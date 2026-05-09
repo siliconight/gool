@@ -1,0 +1,288 @@
+// audio_engine/mixer/bus_graph.cpp
+
+#include "audio_engine/mixer/bus_graph.h"
+
+#include "audio_engine/dsp/gain_effect.h"
+#include "audio_engine/dsp/biquad_filter.h"
+#include "audio_engine/dsp/compressor.h"
+#include "audio_engine/dsp/reverb_effect.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <unordered_set>
+#include <vector>
+
+namespace audio {
+
+namespace {
+
+float DbToLinearLocal(float dB) noexcept {
+    return std::pow(10.0f, dB * 0.05f);
+}
+
+} // namespace
+
+AudioResult BusGraph::Build(const BusGraphConfig& cfg,
+                              uint32_t              sampleRate,
+                              uint32_t              channels,
+                              uint32_t              maxFrames) {
+    sampleRate_ = sampleRate;
+    channels_   = channels;
+    maxFrames_  = maxFrames;
+    categoryMap_ = cfg.categoryMap;
+
+    if (auto rc = ValidateAndBuildBuses(cfg); rc != AudioResult::Success) return rc;
+    if (auto rc = BuildRenderOrder();        rc != AudioResult::Success) return rc;
+
+    for (auto& bp : buses_) {
+        bp->input.assign(static_cast<size_t>(maxFrames) * channels, 0.0f);
+        bp->output.assign(static_cast<size_t>(maxFrames) * channels, 0.0f);
+    }
+
+    for (uint32_t i = 0; i < cfg.busCount; ++i) {
+        const BusConfig& bcfg = cfg.buses[i];
+        const uint32_t   idx  = IndexOf(bcfg.id);
+        if (idx == kInvalidIndex) continue;
+        if (auto rc = BuildEffectsForBus(*buses_[idx], bcfg); rc != AudioResult::Success) {
+            return rc;
+        }
+    }
+
+    for (auto& bp : buses_) {
+        for (auto& fx : bp->effects) {
+            fx->Prepare(sampleRate_, channels_);
+        }
+    }
+
+    return AudioResult::Success;
+}
+
+AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
+    buses_.clear();
+
+    if (cfg.busCount == 0) {
+        auto b = std::make_unique<Bus>();
+        b->id            = kBusMaster;
+        b->parentIndex   = kInvalidIndex;
+        b->silent        = false;
+        b->outputGainLinear.store(1.0f, std::memory_order_relaxed);
+        buses_.push_back(std::move(b));
+        masterIndex_ = 0;
+        return AudioResult::Success;
+    }
+
+    if (cfg.busCount > kMaxBuses) return AudioResult::InvalidArgument;
+
+    std::unordered_set<BusId> seenIds;
+    bool hasMaster = false;
+    for (uint32_t i = 0; i < cfg.busCount; ++i) {
+        const BusId id = cfg.buses[i].id;
+        if (id == kInvalidBusId) return AudioResult::InvalidArgument;
+        if (!seenIds.insert(id).second) return AudioResult::InvalidArgument;
+        if (id == kBusMaster) hasMaster = true;
+    }
+    if (!hasMaster) return AudioResult::InvalidArgument;
+
+    buses_.reserve(cfg.busCount);
+    for (uint32_t i = 0; i < cfg.busCount; ++i) {
+        const BusConfig& bcfg = cfg.buses[i];
+        if (bcfg.id != kBusMaster) continue;
+        auto b = std::make_unique<Bus>();
+        b->id          = bcfg.id;
+        b->parentIndex = kInvalidIndex;
+        b->silent      = bcfg.silent;
+        b->proximityCurve = bcfg.proximityCurve;
+        b->outputGainLinear.store(DbToLinearLocal(bcfg.outputGainDb),
+                                   std::memory_order_relaxed);
+        masterIndex_ = static_cast<uint32_t>(buses_.size());
+        buses_.push_back(std::move(b));
+        break;
+    }
+    for (uint32_t i = 0; i < cfg.busCount; ++i) {
+        const BusConfig& bcfg = cfg.buses[i];
+        if (bcfg.id == kBusMaster) continue;
+        auto b = std::make_unique<Bus>();
+        b->id          = bcfg.id;
+        b->silent      = bcfg.silent;
+        b->proximityCurve = bcfg.proximityCurve;
+        b->outputGainLinear.store(DbToLinearLocal(bcfg.outputGainDb),
+                                   std::memory_order_relaxed);
+        buses_.push_back(std::move(b));
+    }
+
+    for (auto& bp : buses_) {
+        if (bp->id == kBusMaster) { bp->parentIndex = kInvalidIndex; continue; }
+        const BusConfig* bcfg = nullptr;
+        for (uint32_t i = 0; i < cfg.busCount; ++i) {
+            if (cfg.buses[i].id == bp->id) { bcfg = &cfg.buses[i]; break; }
+        }
+        if (!bcfg) return AudioResult::InternalError;
+        const uint32_t parentIdx = IndexOf(bcfg->parent);
+        if (parentIdx == kInvalidIndex) return AudioResult::InvalidArgument;
+        bp->parentIndex = parentIdx;
+    }
+
+    for (uint32_t i = 0; i < buses_.size(); ++i) {
+        uint32_t walker = buses_[i]->parentIndex;
+        uint32_t hops   = 0;
+        while (walker != kInvalidIndex) {
+            if (walker == i) return AudioResult::InvalidArgument;     // cycle
+            if (++hops > buses_.size()) return AudioResult::InvalidArgument;
+            walker = buses_[walker]->parentIndex;
+        }
+    }
+
+    return AudioResult::Success;
+}
+
+AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
+    if (cfg.effectCount > kMaxEffectsPerBus) return AudioResult::InvalidArgument;
+    bus.effects.reserve(cfg.effectCount);
+    bus.sidechainSourceIndex.reserve(cfg.effectCount);
+
+    for (uint32_t i = 0; i < cfg.effectCount; ++i) {
+        const EffectConfig& ec = cfg.effects[i];
+        std::unique_ptr<IDspEffect> fx;
+        uint32_t sidechainIdx = kInvalidIndex;
+
+        switch (ec.kind) {
+            case EffectKind::None:
+                continue;
+            case EffectKind::Gain:
+                fx = std::make_unique<GainEffect>(ec.gainDb);
+                break;
+            case EffectKind::BiquadFilter:
+                fx = std::make_unique<BiquadFilterEffect>(
+                    ec.biquadType, ec.biquadCutoffHz, ec.biquadQ);
+                break;
+            case EffectKind::Compressor: {
+                fx = std::make_unique<CompressorEffect>(
+                    ec.compressorThresholdDb,
+                    ec.compressorRatio,
+                    ec.compressorAttackMs,
+                    ec.compressorReleaseMs,
+                    ec.compressorMakeupDb,
+                    ec.compressorSidechainBus);
+                if (ec.compressorSidechainBus != kInvalidBusId) {
+                    const uint32_t scIdx = IndexOf(ec.compressorSidechainBus);
+                    if (scIdx == kInvalidIndex) return AudioResult::InvalidArgument;
+                    sidechainIdx = scIdx;
+                }
+            } break;
+            case EffectKind::Reverb:
+                fx = std::make_unique<ReverbEffect>(
+                    ec.reverbRoomSize,
+                    ec.reverbDamping,
+                    ec.reverbWetGainDb);
+                break;
+        }
+
+        bus.effects.push_back(std::move(fx));
+        bus.sidechainSourceIndex.push_back(sidechainIdx);
+    }
+    return AudioResult::Success;
+}
+
+AudioResult BusGraph::BuildRenderOrder() {
+    const uint32_t N = static_cast<uint32_t>(buses_.size());
+    std::vector<std::vector<uint32_t>> outEdges(N);
+    std::vector<uint32_t>              inDegree(N, 0);
+
+    for (uint32_t i = 0; i < N; ++i) {
+        const Bus& b = *buses_[i];
+        if (b.parentIndex != kInvalidIndex) {
+            outEdges[i].push_back(b.parentIndex);
+            inDegree[b.parentIndex]++;
+        }
+        for (uint32_t scIdx : b.sidechainSourceIndex) {
+            if (scIdx != kInvalidIndex) {
+                outEdges[scIdx].push_back(i);
+                inDegree[i]++;
+            }
+        }
+    }
+
+    renderOrder_.clear();
+    renderOrder_.reserve(N);
+    std::vector<uint32_t> ready;
+    ready.reserve(N);
+    for (uint32_t i = 0; i < N; ++i) {
+        if (inDegree[i] == 0) ready.push_back(i);
+    }
+    while (!ready.empty()) {
+        const uint32_t v = ready.back();
+        ready.pop_back();
+        renderOrder_.push_back(v);
+        for (uint32_t w : outEdges[v]) {
+            if (--inDegree[w] == 0) ready.push_back(w);
+        }
+    }
+    if (renderOrder_.size() != N) return AudioResult::InvalidArgument;
+    return AudioResult::Success;
+}
+
+uint32_t BusGraph::IndexOf(BusId id) const noexcept {
+    for (uint32_t i = 0; i < buses_.size(); ++i) {
+        if (buses_[i]->id == id) return i;
+    }
+    return kInvalidIndex;
+}
+
+uint32_t BusGraph::IndexForCategory(AudioCategory cat) const noexcept {
+    BusId id = kBusMaster;
+    switch (cat) {
+        case AudioCategory::Music:    id = categoryMap_.music;    break;
+        case AudioCategory::Voice:    id = categoryMap_.voice;    break;
+        case AudioCategory::SFX:      id = categoryMap_.sfx;      break;
+        case AudioCategory::Ambience: id = categoryMap_.ambience; break;
+        case AudioCategory::UI:       id = categoryMap_.ui;       break;
+        case AudioCategory::Dialogue: id = categoryMap_.dialogue; break;
+        case AudioCategory::Count:    break;
+    }
+    const uint32_t idx = IndexOf(id);
+    return (idx != kInvalidIndex) ? idx : masterIndex_;
+}
+
+void BusGraph::ClearAllInputBuffers(uint32_t frames, uint32_t channels) noexcept {
+    const size_t bytes = static_cast<size_t>(frames) * channels * sizeof(float);
+    for (auto& bp : buses_) {
+        std::memset(bp->input.data(), 0, bytes);
+    }
+}
+
+IDspEffect* BusGraph::EffectAt(uint32_t busIndex, uint32_t effectIndex) noexcept {
+    if (busIndex >= buses_.size()) return nullptr;
+    auto& effs = buses_[busIndex]->effects;
+    if (effectIndex >= effs.size()) return nullptr;
+    return effs[effectIndex].get();
+}
+
+uint32_t BusGraph::EffectCount(uint32_t busIndex) const noexcept {
+    if (busIndex >= buses_.size()) return 0;
+    return static_cast<uint32_t>(buses_[busIndex]->effects.size());
+}
+
+uint32_t BusGraph::SidechainSourceIndex(uint32_t busIndex, uint32_t effectIndex) const noexcept {
+    if (busIndex >= buses_.size()) return kInvalidIndex;
+    const auto& v = buses_[busIndex]->sidechainSourceIndex;
+    if (effectIndex >= v.size()) return kInvalidIndex;
+    return v[effectIndex];
+}
+
+AudioResult BusGraph::SetBusOutputGainDb(BusId id, float gainDb) noexcept {
+    const uint32_t idx = IndexOf(id);
+    if (idx == kInvalidIndex) return AudioResult::InvalidArgument;
+    buses_[idx]->outputGainLinear.store(DbToLinearLocal(gainDb),
+                                          std::memory_order_relaxed);
+    return AudioResult::Success;
+}
+
+const ProximityCurve* BusGraph::ProximityCurveFor(BusId id) const noexcept {
+    const uint32_t idx = IndexOf(id);
+    if (idx == kInvalidIndex) return nullptr;
+    const auto& pc = buses_[idx]->proximityCurve;
+    return pc.enabled ? &pc : nullptr;
+}
+
+} // namespace audio

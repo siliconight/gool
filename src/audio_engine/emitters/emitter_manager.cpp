@@ -1,0 +1,138 @@
+// audio_engine/emitters/emitter_manager.cpp
+
+#include "audio_engine/emitters/emitter_manager.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace audio {
+
+EmitterManager::EmitterManager(uint32_t maxActiveEmitters)
+    : slots_(maxActiveEmitters) {}
+
+Result<EmitterHandle> EmitterManager::Create(const EmitterDescriptor& desc, bool oneShot) {
+    EmitterRecord rec;
+    rec.descriptor    = desc;
+    rec.position      = desc.position;
+    rec.forward       = desc.forward;
+    rec.velocity      = desc.velocity;
+    rec.oneShot       = oneShot;
+    rec.activeSoundId = desc.soundId;
+
+    auto handle = slots_.Allocate(std::move(rec));
+    if (!handle) return AudioResult::BudgetExceeded;
+    if (auto* allocated = slots_.Get(*handle)) {
+        // 1:1 mapping: mix slot index = emitter slot index. Voice sources use
+        // a higher range; control thread caller is responsible for keeping
+        // these from colliding (set via VoiceSourceManager.MixSlotBase()).
+        allocated->assignedMixSlot = handle->index;
+    }
+    return *handle;
+}
+
+AudioResult EmitterManager::Destroy(EmitterHandle h) {
+    if (!slots_.Free(h)) return AudioResult::InvalidHandle;
+    return AudioResult::Success;
+}
+
+AudioResult EmitterManager::SetTransform(EmitterHandle h,
+                                          const Vec3& pos,
+                                          const Vec3& fwd,
+                                          const Vec3& vel) {
+    auto* rec = slots_.Get(h);
+    if (!rec) return AudioResult::InvalidHandle;
+    rec->position = pos;
+    rec->forward  = fwd;
+    rec->velocity = vel;
+    return AudioResult::Success;
+}
+
+AudioResult EmitterManager::RecordReplicatedTransform(EmitterHandle h,
+                                                        const Vec3&    pos,
+                                                        const Vec3&    fwd,
+                                                        const Vec3&    vel,
+                                                        SimulationTick tick) {
+    auto* rec = slots_.Get(h);
+    if (!rec) return AudioResult::InvalidHandle;
+
+    // Shift history: [previous, latest] <- [latest, new].
+    rec->repPos[0]  = rec->repPos[1];
+    rec->repFwd[0]  = rec->repFwd[1];
+    rec->repVel[0]  = rec->repVel[1];
+    rec->repTick[0] = rec->repTick[1];
+
+    rec->repPos[1]  = pos;
+    rec->repFwd[1]  = fwd;
+    rec->repVel[1]  = vel;
+    rec->repTick[1] = tick;
+    return AudioResult::Success;
+}
+
+void EmitterManager::InterpolateReplicatedTransforms(float alpha) {
+    alpha = std::clamp(alpha, 0.0f, 1.0f);
+
+    slots_.ForEach([&](EmitterHandle, EmitterRecord& rec) {
+        if (!rec.descriptor.followsReplicatedTransform) return;
+
+        // No history yet: keep current values.
+        if (rec.repTick[1] == 0) return;
+
+        if (rec.repTick[0] == 0) {
+            // Single sample: snap to it.
+            rec.position = rec.repPos[1];
+            rec.forward  = rec.repFwd[1];
+            rec.velocity = rec.repVel[1];
+            return;
+        }
+
+        // alpha == 0 -> previous (one-tick lag); alpha == 1 -> latest;
+        // anywhere in between is interpolated. Beyond `latest` (alpha would
+        // exceed 1) we extrapolate using `velocity`. We cap alpha at 1
+        // above; the host runtime is responsible for advancing alpha.
+        const float a = alpha;
+        rec.position.x = std::lerp(rec.repPos[0].x, rec.repPos[1].x, a);
+        rec.position.y = std::lerp(rec.repPos[0].y, rec.repPos[1].y, a);
+        rec.position.z = std::lerp(rec.repPos[0].z, rec.repPos[1].z, a);
+
+        rec.forward.x  = std::lerp(rec.repFwd[0].x, rec.repFwd[1].x, a);
+        rec.forward.y  = std::lerp(rec.repFwd[0].y, rec.repFwd[1].y, a);
+        rec.forward.z  = std::lerp(rec.repFwd[0].z, rec.repFwd[1].z, a);
+
+        rec.velocity   = rec.repVel[1];   // most-recent velocity for doppler
+    });
+}
+
+void EmitterManager::BuildSnapshot(std::vector<SpatialEmitterView>& emitterViews,
+                                     std::vector<Vec3>&               slotPositions,
+                                     std::vector<uint8_t>&            slotOccupied) {
+    const uint32_t cap = slots_.Capacity();
+    if (emitterViews.size() != static_cast<size_t>(cap) + 1) {
+        emitterViews.assign(static_cast<size_t>(cap) + 1, SpatialEmitterView{});
+    }
+    if (slotPositions.size() != static_cast<size_t>(cap) + 1) {
+        slotPositions.assign(static_cast<size_t>(cap) + 1, Vec3{});
+    }
+    if (slotOccupied.size() != static_cast<size_t>(cap) + 1) {
+        slotOccupied.assign(static_cast<size_t>(cap) + 1, 0u);
+    }
+    std::fill(slotOccupied.begin(), slotOccupied.end(), 0u);
+
+    slots_.ForEach([&](EmitterHandle h, EmitterRecord& rec) {
+        const uint32_t idx = h.index;
+        SpatialEmitterView& v = emitterViews[idx];
+        v.position        = rec.position;
+        v.velocity        = rec.velocity;
+        v.occlusionAmount = 0.0f;     // filled by occlusion system after this
+        v.minDistance     = rec.descriptor.attenuation.minDistance;
+        v.maxDistance     = rec.descriptor.attenuation.maxDistance;
+        v.volumeFloor     = rec.descriptor.attenuation.volumeFloor;
+        v.falloffModel    = rec.descriptor.attenuation.falloffModel;
+        v.category        = rec.descriptor.category;
+        v.spatialized     = rec.descriptor.isSpatialized;
+
+        slotPositions[idx] = rec.position;
+        slotOccupied[idx]  = 1u;
+    });
+}
+
+} // namespace audio

@@ -1,0 +1,71 @@
+# Build artifacts
+build/
+build-*/
+out/
+cmake-build-*/
+.cache/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Object files and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.app
+*.pdb
+
+# Test executables (we name them audio_engine_*_test in CMake)
+audio_engine_*_test
+!audio_engine_*_test.cpp
+!audio_engine_*_test.h
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Profiling / debug output
+*.log
+*.dSYM/
+core
+core.*
+vgcore.*
+perf.data*
+callgrind.out.*
+
+# Python (if anyone adds tooling)
+__pycache__/
+*.pyc
+*.pyo
+
+# Large binary fixtures we don't want to track casually; remove this
+# block if you intentionally check assets in.
+*.wav
+*.ogg
+*.flac
+*.mp3
+
+# Local environment files
+.env
+.env.local

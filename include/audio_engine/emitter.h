@@ -1,0 +1,64 @@
+// audio_engine/emitter.h
+//
+// Public emitter and sound-definition types. The internal Emitter object
+// (in src/audio_engine/emitters/) holds the lifecycle state; this header
+// defines what the host hands in.
+
+#ifndef AUDIO_ENGINE_EMITTER_H
+#define AUDIO_ENGINE_EMITTER_H
+
+#include "audio_engine/types.h"
+#include "audio_engine/handles.h"
+#include "audio_engine/attenuation.h"
+#include "audio_engine/bus.h"
+
+namespace audio {
+
+// Used at registration time. AudioRuntime::CreateEmitter copies these fields
+// into its internal slot.
+struct EmitterDescriptor {
+    AudioSoundId           soundId           = kInvalidSoundId;
+    AudioActorId           ownerActorId      = kInvalidActorId;
+    Vec3                   position{};
+    Vec3                   forward{0.0f, 0.0f, -1.0f};
+    Vec3                   velocity{};
+    AttenuationSettings    attenuation{};
+    AudioPriority          priority          = AudioPriority::Normal;
+    AudioReplicationPolicy replicationPolicy = AudioReplicationPolicy::LocalOnly;
+    AudioCategory          category          = AudioCategory::SFX;
+    // Explicit bus override. kInvalidBusId means "use the AudioConfig
+    // category-to-bus map to resolve at CreateEmitter time."
+    BusId                  targetBus         = kInvalidBusId;
+    bool                   isLooping         = false;
+    bool                   isSpatialized     = true;
+    bool                   occlusionEnabled  = true;
+    // Used by state-based emitters that follow replicated transforms; ignored
+    // for purely local emitters.
+    bool                   followsReplicatedTransform = false;
+
+    // Fade-in duration in milliseconds. When > 0, the voice's gain
+    // ramps from 0 to its computed target over this duration using
+    // an equal-power (sine) curve, paired with the cosine fade-out
+    // applied by DestroyEmitter / StopMixer so a crossfade between
+    // two emitters has constant total power. Default 0 = no fade-in.
+    float                  fadeInMs                   = 0.0f;
+};
+
+// Static, per-sound metadata. Registered once via
+// AudioRuntime::RegisterSoundDefinition(); resolved into emitter defaults at
+// CreateEmitter time.
+struct SoundDefinition {
+    AudioSoundId           soundId           = kInvalidSoundId;
+    AudioCategory          category          = AudioCategory::SFX;
+    AudioPriority          priority          = AudioPriority::Normal;
+    AttenuationSettings    attenuation{};
+    BusId                  targetBus         = kInvalidBusId;
+    bool                   spatialized       = true;
+    bool                   looping           = false;
+    bool                   occlusionEnabled  = true;
+    AudioReplicationPolicy defaultReplicationPolicy = AudioReplicationPolicy::LocalOnly;
+};
+
+} // namespace audio
+
+#endif // AUDIO_ENGINE_EMITTER_H
