@@ -189,6 +189,46 @@ health — the heartbeat pattern. 8 sub-tests covering all branches.
 - Bindings are programmatic; JSON sound-bank declaration of RTPC
   curves is a separate roadmap item.
 
+### 1.4c Multi-target RTPC + curves + JSON authoring — **M** [SHIPPED in 0.5.0]
+
+**Outcome:** the v0.4 limitations are closed in one iteration. Sounds
+can have up to four bindings simultaneously (volume + pitch + lowpass
++ reverb), each driven by its own parameter and shaped by its own
+curve. Bindings can be authored programmatically or declaratively in
+JSON sound banks.
+
+**Status:** Shipped. New `RtpcTarget` enum (Volume / Pitch /
+LowPassCutoff / ReverbSend) and `RtpcCurve` enum (Linear / Exponential
+/ InverseExponential / SCurve). `SetSoundRtpc(soundId, binding)`
+replaces v0.4's `SetSoundVolumeRtpc` (mechanical migration). Storage
+moved to vector-of-bindings-per-sound, capped at one per (sound,
+target). JSON `rtpc` array on each sound entry parses with line-numbered
+errors on bad target/curve names. GDScript autoload exposes
+`bind_volume_rtpc` / `bind_pitch_rtpc` / `bind_lowpass_rtpc` /
+`bind_reverb_rtpc` simple facades plus `bind_rtpc(name, dict)` for the
+advanced full API.
+
+**Audibility-verified DoD:** `tests/unit/sound_rtpc_test.cpp` registers
+real PCM, binds volume + pitch + lowpass on three different test sounds,
+asserts measured RMS for each. Multi-binding coexistence test confirms
+volume and pitch bindings on the same sound apply independently. Curve
+test confirms linear / exp / inv-exp / scurve at parameter midpoint
+produce 0.125 / 0.0625 / 0.1875 / 0.125 RMS respectively (0.25
+reference). 7 sub-tests total. Plus 2 new sub-tests in
+`sound_bank_test.cpp` for JSON authoring + error handling.
+
+**Limitations carried into the next iteration:**
+- Custom point-list curves (arbitrary curve shapes via JSON control
+  points) — still future. Linear / Exponential / InverseExponential /
+  SCurve cover typical FMOD/Wwise authoring needs but not exotic
+  artist-authored shapes.
+- LowPassCutoff combines via `max()` with the spatial baseline. Cases
+  that want RTPC to *override* spatial filtering (underwater zone
+  replaces occlusion) need a different combiner.
+- Bindings are per-sound only. Per-bus RTPC ("all music quiets when
+  combat starts" without binding every track individually) is a
+  separate feature.
+
 ### 1.5 Co-op shooter starter template — **M**
 
 **Outcome:** a downloadable Godot project that's a complete co-op

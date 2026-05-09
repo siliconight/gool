@@ -158,6 +158,67 @@ constexpr AudioParameterId HashParameterName(std::string_view name) noexcept {
     return h;
 }
 
+// ---- RTPC binding types --------------------------------------------------
+
+// Per-voice parameter targeted by an RTPC binding. The runtime maps each
+// value to the matching well-known AudioParameterId on the internal
+// parameter smoother (see EvaluateRtpcBindings_ in the runtime).
+//
+//   * Volume:        multiplicative on sp.gain. Identity = 1.0.
+//   * Pitch:         multiplicative on sp.pitch. Identity = 1.0.
+//                    1.0 = unchanged; 2.0 = one octave up; 0.5 = one octave down.
+//   * LowPassCutoff: combined as max(spatial_baseline, rtpc) so RTPC can
+//                    add filtering on top of occlusion / air absorption,
+//                    but never reduce filtering applied by the world.
+//                    Range [0, 1]; 0 = no filter, 1 = fully muffled.
+//   * ReverbSend:    combined as min(1, spatial_baseline + rtpc) so
+//                    RTPC adds wetness atop the global send. Range [0, 1].
+enum class RtpcTarget : uint8_t {
+    Volume        = 0,
+    Pitch         = 1,
+    LowPassCutoff = 2,
+    ReverbSend    = 3,
+};
+
+constexpr size_t kRtpcTargetCount = 4;
+
+// Shape function applied between input remap and output remap.
+//   * Linear:             y = t
+//   * Exponential:        y = pow(t, exponent)         — convex, accelerates late
+//   * InverseExponential: y = 1 - pow(1 - t, exponent) — concave, accelerates early
+//   * SCurve:             y = t*t*(3 - 2t)             — sigmoidal smoothstep
+//
+// `curveExponent` is consulted only for Exponential / InverseExponential;
+// 2.0 is a reasonable default.
+enum class RtpcCurve : uint8_t {
+    Linear             = 0,
+    Exponential        = 1,
+    InverseExponential = 2,
+    SCurve             = 3,
+};
+
+// One binding entry. Multiple bindings can attach to the same sound,
+// but at most one per (target). See AudioRuntime::SetSoundRtpc.
+struct SoundRtpcBinding {
+    AudioParameterId paramId       = kInvalidParameterId;
+    RtpcTarget       target        = RtpcTarget::Volume;
+    RtpcCurve        curve         = RtpcCurve::Linear;
+    float            curveExponent = 2.0f;
+
+    // Input remap: parameter values in [minValue, maxValue] map linearly
+    // to [0, 1] before the curve. Out-of-range values clamp.
+    float            minValue      = 0.0f;
+    float            maxValue      = 1.0f;
+
+    // Output remap: curve output (always in [0, 1]) maps linearly to
+    // [minOutput, maxOutput]. minOutput > maxOutput is allowed (inverted).
+    float            minOutput     = 0.0f;
+    float            maxOutput     = 1.0f;
+
+    // Smoothing on the resulting per-voice parameter change. 0 = snap.
+    float            smoothingMs   = 50.0f;
+};
+
 } // namespace audio
 
 #endif // AUDIO_ENGINE_TYPES_H

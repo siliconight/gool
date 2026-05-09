@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/backend.h"
@@ -104,13 +105,11 @@ public:
     bool                  ClearGlobalParameter(AudioParameterId paramId);
     size_t                GetGlobalParameterCount() const;
 
-    // Sound-level RTPC bindings (volume-only in this iteration)
-    AudioResult           SetSoundVolumeRtpc(AudioSoundId     soundId,
-                                              AudioParameterId paramId,
-                                              float minValue, float maxValue,
-                                              float minVolume, float maxVolume,
-                                              float smoothingMs);
-    bool                  ClearSoundVolumeRtpc(AudioSoundId soundId);
+    // Sound-level RTPC bindings (multi-target, multi-curve)
+    AudioResult           SetSoundRtpc(AudioSoundId             soundId,
+                                        const SoundRtpcBinding&  binding);
+    bool                  ClearSoundRtpc(AudioSoundId soundId, RtpcTarget target);
+    size_t                ClearAllSoundRtpc(AudioSoundId soundId);
     size_t                GetSoundRtpcBindingCount() const;
 
     AudioResult           SubmitEvent(const AudioEvent& event);
@@ -288,25 +287,27 @@ private:
     std::unordered_map<AudioParameterId, float> globalParameters_;
 
     // Sound-level RTPC bindings: a lookup table from soundId to the
-    // single volume binding registered for it. Walked once per Update
-    // tick by EvaluateRtpcBindings_(); each binding evaluates in
-    // constant time. Game-thread-only access.
-    struct SoundVolumeRtpcBinding {
-        AudioParameterId paramId      = kInvalidParameterId;
-        float            minValue     = 0.0f;
-        float            maxValue     = 1.0f;
-        float            minVolume    = 0.0f;
-        float            maxVolume    = 1.0f;
-        float            smoothingMs  = 50.0f;
-    };
-    std::unordered_map<AudioSoundId, SoundVolumeRtpcBinding> soundVolumeRtpc_;
+    // list of bindings registered for it. At most one binding per
+    // (soundId, target) pair; SetSoundRtpc replaces an existing target
+    // rather than appending. Walked once per Update tick by
+    // EvaluateRtpcBindings_(); each binding evaluates in constant time.
+    // Game-thread-only access.
+    //
+    // Vector capacity caps at kRtpcTargetCount per sound (four targets).
+    // The map size as a whole is capped by AudioConfig::maxSoundRtpcBindings
+    // — counted as the total number of bindings across all sounds, not
+    // distinct sound IDs, so a sound with 4 bindings counts as 4.
+    std::unordered_map<AudioSoundId, std::vector<SoundRtpcBinding>> soundRtpcBindings_;
 
-    // Per-tick: walk active emitters, look up each emitter's
-    // soundId in soundVolumeRtpc_, evaluate the linear remap, push
-    // the resulting volume target into the parameter smoother for
-    // AudioParameterIds::Gain. Skip-when-unset semantics: if the
-    // binding's parameter has never been set via SetGlobalParameter,
-    // the binding has no effect this tick.
+    // Sum of vector sizes across soundRtpcBindings_. Maintained on Set
+    // and Clear so GetSoundRtpcBindingCount is O(1).
+    size_t soundRtpcBindingTotal_ = 0;
+
+    // Per-tick: walk active emitters, look up each emitter's soundId
+    // in soundRtpcBindings_, evaluate every binding in the list against
+    // the global parameter store (skipping bindings whose parameter is
+    // unset), push each resulting target value into the smoother for
+    // the appropriate AudioParameterId.
     void EvaluateRtpcBindings_();
 };
 

@@ -277,47 +277,142 @@ func clear_rtpc(name: String) -> bool:
         return false
     return _runtime.clear_global_parameter(name)
 
-# Bind a sound's volume to a global parameter (RTPC). Each Update tick
-# the runtime reads the current value of `param_name`, linearly remaps
-# it from [min_value, max_value] to [min_volume, max_volume], and pushes
-# the result through the parameter smoother as the per-voice gain.
+# =============================================================================
+# RTPC binding facades (v0.5+)
+# =============================================================================
 #
-# Skip-when-unset semantics: until the parameter is set via set_rtpc()
-# at least once, the binding has no effect — the authored volume stays
-# in place. Binding-installation order is therefore independent of
-# gameplay state.
+# Bind a sound's per-voice parameter (Volume / Pitch / LowPass / ReverbSend)
+# to a global RTPC. Each `Update` tick the runtime reads the current value of
+# `param_name`, applies the configured curve and remap, and pushes the
+# result through the parameter smoother.
+#
+# Skip-when-unset semantics: until `set_rtpc(param_name, ...)` is called at
+# least once, the binding has no effect. Authored values stay in place.
+#
+# At most one binding per (sound, target) pair. Re-binding the same target
+# replaces the old binding. A sound can have up to four bindings simultaneously
+# (volume + pitch + lowpass + reverb_send, each driven by its own parameter).
 #
 # Examples:
-#   # Heartbeat gets louder as health drops:
-#   Gool.bind_volume_rtpc("heartbeat", "health",
-#       /*min_value*/ 0.0, /*max_value*/ 1.0,
-#       /*min_volume*/ 1.0, /*max_volume*/ 0.0)
+#   # Heartbeat gets louder and pitches up as health drops:
+#   Gool.bind_volume_rtpc("heartbeat", "health", 0, 1, 1.0, 0.0)
+#   Gool.bind_pitch_rtpc("heartbeat",  "health", 0, 1, 1.4, 1.0)
 #
-#   # Music ducks under intense combat:
-#   Gool.bind_volume_rtpc("ambient_music", "combat_intensity",
-#       0.0, 1.0,    # 0 = peace, 1 = max combat
-#       1.0, 0.3,    # full volume at peace, 30% during combat
-#       300.0)       # 300 ms smoothing on the duck
-#
-# Returns true if the binding was registered or updated; false on
-# invalid arguments or budget exhaustion (see AudioConfig::maxSoundRtpcBindings).
+#   # Music ducks under combat with smoothstep curve for an organic feel:
+#   Gool.bind_rtpc("ambient", {
+#       "parameter": "combat_intensity",
+#       "target":    "volume",
+#       "curve":     "scurve",
+#       "min_value": 0.0, "max_value": 1.0,
+#       "min_output": 1.0, "max_output": 0.3,
+#       "smoothing_ms": 300.0,
+#   })
+
+# Bind a Volume target with a linear curve. The most common case.
 func bind_volume_rtpc(sound_name: String, param_name: String,
                        min_value: float, max_value: float,
-                       min_volume: float, max_volume: float,
+                       min_output: float, max_output: float,
                        smoothing_ms: float = 50.0) -> bool:
     if _runtime == null:
         return false
-    return _runtime.set_sound_volume_rtpc(sound_name, param_name,
-                                            min_value, max_value,
-                                            min_volume, max_volume,
-                                            smoothing_ms)
+    return _runtime.set_sound_rtpc(sound_name, param_name,
+                                     "volume", "linear",
+                                     min_value, max_value,
+                                     min_output, max_output,
+                                     2.0, smoothing_ms)
 
-# Remove the volume binding for a sound. Voices currently playing keep
-# their last computed smoothed volume (no snap-back to authored level).
-func clear_volume_rtpc(sound_name: String) -> bool:
+# Bind a Pitch target with a linear curve. Output is a pitch multiplier
+# (1.0 = unchanged, 2.0 = octave up, 0.5 = octave down).
+func bind_pitch_rtpc(sound_name: String, param_name: String,
+                      min_value: float, max_value: float,
+                      min_output: float, max_output: float,
+                      smoothing_ms: float = 50.0) -> bool:
     if _runtime == null:
         return false
-    return _runtime.clear_sound_volume_rtpc(sound_name)
+    return _runtime.set_sound_rtpc(sound_name, param_name,
+                                     "pitch", "linear",
+                                     min_value, max_value,
+                                     min_output, max_output,
+                                     2.0, smoothing_ms)
+
+# Bind a LowPassCutoff target. Output in [0, 1]; 0 = no filter, 1 = fully
+# muffled. Combined with the spatializer's baseline via max(), so RTPC
+# can add filtering on top of occlusion / air absorption but never reduce
+# what the world applied.
+func bind_lowpass_rtpc(sound_name: String, param_name: String,
+                        min_value: float, max_value: float,
+                        min_output: float, max_output: float,
+                        smoothing_ms: float = 50.0) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.set_sound_rtpc(sound_name, param_name,
+                                     "lowpass", "linear",
+                                     min_value, max_value,
+                                     min_output, max_output,
+                                     2.0, smoothing_ms)
+
+# Bind a ReverbSend target. Output in [0, 1] is added to the global
+# reverb send amount with a clamp at 1.0.
+func bind_reverb_rtpc(sound_name: String, param_name: String,
+                       min_value: float, max_value: float,
+                       min_output: float, max_output: float,
+                       smoothing_ms: float = 50.0) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.set_sound_rtpc(sound_name, param_name,
+                                     "reverb", "linear",
+                                     min_value, max_value,
+                                     min_output, max_output,
+                                     2.0, smoothing_ms)
+
+# Advanced: bind any target with any curve, configured via Dictionary.
+# Keys (all required unless marked optional):
+#   parameter:     String — global parameter name
+#   target:        String — "volume" | "pitch" | "lowpass" | "reverb"
+#   curve:         String (optional, default "linear") —
+#                  "linear" | "exponential" | "inverse_exp" | "scurve"
+#   exponent:      float (optional, default 2.0) — used by exp / inv_exp
+#   min_value:     float — input range start
+#   max_value:     float — input range end
+#   min_output:    float — output at min_value (after curve)
+#   max_output:    float — output at max_value (after curve)
+#   smoothing_ms:  float (optional, default 50.0)
+func bind_rtpc(sound_name: String, binding: Dictionary) -> bool:
+    if _runtime == null:
+        return false
+    var param      = binding.get("parameter", "")
+    var target     = binding.get("target",    "")
+    var curve      = binding.get("curve",     "linear")
+    var exponent   = binding.get("exponent",      2.0)
+    var min_value  = binding.get("min_value",     0.0)
+    var max_value  = binding.get("max_value",     1.0)
+    var min_output = binding.get("min_output",    0.0)
+    var max_output = binding.get("max_output",    1.0)
+    var smoothing  = binding.get("smoothing_ms",  50.0)
+    if param == "" or target == "":
+        push_error("[gool] bind_rtpc requires 'parameter' and 'target' keys")
+        return false
+    return _runtime.set_sound_rtpc(sound_name, param, target, curve,
+                                     min_value, max_value,
+                                     min_output, max_output,
+                                     exponent, smoothing)
+
+# Remove one binding for (sound, target). Returns true if it existed.
+func clear_rtpc_binding(sound_name: String, target: String) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.clear_sound_rtpc(sound_name, target)
+
+# Remove every binding for a sound. Returns the number of bindings removed.
+func clear_all_rtpc_bindings(sound_name: String) -> int:
+    if _runtime == null:
+        return 0
+    return _runtime.clear_all_sound_rtpc(sound_name)
+
+# Backward-compat convenience: same as clear_rtpc_binding(name, "volume").
+# Kept so v0.4 call sites don't break on upgrade.
+func clear_volume_rtpc(sound_name: String) -> bool:
+    return clear_rtpc_binding(sound_name, "volume")
 
 # =============================================================================
 # Internal helpers

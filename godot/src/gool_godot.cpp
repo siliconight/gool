@@ -188,16 +188,20 @@ public:
         ClassDB::bind_method(D_METHOD("global_parameter_count"),
                               &GoolAudioRuntime::global_parameter_count);
 
-        // Sound-level RTPC bindings (volume modulation)
-        ClassDB::bind_method(D_METHOD("set_sound_volume_rtpc",
-                                       "sound_name", "param_name",
+        // Sound-level RTPC bindings (multi-target, multi-curve).
+        // GDScript autoload wraps these as Gool.bind_volume_rtpc /
+        // bind_pitch_rtpc / bind_lowpass_rtpc / bind_rtpc (advanced).
+        ClassDB::bind_method(D_METHOD("set_sound_rtpc",
+                                       "sound_name", "param_name", "target", "curve",
                                        "min_value", "max_value",
-                                       "min_volume", "max_volume",
-                                       "smoothing_ms"),
-                              &GoolAudioRuntime::set_sound_volume_rtpc,
-                              DEFVAL(50.0));
-        ClassDB::bind_method(D_METHOD("clear_sound_volume_rtpc", "sound_name"),
-                              &GoolAudioRuntime::clear_sound_volume_rtpc);
+                                       "min_output", "max_output",
+                                       "curve_exponent", "smoothing_ms"),
+                              &GoolAudioRuntime::set_sound_rtpc,
+                              DEFVAL("linear"), DEFVAL(2.0), DEFVAL(50.0));
+        ClassDB::bind_method(D_METHOD("clear_sound_rtpc", "sound_name", "target"),
+                              &GoolAudioRuntime::clear_sound_rtpc);
+        ClassDB::bind_method(D_METHOD("clear_all_sound_rtpc", "sound_name"),
+                              &GoolAudioRuntime::clear_all_sound_rtpc);
         ClassDB::bind_method(D_METHOD("sound_rtpc_binding_count"),
                               &GoolAudioRuntime::sound_rtpc_binding_count);
 
@@ -588,33 +592,80 @@ public:
         return static_cast<int64_t>(runtime_->GetGlobalParameterCount());
     }
 
-    // ---- Sound-level RTPC volume bindings ----------------------------
-    // Surfaced as Gool.bind_volume_rtpc / Gool.clear_volume_rtpc in
-    // the GDScript autoload. Both names hash via HashSoundName /
-    // HashParameterName so any ASCII names work.
+    // ---- Sound-level RTPC bindings (multi-target, multi-curve) -------
+    // Surfaced via GDScript autoload as Gool.bind_volume_rtpc /
+    // bind_pitch_rtpc / bind_lowpass_rtpc / bind_rtpc (advanced).
+    // Names are hashed via HashSoundName / HashParameterName so any
+    // ASCII names work; target / curve are string-keyed for
+    // GDScript ergonomics.
 
-    bool set_sound_volume_rtpc(const String& sound_name,
-                                 const String& param_name,
-                                 double min_value,
-                                 double max_value,
-                                 double min_volume,
-                                 double max_volume,
-                                 double smoothing_ms) {
+    bool set_sound_rtpc(const String& sound_name,
+                          const String& param_name,
+                          const String& target_name,
+                          const String& curve_name,
+                          double min_value,
+                          double max_value,
+                          double min_output,
+                          double max_output,
+                          double curve_exponent,
+                          double smoothing_ms) {
         if (!runtime_) return false;
-        const auto rc = runtime_->SetSoundVolumeRtpc(
-            HashName(sound_name),
-            HashParam(param_name),
-            static_cast<float>(min_value),
-            static_cast<float>(max_value),
-            static_cast<float>(min_volume),
-            static_cast<float>(max_volume),
-            static_cast<float>(smoothing_ms));
+        audio::SoundRtpcBinding b;
+        b.paramId       = HashParam(param_name);
+
+        // Target string → enum.
+        const auto t = target_name.utf8();
+        const std::string ts(t.get_data(), static_cast<size_t>(t.length()));
+        if      (ts == "volume")          b.target = audio::RtpcTarget::Volume;
+        else if (ts == "pitch")           b.target = audio::RtpcTarget::Pitch;
+        else if (ts == "lowpass" || ts == "lowpass_cutoff" ||
+                 ts == "low_pass_cutoff") b.target = audio::RtpcTarget::LowPassCutoff;
+        else if (ts == "reverb" || ts == "reverb_send")
+                                          b.target = audio::RtpcTarget::ReverbSend;
+        else                               return false;
+
+        // Curve string → enum.
+        const auto c = curve_name.utf8();
+        const std::string cs(c.get_data(), static_cast<size_t>(c.length()));
+        if      (cs == "linear")          b.curve = audio::RtpcCurve::Linear;
+        else if (cs == "exponential" || cs == "exp")
+                                          b.curve = audio::RtpcCurve::Exponential;
+        else if (cs == "inverse_exponential" || cs == "inv_exp" ||
+                 cs == "inverse_exp")     b.curve = audio::RtpcCurve::InverseExponential;
+        else if (cs == "scurve" || cs == "smoothstep")
+                                          b.curve = audio::RtpcCurve::SCurve;
+        else                               return false;
+
+        b.curveExponent = static_cast<float>(curve_exponent);
+        b.minValue      = static_cast<float>(min_value);
+        b.maxValue      = static_cast<float>(max_value);
+        b.minOutput     = static_cast<float>(min_output);
+        b.maxOutput     = static_cast<float>(max_output);
+        b.smoothingMs   = static_cast<float>(smoothing_ms);
+
+        const auto rc = runtime_->SetSoundRtpc(HashName(sound_name), b);
         return rc == audio::AudioResult::Success;
     }
 
-    bool clear_sound_volume_rtpc(const String& sound_name) {
+    bool clear_sound_rtpc(const String& sound_name, const String& target_name) {
         if (!runtime_) return false;
-        return runtime_->ClearSoundVolumeRtpc(HashName(sound_name));
+        const auto t = target_name.utf8();
+        const std::string ts(t.get_data(), static_cast<size_t>(t.length()));
+        audio::RtpcTarget tgt;
+        if      (ts == "volume")          tgt = audio::RtpcTarget::Volume;
+        else if (ts == "pitch")           tgt = audio::RtpcTarget::Pitch;
+        else if (ts == "lowpass" || ts == "lowpass_cutoff" ||
+                 ts == "low_pass_cutoff") tgt = audio::RtpcTarget::LowPassCutoff;
+        else if (ts == "reverb" || ts == "reverb_send")
+                                          tgt = audio::RtpcTarget::ReverbSend;
+        else                               return false;
+        return runtime_->ClearSoundRtpc(HashName(sound_name), tgt);
+    }
+
+    int64_t clear_all_sound_rtpc(const String& sound_name) {
+        if (!runtime_) return 0;
+        return static_cast<int64_t>(
+            runtime_->ClearAllSoundRtpc(HashName(sound_name)));
     }
 
     int64_t sound_rtpc_binding_count() const {

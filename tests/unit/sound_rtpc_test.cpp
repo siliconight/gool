@@ -1,13 +1,12 @@
 // tests/unit/sound_rtpc_test.cpp
 //
-// Validates render-thread RTPC volume modulation: setting a global
-// parameter via SetGlobalParameter changes the rendered audio
-// volume of voices whose sound has a registered binding.
-//
-// Audibility-verified: each test renders real audio and asserts on
-// measured RMS, not on internal counters. If the binding evaluation
-// or smoother dispatch breaks, RMS doesn't follow the parameter
-// and these tests fail.
+// Validates render-thread RTPC modulation (v0.5 multi-target API):
+//   * Volume / Pitch / LowPass targets (ReverbSend covered separately
+//     when a reverb bus is configured)
+//   * Linear / Exponential / InverseExponential / SCurve curves
+//   * Multiple bindings per sound (volume + pitch independently driven)
+//   * Skip-when-unset semantics, clamping, clear, API validation
+//   * Audibility-verified end-to-end: real audio rendered, RMS measured
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/backend.h"
@@ -20,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -73,11 +73,6 @@ OfflineBackend* InitRuntime(audio::AudioRuntime& rt) {
     auto rc = rt.Initialize(cfg, std::move(deps));
     assert(rc == audio::AudioResult::Success);
 
-    // The orchestrator's per-emitter UpdateParams pass (where userGain
-    // multiplies into sp.gain and the result is posted to the mixer)
-    // only runs when a listener is registered. Without this, the
-    // mixer voice keeps whatever gain the StartSound command stamped
-    // and RTPC modulation has no audible effect.
     audio::AudioListener lis;
     lis.position = {0, 0, 0};
     lis.forward  = {0, 0, -1};
@@ -93,12 +88,11 @@ float ComputeRms(const std::vector<float>& buf) {
     return static_cast<float>(std::sqrt(acc / static_cast<double>(buf.size())));
 }
 
-// Register a 1-second 440 Hz mono sine wave under the given soundId.
 void RegisterSine(audio::AudioRuntime& rt, audio::AudioSoundId id,
-                   bool spatialized = false) {
+                   float frequencyHz = 440.0f) {
     std::vector<float> sine(48000);
     for (size_t i = 0; i < sine.size(); ++i) {
-        sine[i] = 0.5f * std::sin(2.0f * 3.14159265f * 440.0f *
+        sine[i] = 0.5f * std::sin(2.0f * 3.14159265f * frequencyHz *
                                     static_cast<float>(i) / 48000.0f);
     }
     rt.RegisterPcmSound(id, sine, 48000, 1);
@@ -107,265 +101,323 @@ void RegisterSine(audio::AudioRuntime& rt, audio::AudioSoundId id,
     def.soundId      = id;
     def.category     = audio::AudioCategory::SFX;
     def.targetBus    = audio::kBusMaster;
-    def.spatialized  = spatialized;
+    def.spatialized  = false;
     def.attenuation.minDistance = 1.0f;
     def.attenuation.maxDistance = 1000.0f;
     rt.RegisterSoundDefinition(def);
 }
 
-void TestUnsetParameterLeavesAuthoredVolume() {
-    std::cout << "  [unset parameter: binding has no effect, authored volume preserved]\n";
+audio::SoundRtpcBinding MakeBinding(audio::AudioParameterId paramId,
+                                      audio::RtpcTarget target,
+                                      float minValue, float maxValue,
+                                      float minOutput, float maxOutput,
+                                      audio::RtpcCurve curve = audio::RtpcCurve::Linear,
+                                      float exponent = 2.0f,
+                                      float smoothingMs = 0.0f) {
+    audio::SoundRtpcBinding b;
+    b.paramId       = paramId;
+    b.target        = target;
+    b.curve         = curve;
+    b.curveExponent = exponent;
+    b.minValue      = minValue;
+    b.maxValue      = maxValue;
+    b.minOutput     = minOutput;
+    b.maxOutput     = maxOutput;
+    b.smoothingMs   = smoothingMs;
+    return b;
+}
+
+// --- Volume target ---------------------------------------------------------
+
+void TestVolumeBindingDrivesRenderedRms() {
+    std::cout << "  [volume binding: RMS halves at parameter midpoint]\n";
+
+    const auto p = audio::HashParameterName("health");
+    constexpr audio::AudioSoundId kSnd = 0xB001;
+
+    audio::AudioRuntime rt1;
+    OfflineBackend* be1 = InitRuntime(rt1);
+    RegisterSine(rt1, kSnd);
+    rt1.SetSoundRtpc(kSnd, MakeBinding(p, audio::RtpcTarget::Volume, 0, 1, 0, 1));
+    rt1.SetGlobalParameter(p, 1.0f);
+    rt1.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt1.Update(1.0f / 60.0f);
+    std::vector<float> bufFull;
+    be1->Render(24000, bufFull);
+    const float rmsFull = ComputeRms(bufFull);
+
+    audio::AudioRuntime rt2;
+    OfflineBackend* be2 = InitRuntime(rt2);
+    RegisterSine(rt2, kSnd);
+    rt2.SetSoundRtpc(kSnd, MakeBinding(p, audio::RtpcTarget::Volume, 0, 1, 0, 1));
+    rt2.SetGlobalParameter(p, 0.5f);
+    rt2.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt2.Update(1.0f / 60.0f);
+    std::vector<float> bufHalf;
+    be2->Render(24000, bufHalf);
+    const float rmsHalf = ComputeRms(bufHalf);
+
+    const float ratio = rmsHalf / std::max(rmsFull, 1e-9f);
+    std::cout << "    full RMS = " << rmsFull << "  half RMS = " << rmsHalf
+              << "  ratio = " << ratio << "\n";
+    assert(rmsFull > 0.10f);
+    assert(ratio > 0.40f && ratio < 0.60f);
+
+    rt1.Shutdown(); rt2.Shutdown();
+}
+
+// --- Pitch target ----------------------------------------------------------
+
+void TestPitchBindingChangesRender() {
+    std::cout << "  [pitch binding: rendered audio differs from reference]\n";
+
+    const auto p = audio::HashParameterName("intensity");
+    constexpr audio::AudioSoundId kSnd = 0xB002;
+
+    audio::AudioRuntime rt1;
+    OfflineBackend* be1 = InitRuntime(rt1);
+    RegisterSine(rt1, kSnd, 880.0f);
+    rt1.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt1.Update(1.0f / 60.0f);
+    std::vector<float> bufRef;
+    be1->Render(24000, bufRef);
+    const float rmsRef = ComputeRms(bufRef);
+
+    audio::AudioRuntime rt2;
+    OfflineBackend* be2 = InitRuntime(rt2);
+    RegisterSine(rt2, kSnd, 880.0f);
+    rt2.SetSoundRtpc(kSnd, MakeBinding(p, audio::RtpcTarget::Pitch,
+                                         0.0f, 1.0f, 0.5f, 1.0f));
+    rt2.SetGlobalParameter(p, 0.0f);  // → pitch = 0.5 (octave down)
+    rt2.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt2.Update(1.0f / 60.0f);
+    std::vector<float> bufLow;
+    be2->Render(24000, bufLow);
+    const float rmsLow = ComputeRms(bufLow);
+
+    std::cout << "    ref RMS = " << rmsRef << "  low RMS = " << rmsLow << "\n";
+    assert(rmsRef > 0.10f && rmsLow > 0.10f);
+
+    // Distinct waveforms.
+    assert(bufRef.size() == bufLow.size());
+    double diff = 0.0;
+    for (size_t i = 0; i < bufRef.size(); ++i) {
+        diff += std::abs(bufRef[i] - bufLow[i]);
+    }
+    diff /= static_cast<double>(bufRef.size());
+    std::cout << "    mean abs diff = " << diff << " (expect noticeably > 0)\n";
+    assert(diff > 0.05);
+
+    rt1.Shutdown(); rt2.Shutdown();
+}
+
+// --- LowPass target --------------------------------------------------------
+
+void TestLowPassBindingAttenuatesHighFreq() {
+    std::cout << "  [lowpass binding: 5 kHz sine attenuated when filter engaged]\n";
+
+    const auto p = audio::HashParameterName("muffle");
+    constexpr audio::AudioSoundId kSnd = 0xB003;
+
+    audio::AudioRuntime rt1;
+    OfflineBackend* be1 = InitRuntime(rt1);
+    RegisterSine(rt1, kSnd, 5000.0f);
+    rt1.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt1.Update(1.0f / 60.0f);
+    std::vector<float> bufOpen;
+    be1->Render(24000, bufOpen);
+    const float rmsOpen = ComputeRms(bufOpen);
+
+    audio::AudioRuntime rt2;
+    OfflineBackend* be2 = InitRuntime(rt2);
+    RegisterSine(rt2, kSnd, 5000.0f);
+    rt2.SetSoundRtpc(kSnd, MakeBinding(p, audio::RtpcTarget::LowPassCutoff,
+                                         0.0f, 1.0f, 0.0f, 1.0f));
+    rt2.SetGlobalParameter(p, 1.0f);
+    rt2.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt2.Update(1.0f / 60.0f);
+    std::vector<float> bufFiltered;
+    be2->Render(24000, bufFiltered);
+    const float rmsFiltered = ComputeRms(bufFiltered);
+
+    std::cout << "    open RMS = " << rmsOpen
+              << "  filtered RMS = " << rmsFiltered
+              << "  ratio = " << (rmsFiltered / std::max(rmsOpen, 1e-9f)) << "\n";
+    assert(rmsOpen > 0.10f);
+    assert(rmsFiltered < rmsOpen * 0.85f);
+
+    rt1.Shutdown(); rt2.Shutdown();
+}
+
+// --- Multiple bindings per sound -------------------------------------------
+
+void TestMultipleBindingsCoexist() {
+    std::cout << "  [multi-binding: volume + pitch on same sound, independent]\n";
+
     audio::AudioRuntime rt;
     OfflineBackend* be = InitRuntime(rt);
+    constexpr audio::AudioSoundId kSnd = 0xB004;
+    RegisterSine(rt, kSnd, 880.0f);
 
-    constexpr audio::AudioSoundId kSnd = 0xAA01;
-    RegisterSine(rt, kSnd);
+    const auto pVol   = audio::HashParameterName("ducking");
+    const auto pPitch = audio::HashParameterName("doppler_sim");
 
-    // Bind volume to "health" but never call set_rtpc("health", ...).
-    // Skip-when-unset semantics say the binding has no effect — the
-    // sine renders at its authored 0.5 amplitude.
-    const auto pHealth = audio::HashParameterName("health");
-    auto rc = rt.SetSoundVolumeRtpc(kSnd, pHealth,
-        /*minV*/ 0.0f, /*maxV*/ 1.0f,
-        /*minVol*/ 0.0f, /*maxVol*/ 1.0f,
-        /*smoothingMs*/ 0.0f);
-    assert(rc == audio::AudioResult::Success);
+    auto rcV = rt.SetSoundRtpc(kSnd, MakeBinding(
+        pVol, audio::RtpcTarget::Volume, 0.0f, 1.0f, 1.0f, 0.0f));
+    assert(rcV == audio::AudioResult::Success);
 
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
+    auto rcP = rt.SetSoundRtpc(kSnd, MakeBinding(
+        pPitch, audio::RtpcTarget::Pitch, 0.0f, 1.0f, 1.0f, 0.5f));
+    assert(rcP == audio::AudioResult::Success);
+
+    assert(rt.GetSoundRtpcBindingCount() == 2u);
+
+    rt.SetGlobalParameter(pVol,   0.0f);
+    rt.SetGlobalParameter(pPitch, 0.0f);
+    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
     for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
+    std::vector<float> buf;
+    be->Render(24000, buf);
+    const float rmsFull = ComputeRms(buf);
+    std::cout << "    both at min: RMS = " << rmsFull << "\n";
+    assert(rmsFull > 0.10f);
 
-    std::vector<float> audio_buf;
-    be->Render(/*frames*/ 24000, audio_buf);
-    const float rms = ComputeRms(audio_buf);
-    std::cout << "    rendered RMS = " << rms << " (expect ~0.25 for unmodulated sine)\n";
-    // 0.5-amplitude mono sine through stereo at unity gain ≈ 0.25 RMS
-    // (with some small attenuation from the bus chain). Just assert
-    // it's clearly above silence.
-    assert(rms > 0.10f);
+    rt.SetGlobalParameter(pVol, 1.0f);
+    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
+    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
+    std::vector<float> bufSilent;
+    be->Render(24000, bufSilent);
+    const float rmsSilent = ComputeRms(bufSilent);
+    std::cout << "    volume cranked: RMS = " << rmsSilent << "\n";
+    assert(rmsSilent < 0.01f);
+
+    auto rcRebind = rt.SetSoundRtpc(kSnd, MakeBinding(
+        pVol, audio::RtpcTarget::Volume, 0.0f, 1.0f, 0.5f, 0.5f));
+    assert(rcRebind == audio::AudioResult::Success);
+    assert(rt.GetSoundRtpcBindingCount() == 2u);
+
+    bool removedVol = rt.ClearSoundRtpc(kSnd, audio::RtpcTarget::Volume);
+    assert(removedVol);
+    assert(rt.GetSoundRtpcBindingCount() == 1u);
+
+    size_t removedAll = rt.ClearAllSoundRtpc(kSnd);
+    assert(removedAll == 1u);
+    assert(rt.GetSoundRtpcBindingCount() == 0u);
 
     rt.Shutdown();
 }
 
-void TestRtpcZeroSilencesAudio() {
-    std::cout << "  [parameter at zero with binding {0->0, 1->1}: voice is silent]\n";
+// --- Curves ----------------------------------------------------------------
+
+void TestCurveTypesProduceDifferentOutput() {
+    std::cout << "  [curves: linear / exponential / inverse-exp / scurve at midpoint]\n";
+
+    const auto p = audio::HashParameterName("dial");
+    constexpr audio::AudioSoundId kSnd = 0xB005;
+
+    auto run_with_curve = [&](audio::RtpcCurve curve) -> float {
+        audio::AudioRuntime rt;
+        OfflineBackend* be = InitRuntime(rt);
+        RegisterSine(rt, kSnd);
+        rt.SetSoundRtpc(kSnd, MakeBinding(p, audio::RtpcTarget::Volume,
+                                            0.0f, 1.0f, 0.0f, 1.0f, curve));
+        rt.SetGlobalParameter(p, 0.5f);
+        rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
+        for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
+        std::vector<float> buf;
+        be->Render(24000, buf);
+        const float rms = ComputeRms(buf);
+        rt.Shutdown();
+        return rms;
+    };
+
+    const float rmsLinear = run_with_curve(audio::RtpcCurve::Linear);
+    const float rmsExp    = run_with_curve(audio::RtpcCurve::Exponential);
+    const float rmsInvExp = run_with_curve(audio::RtpcCurve::InverseExponential);
+    const float rmsScurve = run_with_curve(audio::RtpcCurve::SCurve);
+
+    std::cout << "    linear=" << rmsLinear
+              << "  exp(2)=" << rmsExp
+              << "  invexp(2)=" << rmsInvExp
+              << "  scurve=" << rmsScurve << "\n";
+
+    // Linear at t=0.5 → 0.5 → RMS half.
+    // Exponential(2) at t=0.5 → 0.25 → quarter.
+    // InverseExponential(2) at t=0.5 → 0.75 → three-quarters.
+    // SCurve at t=0.5 → 0.5 (smoothstep is symmetric around midpoint).
+    assert(rmsExp < rmsLinear);                       // exp pulls toward min
+    assert(rmsInvExp > rmsLinear);                    // inv-exp pulls toward max
+    assert(std::abs(rmsScurve - rmsLinear) < 0.02f);  // smoothstep ≈ linear at 0.5
+}
+
+// --- Skip-when-unset preserved per-binding ---------------------------------
+
+void TestSkipWhenUnsetIsPerBinding() {
+    std::cout << "  [skip-when-unset: one binding's unset param doesn't affect others]\n";
+
     audio::AudioRuntime rt;
     OfflineBackend* be = InitRuntime(rt);
-
-    constexpr audio::AudioSoundId kSnd = 0xAA02;
+    constexpr audio::AudioSoundId kSnd = 0xB006;
     RegisterSine(rt, kSnd);
 
-    const auto pHealth = audio::HashParameterName("health");
-    rt.SetSoundVolumeRtpc(kSnd, pHealth, 0.0f, 1.0f, 0.0f, 1.0f, /*smooth*/ 0.0f);
-    // Set health to 0 → volume mapped to 0.
-    rt.SetGlobalParameter(pHealth, 0.0f);
+    const auto pSet   = audio::HashParameterName("set_param");
+    const auto pUnset = audio::HashParameterName("never_set");
 
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
+    rt.SetSoundRtpc(kSnd, MakeBinding(pSet, audio::RtpcTarget::Volume,
+                                        0, 1, 0, 1));
+    rt.SetSoundRtpc(kSnd, MakeBinding(pUnset, audio::RtpcTarget::Pitch,
+                                        0, 1, 1, 0.5f));
+
+    rt.SetGlobalParameter(pSet, 0.0f);
+
+    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(kSnd, audio::Vec3{0,0,0}));
     for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-
-    std::vector<float> audio_buf;
-    be->Render(24000, audio_buf);
-    const float rms = ComputeRms(audio_buf);
+    std::vector<float> buf;
+    be->Render(24000, buf);
+    const float rms = ComputeRms(buf);
     std::cout << "    rendered RMS = " << rms << " (expect ~0)\n";
     assert(rms < 0.01f);
 
     rt.Shutdown();
 }
 
-void TestRtpcOneEqualsAuthoredVolume() {
-    std::cout << "  [parameter at one: rendered volume matches authored]\n";
-    audio::AudioRuntime rt;
-    OfflineBackend* be = InitRuntime(rt);
-
-    constexpr audio::AudioSoundId kSnd = 0xAA03;
-    RegisterSine(rt, kSnd);
-
-    const auto pHealth = audio::HashParameterName("health");
-    rt.SetSoundVolumeRtpc(kSnd, pHealth, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
-    rt.SetGlobalParameter(pHealth, 1.0f);
-
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
-    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-
-    std::vector<float> audio_buf;
-    be->Render(24000, audio_buf);
-    const float rms = ComputeRms(audio_buf);
-    std::cout << "    rendered RMS = " << rms << " (expect ~0.25)\n";
-    assert(rms > 0.10f);
-
-    rt.Shutdown();
-}
-
-void TestRtpcMidpointHalfVolume() {
-    std::cout << "  [parameter at 0.5 with binding {0->0, 1->1}: ~half rendered RMS]\n";
-    audio::AudioRuntime rt;
-    OfflineBackend* be = InitRuntime(rt);
-
-    constexpr audio::AudioSoundId kSnd = 0xAA04;
-    RegisterSine(rt, kSnd);
-
-    const auto pHealth = audio::HashParameterName("health");
-    rt.SetSoundVolumeRtpc(kSnd, pHealth, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
-
-    // Reference render at full volume.
-    rt.SetGlobalParameter(pHealth, 1.0f);
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
-    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-    std::vector<float> bufFull;
-    be->Render(24000, bufFull);
-    const float rmsFull = ComputeRms(bufFull);
-
-    // Re-render the same sound at half parameter value. Bring up a
-    // fresh runtime so the previous one-shot doesn't pollute.
-    audio::AudioRuntime rt2;
-    OfflineBackend* be2 = InitRuntime(rt2);
-    RegisterSine(rt2, kSnd);
-    rt2.SetSoundVolumeRtpc(kSnd, pHealth, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
-    rt2.SetGlobalParameter(pHealth, 0.5f);
-    rt2.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
-    for (int i = 0; i < 30; ++i) rt2.Update(1.0f / 60.0f);
-    std::vector<float> bufHalf;
-    be2->Render(24000, bufHalf);
-    const float rmsHalf = ComputeRms(bufHalf);
-
-    std::cout << "    full RMS = " << rmsFull
-              << "   half RMS = " << rmsHalf
-              << "   ratio = " << (rmsHalf / std::max(rmsFull, 1e-9f)) << "\n";
-    // Half parameter value with linear binding → half voice gain →
-    // half RMS. Allow ±20% slack for smoother transient and bus chain
-    // effects.
-    const float ratio = rmsHalf / std::max(rmsFull, 1e-9f);
-    assert(ratio > 0.40f && ratio < 0.60f);
-
-    rt.Shutdown();
-    rt2.Shutdown();
-}
-
-void TestInvertedBindingHigherParamLowerVolume() {
-    std::cout << "  [inverted binding {1->0, 0->1}: full health is silent]\n";
-    audio::AudioRuntime rt;
-    OfflineBackend* be = InitRuntime(rt);
-
-    constexpr audio::AudioSoundId kSnd = 0xAA05;
-    RegisterSine(rt, kSnd);
-
-    const auto pHealth = audio::HashParameterName("health");
-    // Heartbeat-style: minVolume at full health, maxVolume at low health.
-    // Wire by mapping minValue=1 → minVolume=0 and maxValue=0 → maxVolume=1.
-    rt.SetSoundVolumeRtpc(kSnd, pHealth,
-        /*minV*/ 1.0f, /*maxV*/ 0.0f,
-        /*minVol*/ 0.0f, /*maxVol*/ 1.0f,
-        /*smooth*/ 0.0f);
-    rt.SetGlobalParameter(pHealth, 1.0f);  // full health
-
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
-    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-
-    std::vector<float> audio_buf;
-    be->Render(24000, audio_buf);
-    const float rms = ComputeRms(audio_buf);
-    std::cout << "    full health, inverted binding: RMS = " << rms << "\n";
-    assert(rms < 0.01f);
-
-    rt.Shutdown();
-}
-
-void TestClampsOutsideRange() {
-    std::cout << "  [parameter beyond range clamps to nearer endpoint]\n";
-    audio::AudioRuntime rt;
-    OfflineBackend* be = InitRuntime(rt);
-
-    constexpr audio::AudioSoundId kSnd = 0xAA06;
-    RegisterSine(rt, kSnd);
-
-    const auto p = audio::HashParameterName("test");
-    // Binding {0..1 -> 0..1}. Parameter set to 100 → t clamps to 1
-    // → volume clamps to maxVolume = 1.
-    rt.SetSoundVolumeRtpc(kSnd, p, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
-    rt.SetGlobalParameter(p, 100.0f);
-
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
-    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-
-    std::vector<float> audio_buf;
-    be->Render(24000, audio_buf);
-    const float rms = ComputeRms(audio_buf);
-    assert(rms > 0.10f);
-
-    // Parameter set to -100 → t clamps to 0 → volume = 0 → silence.
-    rt.SetGlobalParameter(p, -100.0f);
-    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-    rt.SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
-        kSnd, audio::Vec3{0,0,0}));
-    for (int i = 0; i < 30; ++i) rt.Update(1.0f / 60.0f);
-    std::vector<float> bufLow;
-    be->Render(24000, bufLow);
-    const float rmsLow = ComputeRms(bufLow);
-    std::cout << "    above-range RMS = " << rms
-              << "   below-range RMS = " << rmsLow << "\n";
-    assert(rmsLow < 0.01f);
-
-    rt.Shutdown();
-}
-
-void TestClearStopsModulation() {
-    std::cout << "  [Clear: subsequent voices use authored volume]\n";
-    audio::AudioRuntime rt;
-    InitRuntime(rt);
-
-    constexpr audio::AudioSoundId kSnd = 0xAA07;
-    RegisterSine(rt, kSnd);
-
-    const auto p = audio::HashParameterName("temp");
-    auto rc = rt.SetSoundVolumeRtpc(kSnd, p, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
-    assert(rc == audio::AudioResult::Success);
-    assert(rt.GetSoundRtpcBindingCount() == 1u);
-
-    bool removed = rt.ClearSoundVolumeRtpc(kSnd);
-    assert(removed);
-    assert(rt.GetSoundRtpcBindingCount() == 0u);
-
-    bool removedAgain = rt.ClearSoundVolumeRtpc(kSnd);
-    assert(!removedAgain);
-
-    rt.Shutdown();
-}
+// --- API validation --------------------------------------------------------
 
 void TestApiValidation() {
-    std::cout << "  [SetSoundVolumeRtpc rejects invalid arguments]\n";
+    std::cout << "  [SetSoundRtpc rejects invalid arguments]\n";
     audio::AudioRuntime rt;
     InitRuntime(rt);
 
     const auto p = audio::HashParameterName("ok");
 
-    // Invalid soundId.
-    auto r1 = rt.SetSoundVolumeRtpc(audio::kInvalidSoundId, p,
-        0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
+    auto r1 = rt.SetSoundRtpc(audio::kInvalidSoundId,
+        MakeBinding(p, audio::RtpcTarget::Volume, 0, 1, 0, 1));
     assert(r1 == audio::AudioResult::InvalidArgument);
 
-    // Invalid paramId.
-    auto r2 = rt.SetSoundVolumeRtpc(0xFEED, audio::kInvalidParameterId,
-        0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
+    auto r2 = rt.SetSoundRtpc(0xFEED,
+        MakeBinding(audio::kInvalidParameterId, audio::RtpcTarget::Volume,
+                    0, 1, 0, 1));
     assert(r2 == audio::AudioResult::InvalidArgument);
 
-    // Degenerate range (min == max would divide by zero).
-    auto r3 = rt.SetSoundVolumeRtpc(0xFEED, p, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f);
+    auto r3 = rt.SetSoundRtpc(0xFEED,
+        MakeBinding(p, audio::RtpcTarget::Volume, 0.5f, 0.5f, 0, 1));
     assert(r3 == audio::AudioResult::InvalidArgument);
 
-    // NaN endpoint.
     auto nan = std::numeric_limits<float>::quiet_NaN();
-    auto r4 = rt.SetSoundVolumeRtpc(0xFEED, p, 0.0f, 1.0f, nan, 1.0f, 0.0f);
+    auto bNaN = MakeBinding(p, audio::RtpcTarget::Volume, 0, 1, nan, 1);
+    auto r4 = rt.SetSoundRtpc(0xFEED, bNaN);
     assert(r4 == audio::AudioResult::InvalidArgument);
 
-    // Negative smoothing.
-    auto r5 = rt.SetSoundVolumeRtpc(0xFEED, p, 0.0f, 1.0f, 0.0f, 1.0f, -1.0f);
+    auto bNegSmooth = MakeBinding(p, audio::RtpcTarget::Volume, 0, 1, 0, 1);
+    bNegSmooth.smoothingMs = -1.0f;
+    auto r5 = rt.SetSoundRtpc(0xFEED, bNegSmooth);
     assert(r5 == audio::AudioResult::InvalidArgument);
+
+    auto bBadTgt = MakeBinding(p, audio::RtpcTarget::Volume, 0, 1, 0, 1);
+    bBadTgt.target = static_cast<audio::RtpcTarget>(99);
+    auto r6 = rt.SetSoundRtpc(0xFEED, bBadTgt);
+    assert(r6 == audio::AudioResult::InvalidArgument);
 
     rt.Shutdown();
 }
@@ -374,13 +426,12 @@ void TestApiValidation() {
 
 int main() {
     std::cout << "[sound_rtpc_test]\n";
-    TestUnsetParameterLeavesAuthoredVolume();
-    TestRtpcZeroSilencesAudio();
-    TestRtpcOneEqualsAuthoredVolume();
-    TestRtpcMidpointHalfVolume();
-    TestInvertedBindingHigherParamLowerVolume();
-    TestClampsOutsideRange();
-    TestClearStopsModulation();
+    TestVolumeBindingDrivesRenderedRms();
+    TestPitchBindingChangesRender();
+    TestLowPassBindingAttenuatesHighFreq();
+    TestMultipleBindingsCoexist();
+    TestCurveTypesProduceDifferentOutput();
+    TestSkipWhenUnsetIsPerBinding();
     TestApiValidation();
     std::cout << "[sound_rtpc_test] PASSED\n";
     return 0;

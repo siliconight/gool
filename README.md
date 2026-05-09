@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.4.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.5.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -140,23 +140,37 @@ reference. Drop down to the lower-level API (`submit_event_local`,
 `register_pcm_sound`, `submit_voice_packet`, `set_global_parameter`)
 when these aren't enough.
 
-To make `set_rtpc` actually drive audio, bind a sound's volume to a
-parameter once, then call `set_rtpc` whenever the value changes:
+To make `set_rtpc` actually drive audio, bind a sound's parameter target
+to a global RTPC once, then call `set_rtpc` whenever the value changes:
 
 ```gdscript
-# Heartbeat gets louder as health drops:
-Gool.bind_volume_rtpc("heartbeat", "health",
-    0.0, 1.0,    # parameter range
-    1.0, 0.0)    # full volume at health=0, silent at health=1
+# Heartbeat gets louder AND pitches up as health drops:
+Gool.bind_volume_rtpc("heartbeat", "health", 0, 1, 1.0, 0.0)
+Gool.bind_pitch_rtpc("heartbeat",  "health", 0, 1, 1.4, 1.0)
+
+# Music ducks under combat with a smoothstep curve for an organic feel:
+Gool.bind_rtpc("ambient_music", {
+    "parameter": "combat_intensity",
+    "target":    "volume",
+    "curve":     "scurve",
+    "min_value": 0.0, "max_value": 1.0,
+    "min_output": 1.0, "max_output": 0.3,
+    "smoothing_ms": 300.0,
+})
 
 # Later, every frame, just push the gameplay value:
 Gool.set_rtpc("health", current_health / max_health)
+Gool.set_rtpc("combat_intensity", combat_meter)
 ```
 
-The runtime walks active voices each `Update` tick, evaluates the
-binding, and pushes the result through the parameter smoother.
-Skip-when-unset semantics: until `set_rtpc` is called once, the
-binding has no effect — authored volume stays in place.
+Four targets are supported: `volume`, `pitch`, `lowpass`, `reverb`. Four
+curves: `linear`, `exponential`, `inverse_exp`, `scurve`. A sound can
+have one binding per target simultaneously (volume + pitch + lowpass +
+reverb each driven by their own parameter). Bindings can also be
+declared in JSON sound banks via an `rtpc` array on each sound entry.
+
+Skip-when-unset semantics: until `set_rtpc` is called once, bindings
+have no effect — authored values stay in place.
 
 To install:
 
@@ -583,7 +597,7 @@ matrix. Headline coverage:
 | `default_bounds_validator_test` | DefaultBoundsValidator rejects NaN/Inf vec3, extreme magnitudes, malformed parameters, unknown soundIds; ChainReplicationValidator short-circuits |
 | `version_test`                  | `audio::GetVersion()` returns the pinned version triple; catches drift between version.h and CMakeLists |
 | `global_parameter_test`         | RTPC store: HashParameterName stable + collision-aware, set/get/clear, budget enforced only on new IDs, NotInitialized + InvalidArgument paths |
-| `sound_rtpc_test`               | Render-thread RTPC volume modulation: audibility-verified end-to-end (RMS=0 at param=0, RMS halves at 0.5 with linear binding, inverted bindings, clamps, clear, API validation) |
+| `sound_rtpc_test`               | Render-thread RTPC modulation: Volume / Pitch / LowPass / multi-binding / linear+exp+inv-exp+scurve curves; audibility-verified end-to-end |
 | `integration_kitchen_sink_test` | 5-second simulation with all subsystems active             |
 
 CI runs the full suite on Ubuntu and Windows on every push. The

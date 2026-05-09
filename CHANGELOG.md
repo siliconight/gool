@@ -12,6 +12,110 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.5.0] - 2026-05-09
+
+Multi-target RTPC. The single-target volume binding from v0.4 generalizes
+to four targets, four curves, multiple bindings per sound, and JSON
+authoring. The pattern that took 1 binding in v0.4 ("heartbeat volume
+follows health") now scales to 4 bindings ("heartbeat volume + pitch
+follow health, music volume ducks under combat with a smoothstep,
+caves apply lowpass via wetness").
+
+### Added
+
+- **Four RTPC targets**: Volume (multiplicative on gain), Pitch
+  (multiplicative on pitch), LowPassCutoff (max with spatial baseline),
+  ReverbSend (clamped sum with spatial baseline). `RtpcTarget` enum.
+- **Four curves**: Linear, Exponential, InverseExponential, SCurve
+  (smoothstep). `RtpcCurve` enum + `curveExponent` for exp/inv-exp.
+- **Multiple bindings per sound**: at most one binding per (sound,
+  target) pair. A single sound can have volume + pitch + lowpass +
+  reverb all driven by different parameters simultaneously.
+- **`AudioRuntime::SetSoundRtpc(soundId, binding)`** — unified API
+  taking a `SoundRtpcBinding` struct. Replaces v0.4's
+  `SetSoundVolumeRtpc` (mechanical migration: pass binding fields
+  via the struct).
+- **`ClearSoundRtpc(soundId, target)`** — remove one target's binding.
+- **`ClearAllSoundRtpc(soundId)`** — remove all bindings for a sound;
+  returns count removed.
+- **JSON sound bank `rtpc` array** — bindings can now be authored
+  alongside sound definitions in `.json` banks. Schema:
+
+  ```json
+  {
+    "name": "heartbeat",
+    "category": "SFX",
+    "rtpc": [
+      { "parameter": "health",
+        "target":    "volume",
+        "curve":     "linear",
+        "min_value": 0.0, "max_value": 1.0,
+        "min_output": 1.0, "max_output": 0.0,
+        "smoothing_ms": 50 },
+      { "parameter": "fatigue",
+        "target":    "pitch",
+        "curve":     "exponential", "exponent": 2.0,
+        "min_value": 0.0, "max_value": 1.0,
+        "min_output": 1.0, "max_output": 0.85 }
+    ]
+  }
+  ```
+
+  Unknown target/curve names produce line-numbered error messages.
+- **GDScript autoload facades**:
+  - `Gool.bind_volume_rtpc(...)` — Volume + linear (the v0.4 ergonomics, preserved)
+  - `Gool.bind_pitch_rtpc(...)` — Pitch + linear
+  - `Gool.bind_lowpass_rtpc(...)` — LowPass + linear
+  - `Gool.bind_reverb_rtpc(...)` — ReverbSend + linear
+  - `Gool.bind_rtpc(sound_name, dict)` — full API: any target, any curve
+  - `Gool.clear_rtpc_binding(name, target)` / `Gool.clear_all_rtpc_bindings(name)`
+- **GDExtension bindings**: `set_sound_rtpc` (target+curve as strings),
+  `clear_sound_rtpc`, `clear_all_sound_rtpc`, `sound_rtpc_binding_count`.
+
+### Changed
+
+- **BREAKING (pre-1.0)**: `AudioRuntime::SetSoundVolumeRtpc` /
+  `ClearSoundVolumeRtpc` removed. Migration: replace with
+  `SetSoundRtpc(soundId, binding)` where `binding.target = RtpcTarget::Volume`
+  and the field names map directly. Same for the GDScript
+  `Gool.set_sound_volume_rtpc` / `Gool.clear_sound_volume_rtpc` GDExtension
+  methods. The GDScript `Gool.bind_volume_rtpc` facade stays with the
+  same signature so call sites that use the facade don't need changes.
+- Storage moves from `unordered_map<AudioSoundId, SoundVolumeRtpcBinding>`
+  to `unordered_map<AudioSoundId, std::vector<SoundRtpcBinding>>`.
+  `AudioConfig::maxSoundRtpcBindings` (256) now caps total bindings
+  across all sounds, not distinct sound IDs — a sound with 4 bindings
+  counts as 4 against the budget.
+- Step 9 of `Update` (per-emitter `UpdateParams` pass) now reads
+  `LowPassAmount` and `ReverbSend` from the parameter smoother in
+  addition to `Gain` and `Pitch`. Default fallbacks preserve existing
+  unbound behavior.
+
+### Tests
+
+- `tests/unit/sound_rtpc_test.cpp` rewritten (7 sub-tests):
+  Volume/Pitch/LowPass audibility, multi-binding coexistence, four
+  curves at midpoint behave correctly (linear=0.125, exp(2)=0.0625,
+  inv-exp(2)=0.1875, scurve=0.125 from a 0.25 reference), skip-when-unset
+  per-binding, API validation including out-of-range enums.
+- `tests/unit/sound_bank_test.cpp` extended with 2 new sub-tests:
+  RTPC array parses and registers bindings; unknown target string is
+  rejected with line number. Total 30/30 passing.
+
+### Limitations carried into the next iteration
+
+- Custom point-list curves (arbitrary curve shapes via JSON-authored
+  control points) are still future. Linear / Exponential /
+  InverseExponential / SCurve cover the typical FMOD/Wwise authoring
+  patterns.
+- LowPassCutoff combines via `max()` with the spatial baseline (so RTPC
+  can never reduce the world's filter). Use cases that want RTPC to
+  override spatial filtering (e.g. underwater zone replaces occlusion)
+  need a different combiner — roadmap.
+- Bindings are still per-sound, not per-emitter or per-bus. Per-bus
+  RTPC modulation (e.g. "all music quiets when combat starts" without
+  binding every track individually) is a separate feature.
+
 ## [0.4.0] - 2026-05-09
 
 Render-thread RTPC volume modulation. The disclaimer in v0.3.0
@@ -229,7 +333,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
 [0.2.0]: https://github.com/siliconight/gool/releases/tag/v0.2.0

@@ -300,6 +300,19 @@ struct ParsedDefaults {
     bool                   hasLoopCrossfade  = false;
 };
 
+struct ParsedRtpcBinding {
+    std::string             paramName;
+    RtpcTarget              target        = RtpcTarget::Volume;
+    RtpcCurve               curve         = RtpcCurve::Linear;
+    float                   curveExponent = 2.0f;
+    float                   minValue      = 0.0f;
+    float                   maxValue      = 1.0f;
+    float                   minOutput     = 0.0f;
+    float                   maxOutput     = 1.0f;
+    float                   smoothingMs   = 50.0f;
+    int                     lineDeclared  = 0;
+};
+
 struct ParsedSound {
     std::string name;
     std::string file;            // empty if none — required for now
@@ -325,6 +338,11 @@ struct ParsedSound {
     bool                   hasAttenuation   = false;
     float                  loopCrossfadeMs  = 0.0f;
     bool                   hasLoopCrossfade = false;
+
+    // RTPC bindings authored alongside the sound. Translated by the
+    // loader into runtime.SetSoundRtpc() calls after the sound's
+    // SoundDefinition has been registered.
+    std::vector<ParsedRtpcBinding> rtpc;
 };
 
 enum class GroupPolicy : uint8_t { Random, RandomNoRepeat, Sequential };
@@ -424,6 +442,125 @@ bool ParseAttenuation(JsonScanner& s, AttenuationSettings& out, ParseError& err)
         }
         if (s.Match(',')) continue;
         s.Expect('}', "to close attenuation object", err);
+        return err.message.empty();
+    }
+}
+
+// ---------------------------------------------------------------------
+// RTPC binding parsers (v0.5+)
+// ---------------------------------------------------------------------
+
+bool ParseRtpcTargetName(const std::string& s, RtpcTarget& out) {
+    if      (s == "volume")          out = RtpcTarget::Volume;
+    else if (s == "pitch")           out = RtpcTarget::Pitch;
+    else if (s == "lowpass" ||
+             s == "lowpass_cutoff" ||
+             s == "low_pass_cutoff") out = RtpcTarget::LowPassCutoff;
+    else if (s == "reverb" ||
+             s == "reverb_send")     out = RtpcTarget::ReverbSend;
+    else return false;
+    return true;
+}
+
+bool ParseRtpcCurveName(const std::string& s, RtpcCurve& out) {
+    if      (s == "linear")               out = RtpcCurve::Linear;
+    else if (s == "exponential" ||
+             s == "exp")                  out = RtpcCurve::Exponential;
+    else if (s == "inverse_exponential" ||
+             s == "inv_exp" ||
+             s == "inverse_exp")          out = RtpcCurve::InverseExponential;
+    else if (s == "scurve" ||
+             s == "smoothstep")           out = RtpcCurve::SCurve;
+    else return false;
+    return true;
+}
+
+bool ParseRtpcBinding(JsonScanner& s, ParsedRtpcBinding& out, ParseError& err) {
+    out.lineDeclared = s.Line();
+    s.Expect('{', "to open rtpc binding object", err);
+    if (!err.message.empty()) return false;
+    s.SkipWhitespace();
+    if (s.Match('}')) {
+        err.line = out.lineDeclared;
+        err.message = "rtpc binding has no fields";
+        return false;
+    }
+    while (true) {
+        std::string key;
+        if (!s.ParseString(key, err)) return false;
+        s.Expect(':', "after rtpc binding key", err);
+        if (!err.message.empty()) return false;
+
+        if (key == "parameter" || key == "param") {
+            if (!s.ParseString(out.paramName, err)) return false;
+        } else if (key == "target") {
+            std::string v; if (!s.ParseString(v, err)) return false;
+            if (!ParseRtpcTargetName(v, out.target)) {
+                err.line = s.Line();
+                err.message = "unknown rtpc target '" + v +
+                              "' (expected: volume, pitch, lowpass, reverb)";
+                return false;
+            }
+        } else if (key == "curve") {
+            std::string v; if (!s.ParseString(v, err)) return false;
+            if (!ParseRtpcCurveName(v, out.curve)) {
+                err.line = s.Line();
+                err.message = "unknown rtpc curve '" + v +
+                              "' (expected: linear, exp, inv_exp, scurve)";
+                return false;
+            }
+        } else if (key == "curve_exponent" || key == "exponent") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.curveExponent = static_cast<float>(f);
+        } else if (key == "min_value") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.minValue = static_cast<float>(f);
+        } else if (key == "max_value") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.maxValue = static_cast<float>(f);
+        } else if (key == "min_output") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.minOutput = static_cast<float>(f);
+        } else if (key == "max_output") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.maxOutput = static_cast<float>(f);
+        } else if (key == "smoothing_ms" || key == "smoothing") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.smoothingMs = static_cast<float>(f);
+        } else {
+            if (!s.SkipValue(err)) return false;
+        }
+
+        if (s.Match(',')) continue;
+        s.Expect('}', "to close rtpc binding object", err);
+        if (!err.message.empty()) return false;
+
+        // Validation: required fields must have been supplied.
+        if (out.paramName.empty()) {
+            err.line = out.lineDeclared;
+            err.message = "rtpc binding missing required 'parameter' field";
+            return false;
+        }
+        return true;
+    }
+}
+
+bool ParseRtpcArray(JsonScanner& s, std::vector<ParsedRtpcBinding>& out, ParseError& err) {
+    s.Expect('[', "to open rtpc array", err);
+    if (!err.message.empty()) return false;
+    s.SkipWhitespace();
+    if (s.Match(']')) return true;
+    while (true) {
+        out.emplace_back();
+        if (!ParseRtpcBinding(s, out.back(), err)) return false;
+        if (s.Match(',')) continue;
+        s.Expect(']', "to close rtpc array", err);
         return err.message.empty();
     }
 }
@@ -565,6 +702,8 @@ bool ParseSoundEntry(JsonScanner& s, ParsedSound& out, ParseError& err) {
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.loopCrossfadeMs = static_cast<float>(f);
             out.hasLoopCrossfade = true;
+        } else if (key == "rtpc") {
+            if (!ParseRtpcArray(s, out.rtpc, err)) return false;
         } else {
             if (!s.SkipValue(err)) return false;
         }
@@ -965,6 +1104,33 @@ SoundBankLoadResult ResolveAndRegister(SoundBankImpl&            impl,
             r.errorMessage = "sound '" + s.name +
                              "': RegisterSoundDefinition failed";
             return r;
+        }
+
+        // Translate authored rtpc bindings to runtime SetSoundRtpc
+        // calls. Each binding hashes its parameter name and dispatches.
+        for (const auto& pb : s.rtpc) {
+            SoundRtpcBinding rb;
+            rb.paramId       = HashParameterName(pb.paramName);
+            rb.target        = pb.target;
+            rb.curve         = pb.curve;
+            rb.curveExponent = pb.curveExponent;
+            rb.minValue      = pb.minValue;
+            rb.maxValue      = pb.maxValue;
+            rb.minOutput     = pb.minOutput;
+            rb.maxOutput     = pb.maxOutput;
+            rb.smoothingMs   = pb.smoothingMs;
+            const AudioResult rrt = runtime.SetSoundRtpc(id, rb);
+            if (rrt != AudioResult::Success) {
+                r.errorLine = pb.lineDeclared;
+                r.errorMessage = "sound '" + s.name +
+                                 "': rtpc binding for parameter '" +
+                                 pb.paramName + "' rejected (" +
+                                 (rrt == AudioResult::BudgetExceeded
+                                      ? "budget exceeded — bump AudioConfig::maxSoundRtpcBindings"
+                                      : "invalid argument — check min/max range, NaN, or bad enum") +
+                                 ")";
+                return r;
+            }
         }
 
         impl.soundIds[s.name] = id;

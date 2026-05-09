@@ -364,6 +364,99 @@ void TestPerformance() {
     (void)accum;
 }
 
+void TestRtpcInJson() {
+    std::cout << "  [rtpc array in sound entry registers bindings]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+
+    PreregisterSynthetic(rt, {"heartbeat", "ambient_loop"});
+
+    // Two sounds: heartbeat with two bindings (volume + pitch),
+    // ambient_loop with a lowpass binding using a curve.
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            {
+                "name": "heartbeat",
+                "category": "SFX",
+                "rtpc": [
+                    {
+                        "parameter": "health",
+                        "target":    "volume",
+                        "min_value": 0.0, "max_value": 1.0,
+                        "min_output": 1.0, "max_output": 0.0,
+                        "smoothing_ms": 50
+                    },
+                    {
+                        "parameter": "fatigue",
+                        "target":    "pitch",
+                        "curve":     "exponential",
+                        "exponent":  2.0,
+                        "min_value": 0.0, "max_value": 1.0,
+                        "min_output": 1.0, "max_output": 0.85
+                    }
+                ]
+            },
+            {
+                "name": "ambient_loop",
+                "category": "Ambience",
+                "rtpc": [
+                    {
+                        "parameter": "wetness",
+                        "target":    "lowpass",
+                        "curve":     "scurve",
+                        "min_value": 0.0, "max_value": 1.0,
+                        "min_output": 0.0, "max_output": 1.0
+                    }
+                ]
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(r.errorMessage.empty());
+    assert(r.soundsLoaded == 2u);
+
+    // 2 + 1 = 3 bindings registered total.
+    assert(rt.GetSoundRtpcBindingCount() == 3u);
+
+    // Removing all bindings for heartbeat removes 2; ambient_loop's
+    // binding remains.
+    const auto kHb = audio::HashSoundName("heartbeat");
+    const auto removed = rt.ClearAllSoundRtpc(kHb);
+    assert(removed == 2u);
+    assert(rt.GetSoundRtpcBindingCount() == 1u);
+
+    rt.Shutdown();
+}
+
+void TestRtpcInJsonRejectsUnknownTarget() {
+    std::cout << "  [rtpc with unknown target string is rejected with line number]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {"siren"});
+
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            {
+                "name": "siren",
+                "rtpc": [
+                    { "parameter": "alarm_level", "target": "loudness",
+                      "min_value": 0, "max_value": 1,
+                      "min_output": 0, "max_output": 1 }
+                ]
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(!r.errorMessage.empty());
+    // The error mentions "loudness" so the user can fix it.
+    assert(r.errorMessage.find("loudness") != std::string::npos);
+    rt.Shutdown();
+}
+
 } // namespace
 
 int main() {
@@ -377,6 +470,8 @@ int main() {
     TestHotReload();
     TestMalformedJson();
     TestUnknownEnumValue();
+    TestRtpcInJson();
+    TestRtpcInJsonRejectsUnknownTarget();
     TestPerformance();
     std::cout << "[sound_bank_test] OK\n";
     return 0;
