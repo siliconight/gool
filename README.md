@@ -1,38 +1,123 @@
-# audio_engine
+# gool
 
 [![CI](https://github.com/siliconight/gool/actions/workflows/ci.yml/badge.svg)](https://github.com/siliconight/gool/actions/workflows/ci.yml)
 
-A standalone C++20 runtime audio engine for 3D spatial multiplayer games.
-Distance attenuation, occlusion, Doppler, reverb, binaural HRTF, sidechain
-ducking, Opus voice chat, and the threading model to make all of it run
-without allocations or locks on the render thread.
-
-The library namespace is `audio`, the CMake target is `audio_engine`, and
-the host-facing orchestrator class is `audio::AudioRuntime`. The engine
-ships with a silent backend (for headless tests and CI) and a default-on
-miniaudio backend (for hearing things on real devices). It does not own
-physics, networking, or game state — those are seams the host plugs into.
-
-**Make your computer beep in 30 seconds:**
+**Multiplayer-first audio middleware for indie games.** Voice
+chat, spatial audio, adaptive music, sidechain ducking, and
+deterministic replay — in one C++20 library that builds in 60
+seconds and ships with a Godot 4 binding.
 
 ```bash
 git clone https://github.com/siliconight/gool.git && cd gool
 cmake -S . -B build && cmake --build build -j
-./build/examples/audio_engine_hello_audio   # plays a 1-second 440 Hz tone
+./build/examples/audio_engine_hello_audio   # 1-second 440 Hz tone
 ```
 
-If you hear it, the engine is working end-to-end on your machine.
+If you hear the tone, the engine works end-to-end on your machine.
+Total time: ~30 seconds on a warm cache.
+
+> **Demo recording:** _to be added — record `examples/quickstart`
+> running in Godot once the GDExtension binary is published as a
+> release artifact._
+
+## Why gool
+
+| | gool | FMOD Studio | Wwise | Godot built-in audio |
+|---|---|---|---|---|
+| **Built-in voice chat** | ✅ Opus + jitter buffer + PLC | ❌ external (Vivox etc.) | ❌ external | ❌ |
+| **Multiplayer-first** | ✅ replication, prediction, determinism | ⚠ generic | ⚠ generic | ❌ |
+| **License** | open source | per-title fee | per-title fee | open source |
+| **Indie-scale authoring** | JSON banks + sane defaults | visual editor (deep) | visual editor (deepest) | per-clip nodes |
+| **Godot integration** | first-class GDExtension + 5 prefabs | community wrapper | community wrapper | native |
+| **Deterministic replay** | ✅ bit-identical mix output | ❌ | ❌ | ❌ |
+| **Switching cost from FMOD/Wwise** | low (see migration docs) | — | — | high (no events/RTPCs) |
+
+Gool is the right pick if you're building an indie multiplayer
+game and the integration & licensing overhead of FMOD/Wwise
+outweigh their (genuine) authoring advantages. It's the wrong
+pick if you have a dedicated audio team that depends on FMOD
+Studio's visual graph; we don't try to match that.
+
+## Two-minute setup (Godot 4)
+
+1. **Build the GDExtension** once for your platform:
+   ```bash
+   cmake -S godot -B build-godot -DGODOT_CPP_PATH=/path/to/godot-cpp
+   cmake --build build-godot -j
+   ```
+2. **Copy** the resulting shared library into your Godot project:
+   `addons/gool/bin/`.
+3. **Enable the plugin** in Project Settings → Plugins. The plugin
+   adds the `/root/Gool` autoload, registers the prefab Nodes,
+   and writes default config to `res://gool/config.json`.
+4. **Drop a node** in your scene: `AudioEmitter3D`, set
+   `sound_name`, tick `autoplay`. Run the project. You hear it.
+
+For a complete working scene with all five prefabs wired up, open
+`examples/quickstart` in Godot and press Play.
+
+## Drag-and-drop nodes
+
+| Node | Purpose | Inspector knobs |
+|---|---|---|
+| **AudioEmitter3D** | A 3D positional sound emitter (replaces `AudioStreamPlayer3D`) | sound_name, looping, loop_crossfade_ms, fade_in/out, min/max_distance, autoplay, playback_speed |
+| **VoiceChatPlayer** | Per-player voice node with quality monitoring | player_id, jitter_warning_ms, loss_warning_ratio |
+| **MusicStateController** | Adaptive music with named states & crossfades | states (dict), current_state |
+| **ReverbZone** | Area3D that triggers reverb mix changes on listener entry | room_size, damping, wet_gain_db, transition_ms |
+| **FootstepSurfacePlayer** | Plays footstep variants based on surface group | surface_sounds (dict), default_surface, raycast_distance |
+
+Each prefab is ~50-150 lines of GDScript with sane defaults; you
+configure them in the inspector and most projects need zero code
+beyond `step()` and `set_state(...)` calls.
+
+## Engine features at a glance
+
+- **Spatial:** distance attenuation, occlusion lowpass with
+  per-material parameters, Doppler with pitch smoothing, air
+  absorption, reverb sends, binaural HRTF (Stage 1)
+- **Music:** equal-power crossfade, loop-boundary crossfade
+  (158× click reduction measured), runtime playback-speed control
+- **EQ:** lowpass / highpass / bandpass / low-shelf / high-shelf /
+  parametric peak biquads (RBJ cookbook, ±0.05 dB out-of-band)
+- **Voice chat:** Opus codec wrapper, adaptive jitter buffer
+  (97.84% audible-frame continuity at 10% loss / 50 ms jitter),
+  packet-loss concealment, sequence reorder handling
+- **Asset pipeline:** JSON sound banks, FNV-1a hashed IDs, three
+  group selection policies (random / random_no_repeat / sequential),
+  hot reload, `.gpak` binary asset packs (`PakReader::MakeSoundBankLoader`)
+- **Multiplayer:** per-event staleness, predicted-event
+  cancellation, interest management, per-player voice telemetry,
+  6-arg `OnVoicePacket` for bit-identical replay determinism
+- **Threading:** four roles enforced via Clang TSA; render thread
+  has zero allocations / locks / syscalls / exceptions
+- **Backends:** silent (CI), miniaudio (default-on for top-level builds)
+
+For deep dives on any feature, scroll down — every subsystem has
+its own section with measured numbers and the design intent
+behind it.
+
+---
+
+## Migrating from FMOD or Wwise
+
+| | |
+|---|---|
+| [docs/migration_from_fmod.md](docs/migration_from_fmod.md)   | Concept-by-concept FMOD ↔ gool table, API replacement examples, snapshot workaround |
+| [docs/migration_from_wwise.md](docs/migration_from_wwise.md) | Concept-by-concept Wwise ↔ gool table, RTPC mapping pattern, State machine migration |
+| [docs/terminology.md](docs/terminology.md)                   | Glossary aligned with FMOD/Wwise vocabulary so muscle memory transfers |
+
+---
 
 ## Table of contents
 
-- [Quick start](#quick-start) — clone, build, hear audio in 5 minutes
-- [Dependencies](#dependencies) — what you need to build and run
-- [Integrating into your game](#integrating-into-your-game) — minimal walkthrough
-- [Features at a glance](#features-at-a-glance) — what's available
-- [Sound bank (data-driven asset pipeline)](#sound-bank-data-driven-asset-pipeline) — JSON schema, hot reload
-- [Music transitions and playback speed](#music-transitions-and-playback-speed) — equal-power crossfade, runtime speed control
-- [Online multiplayer](#online-multiplayer) — voice chat, replication, prediction, determinism
-- [Reference](#reference) — design intent, per-subsystem deep dives, internals
+- [Quick start](#quick-start) — full build options
+- [Dependencies](#dependencies)
+- [Integrating into your game](#integrating-into-your-game)
+- [Features at a glance](#features-at-a-glance)
+- [Sound bank (data-driven asset pipeline)](#sound-bank-data-driven-asset-pipeline)
+- [Music transitions and playback speed](#music-transitions-and-playback-speed)
+- [Online multiplayer](#online-multiplayer)
+- [Reference](#reference)
 - [License](#license)
 
 ---

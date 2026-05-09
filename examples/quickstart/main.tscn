@@ -1,0 +1,46 @@
+[gd_scene load_steps=7 format=3 uid="uid://gool_quickstart_main"]
+
+[ext_resource type="Script" path="res://main.gd" id="1_main"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/audio_emitter_3d.gd" id="2_emitter"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/voice_chat_player.gd" id="3_voice"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/music_state_controller.gd" id="4_music"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/footstep_surface_player.gd" id="5_footstep"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/reverb_zone.gd" id="6_reverb"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_zone"]
+radius = 4.0
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="Listener" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+
+[node name="MovingEmitter" type="Node3D" parent="."]
+script = ExtResource("2_emitter")
+sound_name = ""
+looping = true
+loop_crossfade_ms = 50.0
+autoplay = false
+
+[node name="Music" type="Node" parent="."]
+script = ExtResource("4_music")
+
+[node name="Voice" type="Node3D" parent="."]
+script = ExtResource("3_voice")
+
+[node name="Walker" type="Node3D" parent="."]
+script = ExtResource("5_footstep")
+default_surface = "stone"
+
+[node name="ReverbZone" type="Area3D" parent="."]
+script = ExtResource("6_reverb")
+room_size = 0.7
+damping = 0.4
+wet_gain_db = -10.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="ReverbZone"]
+shape = SubResource("SphereShape3D_zone")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, 12)
