@@ -105,6 +105,39 @@ func get_voice_jitter_ms(player_id: int) -> float:
 func get_voice_packet_loss_ratio(player_id: int) -> float:
     return _runtime.get_voice_packet_loss_ratio(player_id)
 
+# ---- Replication / multiplayer ----
+
+func on_tick_advanced(simulation_tick: int, server_time_ms: int) -> void:
+    _runtime.on_tick_advanced(simulation_tick, server_time_ms)
+
+func submit_event_local(sound_name: String, position: Vector3,
+                          prediction_id: int = 0,
+                          priority: int = 128,
+                          timestamp_ms: int = 0) -> void:
+    _runtime.submit_event_local(sound_name, position,
+                                  prediction_id, priority, timestamp_ms)
+
+func submit_replicated_event(sound_name: String, position: Vector3,
+                               simulation_tick: int = 0,
+                               server_time_ms: int = 0,
+                               priority: int = 128) -> void:
+    _runtime.submit_replicated_event(sound_name, position,
+                                       simulation_tick, server_time_ms,
+                                       priority)
+
+func cancel_predicted_event(prediction_id: int,
+                               fade_out_ms: float = 50.0) -> void:
+    _runtime.cancel_predicted_event(prediction_id, fade_out_ms)
+
+func update_replicated_transform(handle: int, position: Vector3,
+                                    forward: Vector3, velocity: Vector3,
+                                    simulation_tick: int) -> void:
+    _runtime.update_replicated_transform(handle, position, forward,
+                                            velocity, simulation_tick)
+
+func make_prediction_id() -> int:
+    return _runtime.make_prediction_id()
+
 func _load_config() -> Dictionary:
     if not FileAccess.file_exists(CONFIG_PATH):
         return {}

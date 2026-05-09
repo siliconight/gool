@@ -24,11 +24,13 @@ const PREFAB_DIR := "res://addons/gool/prefabs/"
 
 # (class_name, base_node, script_path, icon_path)
 const PREFABS := [
-    ["AudioEmitter3D",         "Node3D", "audio_emitter_3d.gd",       ""],
-    ["VoiceChatPlayer",        "Node3D", "voice_chat_player.gd",      ""],
-    ["MusicStateController",   "Node",   "music_state_controller.gd", ""],
-    ["ReverbZone",             "Area3D", "reverb_zone.gd",            ""],
-    ["FootstepSurfacePlayer",  "Node3D", "footstep_surface_player.gd",""],
+    ["AudioEmitter3D",            "Node3D", "audio_emitter_3d.gd",            ""],
+    ["VoiceChatPlayer",           "Node3D", "voice_chat_player.gd",           ""],
+    ["MusicStateController",      "Node",   "music_state_controller.gd",      ""],
+    ["ReverbZone",                "Area3D", "reverb_zone.gd",                 ""],
+    ["FootstepSurfacePlayer",     "Node3D", "footstep_surface_player.gd",     ""],
+    ["NetworkedAudioEvent",       "Node",   "networked_audio_event.gd",       ""],
+    ["NetworkedAudioEmitter3D",   "Node3D", "networked_audio_emitter_3d.gd",  ""],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"

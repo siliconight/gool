@@ -20,7 +20,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        # CI runs the silent NullAudioBackend — the test suite doesn't
+        # need a real audio device. Miniaudio is opt-in for local
+        # builds (see README); CI keeps it off so the build doesn't
+        # depend on FetchContent network reliability.
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
 
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel

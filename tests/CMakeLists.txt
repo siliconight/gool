@@ -20,11 +20,12 @@ add_executable(audio_engine_loop_crossfade_test          unit/loop_crossfade_tes
 add_executable(audio_engine_biquad_eq_test               unit/biquad_eq_test.cpp)
 add_executable(audio_engine_gpak_test                    unit/gpak_test.cpp)
 add_executable(audio_engine_determinism_test             unit/determinism_test.cpp)
+add_executable(audio_engine_replicated_events_test       unit/replicated_events_test.cpp)
 add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitchen_sink_test.cpp)
 
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
-foreach(_t spsc_ring slot_map bus_graph compressor decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry integration_kitchen_sink)
+foreach(_t spsc_ring slot_map bus_graph compressor decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry biquad_eq integration_kitchen_sink)
     target_include_directories(audio_engine_${_t}_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)
@@ -53,6 +54,7 @@ target_link_libraries(audio_engine_loop_crossfade_test           PRIVATE audio_e
 target_link_libraries(audio_engine_biquad_eq_test                PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_gpak_test                     PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_determinism_test              PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_replicated_events_test        PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_integration_kitchen_sink_test  PRIVATE audio_engine::audio_engine)
 
 add_test(NAME spsc_ring_test                COMMAND audio_engine_spsc_ring_test)
@@ -77,4 +79,5 @@ add_test(NAME loop_crossfade_test           COMMAND audio_engine_loop_crossfade_
 add_test(NAME biquad_eq_test                COMMAND audio_engine_biquad_eq_test)
 add_test(NAME gpak_test                     COMMAND audio_engine_gpak_test)
 add_test(NAME determinism_test              COMMAND audio_engine_determinism_test)
+add_test(NAME replicated_events_test        COMMAND audio_engine_replicated_events_test)
 add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kitchen_sink_test)

@@ -9,12 +9,15 @@ seconds and ships with a Godot 4 binding.
 
 ```bash
 git clone https://github.com/siliconight/gool.git && cd gool
-cmake -S . -B build && cmake --build build -j
+cmake -S . -B build -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
+cmake --build build -j
 ./build/examples/audio_engine_hello_audio   # 1-second 440 Hz tone
 ```
 
 If you hear the tone, the engine works end-to-end on your machine.
-Total time: ~30 seconds on a warm cache.
+Total time: ~30 seconds on a warm cache. The miniaudio flag is
+opt-in so the core library has zero third-party dependencies; CI
+runs with it off and the test suite uses a silent backend.
 
 > **Demo recording:** _to be added — record `examples/quickstart`
 > running in Godot once the GDExtension binary is published as a
@@ -65,10 +68,16 @@ For a complete working scene with all five prefabs wired up, open
 | **MusicStateController** | Adaptive music with named states & crossfades | states (dict), current_state |
 | **ReverbZone** | Area3D that triggers reverb mix changes on listener entry | room_size, damping, wet_gain_db, transition_ms |
 | **FootstepSurfacePlayer** | Plays footstep variants based on surface group | surface_sounds (dict), default_surface, raycast_distance |
+| **NetworkedAudioEvent** | Server-auth / client-predicted / client-authoritative replicated one-shot events | mode, default_audible_radius, default_priority, late_event_dropping |
+| **NetworkedAudioEmitter3D** | Persistent replicated emitter; authority streams transform, others interpolate | sound_name, network_tick_ms, audible_radius, interpolate_received |
 
-Each prefab is ~50-150 lines of GDScript with sane defaults; you
+Plus the standalone helper:
+
+- **`AudioRelevancyFilter`** — `RefCounted` utility for distance + team based peer culling. Attach to `NetworkedAudioEvent.relevancy_filter` so RPCs only fire to peers within audible range. See `docs/replication_patterns.md`.
+
+Each prefab is ~50-200 lines of GDScript with sane defaults; you
 configure them in the inspector and most projects need zero code
-beyond `step()` and `set_state(...)` calls.
+beyond `step()`, `set_state(...)`, and `play(...)` calls.
 
 ## Engine features at a glance
 
@@ -105,6 +114,7 @@ behind it.
 | [docs/migration_from_fmod.md](docs/migration_from_fmod.md)   | Concept-by-concept FMOD ↔ gool table, API replacement examples, snapshot workaround |
 | [docs/migration_from_wwise.md](docs/migration_from_wwise.md) | Concept-by-concept Wwise ↔ gool table, RTPC mapping pattern, State machine migration |
 | [docs/terminology.md](docs/terminology.md)                   | Glossary aligned with FMOD/Wwise vocabulary so muscle memory transfers |
+| [docs/replication_patterns.md](docs/replication_patterns.md) | Server-auth vs client-predicted vs client-authoritative replication for multiplayer audio |
 
 ---
 

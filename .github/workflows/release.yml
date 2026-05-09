@@ -31,9 +31,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-                                  -DAUDIO_ENGINE_BUILD_EXAMPLES=OFF
-                                  -DAUDIO_ENGINE_BUILD_TESTS=OFF
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUDIO_ENGINE_BUILD_EXAMPLES=OFF -DAUDIO_ENGINE_BUILD_TESTS=OFF -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
 
       - name: Build library
         run: cmake --build build --config Release --target audio_engine --parallel

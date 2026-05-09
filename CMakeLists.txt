@@ -17,7 +17,7 @@ option(AUDIO_ENGINE_SHARED   "Build audio_engine as a shared library"  OFF)
 option(AUDIO_ENGINE_BUILD_EXAMPLES "Build examples" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_BUILD_TESTS    "Build unit tests" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O)" ${AUDIO_ENGINE_TOP_LEVEL})
+option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O). Required for the audible examples (playback, hello_audio); the core library and tests build without it." OFF)
 option(AUDIO_ENGINE_FETCH_MINIAUDIO   "Fetch miniaudio via FetchContent if not vendored locally" ON)
 
 # File-format decoders. Each is independent and off by default to keep the

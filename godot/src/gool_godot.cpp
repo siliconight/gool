@@ -31,6 +31,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
+#include <atomic>
 #include <memory>
 
 using namespace godot;
@@ -112,6 +113,37 @@ public:
                                        "handle_packed", "speed", "smoothing_ms"),
                               &GoolAudioRuntime::set_emitter_playback_speed,
                               DEFVAL(50.0));
+
+        // ---- Replication / multiplayer ----
+        // The host's networking layer uses these to forward events
+        // across the wire. See docs/replication_patterns.md for the
+        // three supported patterns (server-authoritative,
+        // client-predicted, client-authoritative).
+        ClassDB::bind_method(D_METHOD("on_tick_advanced",
+                                       "simulation_tick", "server_time_ms"),
+                              &GoolAudioRuntime::on_tick_advanced);
+        ClassDB::bind_method(D_METHOD("submit_event_local",
+                                       "sound_name", "position",
+                                       "prediction_id", "priority", "timestamp_ms"),
+                              &GoolAudioRuntime::submit_event_local,
+                              DEFVAL(0), DEFVAL(128), DEFVAL(0));
+        ClassDB::bind_method(D_METHOD("submit_replicated_event",
+                                       "sound_name", "position",
+                                       "simulation_tick", "server_time_ms",
+                                       "priority"),
+                              &GoolAudioRuntime::submit_replicated_event,
+                              DEFVAL(0), DEFVAL(0), DEFVAL(128));
+        ClassDB::bind_method(D_METHOD("cancel_predicted_event",
+                                       "prediction_id", "fade_out_ms"),
+                              &GoolAudioRuntime::cancel_predicted_event,
+                              DEFVAL(50.0));
+        ClassDB::bind_method(D_METHOD("update_replicated_transform",
+                                       "handle_packed",
+                                       "position", "forward", "velocity",
+                                       "simulation_tick"),
+                              &GoolAudioRuntime::update_replicated_transform);
+        ClassDB::bind_method(D_METHOD("make_prediction_id"),
+                              &GoolAudioRuntime::make_prediction_id);
 
         // Voice chat (multiplayer).
         ClassDB::bind_method(D_METHOD("register_voice_source", "player_id"),
@@ -316,6 +348,86 @@ public:
         runtime_->SetEmitterPlaybackSpeed(UnpackHandle(handle_packed),
                                             static_cast<float>(speed),
                                             static_cast<float>(smoothing_ms));
+    }
+
+    // Replication API. These match the engine's network-thread
+    // entry points (the binding is single-threaded so they're
+    // called from Godot's main thread, which is treated as the
+    // network thread for binding purposes).
+
+    void on_tick_advanced(int64_t simulation_tick, int64_t server_time_ms) {
+        if (!runtime_) return;
+        runtime_->OnTickAdvanced(
+            static_cast<audio::SimulationTick>(simulation_tick),
+            static_cast<audio::TimestampMs>(server_time_ms));
+    }
+
+    void submit_event_local(const String& sound_name,
+                              const Vector3& position,
+                              int64_t prediction_id,
+                              int priority,
+                              int64_t timestamp_ms) {
+        if (!runtime_) return;
+        audio::AudioSoundId id = audio::kInvalidSoundId;
+        if (bank_) {
+            const auto utf8 = sound_name.utf8();
+            id = bank_->Find(std::string_view(utf8.get_data(), utf8.length()));
+        }
+        if (id == audio::kInvalidSoundId) id = HashName(sound_name);
+        auto ev = audio::AudioEvent::MakePlaySoundAtLocation(
+            id, V3(position),
+            audio::AudioReplicationPolicy::LocalOnly,
+            static_cast<audio::AudioPriority>(priority),
+            static_cast<audio::TimestampMs>(timestamp_ms));
+        ev.predictionId = static_cast<uint64_t>(prediction_id);
+        runtime_->SubmitEvent(ev);
+    }
+
+    void submit_replicated_event(const String& sound_name,
+                                   const Vector3& position,
+                                   int64_t simulation_tick,
+                                   int64_t server_time_ms,
+                                   int priority) {
+        if (!runtime_) return;
+        audio::AudioSoundId id = audio::kInvalidSoundId;
+        if (bank_) {
+            const auto utf8 = sound_name.utf8();
+            id = bank_->Find(std::string_view(utf8.get_data(), utf8.length()));
+        }
+        if (id == audio::kInvalidSoundId) id = HashName(sound_name);
+        auto ev = audio::AudioEvent::MakePlaySoundAtLocation(
+            id, V3(position),
+            audio::AudioReplicationPolicy::ServerAuthoritative,
+            static_cast<audio::AudioPriority>(priority),
+            static_cast<audio::TimestampMs>(server_time_ms));
+        ev.simulationTick = static_cast<audio::SimulationTick>(simulation_tick);
+        runtime_->SubmitReplicatedEvent(ev);
+    }
+
+    void cancel_predicted_event(int64_t prediction_id, double fade_out_ms) {
+        if (!runtime_) return;
+        runtime_->CancelPredictedEvent(static_cast<uint64_t>(prediction_id),
+                                         static_cast<float>(fade_out_ms));
+    }
+
+    void update_replicated_transform(int64_t handle_packed,
+                                       const Vector3& position,
+                                       const Vector3& forward,
+                                       const Vector3& velocity,
+                                       int64_t simulation_tick) {
+        if (!runtime_) return;
+        runtime_->UpdateReplicatedTransform(
+            UnpackHandle(handle_packed),
+            V3(position), V3(forward), V3(velocity),
+            static_cast<audio::SimulationTick>(simulation_tick));
+    }
+
+    int64_t make_prediction_id() {
+        // Monotonic counter starting from a value unlikely to collide
+        // with a host-provided id. Nanoseconds-since-init is a clean
+        // generator; we just need uniqueness within a session.
+        static std::atomic<uint64_t> next{1};
+        return static_cast<int64_t>(next.fetch_add(1, std::memory_order_relaxed));
     }
 
     bool register_voice_source(int64_t player_id) {
