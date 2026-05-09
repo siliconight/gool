@@ -7,6 +7,7 @@
 #define AUDIO_ENGINE_TYPES_H
 
 #include <cstdint>
+#include <string_view>
 
 namespace audio {
 
@@ -128,6 +129,33 @@ namespace AudioParameterIds {
     constexpr AudioParameterId ReverbSend    = 4;
     constexpr AudioParameterId VehicleRpm    = 5;
     constexpr AudioParameterId HostBase      = 1024;
+}
+
+constexpr AudioParameterId kInvalidParameterId = 0;
+
+// FNV-1a hash of a parameter name into an AudioParameterId. Same
+// construction as HashSoundName so behavior is consistent. constexpr
+// so host code can hash compile-time-known names with zero runtime
+// cost ("health", "fatigue", "cave_dampness", etc.).
+//
+// Hashes that collide with the engine-reserved IDs (1..1023) are
+// remapped above HostBase to keep host-defined names from masking
+// engine semantics. Host games should treat parameter names with the
+// same "no underscores at the start, ASCII only" discipline they use
+// for sound names.
+constexpr AudioParameterId HashParameterName(std::string_view name) noexcept {
+    uint32_t h = 2166136261u;
+    for (char c : name) {
+        h ^= static_cast<uint8_t>(c);
+        h *= 16777619u;
+    }
+    // Reserve 0 (kInvalidParameterId) and the engine-reserved range
+    // [1, HostBase). Anything that lands there gets bumped above the
+    // host base.
+    if (h < AudioParameterIds::HostBase) {
+        h += AudioParameterIds::HostBase;
+    }
+    return h;
 }
 
 } // namespace audio

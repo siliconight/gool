@@ -24,6 +24,7 @@ add_executable(audio_engine_replicated_events_test       unit/replicated_events_
 add_executable(audio_engine_replication_rate_limit_test  unit/replication_rate_limit_test.cpp)
 add_executable(audio_engine_default_bounds_validator_test unit/default_bounds_validator_test.cpp)
 add_executable(audio_engine_version_test                  unit/version_test.cpp)
+add_executable(audio_engine_global_parameter_test         unit/global_parameter_test.cpp)
 add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitchen_sink_test.cpp)
 
 # Tests need access to internal headers (src/) for util classes that aren't
@@ -61,6 +62,7 @@ target_link_libraries(audio_engine_replicated_events_test        PRIVATE audio_e
 target_link_libraries(audio_engine_replication_rate_limit_test   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_default_bounds_validator_test  PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_version_test                   PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_global_parameter_test          PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_integration_kitchen_sink_test  PRIVATE audio_engine::audio_engine)
 
 add_test(NAME spsc_ring_test                COMMAND audio_engine_spsc_ring_test)
@@ -89,4 +91,5 @@ add_test(NAME replicated_events_test        COMMAND audio_engine_replicated_even
 add_test(NAME replication_rate_limit_test   COMMAND audio_engine_replication_rate_limit_test)
 add_test(NAME default_bounds_validator_test COMMAND audio_engine_default_bounds_validator_test)
 add_test(NAME version_test                  COMMAND audio_engine_version_test)
+add_test(NAME global_parameter_test         COMMAND audio_engine_global_parameter_test)
 add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kitchen_sink_test)

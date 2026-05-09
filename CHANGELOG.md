@@ -12,6 +12,62 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.3.0] - 2026-05-09
+
+The tiny API facade. Four canonical entry points users can copy-paste
+verbatim into a fresh Godot project: `Gool.play_3d`, `Gool.play_music_state`,
+`Gool.play_voice`, `Gool.set_rtpc`. Each is a thin GDScript wrapper over
+the lower-level engine APIs; users drop down to the raw bindings when
+they outgrow them.
+
+### Added
+
+- **`Gool.play_3d(name, position, priority=128)`** — one-shot 3D playback
+  by authored sound name. Wraps `submit_event_local` with sane defaults.
+- **`Gool.play_music_state(state_name, fade_ms=500)`** — equal-power
+  crossfade to a new music state. Lazily creates a `GoolMusicChannel`
+  on first call. Idempotent: re-passing the current state is a no-op.
+- **`Gool.play_voice(player_id, audio_stream)`** — decode an
+  `AudioStreamWAV` (FORMAT_16_BITS) to mono float32 PCM, register as
+  an ephemeral one-shot, dispatch through the play path. Raises a
+  push_error on unsupported formats. AudioStreamOggVorbis support is
+  on the roadmap; for raw Opus voice traffic from a network layer,
+  use `Gool.submit_voice_packet` directly.
+- **`Gool.set_rtpc(name, value)`** / **`get_rtpc`** / **`has_rtpc`** /
+  **`clear_rtpc`** — string-keyed real-time parameter store. Authored
+  sound definitions reading these to drive volume / cutoff / pitch is
+  a future feature; the storage and observability ship now so host
+  code can build against the API.
+- **`AudioRuntime::SetGlobalParameter`** / **`GetGlobalParameter`** /
+  **`ClearGlobalParameter`** / **`GetGlobalParameterCount`** — C++ API
+  for the global parameter store. Game-thread access at this stage;
+  render-thread modulation is a follow-up.
+- **`HashParameterName(name)`** constexpr in `types.h`. FNV-1a, same
+  shape as `HashSoundName`. Hashes that would collide with the
+  engine-reserved range `[1, HostBase)` are bumped above
+  `AudioParameterIds::HostBase` so host names can't mask engine
+  semantics.
+- **`AudioConfig::maxGlobalParameters`** (default 256). Budget is
+  enforced only on new IDs — updating an existing parameter is
+  always free.
+- **`Gool.stop_music(fade_ms=500)`** — companion to `play_music_state`.
+- GDExtension bindings: `set_global_parameter`, `get_global_parameter`,
+  `has_global_parameter`, `clear_global_parameter`,
+  `global_parameter_count`, `hash_parameter_name`.
+
+### Tests
+
+- `tests/unit/global_parameter_test.cpp` — 7 sub-tests covering hash
+  stability + reserved-range remapping, set/get round-trip, unset
+  returns false, clear semantics, budget enforcement (only on new
+  IDs), NotInitialized, InvalidArgument. Total 29/29 passing.
+
+### Documentation
+
+- README Quick Start now leads with the four facade lines, ahead of
+  the prefab-node walkthrough.
+- Phase 1.4 marked SHIPPED in 0.3.0 in the roadmap.
+
 ## [0.2.0] - 2026-05-09
 
 The first public release with binary artifacts. Adds the multiplayer
@@ -114,6 +170,7 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
 [0.2.0]: https://github.com/siliconight/gool/releases/tag/v0.2.0
 [0.1.0]: https://github.com/siliconight/gool/tree/main

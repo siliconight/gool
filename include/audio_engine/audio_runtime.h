@@ -176,6 +176,46 @@ public:
                                     speed, smoothingMs);
     }
 
+    // ---- Global (RTPC) parameters (game thread) --------------------------
+    // A flat name → float store for "real-time parameter control" values
+    // that authored sound definitions can reference. Common examples:
+    // "health", "wetness", "fatigue". The store is host-facing only at
+    // this stage — values are recorded and surfaced via GetGlobalParameter
+    // for game-side polling and debug overlays. Render-thread modulation
+    // (sound definitions reading global parameters and adjusting volume
+    // / cutoff / pitch automatically) is a future feature; this API ships
+    // the storage and observability now so host code can build against it
+    // and the upgrade path is additive.
+    //
+    // Lookups are O(1) average via an internal hash map. The store is
+    // bounded — see AudioConfig::maxGlobalParameters (default 256). A
+    // SetGlobalParameter call that would exceed the budget returns
+    // AudioResult::BudgetExceeded and leaves the store unchanged.
+    //
+    // Parameter IDs: use HashParameterName("name") for string-keyed
+    // parameters (the GDScript `Gool.set_rtpc("health", 0.3)` facade
+    // does this internally). Or pass any AudioParameterId your host
+    // code reserves above AudioParameterIds::HostBase.
+    AudioResult SetGlobalParameter(AudioParameterId paramId, float value)
+        AUDIO_REQUIRES(GameThread);
+
+    // Read the current value. Returns true if the parameter has been
+    // set at least once; false if it has never been set (in which case
+    // `outValue` is left untouched). Cheap; safe to call every frame.
+    bool GetGlobalParameter(AudioParameterId paramId,
+                             float&           outValue) const
+        AUDIO_REQUIRES(GameThread);
+
+    // Remove a parameter from the store. Returns true if it existed.
+    // Idempotent: clearing an unset parameter returns false but is
+    // not an error.
+    bool ClearGlobalParameter(AudioParameterId paramId)
+        AUDIO_REQUIRES(GameThread);
+
+    // Number of parameters currently stored. Useful for budget checks
+    // and debug overlays.
+    size_t GetGlobalParameterCount() const AUDIO_REQUIRES(GameThread);
+
     // ---- Bus graph (game thread) -----------------------------------------
     // The bus graph is defined in AudioConfig and immutable after Initialize.
     // These methods update parameter values on existing buses and effects.

@@ -76,6 +76,18 @@ AudioResult AudioRuntime::SetEmitterParameter(EmitterHandle h,
                                                 float sm) {
     return impl_->SetEmitterParameter(h, p, val, sm);
 }
+AudioResult AudioRuntime::SetGlobalParameter(AudioParameterId p, float v) {
+    return impl_->SetGlobalParameter(p, v);
+}
+bool AudioRuntime::GetGlobalParameter(AudioParameterId p, float& out) const {
+    return impl_->GetGlobalParameter(p, out);
+}
+bool AudioRuntime::ClearGlobalParameter(AudioParameterId p) {
+    return impl_->ClearGlobalParameter(p);
+}
+size_t AudioRuntime::GetGlobalParameterCount() const {
+    return impl_->GetGlobalParameterCount();
+}
 AudioResult AudioRuntime::SubmitEvent(const AudioEvent& e) { return impl_->SubmitEvent(e); }
 AudioResult AudioRuntime::CancelPredictedEvent(uint64_t predictionId, float fadeOutMs) {
     return impl_->CancelPredictedEvent(predictionId, fadeOutMs);
@@ -405,6 +417,40 @@ AudioResult AudioRuntimeImpl::SetEmitterParameter(EmitterHandle    h,
     if (!emitters_->IsValid(h)) return AudioResult::InvalidHandle;
     orchestrator_->Smoother().SetTarget(h, param, value, smoothingMs);
     return AudioResult::Success;
+}
+
+AudioResult AudioRuntimeImpl::SetGlobalParameter(AudioParameterId paramId,
+                                                   float            value) {
+    if (!initialized_)              return AudioResult::NotInitialized;
+    if (paramId == kInvalidParameterId) return AudioResult::InvalidArgument;
+    auto it = globalParameters_.find(paramId);
+    if (it != globalParameters_.end()) {
+        // Updating an existing parameter — never exceeds the budget.
+        it->second = value;
+        return AudioResult::Success;
+    }
+    // New parameter: enforce the configured cap.
+    if (globalParameters_.size() >= config_.maxGlobalParameters) {
+        return AudioResult::BudgetExceeded;
+    }
+    globalParameters_.emplace(paramId, value);
+    return AudioResult::Success;
+}
+
+bool AudioRuntimeImpl::GetGlobalParameter(AudioParameterId paramId,
+                                            float&           outValue) const {
+    auto it = globalParameters_.find(paramId);
+    if (it == globalParameters_.end()) return false;
+    outValue = it->second;
+    return true;
+}
+
+bool AudioRuntimeImpl::ClearGlobalParameter(AudioParameterId paramId) {
+    return globalParameters_.erase(paramId) > 0;
+}
+
+size_t AudioRuntimeImpl::GetGlobalParameterCount() const {
+    return globalParameters_.size();
 }
 
 AudioResult AudioRuntimeImpl::SubmitEvent(const AudioEvent& event) {

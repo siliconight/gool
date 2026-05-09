@@ -174,6 +174,13 @@ struct AudioConfig {
     //
     // Defaults are sized for plausible gameplay; see ReplicationRateLimitConfig.
     ReplicationRateLimitConfig replicationRateLimit;
+
+    // Maximum number of distinct global (RTPC) parameters the runtime
+    // will store. SetGlobalParameter calls beyond this budget return
+    // AudioResult::BudgetExceeded; the store is unchanged. Sized
+    // generously for typical games (a few dozen parameters is normal);
+    // bump for projects with very large parameter graphs.
+    uint32_t maxGlobalParameters = 256;
 };
 
 } // namespace audio

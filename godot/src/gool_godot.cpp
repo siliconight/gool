@@ -52,6 +52,12 @@ static audio::AudioSoundId HashName(const String& name) {
                                                     utf8.length()));
 }
 
+static audio::AudioParameterId HashParam(const String& name) {
+    const auto utf8 = name.utf8();
+    return audio::HashParameterName(std::string_view(utf8.get_data(),
+                                                       utf8.length()));
+}
+
 // =====================================================================
 // GoolAudioRuntime
 // =====================================================================
@@ -169,9 +175,24 @@ public:
         ClassDB::bind_method(D_METHOD("get_voice_packet_loss_ratio", "player_id"),
                               &GoolAudioRuntime::get_voice_packet_loss_ratio);
 
+        // Global (RTPC) parameter store. The GDScript autoload
+        // wraps these as Gool.set_rtpc / Gool.get_rtpc.
+        ClassDB::bind_method(D_METHOD("set_global_parameter", "name", "value"),
+                              &GoolAudioRuntime::set_global_parameter);
+        ClassDB::bind_method(D_METHOD("get_global_parameter", "name"),
+                              &GoolAudioRuntime::get_global_parameter);
+        ClassDB::bind_method(D_METHOD("has_global_parameter", "name"),
+                              &GoolAudioRuntime::has_global_parameter);
+        ClassDB::bind_method(D_METHOD("clear_global_parameter", "name"),
+                              &GoolAudioRuntime::clear_global_parameter);
+        ClassDB::bind_method(D_METHOD("global_parameter_count"),
+                              &GoolAudioRuntime::global_parameter_count);
+
         // Misc.
         ClassDB::bind_method(D_METHOD("hash_sound_name", "name"),
                               &GoolAudioRuntime::hash_sound_name);
+        ClassDB::bind_method(D_METHOD("hash_parameter_name", "name"),
+                              &GoolAudioRuntime::hash_parameter_name);
         ClassDB::bind_method(D_METHOD("is_initialized"),
                               &GoolAudioRuntime::is_initialized);
 
@@ -511,6 +532,47 @@ public:
 
     int64_t hash_sound_name(const String& name) const {
         return static_cast<int64_t>(HashName(name));
+    }
+
+    int64_t hash_parameter_name(const String& name) const {
+        return static_cast<int64_t>(HashParam(name));
+    }
+
+    // ---- Global (RTPC) parameter store -------------------------------
+    // Surfaced as Gool.set_rtpc / Gool.get_rtpc in the GDScript
+    // autoload. Names are hashed with HashParameterName so any
+    // ASCII string maps to a stable AudioParameterId.
+
+    bool set_global_parameter(const String& name, double value) {
+        if (!runtime_) return false;
+        const auto rc = runtime_->SetGlobalParameter(
+            HashParam(name), static_cast<float>(value));
+        return rc == audio::AudioResult::Success;
+    }
+
+    // Returns the stored value, or 0.0 if the parameter has never
+    // been set. Use has_global_parameter() to disambiguate.
+    double get_global_parameter(const String& name) const {
+        if (!runtime_) return 0.0;
+        float v = 0.0f;
+        runtime_->GetGlobalParameter(HashParam(name), v);
+        return static_cast<double>(v);
+    }
+
+    bool has_global_parameter(const String& name) const {
+        if (!runtime_) return false;
+        float v = 0.0f;
+        return runtime_->GetGlobalParameter(HashParam(name), v);
+    }
+
+    bool clear_global_parameter(const String& name) {
+        if (!runtime_) return false;
+        return runtime_->ClearGlobalParameter(HashParam(name));
+    }
+
+    int64_t global_parameter_count() const {
+        if (!runtime_) return 0;
+        return static_cast<int64_t>(runtime_->GetGlobalParameterCount());
     }
 
     bool is_initialized() const { return initialized_; }

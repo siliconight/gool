@@ -19,6 +19,18 @@ const CONFIG_PATH := "res://gool/config.json"
 var _runtime: Node = null
 var _ready_emitted: bool = false
 
+# Lazy-instantiated GoolMusicChannel for the play_music_state facade.
+# Created on first call so projects that don't use music never pay
+# any setup cost.
+var _music_channel: Node = null
+var _music_state: String = ""
+
+# Counter feeding unique sound-bank names for play_voice clips
+# extracted from AudioStreamWAV resources. Each call registers a
+# fresh ephemeral sound; reuse is intentionally avoided so concurrent
+# voice playback for the same player works without state coordination.
+var _voice_counter: int = 0
+
 signal ready_to_play
 
 func _ready() -> void:
@@ -147,6 +159,176 @@ func update_replicated_transform(handle: int, position: Vector3,
 
 func make_prediction_id() -> int:
     return _runtime.make_prediction_id()
+
+# =============================================================================
+# Tiny API facade
+# =============================================================================
+#
+# These four methods are the canonical entry points for fast prototyping.
+# Each is a thin wrapper around lower-level APIs. Drop down to the raw
+# bindings (submit_event_local, register_pcm_sound, submit_voice_packet,
+# set_global_parameter) when you outgrow them.
+#
+#   Gool.play_3d("rifle_fire", global_position)
+#   Gool.play_music_state("combat")
+#   Gool.play_voice(player_id, audio_stream)
+#   Gool.set_rtpc("health", hp)
+
+# Play a one-shot 3D sound by authored name at `position`. Sound must be
+# registered (via sound bank or register_pcm_sound) ahead of this call.
+# `priority` is 0..255; higher survives culling under voice budgets.
+# Returns true if the event was queued; false if the runtime is not
+# initialized or the queue is full.
+func play_3d(name: String, position: Vector3, priority: int = 128) -> bool:
+    if _runtime == null:
+        return false
+    var rc: int = _runtime.submit_event_local(name, position, 0, priority, 0)
+    return rc == 0  # AudioResult::Success
+
+# Switch the music channel to `state_name` with an equal-power crossfade.
+# Idempotent: passing the currently-playing state is a no-op so callers
+# can poll-style invoke this every frame without churn. The first call
+# lazily creates a GoolMusicChannel under this autoload.
+func play_music_state(state_name: String, fade_ms: float = 500.0) -> bool:
+    if _runtime == null:
+        return false
+    if _music_channel == null:
+        _music_channel = ClassDB.instantiate("GoolMusicChannel")
+        if _music_channel == null:
+            push_error("[gool] GoolMusicChannel class not registered. "
+                       + "Build and install the GDExtension first.")
+            return false
+        add_child(_music_channel)
+        _music_channel.attach(_runtime)
+    if state_name == _music_state and _music_channel.is_playing():
+        return true  # already in this state
+    _music_state = state_name
+    _music_channel.play(state_name, fade_ms)
+    return true
+
+# Stop the music channel with a fade-out. Subsequent play_music_state
+# calls work normally afterward.
+func stop_music(fade_ms: float = 500.0) -> void:
+    if _music_channel == null:
+        return
+    _music_state = ""
+    _music_channel.stop(fade_ms)
+
+# Play `audio_stream` as voice for `player_id`. The clip is decoded to
+# PCM, registered as an ephemeral sound, and dispatched through the
+# normal play path.
+#
+# Currently supports AudioStreamWAV with FORMAT_16_BITS only. For
+# AudioStreamOggVorbis, decode upstream to AudioStreamWAV (or use the
+# raw voice path: Gool.submit_voice_packet for Opus traffic from a
+# real network layer). AudioStreamOggVorbis support is on the roadmap.
+#
+# Returns true if the clip was queued; false on input errors or
+# missing runtime.
+func play_voice(player_id: int, audio_stream: AudioStream) -> bool:
+    if _runtime == null:
+        return false
+    if not (audio_stream is AudioStreamWAV):
+        push_error("[gool] play_voice currently supports AudioStreamWAV only. "
+                   + "AudioStreamOggVorbis support is on the roadmap. For "
+                   + "Opus voice packets from a network layer, use "
+                   + "Gool.submit_voice_packet directly.")
+        return false
+    var wav: AudioStreamWAV = audio_stream
+    var samples := _wav_to_pcm_mono(wav)
+    if samples.is_empty():
+        return false
+    _voice_counter += 1
+    var clip_name := "_voice_%d_%d" % [player_id, _voice_counter]
+    var sample_rate: int = int(wav.mix_rate)
+    if sample_rate <= 0:
+        sample_rate = 48000
+    _runtime.register_pcm_sound(clip_name, samples, sample_rate, 1)
+    _runtime.register_sound_definition(clip_name, false)
+    _runtime.play_sound_at_location(clip_name, Vector3.ZERO)
+    return true
+
+# Set a real-time parameter ("RTPC" in middleware lingo) by name.
+# Stored as a key-value pair in the runtime; authored sound definitions
+# can reference these in future updates. For now: useful for game-state
+# polling, debug overlays, and getting comfortable with the API shape.
+# Returns true if the value was stored; false on budget exhaustion or
+# missing runtime. See AudioConfig::maxGlobalParameters (default 256).
+func set_rtpc(name: String, value: float) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.set_global_parameter(name, value)
+
+# Read the current value of an RTPC. Returns 0.0 if the parameter has
+# never been set; use has_rtpc() to disambiguate "set to zero" from
+# "never set."
+func get_rtpc(name: String) -> float:
+    if _runtime == null:
+        return 0.0
+    return _runtime.get_global_parameter(name)
+
+func has_rtpc(name: String) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.has_global_parameter(name)
+
+func clear_rtpc(name: String) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.clear_global_parameter(name)
+
+# =============================================================================
+# Internal helpers
+# =============================================================================
+
+# Convert a 16-bit signed little-endian PCM AudioStreamWAV to mono
+# float32 samples in [-1, 1]. Stereo sources are downmixed by
+# averaging L+R per frame (no fancy panning preservation; voice
+# clips are typically mono anyway).
+#
+# Returns an empty array if the format is unsupported or the buffer
+# is malformed; the caller has already pushed an error message in
+# that case so we just bail.
+func _wav_to_pcm_mono(wav: AudioStreamWAV) -> PackedFloat32Array:
+    var out := PackedFloat32Array()
+    if wav.format != AudioStreamWAV.FORMAT_16_BITS:
+        push_error("[gool] play_voice supports FORMAT_16_BITS WAVs only. "
+                   + "Re-import your asset as 16-bit PCM in Godot's "
+                   + "import dock.")
+        return out
+    var data: PackedByteArray = wav.data
+    var byte_count: int = data.size()
+    if byte_count == 0 or byte_count % 2 != 0:
+        return out
+    var sample_count: int = byte_count / 2
+    var stereo: bool = wav.stereo
+    if stereo and sample_count % 2 != 0:
+        return out
+    var frames: int = (sample_count / 2) if stereo else sample_count
+    out.resize(frames)
+    var inv: float = 1.0 / 32768.0
+    if stereo:
+        for i in range(frames):
+            var lo_l: int = data[i * 4 + 0]
+            var hi_l: int = data[i * 4 + 1]
+            var lo_r: int = data[i * 4 + 2]
+            var hi_r: int = data[i * 4 + 3]
+            var l: int = (hi_l << 8) | lo_l
+            var r: int = (hi_r << 8) | lo_r
+            if l >= 32768:
+                l -= 65536
+            if r >= 32768:
+                r -= 65536
+            out[i] = ((l + r) * 0.5) * inv
+    else:
+        for i in range(frames):
+            var lo: int = data[i * 2 + 0]
+            var hi: int = data[i * 2 + 1]
+            var s: int = (hi << 8) | lo
+            if s >= 32768:
+                s -= 65536
+            out[i] = float(s) * inv
+    return out
 
 func _load_config() -> Dictionary:
     if not FileAccess.file_exists(CONFIG_PATH):

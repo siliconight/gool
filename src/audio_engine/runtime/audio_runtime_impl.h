@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/backend.h"
@@ -96,6 +97,13 @@ public:
                                                AudioParameterId param,
                                                float            value,
                                                float            smoothingMs);
+
+    // Global (RTPC) parameter store
+    AudioResult           SetGlobalParameter(AudioParameterId paramId, float value);
+    bool                  GetGlobalParameter(AudioParameterId paramId, float& outValue) const;
+    bool                  ClearGlobalParameter(AudioParameterId paramId);
+    size_t                GetGlobalParameterCount() const;
+
     AudioResult           SubmitEvent(const AudioEvent& event);
     AudioResult           CancelPredictedEvent(uint64_t predictionId, float fadeOutMs);
     bool                  GetVoiceNetworkStats(AudioPlayerId playerId,
@@ -262,6 +270,13 @@ private:
     // Tick-to-tick interpolation alpha state (host-clock based).
     float interpAlpha_     = 1.0f;
     float ticksObservedDt_ = 0.05f;     // estimated tick period in seconds
+
+    // Global (RTPC) parameter store. Game-thread-only writes and
+    // reads at this stage. Render-thread modulation (sound definitions
+    // reading these and adjusting volume / cutoff / pitch) is a
+    // future feature; the storage here ships first so host code can
+    // build against the API.
+    std::unordered_map<AudioParameterId, float> globalParameters_;
 };
 
 } // namespace audio

@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.2.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.3.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -120,6 +120,27 @@ The designer authors content. The gameplay engineer triggers
 events. The middleware handles the rest.
 
 ## Quick start (Godot 4.2+)
+
+Once the addon is enabled and `Gool` is autoloaded, four lines of
+GDScript cover the most common cases:
+
+```gdscript
+Gool.play_3d("rifle_fire", global_position)
+Gool.play_music_state("combat")
+Gool.play_voice(player_id, audio_stream)   # AudioStreamWAV
+Gool.set_rtpc("health", hp)
+```
+
+`play_3d` plays a registered sound at a world position. `play_music_state`
+crossfades the music channel to a new state (lazily creates one on first
+call). `play_voice` decodes an `AudioStreamWAV` to PCM and plays it as
+voice for the given player. `set_rtpc` stores a real-time parameter
+("health", "wetness", etc.) that authored sound definitions can
+reference. Drop down to the lower-level API (`submit_event_local`,
+`register_pcm_sound`, `submit_voice_packet`, `set_global_parameter`)
+when these aren't enough.
+
+To install:
 
 ```bash
 git clone https://github.com/siliconight/gool.git && cd gool
@@ -515,7 +536,7 @@ audio_engine/
 
 ### Test suite
 
-28 unit tests in `tests/unit/`, all wired into CTest and the CI
+29 unit tests in `tests/unit/`, all wired into CTest and the CI
 matrix. Headline coverage:
 
 | Test                            | Validates                                                  |
@@ -543,6 +564,7 @@ matrix. Headline coverage:
 | `replication_rate_limit_test`   | Per-player + per-category token-bucket rate limiter, IReplicationValidator hook, voice path rate limit, new-id-cycling defense, source/policy enforcement, deterministic across runs |
 | `default_bounds_validator_test` | DefaultBoundsValidator rejects NaN/Inf vec3, extreme magnitudes, malformed parameters, unknown soundIds; ChainReplicationValidator short-circuits |
 | `version_test`                  | `audio::GetVersion()` returns the pinned version triple; catches drift between version.h and CMakeLists |
+| `global_parameter_test`         | RTPC store: HashParameterName stable + collision-aware, set/get/clear, budget enforced only on new IDs, NotInitialized + InvalidArgument paths |
 | `integration_kitchen_sink_test` | 5-second simulation with all subsystems active             |
 
 CI runs the full suite on Ubuntu and Windows on every push. The

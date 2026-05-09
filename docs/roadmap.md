@@ -113,7 +113,7 @@ prose about what it would do.
 **DoD:** anyone visiting the GitHub page sees what the engine does
 within 3 seconds without reading.
 
-### 1.4 Tiny API facade — **S**
+### 1.4 Tiny API facade — **S** [SHIPPED in 0.3.0]
 
 **Outcome:** the four lines the consultant called out actually work
 verbatim:
@@ -124,17 +124,37 @@ Gool.play_voice(player_id, audio_stream)
 Gool.set_rtpc("health", hp)
 ```
 
-**Work:**
-- Add four convenience methods to `runtime_singleton.gd`. Each
-  is a thin wrapper that fans out to the underlying systems we
-  already have (SubmitEvent, MusicChannel, voice path,
-  parameter smoother).
-- Wire them into the autoload singleton.
-- Document them as the canonical API in the README "Quick start"
-  section, ahead of the prefab nodes.
+**Status:** Shipped. All four facade methods live in
+`godot/addons/gool/runtime_singleton.gd` as thin wrappers over the
+lower-level engine APIs. README Quick Start now leads with these
+four lines, ahead of the prefab-node walkthrough.
 
-**DoD:** copy-paste any of the four lines into a fresh Godot
-project, run, observe the expected behavior.
+* `play_3d` wraps `submit_event_local` with sane defaults (no
+  prediction, normal priority).
+* `play_music_state` lazily creates a `GoolMusicChannel` on first
+  call and is idempotent on the current state — re-passing the
+  same name is a no-op so callers can poll-style invoke every
+  frame without churn.
+* `play_voice` decodes `AudioStreamWAV` (FORMAT_16_BITS) to mono
+  float32 PCM, registers as an ephemeral one-shot, and dispatches
+  through the play path. AudioStreamOggVorbis support is
+  documented as future work; for raw Opus voice traffic from a
+  network layer, hosts use `Gool.submit_voice_packet` directly.
+* `set_rtpc` / `get_rtpc` / `has_rtpc` / `clear_rtpc` map to a new
+  C++ global parameter store on `AudioRuntime`. `HashParameterName`
+  remaps engine-reserved IDs above `HostBase` so host names can't
+  mask engine semantics. Budget is enforced only on new IDs —
+  updates are always free.
+
+**Limitations carried into the next iteration:**
+- `set_rtpc` stores values but does not yet drive sound-definition
+  modulation on the render thread (sound definitions reading these
+  to adjust volume / cutoff / pitch). The storage and observability
+  ship now so host code can build against the API; render-thread
+  modulation is a future M-sized item.
+- `play_voice` accepts only `AudioStreamWAV` with FORMAT_16_BITS.
+  AudioStreamOggVorbis support requires hooking the existing Ogg
+  decoder to AudioStream input and is on the roadmap.
 
 ### 1.5 Co-op shooter starter template — **M**
 
