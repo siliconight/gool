@@ -21,6 +21,9 @@ add_executable(audio_engine_biquad_eq_test               unit/biquad_eq_test.cpp
 add_executable(audio_engine_gpak_test                    unit/gpak_test.cpp)
 add_executable(audio_engine_determinism_test             unit/determinism_test.cpp)
 add_executable(audio_engine_replicated_events_test       unit/replicated_events_test.cpp)
+add_executable(audio_engine_replication_rate_limit_test  unit/replication_rate_limit_test.cpp)
+add_executable(audio_engine_default_bounds_validator_test unit/default_bounds_validator_test.cpp)
+add_executable(audio_engine_version_test                  unit/version_test.cpp)
 add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitchen_sink_test.cpp)
 
 # Tests need access to internal headers (src/) for util classes that aren't
@@ -55,6 +58,9 @@ target_link_libraries(audio_engine_biquad_eq_test                PRIVATE audio_e
 target_link_libraries(audio_engine_gpak_test                     PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_determinism_test              PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_replicated_events_test        PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_replication_rate_limit_test   PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_default_bounds_validator_test  PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_version_test                   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_integration_kitchen_sink_test  PRIVATE audio_engine::audio_engine)
 
 add_test(NAME spsc_ring_test                COMMAND audio_engine_spsc_ring_test)
@@ -80,4 +86,7 @@ add_test(NAME biquad_eq_test                COMMAND audio_engine_biquad_eq_test)
 add_test(NAME gpak_test                     COMMAND audio_engine_gpak_test)
 add_test(NAME determinism_test              COMMAND audio_engine_determinism_test)
 add_test(NAME replicated_events_test        COMMAND audio_engine_replicated_events_test)
+add_test(NAME replication_rate_limit_test   COMMAND audio_engine_replication_rate_limit_test)
+add_test(NAME default_bounds_validator_test COMMAND audio_engine_default_bounds_validator_test)
+add_test(NAME version_test                  COMMAND audio_engine_version_test)
 add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kitchen_sink_test)

@@ -231,7 +231,30 @@ public:
     void OnTickAdvanced(SimulationTick tick, TimestampMs serverTimeMs)
         AUDIO_REQUIRES(NetworkThread);
 
+    // 1-arg form: legacy / convenience. Treats source as Unknown,
+    // permissive policy enforcement. Suitable for tests and for hosts
+    // that don't yet distinguish server-authored from client-forwarded
+    // events.
     AudioResult SubmitReplicatedEvent(const AudioEvent& event)
+        AUDIO_REQUIRES(NetworkThread);
+
+    // 2-arg form: explicit trust label.
+    //
+    // Use `ReplicationSource::Server` when the event was authored by
+    // your authoritative server logic — the runtime trusts the
+    // replicationPolicy field verbatim.
+    //
+    // Use `ReplicationSource::Client` when forwarding an event that
+    // arrived from a network peer — the runtime rejects events whose
+    // declared `replicationPolicy` is `ServerAuthoritative` (clients
+    // cannot author server-authoritative state changes), counted in
+    // `Stats::replicationEventsRejectedByValidator` (returned as
+    // `AudioResult::PolicyViolation`).
+    //
+    // The validator hook (if installed) and the rate limiter run in
+    // both cases.
+    AudioResult SubmitReplicatedEvent(const AudioEvent& event,
+                                       ReplicationSource source)
         AUDIO_REQUIRES(NetworkThread);
 
     AudioResult UpdateReplicatedTransform(EmitterHandle  handle,
@@ -294,6 +317,11 @@ public:
         uint64_t packetsReordered        = 0;
         uint64_t packetsLost             = 0;
         uint64_t packetsOverwritten      = 0;
+        // Voice packets the network-thread rate limiter rejected before
+        // they reached the jitter buffer. High counts in steady state
+        // indicate either an overprovisioned attacker or a misconfigured
+        // budget; tune `AudioConfig::replicationRateLimit.perCategory[Voice]`.
+        uint64_t packetsRateLimited     = 0;
         uint64_t plcGenerated            = 0;
         uint64_t silentFrames            = 0;
         uint32_t observedJitterMs        = 0;
@@ -343,8 +371,62 @@ public:
         // transforms still update; they just didn't get spatial
         // params recomputed this tick.
         uint32_t emittersSkippedByInterestLastTick = 0;
+        // Replicated events rejected by the per-player, per-category
+        // token-bucket rate limiter, aggregated across all players.
+        // Indexed by AudioCategory (0=SFX, 1=Voice, 2=Music,
+        // 3=Ambience, 4=UI, 5=Dialogue). High counts in any one
+        // category signal a misbehaving (or malicious) client; query
+        // GetPerPlayerReplicationStats(playerId) to identify which.
+        uint64_t replicationEventsRateLimited[6] = {0,0,0,0,0,0};
+        // Replicated events rejected by the IReplicationValidator
+        // hook (if installed). Aggregated across all players. This
+        // counter reflects ONLY host-policy denials — runtime-level
+        // protocol enforcement (Phase 2.5) is tracked separately in
+        // `replicationPolicyViolations` below so dashboards can
+        // distinguish the two.
+        uint64_t replicationEventsRejectedByValidator = 0;
+        // Replicated events rejected by Phase 2.5 protocol-policy
+        // enforcement: a Client-sourced event declared a
+        // ServerAuthoritative policy, which only the server is
+        // allowed to author. Non-zero values here indicate active
+        // spoof attempts at the wire layer. Each rejection means
+        // the spoofed event was dropped before reaching the
+        // control thread — no remote listener heard it.
+        uint64_t replicationPolicyViolations = 0;
+        // Replicated events rejected because the per-tick new-player
+        // admission cap was exhausted (anti-DoS for playerId-cycling).
+        // Non-zero values in steady state indicate either a
+        // legitimately busy lobby (bump
+        // `ReplicationRateLimitConfig::maxNewPlayersPerTick`) or an
+        // active id-cycling attack.
+        uint64_t replicationEventsRejectedNewIdBudget = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
+
+    // ---- Replication validator + per-player stats (game thread) ---------
+    // Install a host-supplied policy hook called from the network thread
+    // before per-category rate limiting on every SubmitReplicatedEvent.
+    // Returning false from ShouldAccept silently drops the event and
+    // increments the validator-rejection counter.
+    //
+    // Pass nullptr to clear a previously-installed validator. Lifetime
+    // is the host's responsibility; the runtime stores the pointer
+    // verbatim and never deletes it.
+    void SetReplicationValidator(class IReplicationValidator* validator) noexcept
+        AUDIO_REQUIRES(GameThread);
+
+    // Per-player replication stats: events accepted by the rate limiter,
+    // events dropped by it, events rejected by the validator. Returns
+    // false if the player has never been seen (or was evicted from the
+    // LRU table when capacity was hit). Cheap; safe to poll every frame.
+    struct PerPlayerReplicationStats {
+        uint64_t eventsAccepted    = 0;
+        uint64_t eventsRateLimited = 0;
+        uint64_t eventsRejected    = 0;
+    };
+    bool GetPerPlayerReplicationStats(AudioPlayerId             playerId,
+                                       PerPlayerReplicationStats& out) const
+        AUDIO_REQUIRES(GameThread);
 
 private:
     std::unique_ptr<AudioRuntimeImpl> impl_;

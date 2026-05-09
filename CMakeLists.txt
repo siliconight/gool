@@ -1,8 +1,28 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
+
+# Capture the current git commit SHA (short form) so it can be
+# compiled into the library and surfaced via audio::GetVersion().
+# Falls back to "unknown" when not in a git checkout.
+execute_process(
+    COMMAND git rev-parse --short=7 HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE AUDIO_ENGINE_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT AUDIO_ENGINE_GIT_COMMIT)
+    set(AUDIO_ENGINE_GIT_COMMIT "unknown")
+endif()
+message(STATUS "audio_engine: version ${PROJECT_VERSION} (commit ${AUDIO_ENGINE_GIT_COMMIT})")
+
+# Sanity check: the version constants in include/audio_engine/version.h
+# must match the project() VERSION above. The header is the runtime
+# source of truth (compile-time constants); the project() declaration
+# drives release artifact filenames. RELEASING.md documents the
+# dual-edit requirement.
 
 # Detect whether we are the top-level project (controls examples/tests by default).
 if(NOT DEFINED AUDIO_ENGINE_TOP_LEVEL)
@@ -78,6 +98,9 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/orchestrator/sequence_player.cpp
     src/audio_engine/runtime/audio_runtime.cpp
     src/audio_engine/runtime/music_channel.cpp
+    src/audio_engine/runtime/replication_rate_limiter.cpp
+    src/audio_engine/default_bounds_validator.cpp
+    src/audio_engine/version.cpp
 )
 
 if(AUDIO_ENGINE_SHARED)
@@ -98,6 +121,11 @@ target_include_directories(audio_engine
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_link_libraries(audio_engine PUBLIC Threads::Threads)
+
+# Stamp the git SHA captured at configure time into the library so
+# audio::GetVersion().commit reflects what was actually built.
+target_compile_definitions(audio_engine PRIVATE
+    AE_BUILD_COMMIT="${AUDIO_ENGINE_GIT_COMMIT}")
 
 # -------------------------------------------------------------------------
 # Optional: miniaudio backend

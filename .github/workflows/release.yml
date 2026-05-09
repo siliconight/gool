@@ -1,8 +1,11 @@
 name: Release
 
-# Triggered when a version tag is pushed (e.g. `git tag v0.1.0; git push --tags`).
-# Builds static libraries and headers as a release artifact for each
-# supported OS, then attaches them to the GitHub Release.
+# Triggered when a version tag is pushed (e.g. `git tag v0.2.0; git push --tags`).
+# The leading `v` is stripped to derive the version (`0.2.0`); the version
+# becomes part of the artifact filename so different releases coexist on
+# the GitHub Releases page.
+#
+# See RELEASING.md for the full release procedure.
 
 on:
   push:
@@ -20,14 +23,26 @@ jobs:
         # add the macos-latest entry back here.
         include:
           - os: ubuntu-latest
-            archive_name: gool-linux-x86_64
+            platform: linux-x86_64
             archive_ext: tar.gz
           - os: windows-latest
-            archive_name: gool-windows-x86_64
+            platform: windows-x86_64
             archive_ext: zip
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        shell: bash
+        run: |
+          # Tag is like "v0.2.0". Strip the leading "v" → "0.2.0".
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE_NAME="gool-${VERSION}-${{ matrix.platform }}"
+          echo "version=$VERSION"           >> "$GITHUB_OUTPUT"
+          echo "archive_name=$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Derived version: $VERSION"
+          echo "Archive name:    $ARCHIVE_NAME"
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUDIO_ENGINE_BUILD_EXAMPLES=OFF -DAUDIO_ENGINE_BUILD_TESTS=OFF -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
@@ -37,31 +52,38 @@ jobs:
 
       - name: Stage artifact (Unix)
         if: runner.os != 'Windows'
+        env:
+          ARCHIVE_NAME: ${{ steps.version.outputs.archive_name }}
         run: |
-          mkdir -p stage/${{ matrix.archive_name }}/lib
-          mkdir -p stage/${{ matrix.archive_name }}/include
-          find build -name "libaudio_engine*.a" -exec cp {} stage/${{ matrix.archive_name }}/lib/ \;
-          cp -r include/audio_engine stage/${{ matrix.archive_name }}/include/
-          cp LICENSE stage/${{ matrix.archive_name }}/
-          cp README.md stage/${{ matrix.archive_name }}/
-          cd stage && tar -czf ../${{ matrix.archive_name }}.tar.gz ${{ matrix.archive_name }}
+          mkdir -p "stage/${ARCHIVE_NAME}/lib"
+          mkdir -p "stage/${ARCHIVE_NAME}/include"
+          find build -name "libaudio_engine*.a" -exec cp {} "stage/${ARCHIVE_NAME}/lib/" \;
+          cp -r include/audio_engine "stage/${ARCHIVE_NAME}/include/"
+          cp LICENSE      "stage/${ARCHIVE_NAME}/"
+          cp README.md    "stage/${ARCHIVE_NAME}/"
+          cp CHANGELOG.md "stage/${ARCHIVE_NAME}/"
+          cd stage && tar -czf "../${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 
       - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          ARCHIVE_NAME: ${{ steps.version.outputs.archive_name }}
         run: |
-          New-Item -ItemType Directory -Force -Path "stage/${{ matrix.archive_name }}/lib" | Out-Null
-          New-Item -ItemType Directory -Force -Path "stage/${{ matrix.archive_name }}/include" | Out-Null
-          Get-ChildItem -Path build -Recurse -Filter "audio_engine*.lib" | Copy-Item -Destination "stage/${{ matrix.archive_name }}/lib/"
-          Copy-Item -Recurse "include/audio_engine" "stage/${{ matrix.archive_name }}/include/"
-          Copy-Item "LICENSE" "stage/${{ matrix.archive_name }}/"
-          Copy-Item "README.md" "stage/${{ matrix.archive_name }}/"
-          Compress-Archive -Path "stage/${{ matrix.archive_name }}" -DestinationPath "${{ matrix.archive_name }}.zip"
+          New-Item -ItemType Directory -Force -Path "stage/$env:ARCHIVE_NAME/lib"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "stage/$env:ARCHIVE_NAME/include" | Out-Null
+          Get-ChildItem -Path build -Recurse -Filter "audio_engine*.lib" | Copy-Item -Destination "stage/$env:ARCHIVE_NAME/lib/"
+          Copy-Item -Recurse "include/audio_engine" "stage/$env:ARCHIVE_NAME/include/"
+          Copy-Item "LICENSE"      "stage/$env:ARCHIVE_NAME/"
+          Copy-Item "README.md"    "stage/$env:ARCHIVE_NAME/"
+          Copy-Item "CHANGELOG.md" "stage/$env:ARCHIVE_NAME/"
+          Compress-Archive -Path "stage/$env:ARCHIVE_NAME" -DestinationPath "$env:ARCHIVE_NAME.zip"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ matrix.archive_name }}.${{ matrix.archive_ext }}
+          files: ${{ steps.version.outputs.archive_name }}.${{ matrix.archive_ext }}
           fail_on_unmatched_files: true
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

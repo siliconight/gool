@@ -52,6 +52,13 @@ struct AudioEvent {
     AudioPriority          priority          = AudioPriority::Normal;
     AudioReplicationPolicy replicationPolicy = AudioReplicationPolicy::LocalOnly;
 
+    // Category for per-player, per-category replication rate limiting on
+    // the network thread. Defaults to SFX, which is the right choice for
+    // gameplay-driven events (gunshots, footsteps, hits). Override for
+    // music transitions, dialogue, ambience, or UI to apply that
+    // category's bucket. See AudioConfig::replicationRateLimit.
+    AudioCategory          category          = AudioCategory::SFX;
+
     // Per-event staleness override (item-driven). When > 0, the engine
     // drops this event during drain if (now - timestampMs) exceeds this
     // value, ignoring the global `AudioConfig::lateEventDiscardMs`. Use

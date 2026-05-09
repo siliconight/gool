@@ -19,6 +19,8 @@ const char* ToString(AudioResult r) noexcept {
         case AudioResult::Unsupported:        return "Unsupported";
         case AudioResult::IoError:            return "IoError";
         case AudioResult::DecodeError:        return "DecodeError";
+        case AudioResult::RateLimited:        return "RateLimited";
+        case AudioResult::PolicyViolation:    return "PolicyViolation";
     }
     return "Unknown";
 }

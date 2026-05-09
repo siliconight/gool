@@ -194,3 +194,161 @@ Prefabs:
 
 For the actual scene wiring of these prefabs, see
 `examples/quickstart` and the engine repo's `tests/unit/replicated_events_test.cpp`.
+
+---
+
+## Threat model
+
+The runtime ships flow-control and field-validity defenses out of
+the box; it cannot make decisions about peer identity or sender
+authority. That's the host's job. This section spells out the
+trust boundary so it's clear what shipped code defends against and
+what host integration is responsible for.
+
+### What the runtime can validate
+
+These are enforced inside the engine, before any event reaches
+the control thread:
+
+- **Flow control.** Per-player, per-category token-bucket rate
+  limiter on `SubmitReplicatedEvent` and `OnVoicePacket`. Defaults
+  in `AudioConfig::replicationRateLimit`: 50 SFX/sec/player,
+  150 voice packets/sec/player, 5 music/sec, 20 dialogue/sec,
+  10 ambience/sec, UI unlimited. Rejections surface as
+  `AudioResult::RateLimited` and aggregate in
+  `Stats::replicationEventsRateLimited[6]`.
+
+- **PlayerId-cycling DoS.** Per-tick admission cap on
+  never-seen-before playerIds (`maxNewPlayersPerTick = 8` default).
+  Above the cap, new ids are rejected for the rest of the tick;
+  counter resets on `OnTickAdvanced`. Surfaced as
+  `Stats::replicationEventsRejectedNewIdBudget`. Without this, an
+  attacker could blow out the rate limiter's LRU table and reset
+  every legitimate player's bucket counters.
+
+- **Replication-policy spoofing.** When the host calls the 2-arg
+  `SubmitReplicatedEvent(event, ReplicationSource::Client)`, the
+  runtime rejects events declaring
+  `replicationPolicy = ServerAuthoritative` — clients cannot
+  author state changes that affect remote listeners. Returns
+  `AudioResult::PolicyViolation`. Tracked in
+  `Stats::replicationPolicyViolations` (separate from
+  `replicationEventsRejectedByValidator` so dashboards can tell
+  protocol enforcement from host-policy denials). The 1-arg
+  overload is `ReplicationSource::Unknown` (legacy / permissive).
+
+- **Field validity** (via opt-in `DefaultBoundsValidator`).
+  Rejects events with NaN/Inf in `position`, `forward`, or
+  `velocity`; extreme magnitudes (default caps: 1,000 km position,
+  100 km/s velocity); NaN/Inf or out-of-range
+  `parameterValue` / `parameterSmoothingMs`; optionally,
+  unknown `soundId` via a host-supplied lookup callback.
+
+### What the runtime CANNOT validate
+
+The runtime has no view of the network layer, so the following
+are the host's responsibility — full stop:
+
+- **Who sent which packet.** The runtime sees `event.playerId` as
+  a uint32; it cannot know whether that field matches the
+  authenticated peer that delivered the packet. The host's
+  network layer (Steam GameNetworkingSockets, ENet, EOS,
+  WebRTC, raw UDP with auth tokens, etc.) knows the connection
+  identity. The host is responsible for replacing
+  `event.playerId` with the authenticated peer id BEFORE calling
+  `SubmitReplicatedEvent`.
+
+- **Whether a sender role matches a claimed policy.** The runtime
+  can enforce "Client cannot submit ServerAuthoritative" only
+  because the host tells it the source. The host knows whether a
+  payload arrived from a server connection or a client connection;
+  the runtime doesn't.
+
+- **Content authority.** The runtime accepts whatever
+  `event.category` field the host stamps. A malicious payload
+  claiming `AudioCategory::UI` (default unlimited) can bypass
+  the rate limiter for a category Godot would normally never
+  replicate. The host must derive `event.category` from the
+  authored sound definition (look it up by `soundId` in the
+  loaded sound bank), not copy it from the wire payload.
+
+- **Logical anti-cheat.** "This player just fired 30 gunshots in
+  one second from a position 200 m from where they actually are"
+  is gameplay state the runtime doesn't see. Install an
+  `IReplicationValidator` to apply your game-mode-specific rules.
+
+### The four host-side rules
+
+If you're integrating gool into an online multiplayer game with
+adversarial clients, follow all four. None are optional.
+
+1. **Authenticate `playerId` server-side.** Before calling
+   `SubmitReplicatedEvent`, replace whatever the wire payload
+   claimed with the authenticated peer id from your network
+   layer. Never trust a `playerId` field from an untrusted
+   connection.
+
+2. **Derive `category` from the sound definition, not the wire.**
+   When you receive a replicated event from a client, look up
+   the sound by `event.soundId` in your loaded `SoundBank`,
+   take the authored `AudioCategory` from the `SoundDefinition`,
+   and overwrite `event.category` with it. This closes the
+   category-spoof gap.
+
+3. **Enforce policy by sender role.** Use the 2-arg
+   `SubmitReplicatedEvent(event, ReplicationSource::Client)` for
+   every event you receive from a network peer. Use
+   `ReplicationSource::Server` only for events authored by your
+   own authoritative server logic. The runtime then enforces
+   "client cannot author ServerAuthoritative" automatically.
+
+4. **Validate numeric ranges before submit.** Install
+   `DefaultBoundsValidator` (chained with your custom validator
+   via `ChainReplicationValidator` if needed) so events with
+   NaN/Inf or extreme magnitudes are rejected before they reach
+   the spatializer. Configure tighter magnitude caps if your
+   game world is smaller than the defaults.
+
+### What this gets you, and what it doesn't
+
+With the runtime defenses + the four host-side rules, the
+remaining attack surface is:
+
+- A legitimate authenticated peer abusing their own per-player
+  budgets within configured limits (plain rate limiting handles
+  this; tune the budgets for your game).
+- Logical exploits requiring gameplay context the audio layer
+  doesn't have (e.g. "fire underwater," "shoot through a wall").
+  This is anti-cheat territory and lives in your gameplay logic
+  or a separate validator.
+- Side-channel attacks against the audio device or codec
+  (libopus CVEs, etc.). The runtime wraps libopus but doesn't
+  audit it; keep the underlying library patched.
+
+What you should NOT expect:
+
+- The runtime is not a substitute for transport-layer auth.
+- The runtime does not encrypt voice payloads. Voice encryption
+  is on the roadmap (Phase 2.1) but not yet shipped. Use a
+  transport that encrypts (Steam GameNetworkingSockets, EOS,
+  DTLS) until then.
+- The runtime does not deduplicate retransmits at the event
+  layer (it does for voice packets via sequence number). If
+  your network can deliver the same event twice, dedupe before
+  submit.
+
+### Stats to monitor in production
+
+Poll these counters from `runtime.GetStats()` and your dashboards
+will tell you when something is wrong:
+
+| Counter                                          | What a non-zero value means                              |
+|--------------------------------------------------|----------------------------------------------------------|
+| `replicationEventsRateLimited[i]`                | Per-category flow-control drops; tune budget if benign   |
+| `replicationPolicyViolations`                    | Phase 2.5 caught a Client-source ServerAuthoritative spoof — active wire-layer attack |
+| `replicationEventsRejectedByValidator`           | Host's `IReplicationValidator` denied — your custom policy fired |
+| `replicationEventsRejectedNewIdBudget`           | New playerIds capped — likely id-cycling DoS attempt     |
+| `voiceNetworkStats[playerId].packetsRateLimited` | Per-player voice flooding                                |
+
+A spike in any of these on a running production server is a
+signal worth alerting on, not just a counter to log.

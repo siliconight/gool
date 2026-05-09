@@ -77,6 +77,7 @@ struct JitterBufferStats {
     uint64_t packetsReordered       = 0;     // arrived before its predecessor (still accepted)
     uint64_t packetsLost            = 0;     // expected seq never arrived; PLC issued
     uint64_t packetsOverwritten     = 0;     // capacity full; oldest evicted (network ahead of consumer)
+    uint64_t packetsRateLimited     = 0;     // network-thread rate limiter rejected the packet before ingest
     uint64_t plcGenerated           = 0;     // Pop returned PLC
     uint64_t silentFrames           = 0;     // Pop returned Empty (prebuffering or starved)
     uint32_t currentTargetDepth     = 0;     // frames the consumer is currently aiming to keep buffered
@@ -303,6 +304,13 @@ public:
     }
 
     const JitterBufferStats& Stats() const noexcept { return stats_; }
+
+    // Network-thread bump for packets the upstream rate limiter
+    // rejected before they reached this buffer's Push(). The counter
+    // is part of the same stats struct exposed to the game thread,
+    // so a poll of GetVoiceStats() surfaces the drop alongside the
+    // existing packet counters.
+    void BumpRateLimited() noexcept { ++stats_.packetsRateLimited; }
     uint32_t Depth()             const noexcept { return cfg_.capacityDepth; }
     uint32_t TargetDepth()       const noexcept { return targetDepth_; }
     uint32_t ObservedJitterMs()  const noexcept { return jitterMs_; }

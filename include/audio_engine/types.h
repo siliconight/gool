@@ -65,6 +65,29 @@ enum class AudioPriority : uint8_t {
     Critical = 255,
 };
 
+// Trust label for SubmitReplicatedEvent. The runtime uses this to
+// enforce policy on sensitive replication modes — e.g. a client cannot
+// submit a ServerAuthoritative event and have remote listeners hear it.
+//
+// `Server`: the event was authored by the host's own (trusted) server
+// logic. The host calls SubmitReplicatedEvent for its own authoritative
+// state changes, and the call carries this label.
+//
+// `Client`: the event arrived over the wire from a remote peer. The
+// host has authenticated the peer at the network layer, but the
+// payload itself is still untrusted. This is the form to use when
+// forwarding inbound RPCs into the runtime.
+//
+// `Unknown`: legacy / unspecified. The single-arg SubmitReplicatedEvent
+// overload uses this label; the runtime treats it permissively for
+// backward compatibility but does not enforce policy on it. New code
+// should use the explicit two-arg form.
+enum class ReplicationSource : uint8_t {
+    Server  = 0,
+    Client  = 1,
+    Unknown = 2,
+};
+
 enum class FalloffModel : uint8_t {
     Linear,
     Logarithmic,

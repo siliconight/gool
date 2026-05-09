@@ -52,6 +52,16 @@ func _exit_tree() -> void:
 func is_initialized() -> bool:
     return _runtime != null and _runtime.is_initialized()
 
+# Returns the engine version as a Dictionary:
+#   { "major": int, "minor": int, "patch": int,
+#     "full":  String, "commit": String }
+# Useful in debug overlays, crash reports, and bug-report forms.
+# Available before init() since the version is compile-time.
+func get_version() -> Dictionary:
+    if _runtime == null:
+        return {}
+    return _runtime.get_version()
+
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
                          sr: int = 48000, ch: int = 1) -> int:
     return _runtime.register_pcm_sound(name, samples, sr, ch)

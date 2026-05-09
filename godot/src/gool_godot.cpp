@@ -20,12 +20,14 @@
 #include "audio_engine/miniaudio_backend.h"
 #include "audio_engine/music_channel.h"
 #include "audio_engine/sound_bank.h"
+#include "audio_engine/version.h"
 
 #include <godot_cpp/classes/global_constants.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -70,6 +72,13 @@ public:
         ClassDB::bind_method(D_METHOD("shutdown"), &GoolAudioRuntime::shutdown);
         ClassDB::bind_method(D_METHOD("update", "delta"),
                               &GoolAudioRuntime::update);
+
+        // Version metadata. Returns a Dictionary with keys
+        // "major", "minor", "patch", "full", "commit". Useful for
+        // debug overlays and crash reports.
+        ClassDB::bind_method(D_METHOD("get_version"),
+                              &GoolAudioRuntime::get_version);
+
         ClassDB::bind_method(D_METHOD("set_listener_transform",
                                        "position", "forward", "velocity"),
                               &GoolAudioRuntime::set_listener_transform);
@@ -207,6 +216,22 @@ public:
         runtime_->Shutdown();
         runtime_.reset();
         initialized_ = false;
+    }
+
+    // Returns the engine's version as a Godot Dictionary:
+    //   { "major": int, "minor": int, "patch": int,
+    //     "full":  String, "commit": String }
+    // Available before init() — the version is compile-time, no
+    // runtime state needed.
+    Dictionary get_version() const {
+        const auto v = audio::GetVersion();
+        Dictionary d;
+        d["major"]  = v.major;
+        d["minor"]  = v.minor;
+        d["patch"]  = v.patch;
+        d["full"]   = String(v.full);
+        d["commit"] = String(v.commit);
+        return d;
     }
 
     void update(double delta) {

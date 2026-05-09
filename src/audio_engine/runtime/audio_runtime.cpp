@@ -4,6 +4,7 @@
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/runtime/audio_runtime_impl.h"
+#include "audio_engine/replication_validator.h"
 
 #include "audio_engine/backend/null_audio_backend.h"
 #include "audio_engine/spatial/default_spatializer.h"
@@ -100,6 +101,10 @@ void AudioRuntime::OnTickAdvanced(SimulationTick t, TimestampMs ms) {
 AudioResult AudioRuntime::SubmitReplicatedEvent(const AudioEvent& e) {
     return impl_->SubmitReplicatedEvent(e);
 }
+AudioResult AudioRuntime::SubmitReplicatedEvent(const AudioEvent& e,
+                                                  ReplicationSource s) {
+    return impl_->SubmitReplicatedEvent(e, s);
+}
 AudioResult AudioRuntime::UpdateReplicatedTransform(EmitterHandle h,
                                                       const Vec3& p,
                                                       const Vec3& f,
@@ -132,6 +137,15 @@ AudioResult AudioRuntime::UnregisterVoiceSource(VoiceSourceHandle h) {
 }
 
 AudioRuntime::Stats AudioRuntime::GetStats() const { return impl_->GetStats(); }
+
+void AudioRuntime::SetReplicationValidator(IReplicationValidator* v) noexcept {
+    impl_->SetReplicationValidator(v);
+}
+bool AudioRuntime::GetPerPlayerReplicationStats(
+        AudioPlayerId                              playerId,
+        AudioRuntime::PerPlayerReplicationStats&   out) const {
+    return impl_->GetPerPlayerReplicationStats(playerId, out);
+}
 
 // ===== AudioRuntimeImpl ====================================================
 
@@ -232,6 +246,11 @@ AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,
     // Streaming pump scratch; sized for a worst-case decode chunk at stereo.
     streamingDecodeScratch_.assign(
         static_cast<size_t>(config.streamingDecodeChunkFrames) * 2u, 0.0f);
+
+    // Replication rate limiter: per-player, per-category token buckets.
+    // Sized once from config; allocates nothing thereafter.
+    replicationRateLimiter_.Initialize(config.replicationRateLimit);
+    replicationValidator_ = nullptr;
 
     // Start backend last; once Start returns, OnRender can fire on the
     // render thread. Mixer is fully constructed by now.
@@ -443,6 +462,7 @@ bool AudioRuntimeImpl::GetVoiceNetworkStats(AudioPlayerId playerId,
     out.packetsReordered        = s->packetsReordered;
     out.packetsLost             = s->packetsLost;
     out.packetsOverwritten      = s->packetsOverwritten;
+    out.packetsRateLimited      = s->packetsRateLimited;
     out.plcGenerated            = s->plcGenerated;
     out.silentFrames            = s->silentFrames;
     out.observedJitterMs        = s->currentObservedJitterMs;
@@ -519,10 +539,60 @@ void AudioRuntimeImpl::OnTickAdvanced(SimulationTick tick, TimestampMs serverTim
     previousServerTimeMs_.store(prev, std::memory_order_release);
     latestServerTimeMs_.store(serverTimeMs, std::memory_order_release);
     latestNetworkTick_.store(tick,         std::memory_order_release);
+
+    // Reset the rate limiter's per-tick new-player admission counter
+    // so a fresh budget is available for legitimate joins this tick.
+    replicationRateLimiter_.OnTickAdvanced(tick);
 }
 
 AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event) {
+    // Backward-compatible 1-arg form. Source = Unknown means the
+    // runtime treats the event permissively — no Phase 2.5
+    // server-authoritative enforcement, but the validator hook and
+    // rate limiter still apply.
+    return SubmitReplicatedEvent(event, ReplicationSource::Unknown);
+}
+
+AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
+                                                     ReplicationSource source) {
     if (!initialized_) return AudioResult::NotInitialized;
+
+    // Step 1: replication-policy enforcement (Phase 2.5).
+    //
+    // A Client-sourced event declaring ServerAuthoritative policy is
+    // a spoof attempt — only the server is allowed to author state
+    // changes that take effect on remote listeners. Reject before
+    // the validator/rate-limiter and bump the dedicated
+    // policyViolations counter (separate from the validator hook's
+    // counter) so dashboards can distinguish "runtime caught a
+    // protocol-level spoof" from "host's custom validator denied."
+    if (source == ReplicationSource::Client &&
+        event.replicationPolicy == AudioReplicationPolicy::ServerAuthoritative) {
+        replicationRateLimiter_.RecordPolicyViolation(event.playerId);
+        return AudioResult::PolicyViolation;
+    }
+
+    // Step 2: host policy hook. If the host has installed a validator
+    // and it rejects, drop silently and bump the rejection counter.
+    if (replicationValidator_ != nullptr &&
+        !replicationValidator_->ShouldAccept(event, event.playerId)) {
+        replicationRateLimiter_.RecordValidatorRejection(event.playerId);
+        return AudioResult::PolicyViolation;
+    }
+
+    // Step 3: per-player, per-category token-bucket rate limit.
+    // Clock is the most recent serverTimeMs from OnTickAdvanced for
+    // determinism; if no tick has advanced yet, the bucket is
+    // pre-filled to capacity so the host's first burst is accepted.
+    const TimestampMs nowMs =
+        latestServerTimeMs_.load(std::memory_order_acquire);
+    if (!replicationRateLimiter_.TryAccept(event.playerId,
+                                            event.category,
+                                            nowMs)) {
+        return AudioResult::RateLimited;
+    }
+
+    // Step 4: enqueue for the control thread.
     return netEvents_->Push(event) ? AudioResult::Success : AudioResult::QueueFull;
 }
 
@@ -567,6 +637,22 @@ AudioResult AudioRuntimeImpl::OnVoicePacket(AudioPlayerId  playerId,
     if (!bytes || size == 0)              return AudioResult::InvalidArgument;
     if (size > kMaxVoicePacketBytes)      return AudioResult::BudgetExceeded;
     if (size > config_.voiceMaxPacketBytes) return AudioResult::BudgetExceeded;
+
+    // Per-player Voice category rate limiting. Rejecting here saves
+    // the decode cost downstream and protects the SPSC ring from
+    // floods. Same deterministic clock (`latestServerTimeMs_`) used
+    // for replicated events; same per-tick new-player budget gates
+    // playerId-cycling DoS attempts on the voice path.
+    const TimestampMs nowMs =
+        latestServerTimeMs_.load(std::memory_order_acquire);
+    if (!replicationRateLimiter_.TryAccept(playerId,
+                                            AudioCategory::Voice,
+                                            nowMs)) {
+        // Surface in per-player voice telemetry too. No-op if the
+        // player has no registered voice source.
+        if (voices_) voices_->BumpVoicePacketRateLimited(playerId);
+        return AudioResult::RateLimited;
+    }
 
     VoicePacketCopy copy;
     copy.playerId       = playerId;
@@ -1237,7 +1323,43 @@ AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
         s.totalRenderCallbacks = mixer_->TotalCallbacks();
         s.renderUnderruns      = mixer_->Underruns();
     }
+    // Replication rate-limit aggregates. Cheap atomic loads.
+    for (size_t i = 0; i < 6; ++i) {
+        s.replicationEventsRateLimited[i] =
+            replicationRateLimiter_.TotalRateLimitedForCategory(
+                static_cast<AudioCategory>(i));
+    }
+    s.replicationEventsRejectedByValidator =
+        replicationRateLimiter_.TotalValidatorRejections();
+    s.replicationPolicyViolations =
+        replicationRateLimiter_.TotalPolicyViolations();
+    s.replicationEventsRejectedNewIdBudget =
+        replicationRateLimiter_.TotalNewIdBudgetRejections();
     return s;
+}
+
+void AudioRuntimeImpl::SetReplicationValidator(
+        IReplicationValidator* validator) noexcept {
+    // Pointer assignment to a single-word member is atomic enough on the
+    // platforms we target; the validator runs only on the network thread,
+    // so the game thread's setter is a coarse lifecycle operation, not a
+    // hot path. Hosts that mutate this mid-flight should expect the
+    // network thread to use either the old or the new validator on
+    // events in flight.
+    replicationValidator_ = validator;
+}
+
+bool AudioRuntimeImpl::GetPerPlayerReplicationStats(
+        AudioPlayerId                              playerId,
+        AudioRuntime::PerPlayerReplicationStats&   out) const {
+    PerPlayerReplicationStats internal;
+    if (!replicationRateLimiter_.GetPlayerStats(playerId, &internal)) {
+        return false;
+    }
+    out.eventsAccepted    = internal.eventsAccepted;
+    out.eventsRateLimited = internal.eventsRateLimited;
+    out.eventsRejected    = internal.eventsRejected;
+    return true;
 }
 
 } // namespace audio

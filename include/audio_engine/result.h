@@ -34,6 +34,8 @@ enum class AudioResult : uint8_t {
     Unsupported,    // requested feature compiled out (e.g. an Ogg decoder when AUDIO_ENGINE_DECODERS_OGG=OFF)
     IoError,        // failed to open or read a file
     DecodeError,    // codec rejected the data
+    RateLimited,    // replicated event dropped because the per-player token bucket for its category was empty
+    PolicyViolation,// replicated event rejected by IReplicationValidator or by AudioReplicationPolicy enforcement
 };
 
 // Implemented in result.cpp.

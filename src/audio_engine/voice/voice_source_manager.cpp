@@ -79,6 +79,15 @@ VoiceSourceManager::GetVoiceStats(AudioPlayerId playerId) const noexcept {
     return &rec->jitter->Stats();
 }
 
+void VoiceSourceManager::BumpVoicePacketRateLimited(
+        AudioPlayerId playerId) noexcept {
+    auto it = byPlayer_.find(playerId);
+    if (it == byPlayer_.end()) return;
+    auto* rec = sources_.Get(it->second);
+    if (!rec || !rec->jitter) return;
+    rec->jitter->BumpRateLimited();
+}
+
 uint32_t VoiceSourceManager::DecodeAndPush(IVoiceCodec& codec) {
     const uint32_t frameSize = codec.FrameSize();
     const uint32_t channels  = codec.Channels();

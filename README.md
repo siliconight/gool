@@ -4,38 +4,55 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
+**Current version:** 0.2.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+in it, [RELEASING.md](RELEASING.md) for how releases are cut.
+
 ## The problem
 
-Godot's built-in audio system handles single-player and basic
-multiplayer games well. `AudioStreamPlayer3D`, an `autoplay`
-checkbox, a few buses — that covers most needs.
+Online multiplayer games need things from audio that single-player
+games don't. Godot doesn't ship them.
 
-Once a game is online and persistent, audio becomes a different
-problem:
+- **Voice chat.** Not LAN — real residential internet, with packet
+  loss and inter-arrival jitter that don't behave nicely. Opus
+  encoding, adaptive jitter buffer, packet-loss concealment,
+  per-player telemetry. Godot has none of it. The de facto answer
+  is "integrate Vivox" or "roll it yourself," and now you're
+  maintaining a second audio path that doesn't talk to your
+  positional system.
+- **Replication-aware events.** A gunshot has different lifetimes
+  for different listeners. The server fires it, the firing client
+  predicts it locally, remote clients receive it via RPC, distant
+  clients never hear it at all. Godot's audio nodes don't know
+  the network exists — every replicated sound is a per-event RPC
+  you wrote yourself.
+- **Adaptive music.** Combat starts, music transitions. Not a
+  hard cut, not a 3 dB power dip in the middle of a linear fade —
+  equal-power crossfade, coordinated across every client in the
+  session. Godot ships per-clip nodes; the state machine is yours
+  to write.
+- **Runtime mixing.** Player gunfire ducks music, ducks remote
+  gunfire, ducks voice chat. Sidechain compression, hierarchical
+  buses, snapshot-style state changes when the player ducks behind
+  cover. Godot has linear `AudioBus` — one chain, no sidechains,
+  no snapshots.
+- **Scale.** A 32-player session with footsteps, ambient world,
+  weapon fire, and dialogue easily hits 200+ active emitters at
+  any moment. Godot pumps every active `AudioStreamPlayer3D`
+  whether the listener can hear it or not. There's no native
+  voice cap, no priority eviction, no interest management.
+- **Replay determinism.** Spectator mode, esports replays,
+  post-match clip recording, server-side debugging of "why did
+  this play." The audio mix has to reproduce. Godot's audio
+  pipeline uses wall-clock-derived timing in several places and
+  isn't designed for bit-identical replay.
 
-- **Voice chat with proximity and team channels.** Godot doesn't
-  ship voice chat. Bolting on Vivox or a custom SDK and integrating
-  it with positional audio is its own project.
-- **Adaptive music that reacts to game state.** Combat, exploration,
-  victory, defeat — each needs smooth crossfades coordinated across
-  all clients in a session.
-- **Replication-aware audio.** Should this gunshot play on the
-  server only, on all clients via RPC, or as a client-predicted
-  local sound the server later validates? That choice changes per
-  sound type, and Godot has no primitive for it.
-- **Scalable spatial audio.** A 32-player world might have hundreds
-  of audible emitters at any moment. Godot pumps every active
-  `AudioStreamPlayer3D` regardless of whether anyone can hear it.
-- **Runtime mixing and ducking.** Player gunfire ducking music
-  ducking ambience while voice chat ducks both, with sidechain
-  compression. This is middleware territory.
-- **Determinism for replay and spectator modes.** A recorded match
-  should produce the same audio mix on playback that the original
-  players heard.
+These aren't nice-to-haves. They're table stakes for online
+multiplayer audio, and they're why FMOD and Wwise dominate that
+tier of the market — at the cost of per-title licensing fees
+and a separate authoring pipeline that lives outside your engine.
 
-`gool` is a multiplayer-first audio middleware layer for Godot
-designed to solve those problems while keeping Godot's native
-rendering, gameplay, and networking unchanged.
+`gool` ships these as native Godot nodes. No licensing.
+No second authoring tool. No parallel audio path.
 
 ## Where it fits
 
@@ -167,9 +184,7 @@ reverb zone, networked event, networked emitter), open
 
 ## Why not Godot's built-in audio?
 
-Godot's audio is good for many projects. We're not trying to
-replace it for every use case. `gool` targets specific needs
-Godot's stock audio doesn't address:
+The gap is concrete:
 
 | Concern                       | Godot built-in                  | gool                                            |
 |-------------------------------|---------------------------------|-------------------------------------------------|
@@ -181,9 +196,12 @@ Godot's stock audio doesn't address:
 | Replay determinism            | not addressed                   | bit-identical mix output verified               |
 | Per-event priority + eviction | first-come-first-served voices  | priority + distance-based eviction              |
 
-If you're shipping a co-op shooter, an extraction game, or any
-persistent online multiplayer experience, the gap is real. If
-you're shipping a single-player platformer, you don't need this.
+Godot's audio is appropriate for projects that don't need any of
+the above — single-player, small co-op, anything where a few
+positional emitters and a linear bus tree are the whole story.
+The moment you need any one row of that table, you're shopping
+for middleware. `gool` is the option that doesn't make you leave
+Godot to find it.
 
 ---
 
@@ -497,7 +515,7 @@ audio_engine/
 
 ### Test suite
 
-25 unit tests in `tests/unit/`, all wired into CTest and the CI
+28 unit tests in `tests/unit/`, all wired into CTest and the CI
 matrix. Headline coverage:
 
 | Test                            | Validates                                                  |
@@ -522,10 +540,22 @@ matrix. Headline coverage:
 | `gpak_test`                     | Pack format round-trip + malformed rejection               |
 | `determinism_test`              | Bit-identical replay across runs                           |
 | `replicated_events_test`        | SubmitReplicatedEvent + Cancel deterministic across runs   |
+| `replication_rate_limit_test`   | Per-player + per-category token-bucket rate limiter, IReplicationValidator hook, voice path rate limit, new-id-cycling defense, source/policy enforcement, deterministic across runs |
+| `default_bounds_validator_test` | DefaultBoundsValidator rejects NaN/Inf vec3, extreme magnitudes, malformed parameters, unknown soundIds; ChainReplicationValidator short-circuits |
+| `version_test`                  | `audio::GetVersion()` returns the pinned version triple; catches drift between version.h and CMakeLists |
 | `integration_kitchen_sink_test` | 5-second simulation with all subsystems active             |
 
 CI runs the full suite on Ubuntu and Windows on every push. The
 ducking baseline (-17.20 dB) is reproduced at every run.
+
+### Roadmap
+
+Where this is going next is documented in
+[`docs/roadmap.md`](docs/roadmap.md): four phases (adoptable,
+production-safe, designer-first, platform), 28 work items, sized
+and ordered by leverage. The roadmap is the canonical answer to
+"is X coming" — file an issue if your X is missing or
+mis-prioritized.
 
 ### License
 

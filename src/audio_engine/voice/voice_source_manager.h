@@ -66,6 +66,13 @@ public:
     // registered.
     const voice::JitterBufferStats* GetVoiceStats(AudioPlayerId playerId) const noexcept;
 
+    // Network thread. Bumps the per-player packetsRateLimited counter
+    // when the upstream rate limiter rejected a voice packet. No-op
+    // if the player has no registered voice source (the global
+    // Stats::replicationEventsRateLimited[Voice] still records the
+    // rejection).
+    void BumpVoicePacketRateLimited(AudioPlayerId playerId) noexcept;
+
     // Iterate active records (for the runtime to send mixer StartVoice
     // commands when registering, and Stop when unregistering).
     template <typename F>

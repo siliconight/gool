@@ -13,6 +13,73 @@
 
 namespace audio {
 
+// Per-player, per-category token-bucket budget for SubmitReplicatedEvent.
+// `tokensPerSecond <= 0` means "unlimited" (no rate limit applied for
+// this category). `burstCapacity` is the maximum tokens the bucket can
+// hold; defaults to one second of refill if left at 0.
+struct ReplicationRateLimitBudget {
+    float    tokensPerSecond = 0.0f;
+    uint32_t burstCapacity   = 0;
+};
+
+// Per-category replication rate-limit configuration. Indexed by
+// AudioCategory (SFX, Voice, Music, Ambience, UI, Dialogue), so the
+// array size must match AudioCategory::Count.
+//
+// The consultant-prescribed defaults below match plausible gameplay:
+//   * SFX 50/sec/player: comfortably above any realistic rate of
+//     gunshots, explosions, footsteps a single player can drive.
+//   * Voice 150/sec/player: 50 Hz Opus produces 50 packets/sec/player;
+//     3x headroom covers retransmits and bursty re-broadcast.
+//   * Music 5/sec/player: music transitions are rare; 5 absorbs
+//     legitimate state-flapping but rejects flooding.
+//   * Dialogue 20/sec/player: NPC barks, taunts; bursty in combat.
+//   * Ambience 10/sec/player: zone changes, weather; mostly host-driven.
+//   * UI 0 (unlimited): UI sounds are usually local-only and not
+//     replicated; left unlimited so legitimate replication isn't gated.
+//
+// To disable rate limiting entirely (e.g. for trusted-host single-machine
+// testing), zero out every category's tokensPerSecond. The runtime treats
+// 0 as "no limit" rather than "0 events/sec."
+struct ReplicationRateLimitConfig {
+    ReplicationRateLimitBudget perCategory[6] = {
+        { 50.0f,  50 },   // SFX
+        { 150.0f, 150 },  // Voice
+        { 5.0f,   5  },   // Music
+        { 10.0f,  10 },   // Ambience
+        { 0.0f,   0  },   // UI (unlimited; UI is rarely replicated)
+        { 20.0f,  20 }    // Dialogue
+    };
+
+    // Maximum number of distinct AudioPlayerIds tracked simultaneously.
+    // When this many players are active and a new playerId arrives, the
+    // least-recently-seen slot is recycled. Sized for typical session
+    // capacity; bump for battle-royale-scale lobbies.
+    uint32_t maxTrackedPlayers = 64;
+
+    // PlayerId-cycling defense (anti-DoS).
+    //
+    // Without this cap, an attacker can flood SubmitReplicatedEvent or
+    // OnVoicePacket using a different fake playerId for each packet:
+    //   * Every event allocates a new slot in the LRU table, evicting
+    //     legitimate players' counters and bucket state.
+    //   * Per-player rate limiting becomes useless because the
+    //     attacker never collides with their own bucket.
+    //
+    // This cap limits how many new (never-seen-before) playerIds may
+    // be admitted into the rate limiter's slot table per simulation
+    // tick. The counter resets on OnTickAdvanced. Once exceeded, all
+    // subsequent events from new playerIds in the same tick are
+    // rejected (counted in `Stats::replicationEventsRejectedNewIdBudget`).
+    //
+    // Sized for typical join cadence: 4-8 players showing up at a
+    // session start, occasional reconnects mid-session. Bump for
+    // tournament lobbies that admit dozens of players in one tick.
+    // Set to 0 to disable the cap entirely (not recommended on
+    // internet-facing hosts).
+    uint32_t maxNewPlayersPerTick = 8;
+};
+
 struct AudioRuntimeBudget {
     uint32_t maxActiveEmitters         = 128;
     uint32_t maxSpatialEmitters        = 64;
@@ -96,6 +163,17 @@ struct AudioConfig {
     // every voice there. To use ducking / submixes / sidechain, define a
     // multi-bus graph here.
     BusGraphConfig busGraph;
+
+    // Replication rate limiting. Per-player, per-category token-bucket
+    // limits on SubmitReplicatedEvent. Defends against malicious or buggy
+    // clients flooding the runtime with thousands of events per tick.
+    //
+    // The deterministic clock used for token refill is the most recent
+    // serverTimeMs reported via OnTickAdvanced, so rate-limit decisions
+    // reproduce across replays for a fixed input timeline.
+    //
+    // Defaults are sized for plausible gameplay; see ReplicationRateLimitConfig.
+    ReplicationRateLimitConfig replicationRateLimit;
 };
 
 } // namespace audio

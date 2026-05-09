@@ -27,6 +27,7 @@
 #include "audio_engine/spatializer.h"
 #include "audio_engine/voice_codec.h"
 #include "audio_engine/geometry_query.h"
+#include "audio_engine/runtime/replication_rate_limiter.h"
 
 #include "audio_engine/assets/audio_asset_registry.h"
 #include "audio_engine/emitters/emitter_manager.h"
@@ -39,6 +40,8 @@
 #include "audio_engine/util/spsc_ring.h"
 
 namespace audio {
+
+class IReplicationValidator; // forward decl; full definition in replication_validator.h
 
 // Maximum voice packet size copied into the SPSC ring on the network thread.
 // Sized to comfortably hold Opus packets at typical bitrates; oversize is
@@ -122,6 +125,8 @@ public:
     // Network thread API
     void        OnTickAdvanced(SimulationTick tick, TimestampMs serverTimeMs);
     AudioResult SubmitReplicatedEvent(const AudioEvent& event);
+    AudioResult SubmitReplicatedEvent(const AudioEvent& event,
+                                       ReplicationSource source);
     AudioResult UpdateReplicatedTransform(EmitterHandle  h,
                                            const Vec3&    pos,
                                            const Vec3&    fwd,
@@ -140,6 +145,12 @@ public:
                                TimestampMs    arrivalTimestampMs);
 
     AudioRuntime::Stats GetStats() const;
+
+    // Replication validator + per-player stats (game thread).
+    void SetReplicationValidator(IReplicationValidator* validator) noexcept;
+    bool GetPerPlayerReplicationStats(
+        AudioPlayerId                              playerId,
+        AudioRuntime::PerPlayerReplicationStats&   out) const;
 
 private:
     // Step helpers called from Update().
@@ -212,6 +223,12 @@ private:
     std::atomic<SimulationTick> latestNetworkTick_{0};
     std::atomic<TimestampMs>    latestServerTimeMs_{0};
     std::atomic<TimestampMs>    previousServerTimeMs_{0};
+
+    // Replication rate limiter + host policy validator. Both are
+    // touched only on the network thread for writes; reads from the
+    // game thread go through the rate limiter's atomic counters.
+    ReplicationRateLimiter      replicationRateLimiter_;
+    IReplicationValidator*      replicationValidator_ = nullptr;
 
     // Control-thread accumulated wall clock (millis) for late-event discard.
     TimestampMs controlClockMs_ = 0;
