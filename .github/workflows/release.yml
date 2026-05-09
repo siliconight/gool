@@ -16,12 +16,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS is temporarily disabled (see ci.yml). To re-enable,
+        # add the macos-latest entry back here.
         include:
           - os: ubuntu-latest
             archive_name: gool-linux-x86_64
-            archive_ext: tar.gz
-          - os: macos-latest
-            archive_name: gool-macos-arm64
             archive_ext: tar.gz
           - os: windows-latest
             archive_name: gool-windows-x86_64
