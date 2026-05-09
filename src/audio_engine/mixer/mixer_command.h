@@ -83,6 +83,13 @@ struct MixerCommand {
     uint32_t     pcmChannels = 1;
     bool         looping    = false;
 
+    // Loop-boundary crossfade duration in frames (computed from
+    // SoundDefinition::loopCrossfadeMs at start time). 0 = disabled,
+    // legacy fmod wrap. > 0 = blend last N tail frames with first N
+    // head frames using equal-power curves; cursor wraps to N
+    // (skipping the already-mixed head samples).
+    uint32_t     loopXfadeFrames = 0;
+
     // StartStreamingSound payload
     util::PcmRingF32* streamRing     = nullptr;
     uint32_t          streamChannels = 1;

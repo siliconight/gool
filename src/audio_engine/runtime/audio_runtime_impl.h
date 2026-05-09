@@ -132,6 +132,12 @@ public:
                                size_t         size,
                                uint16_t       sequenceNumber,
                                TimestampMs    timestampMs);
+    AudioResult OnVoicePacket(AudioPlayerId  playerId,
+                               const uint8_t* bytes,
+                               size_t         size,
+                               uint16_t       sequenceNumber,
+                               TimestampMs    timestampMs,
+                               TimestampMs    arrivalTimestampMs);
 
     AudioRuntime::Stats GetStats() const;
 

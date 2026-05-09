@@ -248,6 +248,27 @@ public:
                                TimestampMs    timestampMs)
         AUDIO_REQUIRES(NetworkThread);
 
+    // Deterministic overload. The host supplies the arrival time
+    // explicitly — typically the host's tick clock — instead of
+    // letting the engine sample steady_clock internally. Use this
+    // form when you need bit-identical replay of a recorded event
+    // sequence: the jitter EMA's adaptive target depth depends on
+    // observed inter-arrival timing, which is the only remaining
+    // wall-clock-derived source of non-determinism on the voice
+    // path. Pass the same timeline values during replay as during
+    // recording and the resulting mix is identical.
+    //
+    // For non-deterministic clients, the 5-arg form above samples
+    // steady_clock at the call site and continues working the way
+    // it always did.
+    AudioResult OnVoicePacket(AudioPlayerId  playerId,
+                               const uint8_t* bytes,
+                               size_t         size,
+                               uint16_t       sequenceNumber,
+                               TimestampMs    timestampMs,
+                               TimestampMs    arrivalTimestampMs)
+        AUDIO_REQUIRES(NetworkThread);
+
     // ---- Voice (game thread) ---------------------------------------------
 
     Result<VoiceSourceHandle> RegisterVoiceSource(AudioPlayerId playerId)

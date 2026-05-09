@@ -115,6 +115,15 @@ AudioResult AudioRuntime::OnVoicePacket(AudioPlayerId pid,
     return impl_->OnVoicePacket(pid, b, s, seq, ts);
 }
 
+AudioResult AudioRuntime::OnVoicePacket(AudioPlayerId pid,
+                                          const uint8_t* b,
+                                          size_t s,
+                                          uint16_t seq,
+                                          TimestampMs ts,
+                                          TimestampMs arrivalMs) {
+    return impl_->OnVoicePacket(pid, b, s, seq, ts, arrivalMs);
+}
+
 Result<VoiceSourceHandle> AudioRuntime::RegisterVoiceSource(AudioPlayerId p) {
     return impl_->RegisterVoiceSource(p);
 }
@@ -537,19 +546,27 @@ AudioResult AudioRuntimeImpl::OnVoicePacket(AudioPlayerId  playerId,
                                               size_t         size,
                                               uint16_t       sequenceNumber,
                                               TimestampMs    timestampMs) {
+    // Sample steady_clock here so the deterministic overload below
+    // is the single source of truth for the actual ingest logic.
+    // Hosts that want bit-identical replay use the 6-arg form
+    // directly with their own tick clock.
+    const TimestampMs arrivalMs = static_cast<TimestampMs>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return OnVoicePacket(playerId, bytes, size, sequenceNumber,
+                          timestampMs, arrivalMs);
+}
+
+AudioResult AudioRuntimeImpl::OnVoicePacket(AudioPlayerId  playerId,
+                                              const uint8_t* bytes,
+                                              size_t         size,
+                                              uint16_t       sequenceNumber,
+                                              TimestampMs    timestampMs,
+                                              TimestampMs    arrivalMs) {
     if (!initialized_) return AudioResult::NotInitialized;
     if (!bytes || size == 0)              return AudioResult::InvalidArgument;
     if (size > kMaxVoicePacketBytes)      return AudioResult::BudgetExceeded;
     if (size > config_.voiceMaxPacketBytes) return AudioResult::BudgetExceeded;
-
-    // Stamp arrival time from steady_clock so the jitter buffer can
-    // compute inter-arrival jitter regardless of any sender/receiver
-    // clock offset. RFC 3550 jitter only depends on inter-packet
-    // *differences*; absolute clock alignment between sender and
-    // receiver is not required.
-    const TimestampMs arrivalMs = static_cast<TimestampMs>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
 
     VoicePacketCopy copy;
     copy.playerId       = playerId;
@@ -589,6 +606,18 @@ void AudioRuntimeImpl::PostMixerStartForEmitter(EmitterRecord& rec, const PcmAss
     cmd.pcmChannels = asset.channels;
     cmd.looping     = rec.descriptor.isLooping;
     cmd.fadeInMs    = rec.descriptor.fadeInMs;
+    // Resolve loop-boundary crossfade from the sound definition. The
+    // value is in milliseconds; the mixer wants frames. Clamp to less
+    // than half the buffer (validated by the mixer too).
+    if (cmd.looping) {
+        if (const auto* def = assets_->GetDefinition(rec.descriptor.soundId)) {
+            const float ms = std::max(0.0f, def->loopCrossfadeMs);
+            const uint32_t requested = static_cast<uint32_t>(
+                (ms / 1000.0f) * static_cast<float>(config_.sampleRate));
+            const uint32_t cap = asset.frames > 1 ? (asset.frames - 1) / 2 : 0u;
+            cmd.loopXfadeFrames = std::min(requested, cap);
+        }
+    }
     if (mixer_->PostCommand(cmd)) {
         rec.mixerStarted          = true;
         rec.activeSoundId         = rec.descriptor.soundId;

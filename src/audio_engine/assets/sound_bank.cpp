@@ -288,6 +288,7 @@ struct ParsedDefaults {
     bool                   occlusionEnabled  = true;
     AudioReplicationPolicy replication       = AudioReplicationPolicy::LocalOnly;
     AttenuationSettings    attenuation;
+    float                  loopCrossfadeMs   = 0.0f;
     bool                   hasCategory       = false;
     bool                   hasPriority       = false;
     bool                   hasBus            = false;
@@ -296,6 +297,7 @@ struct ParsedDefaults {
     bool                   hasOcclusion      = false;
     bool                   hasReplication    = false;
     bool                   hasAttenuation    = false;
+    bool                   hasLoopCrossfade  = false;
 };
 
 struct ParsedSound {
@@ -321,6 +323,8 @@ struct ParsedSound {
     bool                   hasReplication   = false;
     AttenuationSettings    attenuation;
     bool                   hasAttenuation   = false;
+    float                  loopCrossfadeMs  = 0.0f;
+    bool                   hasLoopCrossfade = false;
 };
 
 enum class GroupPolicy : uint8_t { Random, RandomNoRepeat, Sequential };
@@ -479,6 +483,11 @@ bool ParseDefaults(JsonScanner& s, ParsedDefaults& out, ParseError& err) {
         } else if (key == "attenuation") {
             if (!ParseAttenuation(s, out.attenuation, err)) return false;
             out.hasAttenuation = true;
+        } else if (key == "loopCrossfadeMs") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.loopCrossfadeMs = static_cast<float>(f);
+            out.hasLoopCrossfade = true;
         } else {
             if (!s.SkipValue(err)) return false;
         }
@@ -551,6 +560,11 @@ bool ParseSoundEntry(JsonScanner& s, ParsedSound& out, ParseError& err) {
         } else if (key == "attenuation") {
             if (!ParseAttenuation(s, out.attenuation, err)) return false;
             out.hasAttenuation = true;
+        } else if (key == "loopCrossfadeMs") {
+            double f; long long i; bool ii;
+            if (!s.ParseNumber(f, i, ii, err)) return false;
+            out.loopCrossfadeMs = static_cast<float>(f);
+            out.hasLoopCrossfade = true;
         } else {
             if (!s.SkipValue(err)) return false;
         }
@@ -797,6 +811,7 @@ SoundDefinition Resolve(const ParsedSound&    s,
     def.occlusionEnabled = s.hasOcclusion ? s.occlusionEnabled : d.occlusionEnabled;
     def.defaultReplicationPolicy = s.hasReplication ? s.replication : d.replication;
     def.attenuation  = s.hasAttenuation  ? s.attenuation  : d.attenuation;
+    def.loopCrossfadeMs = s.hasLoopCrossfade ? s.loopCrossfadeMs : d.loopCrossfadeMs;
     def.targetBus    = resolvedBus;
     return def;
 }

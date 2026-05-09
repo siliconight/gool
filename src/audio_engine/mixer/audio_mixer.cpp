@@ -173,6 +173,8 @@ void AudioMixer::DrainCommands() noexcept {
                 v.pcmChannels = cmd.pcmChannels;
                 v.cursor      = 0.0;
                 v.looping     = cmd.looping;
+                v.loopXfadeFrames = (cmd.looping && cmd.loopXfadeFrames * 2 < cmd.pcmFrames)
+                                      ? cmd.loopXfadeFrames : 0u;
                 v.voiceRing   = nullptr;
                 v.streamRing  = nullptr;
                 // Reset LPF state. Recompute coefficients only if the
@@ -213,6 +215,7 @@ void AudioMixer::DrainCommands() noexcept {
                 v.pcmChannels    = 0;
                 v.cursor         = 0.0;
                 v.looping        = cmd.looping;
+                v.loopXfadeFrames = 0u;   // streaming sources have no fixed buffer
                 v.voiceRing      = nullptr;
                 v.streamRing     = cmd.streamRing;
                 v.streamChannels = cmd.streamChannels;
@@ -244,6 +247,7 @@ void AudioMixer::DrainCommands() noexcept {
                 v.pcmChannels   = 0;
                 v.cursor        = 0.0;
                 v.looping       = false;
+                v.loopXfadeFrames = 0u;
                 v.voiceRing     = cmd.voiceRing;
                 v.voiceChannels = cmd.voiceChannels;
                 v.streamRing    = nullptr;
@@ -365,11 +369,19 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
         double         cursor   = v.cursor;
         const double   frameMax = static_cast<double>(v.pcmFrames);
         const bool     useLpf   = (v.lpfAmount > 0.001f);
+        const uint32_t loopXf   = v.loopXfadeFrames;
+        const bool     useLoopXf = (loopXf > 0u);
+        const double   wrapTo   = useLoopXf ? static_cast<double>(loopXf) : 0.0;
+        const double   loopSpan = frameMax - wrapTo;          // > 0 (validated at Start)
 
         for (uint32_t f = 0; f < frames; ++f) {
             if (cursor >= frameMax) {
                 if (v.looping) {
-                    cursor = std::fmod(cursor, frameMax);
+                    // With loop crossfade, jump to loopXf rather than 0:
+                    // the first loopXf head samples were already mixed in
+                    // during the tail's crossfade region. Without
+                    // crossfade, behavior is unchanged (wrapTo = 0).
+                    cursor = wrapTo + std::fmod(cursor - wrapTo, loopSpan);
                 } else {
                     v.mode = VoiceMode::Inactive;
                     break;
@@ -383,7 +395,11 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
             const uint32_t idx0 = static_cast<uint32_t>(cursor);
             const float    frac = static_cast<float>(cursor - static_cast<double>(idx0));
             uint32_t idx1 = idx0 + 1;
-            if (idx1 >= v.pcmFrames) idx1 = v.looping ? 0u : idx0;
+            if (idx1 >= v.pcmFrames) {
+                // For loops, the next-sample lookup wraps to the post-loop
+                // landing point: loopXf for crossfade-enabled, 0 otherwise.
+                idx1 = v.looping ? (useLoopXf ? loopXf : 0u) : idx0;
+            }
 
             const float s0a = src[idx0 * srcChans];
             const float s0b = src[idx1 * srcChans];
@@ -396,6 +412,39 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
                 s1 = s1a + (s1b - s1a) * frac;
             } else {
                 s1 = s0;
+            }
+
+            // Loop-boundary equal-power crossfade. When the cursor is in
+            // the last loopXf frames of the buffer, the tail samples
+            // (just read above) fade out via cos(t·π/2) while the head
+            // samples (read fresh from the start of the buffer) fade in
+            // via sin(t·π/2). cos² + sin² = 1, so a perfectly-looping
+            // asset (head ≡ tail) reproduces unchanged; an imperfect
+            // loop transitions smoothly without click.
+            if (useLoopXf && idx0 + loopXf >= v.pcmFrames) {
+                const uint32_t headOffset = idx0 - (v.pcmFrames - loopXf); // 0..loopXf-1
+                const uint32_t hidx0 = headOffset;
+                const uint32_t hidx1 = (hidx0 + 1u < v.pcmFrames) ? hidx0 + 1u : hidx0;
+
+                const float h0a = src[hidx0 * srcChans];
+                const float h0b = src[hidx1 * srcChans];
+                const float h0  = h0a + (h0b - h0a) * frac;
+                float h1;
+                if (srcChans >= 2) {
+                    const float h1a = src[hidx0 * srcChans + 1];
+                    const float h1b = src[hidx1 * srcChans + 1];
+                    h1 = h1a + (h1b - h1a) * frac;
+                } else {
+                    h1 = h0;
+                }
+
+                constexpr float kHalfPi = 1.5707963f;
+                const float t     = static_cast<float>(headOffset)
+                                    / static_cast<float>(loopXf);
+                const float gTail = std::cos(t * kHalfPi);
+                const float gHead = std::sin(t * kHalfPi);
+                s0 = s0 * gTail + h0 * gHead;
+                s1 = s1 * gTail + h1 * gHead;
             }
 
             if (useLpf) ApplyLpfInPlace(v, s0, s1);

@@ -57,6 +57,22 @@ struct SoundDefinition {
     bool                   looping           = false;
     bool                   occlusionEnabled  = true;
     AudioReplicationPolicy defaultReplicationPolicy = AudioReplicationPolicy::LocalOnly;
+
+    // Crossfade duration applied at the loop boundary for looping
+    // sounds. Defaults to 0 = no crossfade, the cursor wraps as
+    // fmod(cursor, length) and any discontinuity between the first
+    // and last samples produces an audible click each iteration.
+    // When > 0, the last `loopCrossfadeMs` of the buffer are blended
+    // into the first `loopCrossfadeMs` using equal-power curves
+    // (cos for the tail, sin for the head); the cursor then wraps
+    // to `loopCrossfadeMs` rather than 0 so the head samples already
+    // mixed in during the crossfade aren't replayed.
+    //
+    // Typical values: 5-20 ms for SFX loops, 50-200 ms for music
+    // beds. The crossfade region must be less than half the buffer
+    // duration; the engine clamps to that limit and falls back to
+    // no-crossfade behavior if violated.
+    float                  loopCrossfadeMs   = 0.0f;
 };
 
 } // namespace audio

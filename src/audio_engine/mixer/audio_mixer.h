@@ -133,6 +133,14 @@ private:
         // means "no send" and skips the extra bus accumulation entirely.
         float reverbSend = 0.0f;
 
+        // Loop-boundary crossfade. 0 = disabled (legacy behavior).
+        // > 0 = number of frames to blend at each loop boundary
+        // using equal-power curves. The mixer reads from both the
+        // tail (cursor in last N frames) and the head (offset
+        // within first N frames) when in this region; on wrap, the
+        // cursor jumps to N rather than 0.
+        uint32_t loopXfadeFrames = 0;
+
         // Fade state. `fadeDirection` selects the curve and the
         // completion behavior:
         //   0 = no fade

@@ -49,9 +49,17 @@ enum class EffectKind : uint8_t {
 };
 
 enum class BiquadType : uint8_t {
-    LowPass  = 0,
+    LowPass   = 0,
     HighPass,
     BandPass,
+    // Tone-shaping filters. cutoff is the corner / transition / center
+    // frequency; Q controls bandwidth (peak) or transition steepness
+    // (shelf); gainDb is the boost (positive) or cut (negative) at
+    // the relevant frequency band. These types ignore Q for shelves
+    // and use it as bandwidth for peak.
+    LowShelf,        // boost/cut frequencies below cutoff
+    HighShelf,       // boost/cut frequencies above cutoff
+    Peak,            // boost/cut a band centered at cutoff
 };
 
 // Tagged-struct effect descriptor. The `kind` field selects which named
@@ -67,6 +75,7 @@ struct EffectConfig {
     BiquadType biquadType = BiquadType::LowPass;
     float      biquadCutoffHz = 20000.0f;
     float      biquadQ        = 0.707f;     // butterworth
+    float      biquadGainDb   = 0.0f;       // honored by LowShelf/HighShelf/Peak only
 
     // Compressor
     float compressorThresholdDb  = -20.0f;
@@ -102,6 +111,7 @@ namespace EffectParameter {
     constexpr uint16_t Reverb_RoomSize          = 9;
     constexpr uint16_t Reverb_Damping           = 10;
     constexpr uint16_t Reverb_WetGainDb         = 11;
+    constexpr uint16_t Biquad_GainDb            = 12;
 }
 
 // ---- Bus configuration ----------------------------------------------------

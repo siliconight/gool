@@ -16,6 +16,10 @@ add_executable(audio_engine_jitter_buffer_test           unit/jitter_buffer_test
 add_executable(audio_engine_voice_telemetry_test         unit/voice_telemetry_test.cpp)
 add_executable(audio_engine_sound_bank_test              unit/sound_bank_test.cpp)
 add_executable(audio_engine_crossfade_test               unit/crossfade_test.cpp)
+add_executable(audio_engine_loop_crossfade_test          unit/loop_crossfade_test.cpp)
+add_executable(audio_engine_biquad_eq_test               unit/biquad_eq_test.cpp)
+add_executable(audio_engine_gpak_test                    unit/gpak_test.cpp)
+add_executable(audio_engine_determinism_test             unit/determinism_test.cpp)
 add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitchen_sink_test.cpp)
 
 # Tests need access to internal headers (src/) for util classes that aren't
@@ -45,6 +49,10 @@ target_link_libraries(audio_engine_jitter_buffer_test            PRIVATE audio_e
 target_link_libraries(audio_engine_voice_telemetry_test          PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_sound_bank_test               PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_crossfade_test                PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_loop_crossfade_test           PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_biquad_eq_test                PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_gpak_test                     PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_determinism_test              PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_integration_kitchen_sink_test  PRIVATE audio_engine::audio_engine)
 
 add_test(NAME spsc_ring_test                COMMAND audio_engine_spsc_ring_test)
@@ -65,4 +73,8 @@ add_test(NAME jitter_buffer_test            COMMAND audio_engine_jitter_buffer_t
 add_test(NAME voice_telemetry_test          COMMAND audio_engine_voice_telemetry_test)
 add_test(NAME sound_bank_test               COMMAND audio_engine_sound_bank_test)
 add_test(NAME crossfade_test                COMMAND audio_engine_crossfade_test)
+add_test(NAME loop_crossfade_test           COMMAND audio_engine_loop_crossfade_test)
+add_test(NAME biquad_eq_test                COMMAND audio_engine_biquad_eq_test)
+add_test(NAME gpak_test                     COMMAND audio_engine_gpak_test)
+add_test(NAME determinism_test              COMMAND audio_engine_determinism_test)
 add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kitchen_sink_test)

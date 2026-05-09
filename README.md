@@ -1,5 +1,7 @@
 # audio_engine
 
+[![CI](https://github.com/siliconight/gool/actions/workflows/ci.yml/badge.svg)](https://github.com/siliconight/gool/actions/workflows/ci.yml)
+
 A standalone C++20 runtime audio engine for 3D spatial multiplayer games.
 Distance attenuation, occlusion, Doppler, reverb, binaural HRTF, sidechain
 ducking, Opus voice chat, and the threading model to make all of it run
@@ -7,9 +9,19 @@ without allocations or locks on the render thread.
 
 The library namespace is `audio`, the CMake target is `audio_engine`, and
 the host-facing orchestrator class is `audio::AudioRuntime`. The engine
-ships with a silent backend (for headless tests and CI) and an opt-in
-miniaudio backend (for actually hearing things). It does not own physics,
-networking, or game state — those are seams the host plugs into.
+ships with a silent backend (for headless tests and CI) and a default-on
+miniaudio backend (for hearing things on real devices). It does not own
+physics, networking, or game state — those are seams the host plugs into.
+
+**Make your computer beep in 30 seconds:**
+
+```bash
+git clone https://github.com/siliconight/gool.git && cd gool
+cmake -S . -B build && cmake --build build -j
+./build/examples/audio_engine_hello_audio   # plays a 1-second 440 Hz tone
+```
+
+If you hear it, the engine is working end-to-end on your machine.
 
 ## Table of contents
 
@@ -303,6 +315,26 @@ compiler catches them at build time.
   pattern. `SetEmitterPlaybackSpeed(handle, speed)` adjusts playback
   rate at runtime with built-in smoothing — 1.5× speed gives exactly
   1.5× pitch (verified to ±0.5%).
+- **Loop-boundary crossfade**: `SoundDefinition::loopCrossfadeMs`
+  blends the last N ms of a looping buffer with the first N ms
+  using the same equal-power curves. Eliminates the click on
+  imperfectly-authored loops (158× reduction measured on a worst-
+  case discontinuous source); zero overhead and zero effect on
+  perfectly-authored loops.
+- **Full EQ palette**: low-pass / high-pass / band-pass plus low-
+  shelf, high-shelf, and parametric peak biquads (RBJ cookbook
+  coefficients). Live `Biquad_GainDb` parameter for shelves and
+  peak. Cookbook-accurate to ±0.05 dB on the center frequency.
+- **`.gpak` asset pack format**: ship all your audio files in one
+  binary blob. `PakReader::MakeSoundBankLoader()` returns a
+  `SoundBankLoadOptions::fileLoader` that pulls files from the
+  pack; the `gpak_create` CLI builds packs from a directory of
+  source files.
+- **Replay determinism**: `OnVoicePacket` has a 6-arg overload
+  taking an explicit arrival timestamp (instead of sampling
+  `steady_clock` internally). With this and the host's tick clock
+  driving `Update`/`OnTickAdvanced`, the engine produces bit-
+  identical sample output across runs given identical input.
 
 ---
 

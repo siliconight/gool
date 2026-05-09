@@ -21,7 +21,12 @@ namespace audio {
 
 class BiquadFilterEffect final : public IDspEffect {
 public:
-    BiquadFilterEffect(BiquadType type, float cutoffHz, float Q);
+    // gainDb is honored only by LowShelf, HighShelf, and Peak; the
+    // basic LP/HP/BP types ignore it. Default 0 dB = unity (no boost
+    // or cut), which keeps backward compatibility for existing
+    // callers that pass two-arg form.
+    BiquadFilterEffect(BiquadType type, float cutoffHz, float Q,
+                        float gainDb = 0.0f);
 
     void Prepare(uint32_t sampleRate, uint32_t channels) override;
     void Process(float* output, uint32_t frames, uint32_t channels,
@@ -35,6 +40,7 @@ private:
     BiquadType type_;
     float      cutoffHz_;
     float      Q_;
+    float      gainDb_ = 0.0f;
 
     uint32_t sampleRate_ = 48000;
     bool     dirty_      = true;

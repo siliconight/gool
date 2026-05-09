@@ -11,8 +11,9 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 }
 
-BiquadFilterEffect::BiquadFilterEffect(BiquadType type, float cutoffHz, float Q)
-    : type_(type), cutoffHz_(cutoffHz), Q_(Q) {}
+BiquadFilterEffect::BiquadFilterEffect(BiquadType type, float cutoffHz, float Q,
+                                         float gainDb)
+    : type_(type), cutoffHz_(cutoffHz), Q_(Q), gainDb_(gainDb) {}
 
 void BiquadFilterEffect::Prepare(uint32_t sampleRate, uint32_t /*channels*/) {
     sampleRate_ = sampleRate > 0 ? sampleRate : 48000;
@@ -60,6 +61,44 @@ void BiquadFilterEffect::RecomputeCoefficients() noexcept {
             a1u = -2.0f * cs;
             a2u = 1.0f - alpha;
         } break;
+
+        // Tone-shaping filters. Robert Bristow-Johnson cookbook formulas
+        // (https://www.w3.org/TR/audio-eq-cookbook/). `A` is the
+        // amplitude factor: positive gainDb gives A > 1 (boost),
+        // negative gives 0 < A < 1 (cut). For the shelves, alpha is
+        // the same sin/(2Q) form used by the basic filters; for Peak,
+        // it acts as bandwidth.
+        case BiquadType::Peak: {
+            const float A = std::pow(10.0f, gainDb_ * (1.0f / 40.0f));
+            b0u = 1.0f + alpha * A;
+            b1u = -2.0f * cs;
+            b2u = 1.0f - alpha * A;
+            a0  = 1.0f + alpha / A;
+            a1u = -2.0f * cs;
+            a2u = 1.0f - alpha / A;
+        } break;
+        case BiquadType::LowShelf: {
+            const float A     = std::pow(10.0f, gainDb_ * (1.0f / 40.0f));
+            const float sqrtA = std::sqrt(std::max(0.0f, A));
+            const float twoSqrtAlpha = 2.0f * sqrtA * alpha;
+            b0u =        A * ((A + 1.0f) - (A - 1.0f) * cs + twoSqrtAlpha);
+            b1u = 2.0f * A * ((A - 1.0f) - (A + 1.0f) * cs);
+            b2u =        A * ((A + 1.0f) - (A - 1.0f) * cs - twoSqrtAlpha);
+            a0  =             (A + 1.0f) + (A - 1.0f) * cs + twoSqrtAlpha;
+            a1u = -2.0f * (   (A - 1.0f) + (A + 1.0f) * cs);
+            a2u =             (A + 1.0f) + (A - 1.0f) * cs - twoSqrtAlpha;
+        } break;
+        case BiquadType::HighShelf: {
+            const float A     = std::pow(10.0f, gainDb_ * (1.0f / 40.0f));
+            const float sqrtA = std::sqrt(std::max(0.0f, A));
+            const float twoSqrtAlpha = 2.0f * sqrtA * alpha;
+            b0u =        A * ((A + 1.0f) + (A - 1.0f) * cs + twoSqrtAlpha);
+            b1u = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cs);
+            b2u =        A * ((A + 1.0f) + (A - 1.0f) * cs - twoSqrtAlpha);
+            a0  =             (A + 1.0f) - (A - 1.0f) * cs + twoSqrtAlpha;
+            a1u =  2.0f * (   (A - 1.0f) - (A + 1.0f) * cs);
+            a2u =             (A + 1.0f) - (A - 1.0f) * cs - twoSqrtAlpha;
+        } break;
     }
 
     const float invA0 = 1.0f / a0;
@@ -99,6 +138,9 @@ void BiquadFilterEffect::OnParameter(uint16_t paramId, float value) noexcept {
     } else if (paramId == EffectParameter::Biquad_Q) {
         Q_     = value;
         dirty_ = true;
+    } else if (paramId == EffectParameter::Biquad_GainDb) {
+        gainDb_ = value;
+        dirty_  = true;
     }
 }
 

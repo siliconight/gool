@@ -17,7 +17,7 @@ option(AUDIO_ENGINE_SHARED   "Build audio_engine as a shared library"  OFF)
 option(AUDIO_ENGINE_BUILD_EXAMPLES "Build examples" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_BUILD_TESTS    "Build unit tests" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O)" OFF)
+option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O)" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_FETCH_MINIAUDIO   "Fetch miniaudio via FetchContent if not vendored locally" ON)
 
 # File-format decoders. Each is independent and off by default to keep the
@@ -54,6 +54,7 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/attenuation.cpp
     src/audio_engine/assets/audio_asset_registry.cpp
     src/audio_engine/assets/sound_bank.cpp
+    src/audio_engine/assets/gpak.cpp
     src/audio_engine/emitters/emitter_manager.cpp
     src/audio_engine/listeners/listener_manager.cpp
     src/audio_engine/voice/voice_source_manager.cpp
@@ -347,6 +348,10 @@ set_target_properties(audio_engine PROPERTIES
 # -------------------------------------------------------------------------
 if(AUDIO_ENGINE_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(AUDIO_ENGINE_TOP_LEVEL)
+    add_subdirectory(tools)
 endif()
 
 if(AUDIO_ENGINE_BUILD_TESTS)

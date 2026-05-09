@@ -154,7 +154,7 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                 break;
             case EffectKind::BiquadFilter:
                 fx = std::make_unique<BiquadFilterEffect>(
-                    ec.biquadType, ec.biquadCutoffHz, ec.biquadQ);
+                    ec.biquadType, ec.biquadCutoffHz, ec.biquadQ, ec.biquadGainDb);
                 break;
             case EffectKind::Compressor: {
                 fx = std::make_unique<CompressorEffect>(
