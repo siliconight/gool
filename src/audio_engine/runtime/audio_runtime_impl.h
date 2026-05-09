@@ -104,6 +104,15 @@ public:
     bool                  ClearGlobalParameter(AudioParameterId paramId);
     size_t                GetGlobalParameterCount() const;
 
+    // Sound-level RTPC bindings (volume-only in this iteration)
+    AudioResult           SetSoundVolumeRtpc(AudioSoundId     soundId,
+                                              AudioParameterId paramId,
+                                              float minValue, float maxValue,
+                                              float minVolume, float maxVolume,
+                                              float smoothingMs);
+    bool                  ClearSoundVolumeRtpc(AudioSoundId soundId);
+    size_t                GetSoundRtpcBindingCount() const;
+
     AudioResult           SubmitEvent(const AudioEvent& event);
     AudioResult           CancelPredictedEvent(uint64_t predictionId, float fadeOutMs);
     bool                  GetVoiceNetworkStats(AudioPlayerId playerId,
@@ -277,6 +286,28 @@ private:
     // future feature; the storage here ships first so host code can
     // build against the API.
     std::unordered_map<AudioParameterId, float> globalParameters_;
+
+    // Sound-level RTPC bindings: a lookup table from soundId to the
+    // single volume binding registered for it. Walked once per Update
+    // tick by EvaluateRtpcBindings_(); each binding evaluates in
+    // constant time. Game-thread-only access.
+    struct SoundVolumeRtpcBinding {
+        AudioParameterId paramId      = kInvalidParameterId;
+        float            minValue     = 0.0f;
+        float            maxValue     = 1.0f;
+        float            minVolume    = 0.0f;
+        float            maxVolume    = 1.0f;
+        float            smoothingMs  = 50.0f;
+    };
+    std::unordered_map<AudioSoundId, SoundVolumeRtpcBinding> soundVolumeRtpc_;
+
+    // Per-tick: walk active emitters, look up each emitter's
+    // soundId in soundVolumeRtpc_, evaluate the linear remap, push
+    // the resulting volume target into the parameter smoother for
+    // AudioParameterIds::Gain. Skip-when-unset semantics: if the
+    // binding's parameter has never been set via SetGlobalParameter,
+    // the binding has no effect this tick.
+    void EvaluateRtpcBindings_();
 };
 
 } // namespace audio

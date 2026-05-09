@@ -216,6 +216,53 @@ public:
     // and debug overlays.
     size_t GetGlobalParameterCount() const AUDIO_REQUIRES(GameThread);
 
+    // ---- RTPC volume modulation (game thread) ----------------------------
+    //
+    // Bind a sound's volume to a global parameter. Each Update tick the
+    // runtime walks active emitters, looks up the binding for each
+    // emitter's `soundId`, reads the current value of `paramId` from
+    // the global parameter store, and computes a target volume:
+    //
+    //     t      = clamp((paramValue - minValue) / (maxValue - minValue), 0, 1)
+    //     volume = lerp(minVolume, maxVolume, t)
+    //
+    // The volume is applied via the existing parameter smoother
+    // (AudioParameterIds::Gain) with the configured `smoothingMs`,
+    // so abrupt parameter changes don't click. Skip-when-unset
+    // semantics: if `paramId` has never been set via SetGlobalParameter,
+    // the binding has no effect this tick — the authored volume stays
+    // in place. This keeps binding-installation order independent of
+    // gameplay state.
+    //
+    // Limitations in this iteration:
+    // - One binding per sound. SetSoundVolumeRtpc on a sound that
+    //   already has a binding replaces it (no error).
+    // - Volume only. Pitch / lowpass / send modulation is roadmap.
+    // - Linear curve only. Exponential / custom-point curves are roadmap.
+    //
+    // Returns Success on bind, BudgetExceeded if the binding table is
+    // full (see AudioConfig::maxSoundRtpcBindings, default 256).
+    AudioResult SetSoundVolumeRtpc(AudioSoundId     soundId,
+                                    AudioParameterId paramId,
+                                    float minValue,
+                                    float maxValue,
+                                    float minVolume,
+                                    float maxVolume,
+                                    float smoothingMs = 50.0f)
+        AUDIO_REQUIRES(GameThread);
+
+    // Remove a sound's RTPC binding. Returns true if a binding existed.
+    // Idempotent: clearing an unbound sound returns false but is not
+    // an error. The next Update tick stops modulating the sound's
+    // volume; voices currently playing keep their last computed
+    // smoothed value (no snap-back to authored volume).
+    bool ClearSoundVolumeRtpc(AudioSoundId soundId)
+        AUDIO_REQUIRES(GameThread);
+
+    // Number of RTPC bindings currently registered (across all sounds).
+    // Useful for budget checks.
+    size_t GetSoundRtpcBindingCount() const AUDIO_REQUIRES(GameThread);
+
     // ---- Bus graph (game thread) -----------------------------------------
     // The bus graph is defined in AudioConfig and immutable after Initialize.
     // These methods update parameter values on existing buses and effects.

@@ -277,6 +277,48 @@ func clear_rtpc(name: String) -> bool:
         return false
     return _runtime.clear_global_parameter(name)
 
+# Bind a sound's volume to a global parameter (RTPC). Each Update tick
+# the runtime reads the current value of `param_name`, linearly remaps
+# it from [min_value, max_value] to [min_volume, max_volume], and pushes
+# the result through the parameter smoother as the per-voice gain.
+#
+# Skip-when-unset semantics: until the parameter is set via set_rtpc()
+# at least once, the binding has no effect — the authored volume stays
+# in place. Binding-installation order is therefore independent of
+# gameplay state.
+#
+# Examples:
+#   # Heartbeat gets louder as health drops:
+#   Gool.bind_volume_rtpc("heartbeat", "health",
+#       /*min_value*/ 0.0, /*max_value*/ 1.0,
+#       /*min_volume*/ 1.0, /*max_volume*/ 0.0)
+#
+#   # Music ducks under intense combat:
+#   Gool.bind_volume_rtpc("ambient_music", "combat_intensity",
+#       0.0, 1.0,    # 0 = peace, 1 = max combat
+#       1.0, 0.3,    # full volume at peace, 30% during combat
+#       300.0)       # 300 ms smoothing on the duck
+#
+# Returns true if the binding was registered or updated; false on
+# invalid arguments or budget exhaustion (see AudioConfig::maxSoundRtpcBindings).
+func bind_volume_rtpc(sound_name: String, param_name: String,
+                       min_value: float, max_value: float,
+                       min_volume: float, max_volume: float,
+                       smoothing_ms: float = 50.0) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.set_sound_volume_rtpc(sound_name, param_name,
+                                            min_value, max_value,
+                                            min_volume, max_volume,
+                                            smoothing_ms)
+
+# Remove the volume binding for a sound. Voices currently playing keep
+# their last computed smoothed volume (no snap-back to authored level).
+func clear_volume_rtpc(sound_name: String) -> bool:
+    if _runtime == null:
+        return false
+    return _runtime.clear_sound_volume_rtpc(sound_name)
+
 # =============================================================================
 # Internal helpers
 # =============================================================================

@@ -156,6 +156,39 @@ four lines, ahead of the prefab-node walkthrough.
   AudioStreamOggVorbis support requires hooking the existing Ogg
   decoder to AudioStream input and is on the roadmap.
 
+### 1.4b Render-thread RTPC volume modulation — **M** [SHIPPED in 0.4.0]
+
+**Outcome:** the v0.3.0 disclaimer is closed. `set_rtpc` actually
+drives audio. Bind once per sound, push values per frame, hear the
+modulation at the rendered output.
+
+**Status:** Shipped. New `SetSoundVolumeRtpc(soundId, paramId,
+minValue, maxValue, minVolume, maxVolume, smoothingMs)` API. Per-tick
+evaluator inserted into `Update` between transform interpolation and
+the orchestrator tick: walks active emitters, evaluates each binding
+against the global parameter store, pushes target volume through the
+existing `ParameterSmoother`. Same code path as `SetEmitterParameter`
+so authored RTPC and manual gain calls compose cleanly. GDScript
+facade: `Gool.bind_volume_rtpc` / `Gool.clear_volume_rtpc`.
+
+**Audibility-verified DoD:** `tests/unit/sound_rtpc_test.cpp` registers
+a 440 Hz sine, binds volume to `health` with `{0→0, 1→1}`, sets health
+to 0, ticks 30 frames, renders 0.5s of audio, asserts measured RMS = 0.
+Same setup with health=0.5 produces RMS exactly halfway between zero
+and full. Inverted bindings (`{1→0, 0→1}`) silence the sound at full
+health — the heartbeat pattern. 8 sub-tests covering all branches.
+
+**Limitations carried into the next iteration:**
+- One binding per sound. Multi-binding (volume + pitch + lowpass
+  independently driven by different parameters) is the next M-sized
+  item.
+- Volume only. Pitch / lowpass / send modulation needs additional
+  per-tick parameter routing.
+- Linear curve only. Exponential and custom-point curves require a
+  curve-format design pass.
+- Bindings are programmatic; JSON sound-bank declaration of RTPC
+  curves is a separate roadmap item.
+
 ### 1.5 Co-op shooter starter template — **M**
 
 **Outcome:** a downloadable Godot project that's a complete co-op

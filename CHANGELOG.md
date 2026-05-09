@@ -12,6 +12,65 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.4.0] - 2026-05-09
+
+Render-thread RTPC volume modulation. The disclaimer in v0.3.0
+("`set_rtpc` stores values but does not yet drive sound modulation")
+is closed. Calling `bind_volume_rtpc("heartbeat", "health", 0, 1, 1, 0)`
+once, then `set_rtpc("health", v)` per frame, now actually changes the
+heartbeat's rendered volume in real time.
+
+### Added
+
+- **`AudioRuntime::SetSoundVolumeRtpc`** / **`ClearSoundVolumeRtpc`** /
+  **`GetSoundRtpcBindingCount`** — bind a sound's volume to a global
+  parameter via a linear curve. Each `Update` tick the runtime walks
+  active emitters, looks up each one's binding, reads the parameter,
+  computes a target gain, and pushes it through the existing parameter
+  smoother (`AudioParameterIds::Gain`). Same code path used by
+  `SetEmitterParameter` so authored modulation and manual gain calls
+  compose cleanly.
+- **`Gool.bind_volume_rtpc(sound_name, param_name, ...)`** /
+  **`Gool.clear_volume_rtpc(sound_name)`** — GDScript autoload facade
+  + GDExtension bindings (`set_sound_volume_rtpc`,
+  `clear_sound_volume_rtpc`, `sound_rtpc_binding_count`).
+- **`AudioConfig::maxSoundRtpcBindings`** (default 256). Budget is
+  enforced only on new sound IDs — re-binding an existing sound is
+  always free. `BudgetExceeded` returned when the cap is hit.
+- **Skip-when-unset semantics**: until `set_rtpc(name, ...)` is called
+  at least once, the binding has no effect. Authored volume stays in
+  place. Binding-installation order is then independent of gameplay
+  state so prefab `_ready()` calls can wire bindings without worrying
+  about sequencing.
+- README Quick Start now shows the bind + set_rtpc pattern.
+
+### Tests
+
+- `tests/unit/sound_rtpc_test.cpp` — 8 sub-tests, audibility-verified
+  end-to-end:
+  - Unset parameter: rendered RMS = 0.25 (authored volume preserved)
+  - Parameter at 0 with `0→0, 1→1` binding: rendered RMS = 0 (silent)
+  - Parameter at 1: rendered RMS = 0.25 (full)
+  - Parameter at 0.5: rendered RMS = 0.125 (exactly half, ratio = 0.5)
+  - Inverted binding `1→0, 0→1` at full health: silent (heartbeat pattern)
+  - Out-of-range parameter values clamp correctly to endpoints
+  - Clear stops modulation
+  - API validation rejects NaN, degenerate range, invalid IDs, negative smoothing
+
+  Total now 30/30 passing.
+
+### Limitations carried into the next iteration
+
+- One binding per sound. Binding multiple parameters to one sound
+  (volume + pitch + lowpass independently) is a future M-sized item.
+- Volume only. Pitch / lowpass cutoff / send-level modulation are
+  roadmap.
+- Linear curve only. Exponential and custom-point curves are roadmap.
+- The orchestrator's per-emitter `UpdateParams` pass that carries the
+  modulated gain to the mixer only runs when a listener is registered.
+  This was the original behavior; documented now in the test setup
+  comments and `EvaluateRtpcBindings_` docs.
+
 ## [0.3.0] - 2026-05-09
 
 The tiny API facade. Four canonical entry points users can copy-paste
@@ -170,7 +229,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
 [0.2.0]: https://github.com/siliconight/gool/releases/tag/v0.2.0
 [0.1.0]: https://github.com/siliconight/gool/tree/main

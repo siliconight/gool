@@ -188,6 +188,19 @@ public:
         ClassDB::bind_method(D_METHOD("global_parameter_count"),
                               &GoolAudioRuntime::global_parameter_count);
 
+        // Sound-level RTPC bindings (volume modulation)
+        ClassDB::bind_method(D_METHOD("set_sound_volume_rtpc",
+                                       "sound_name", "param_name",
+                                       "min_value", "max_value",
+                                       "min_volume", "max_volume",
+                                       "smoothing_ms"),
+                              &GoolAudioRuntime::set_sound_volume_rtpc,
+                              DEFVAL(50.0));
+        ClassDB::bind_method(D_METHOD("clear_sound_volume_rtpc", "sound_name"),
+                              &GoolAudioRuntime::clear_sound_volume_rtpc);
+        ClassDB::bind_method(D_METHOD("sound_rtpc_binding_count"),
+                              &GoolAudioRuntime::sound_rtpc_binding_count);
+
         // Misc.
         ClassDB::bind_method(D_METHOD("hash_sound_name", "name"),
                               &GoolAudioRuntime::hash_sound_name);
@@ -573,6 +586,40 @@ public:
     int64_t global_parameter_count() const {
         if (!runtime_) return 0;
         return static_cast<int64_t>(runtime_->GetGlobalParameterCount());
+    }
+
+    // ---- Sound-level RTPC volume bindings ----------------------------
+    // Surfaced as Gool.bind_volume_rtpc / Gool.clear_volume_rtpc in
+    // the GDScript autoload. Both names hash via HashSoundName /
+    // HashParameterName so any ASCII names work.
+
+    bool set_sound_volume_rtpc(const String& sound_name,
+                                 const String& param_name,
+                                 double min_value,
+                                 double max_value,
+                                 double min_volume,
+                                 double max_volume,
+                                 double smoothing_ms) {
+        if (!runtime_) return false;
+        const auto rc = runtime_->SetSoundVolumeRtpc(
+            HashName(sound_name),
+            HashParam(param_name),
+            static_cast<float>(min_value),
+            static_cast<float>(max_value),
+            static_cast<float>(min_volume),
+            static_cast<float>(max_volume),
+            static_cast<float>(smoothing_ms));
+        return rc == audio::AudioResult::Success;
+    }
+
+    bool clear_sound_volume_rtpc(const String& sound_name) {
+        if (!runtime_) return false;
+        return runtime_->ClearSoundVolumeRtpc(HashName(sound_name));
+    }
+
+    int64_t sound_rtpc_binding_count() const {
+        if (!runtime_) return 0;
+        return static_cast<int64_t>(runtime_->GetSoundRtpcBindingCount());
     }
 
     bool is_initialized() const { return initialized_; }

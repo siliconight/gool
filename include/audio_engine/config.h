@@ -181,6 +181,15 @@ struct AudioConfig {
     // generously for typical games (a few dozen parameters is normal);
     // bump for projects with very large parameter graphs.
     uint32_t maxGlobalParameters = 256;
+
+    // Maximum number of sounds that can have a volume-RTPC binding
+    // registered at once. SetSoundVolumeRtpc beyond this budget
+    // returns AudioResult::BudgetExceeded; existing bindings stay.
+    // Updating an existing binding (re-binding the same sound) never
+    // exceeds the budget. Sized for typical projects (heartbeat,
+    // ambient layers, music stingers — usually < 20 bindings); bump
+    // for very large authored-RTPC catalogs.
+    uint32_t maxSoundRtpcBindings = 256;
 };
 
 } // namespace audio

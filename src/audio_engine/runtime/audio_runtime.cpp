@@ -88,6 +88,20 @@ bool AudioRuntime::ClearGlobalParameter(AudioParameterId p) {
 size_t AudioRuntime::GetGlobalParameterCount() const {
     return impl_->GetGlobalParameterCount();
 }
+AudioResult AudioRuntime::SetSoundVolumeRtpc(AudioSoundId     soundId,
+                                               AudioParameterId paramId,
+                                               float minV, float maxV,
+                                               float minVol, float maxVol,
+                                               float smoothingMs) {
+    return impl_->SetSoundVolumeRtpc(soundId, paramId, minV, maxV,
+                                       minVol, maxVol, smoothingMs);
+}
+bool AudioRuntime::ClearSoundVolumeRtpc(AudioSoundId soundId) {
+    return impl_->ClearSoundVolumeRtpc(soundId);
+}
+size_t AudioRuntime::GetSoundRtpcBindingCount() const {
+    return impl_->GetSoundRtpcBindingCount();
+}
 AudioResult AudioRuntime::SubmitEvent(const AudioEvent& e) { return impl_->SubmitEvent(e); }
 AudioResult AudioRuntime::CancelPredictedEvent(uint64_t predictionId, float fadeOutMs) {
     return impl_->CancelPredictedEvent(predictionId, fadeOutMs);
@@ -451,6 +465,89 @@ bool AudioRuntimeImpl::ClearGlobalParameter(AudioParameterId paramId) {
 
 size_t AudioRuntimeImpl::GetGlobalParameterCount() const {
     return globalParameters_.size();
+}
+
+AudioResult AudioRuntimeImpl::SetSoundVolumeRtpc(AudioSoundId     soundId,
+                                                   AudioParameterId paramId,
+                                                   float minV, float maxV,
+                                                   float minVol, float maxVol,
+                                                   float smoothingMs) {
+    if (!initialized_)                  return AudioResult::NotInitialized;
+    if (soundId == kInvalidSoundId)     return AudioResult::InvalidArgument;
+    if (paramId == kInvalidParameterId) return AudioResult::InvalidArgument;
+    // Range degeneracy: minValue == maxValue would divide by zero in
+    // the linear remap. Reject up front.
+    if (minV == maxV)                   return AudioResult::InvalidArgument;
+    // NaN or infinite endpoints poison the per-tick math.
+    if (!std::isfinite(minV) || !std::isfinite(maxV) ||
+        !std::isfinite(minVol) || !std::isfinite(maxVol) ||
+        !std::isfinite(smoothingMs) || smoothingMs < 0.0f) {
+        return AudioResult::InvalidArgument;
+    }
+
+    auto it = soundVolumeRtpc_.find(soundId);
+    if (it != soundVolumeRtpc_.end()) {
+        // Re-binding the same sound — never exceeds the budget.
+        it->second = SoundVolumeRtpcBinding{paramId, minV, maxV,
+                                              minVol, maxVol, smoothingMs};
+        return AudioResult::Success;
+    }
+    if (soundVolumeRtpc_.size() >= config_.maxSoundRtpcBindings) {
+        return AudioResult::BudgetExceeded;
+    }
+    soundVolumeRtpc_.emplace(soundId,
+        SoundVolumeRtpcBinding{paramId, minV, maxV, minVol, maxVol, smoothingMs});
+    return AudioResult::Success;
+}
+
+bool AudioRuntimeImpl::ClearSoundVolumeRtpc(AudioSoundId soundId) {
+    return soundVolumeRtpc_.erase(soundId) > 0;
+}
+
+size_t AudioRuntimeImpl::GetSoundRtpcBindingCount() const {
+    return soundVolumeRtpc_.size();
+}
+
+void AudioRuntimeImpl::EvaluateRtpcBindings_() {
+    // Cheap fast-path: nothing to do if no bindings are registered.
+    // Avoids the ForEach overhead on the typical "no RTPC" project.
+    if (soundVolumeRtpc_.empty()) return;
+
+    emitters_->ForEach([this](EmitterHandle h, EmitterRecord& rec) {
+        const AudioSoundId sid = rec.activeSoundId;
+        if (sid == kInvalidSoundId) return;
+
+        auto bIt = soundVolumeRtpc_.find(sid);
+        if (bIt == soundVolumeRtpc_.end()) return;
+        const SoundVolumeRtpcBinding& b = bIt->second;
+
+        // Skip-when-unset: if the parameter has never been set via
+        // SetGlobalParameter, leave the authored volume in place.
+        // Binding-installation order then doesn't accidentally
+        // silence sounds.
+        auto pIt = globalParameters_.find(b.paramId);
+        if (pIt == globalParameters_.end()) return;
+        const float paramValue = pIt->second;
+
+        // Linear remap with clamp. Range was validated in
+        // SetSoundVolumeRtpc so (maxValue - minValue) is non-zero.
+        float t = (paramValue - b.minValue) / (b.maxValue - b.minValue);
+        if (t < 0.0f) t = 0.0f;
+        else if (t > 1.0f) t = 1.0f;
+        const float volume = b.minVolume + t * (b.maxVolume - b.minVolume);
+
+        // Push into the parameter smoother for this emitter. The
+        // smoother handles inter-tick interpolation on the render
+        // side. Same code path used by SetEmitterParameter, so
+        // mixing manual SetEmitterParameter calls with RTPC-driven
+        // updates Just Works (last writer wins each tick). Note:
+        // the orchestrator's per-emitter UpdateParams pass only
+        // runs when a listener is registered, so SetListener must
+        // be called once before RTPC modulation has any audible
+        // effect.
+        orchestrator_->Smoother().SetTarget(
+            h, AudioParameterIds::Gain, volume, b.smoothingMs);
+    });
 }
 
 AudioResult AudioRuntimeImpl::SubmitEvent(const AudioEvent& event) {
@@ -1133,6 +1230,17 @@ void AudioRuntimeImpl::Update(float deltaSeconds) {
         if (interpAlpha_ > 1.0f) interpAlpha_ = 1.0f;
     }
     emitters_->InterpolateReplicatedTransforms(interpAlpha_);
+
+    // -------------------------------------------------------------------
+    // 5.5 Evaluate RTPC volume bindings.
+    //     Walks the active-emitter set; for each emitter whose soundId
+    //     has a registered binding and whose bound parameter has been
+    //     set at least once, recomputes the target gain via linear
+    //     remap and pushes it into the smoother. Cheap O(active) per
+    //     tick; early-out when no bindings are registered. Inserted
+    //     here so the smoother targets are picked up by step 6.
+    // -------------------------------------------------------------------
+    EvaluateRtpcBindings_();
 
     // -------------------------------------------------------------------
     // 6. Tick orchestrator (parameter smoothing + sequence player).
