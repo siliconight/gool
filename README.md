@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.2 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -121,6 +121,42 @@ events. The middleware handles the rest.
 
 ## Quick start (Godot 4.2+)
 
+> ### Setup
+>
+> Setup is documented in **[SETUP.md](SETUP.md)** — per-platform
+> prerequisites with package manager commands (winget / Chocolatey
+> on Windows, Homebrew on macOS, apt / dnf / pacman on Linux), the
+> full build-from-source procedure, and a troubleshooting section.
+>
+> **Status:** prebuilt addon binaries aren't shipping yet, so right
+> now everyone goes through the build-from-source path. The build
+> works on Linux + Windows; macOS is currently broken (tracked).
+>
+> The 30-second version of build-from-source, after prerequisites
+> are installed:
+>
+> ```bash
+> git clone https://github.com/siliconight/gool.git && cd gool
+> ./scripts/fetch_miniaudio.sh && ./scripts/fetch_decoders.sh
+> git clone --branch 4.2 https://github.com/godotengine/godot-cpp.git
+> (cd godot-cpp && scons platform=linux target=template_release -j$(nproc))
+> cmake -S godot -B build-godot \
+>     -DGODOT_CPP_PATH=../godot-cpp \
+>     -DCMAKE_BUILD_TYPE=Release \
+>     -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
+> cmake --build build-godot --config Release -j
+> ```
+>
+> Then copy `build-godot/libgool_godot.so` (or `.dylib` / `.dll`)
+> into your Godot project's `addons/gool/bin/` directory, copy the
+> contents of `godot/addons/gool/` into your project's `addons/gool/`,
+> and enable the plugin in **Project Settings → Plugins**.
+>
+> Full per-platform commands and troubleshooting in
+> [SETUP.md](SETUP.md).
+
+### First lines of GDScript
+
 Once the addon is enabled and `Gool` is autoloaded, four lines of
 GDScript cover the most common cases:
 
@@ -172,19 +208,7 @@ declared in JSON sound banks via an `rtpc` array on each sound entry.
 Skip-when-unset semantics: until `set_rtpc` is called once, bindings
 have no effect — authored values stay in place.
 
-To install:
-
-```bash
-git clone https://github.com/siliconight/gool.git && cd gool
-cmake -S godot -B build-godot -DGODOT_CPP_PATH=/path/to/godot-cpp
-cmake --build build-godot -j
-```
-
-Copy `build-godot/libgool_godot.so` (or `.dylib` / `.dll`) into
-your Godot project's `addons/gool/bin/` directory along with the
-included `addons/gool/` files. Open the project, enable the
-plugin in **Project Settings → Plugins**. Drop an `AudioEmitter3D`
-node in your scene, set `sound_name`, run the project.
+### Try the example projects
 
 For a complete working scene with all seven prefabs wired up
 (adaptive music, spatial drone, footsteps, mock voice chat,
@@ -199,6 +223,10 @@ replicate-gameplay-events / play-audio-locally pattern from
 `docs/multiplayer.md` — open `examples/coop_shooter_template`.
 That project is the proof the primitives compose into something
 a Godot dev can build a co-op shooter on top of.
+
+(Both example projects need a built GDExtension binary in their
+own `addons/gool/bin/` directory, same way as your project.
+SETUP.md covers this.)
 
 ## Who this is for
 
@@ -340,12 +368,14 @@ sections above are what most readers need.
 
 The engine is also usable as a standalone C++20 library outside
 of Godot. The library namespace is `audio`, the CMake target is
-`audio_engine`.
+`audio_engine`. Full per-platform build instructions are in
+[SETUP.md](SETUP.md); the short version:
 
 ```bash
 git clone https://github.com/siliconight/gool.git && cd gool
+./scripts/fetch_miniaudio.sh && ./scripts/fetch_decoders.sh
 cmake -S . -B build && cmake --build build -j
-ctest --test-dir build                          # 25 unit tests
+ctest --test-dir build                          # 36 unit tests
 ```
 
 That builds a static library and the test suite using the silent
@@ -366,10 +396,18 @@ cmake --build build -j
 | `AUDIO_ENGINE_BUILD_EXAMPLES`       | ON      | Build examples (`examples/`)               |
 | `AUDIO_ENGINE_BACKEND_MINIAUDIO`    | OFF     | Cross-platform device output via miniaudio |
 | `AUDIO_ENGINE_VOICE_OPUS`           | OFF     | Opus codec for voice chat                  |
-| `AUDIO_ENGINE_DECODERS_WAV`         | ON      | WAV file decoding (dr_wav)                 |
-| `AUDIO_ENGINE_DECODERS_OGG`         | ON      | Ogg Vorbis decoding (stb_vorbis)           |
-| `AUDIO_ENGINE_DECODERS_FLAC`        | ON      | FLAC decoding (dr_flac)                    |
+| `AUDIO_ENGINE_DECODERS_WAV`         | OFF     | WAV file decoding (dr_wav)                 |
+| `AUDIO_ENGINE_DECODERS_OGG`         | OFF     | Ogg Vorbis decoding (stb_vorbis)           |
+| `AUDIO_ENGINE_DECODERS_FLAC`        | OFF     | FLAC decoding (dr_flac)                    |
+| `AUDIO_ENGINE_DECODERS_OPUS`        | OFF     | Ogg Opus file decoding (libopusfile)       |
 | `AUDIO_ENGINE_SHARED`               | OFF     | Build as shared library                    |
+
+All audio device / decoder / codec flags default OFF — the core
+engine ships with the silent `NullAudioBackend` only, which is
+enough for unit tests and headless servers but doesn't produce
+sound. For a Godot-side build you almost certainly want at least
+`AUDIO_ENGINE_BACKEND_MINIAUDIO=ON` and the WAV/OGG/FLAC decoders
+enabled. See [SETUP.md](SETUP.md) for typical invocations.
 
 ### Dependencies
 
@@ -379,17 +417,25 @@ cmake --build build -j
 | CMake 3.20+     | Specified in root `CMakeLists.txt`                 |
 | pthreads        | `find_package(Threads REQUIRED)`                   |
 
-| Vendored (single-header drops, all public-domain or MIT-0) |
-|-------------------------------------------------------------|
-| miniaudio (cross-platform audio device I/O)                |
-| dr_wav, dr_flac (lossless decoders)                         |
-| stb_vorbis (Ogg decoder)                                    |
+| Fetched (single-header drops, all public-domain or MIT-0; not vendored)         |
+|--------------------------------------------------------------------------------------|
+| miniaudio (cross-platform audio device I/O) — `scripts/fetch_miniaudio.{sh,bat}`     |
+| dr_wav, dr_flac (lossless decoders) — `scripts/fetch_decoders.{sh,bat}`              |
+| stb_vorbis (Ogg decoder) — `scripts/fetch_decoders.{sh,bat}`                         |
 
-| Optional fetch                                                  |
-|------------------------------------------------------------------|
-| libopus — voice chat encode/decode (BSD-3-Clause), opt-in via    |
-| `AUDIO_ENGINE_VOICE_OPUS=ON`. Resolved via vendored, system,     |
-| or FetchContent fallback.                                        |
+The fetch scripts download from upstream GitHub and set the files
+read-only after download. `AUDIO_ENGINE_FETCH_DECODERS=ON` (the
+default) also makes CMake fall back to `FetchContent` if the files
+aren't already present, so you can skip the scripts in CI.
+
+| System-package optional dependencies                                     |
+|---------------------------------------------------------------------------|
+| `libopus` — voice chat encode/decode (BSD-3-Clause), opt-in via           |
+| `AUDIO_ENGINE_VOICE_OPUS=ON`. Resolved via vendored, system find_package, |
+| pkg-config, or FetchContent fallback.                                     |
+| `libopusfile` — `.opus` file decoding (BSD-3-Clause), opt-in via          |
+| `AUDIO_ENGINE_DECODERS_OPUS=ON`. Resolved via system find_package or      |
+| pkg-config; install via apt / brew / vcpkg (see [SETUP.md](SETUP.md)).    |
 
 ### Engine architecture
 

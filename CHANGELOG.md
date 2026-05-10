@@ -12,6 +12,87 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.2] - 2026-05-10
+
+Bootstrap-experience overhaul, phase A: documentation. Closes the
+documented gaps that made the project hard to set up for new
+adopters. No engine code changes; this is a docs-and-truth release.
+
+### Added
+
+- **`SETUP.md`** — single-source-of-truth setup guide (530 lines).
+  Per-platform prerequisites with concrete package manager commands
+  (winget + Chocolatey for Windows; Homebrew for macOS; apt / dnf /
+  pacman for Linux). Covers Track A (use prebuilt addon — placeholder
+  until binary releases ship in phase C) and Track B (build from
+  source). Three-phase build-from-source procedure: install
+  prerequisites, build the GDExtension, install the addon into a
+  Godot project. Optional features section covering libopus and
+  libopusfile install per platform. Verification steps.
+  Troubleshooting section covering the 7 most common failure modes
+  (`GODOT_CPP_PATH` missing, `miniaudio.h` not found, decoder headers
+  not found, compiler too old, MSBuild not found on Windows, addon
+  doesn't appear in editor, macOS).
+
+### Fixed
+
+- **README "Build options" table** — corrected the lie that
+  `AUDIO_ENGINE_DECODERS_WAV/OGG/FLAC` default ON. They've always
+  defaulted OFF in `CMakeLists.txt`. Adopters who followed the
+  README ended up with no decoders compiled in. Also added the
+  `AUDIO_ENGINE_DECODERS_OPUS` row missing since v0.11.0.
+
+- **README test count** — was 25 in the build instructions block,
+  36 in the test suite section. Both now say 36.
+
+- **README "Dependencies" section** — re-labeled "Vendored
+  single-header drops" to "Fetched single-header drops" because
+  miniaudio / dr_libs / stb_vorbis aren't actually vendored in the
+  repo; they're fetched on demand via `scripts/fetch_*.sh`. The
+  scripts existed; the README didn't tell adopters to run them.
+  Added libopusfile to the optional-dependency table.
+
+- **README "Quick start" section** — was a wall of GDScript API
+  examples followed by a buried install block. Restructured so the
+  setup pointer (to `SETUP.md`) leads, the 30-second build
+  incantation is visible, and the API examples follow as "first
+  lines you'll write" once the project is set up.
+
+- **godot/README.md** — same install-section rewrite. Points at
+  `SETUP.md` for the per-platform path, adds the missing fetch
+  script step that has to run before miniaudio compiles.
+
+### Acknowledged honestly
+
+- **macOS is currently broken** — the build doesn't work on Apple
+  Clang. CI matrix has macOS disabled in both `ci.yml` and
+  `release.yml`. README and `SETUP.md` now say so up front instead
+  of letting macOS users hit cryptic errors.
+
+- **No prebuilt addon binaries ship yet** — Track A in `SETUP.md`
+  is a placeholder pointing at the build-from-source path for now.
+  Phase C of this work (release pipeline rewrite) will fix this.
+
+### Tests
+
+- Total **36/36** passing (no test changes; this is a docs release).
+  Ducking baseline locked at -17.20 dB.
+
+### What's next
+
+This was Phase A of a planned three-phase bootstrap overhaul:
+
+- **Phase A (this release):** fix the documentation lies, write
+  the missing setup guide.
+- **Phase B (planned next):** bootstrap automation. `scripts/bootstrap.sh`
+  + `scripts/bootstrap.ps1` that verify prerequisites, clone and
+  build godot-cpp at a pinned ref, build the GDExtension, and
+  install into a target Godot project. One-command setup.
+- **Phase C (planned):** release pipeline rewrite. Build the
+  GDExtension binary per platform on tag push, package as
+  `gool-X.Y.Z-godot-addon.zip` ready to drop into a Godot project.
+  Closes the Track A gap.
+
 ## [0.11.1] - 2026-05-10
 
 GDScript bindings for runtime audio-file loading. Closes the gap
@@ -1325,7 +1406,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/siliconight/gool/releases/tag/v0.11.2
 [0.11.1]: https://github.com/siliconight/gool/releases/tag/v0.11.1
 [0.11.0]: https://github.com/siliconight/gool/releases/tag/v0.11.0
 [0.10.1]: https://github.com/siliconight/gool/releases/tag/v0.10.1

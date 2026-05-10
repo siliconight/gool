@@ -25,19 +25,30 @@ module if your project needs it.
 
 ## Build
 
-GDExtension builds as a shared library. From the engine repo root:
+GDExtension builds as a shared library.
+
+> **The full setup procedure is in [../SETUP.md](../SETUP.md)** — per-platform
+> prerequisites (Visual Studio Build Tools / Xcode CLI / build-essential), how
+> to clone and build godot-cpp, and a troubleshooting section. macOS is currently
+> known broken; CI matrix has it disabled.
+
+The 30-second version, after the prerequisites are installed and
+godot-cpp is built at `../godot-cpp/`:
 
 ```bash
+# from the engine repo root:
+./scripts/fetch_miniaudio.sh && ./scripts/fetch_decoders.sh    # one-time
 cmake -S godot -B build-godot \
-    -DGODOT_CPP_PATH=/path/to/godot-cpp \
-    -DCMAKE_BUILD_TYPE=Release
-cmake --build build-godot -j
+    -DGODOT_CPP_PATH=../godot-cpp \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
+cmake --build build-godot --config Release -j
 ```
 
-Copy the resulting `gool_godot.{so,dylib,dll}` into your Godot
-project's `addons/gool/bin/` directory along with the included
-`gool.gdextension` manifest. Reload the project; the new node
-classes appear in the editor.
+Copy the resulting `libgool_godot.{so,dylib}` (or `Release/gool_godot.dll`
+on Windows) into your Godot project's `addons/gool/bin/` directory
+along with the contents of `addons/gool/`. Reload the project; the
+new node classes appear in the editor.
 
 ## Status
 
