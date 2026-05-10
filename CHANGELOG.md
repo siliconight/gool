@@ -12,6 +12,240 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.10] - 2026-05-10
+
+Closes the Windows Opus gap. From v0.11.10 onward, the Windows
+Godot addon archive ships with `AUDIO_ENGINE_DECODERS_OPUS=ON` and
+`AUDIO_ENGINE_VOICE_OPUS=ON` — Windows adopters who download
+`gool-X.Y.Z-godot-addon-windows-x86_64.zip` get `.opus` file
+decoding and Opus voice chat without doing anything extra.
+
+### Approach: vcpkg with `x64-windows-static-md` triplet
+
+`windows-latest` GitHub runners come with vcpkg pre-installed at
+`C:\vcpkg`. The new workflow steps:
+
+1. Cache `C:/vcpkg/installed` via `actions/cache@v4` (key:
+   `vcpkg-windows-opus-static-md-v1`). First build per cache miss
+   compiles opus + opusfile + libogg from source via vcpkg, taking
+   ~5–15 min. Subsequent runs hit cache and run in seconds.
+2. `vcpkg install opusfile:x64-windows-static-md
+   opus:x64-windows-static-md`. The `static-md` triplet is the key
+   choice: dependencies build as static libs but with the dynamic
+   CRT (`/MD`), matching godot-cpp's default. Result: opusfile +
+   opus + libogg are statically linked into `gool_godot.dll`. The
+   addon archive carries one DLL — no `opus.dll`, `opusfile.dll`,
+   or `ogg.dll` need to be shipped alongside.
+3. Pass `-DCMAKE_TOOLCHAIN_FILE=${VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake
+   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md` to the configure
+   step. CMake's `find_package(OpusFile QUIET)` then resolves
+   against the vcpkg-installed package config, and the existing
+   `target_link_libraries(audio_engine PRIVATE OpusFile::opusfile)`
+   path takes over.
+
+### Changed
+
+- **`.github/workflows/release.yml`** — added Windows-specific
+  vcpkg cache step + install step, simplified the configure step
+  to always pass `DECODERS_OPUS=ON VOICE_OPUS=ON` (no longer
+  conditional on platform), conditionally appends the vcpkg
+  toolchain flag on Windows. Stale "(vcpkg integration is a
+  follow-up)" comments removed; the comment now accurately
+  documents all three platforms.
+
+- **`.github/workflows/nightly.yml`** — same pattern. Nightly
+  Windows addon archives now include Opus support; adopters
+  following bleeding edge get parity with Linux/macOS.
+
+- **`.github/workflows/ci.yml`** (`build-gdextension` job) — same
+  pattern. Every PR now compiles the binding against vcpkg's
+  opus/opusfile on Windows, catching any vcpkg-portfile breakage
+  early.
+
+- **`README.md` Build options notes** — updated to say "all three
+  shipping platforms automatically" instead of "Linux + macOS
+  only." Specifically calls out the `x64-windows-static-md`
+  triplet so Windows adopters who want to build locally can
+  match the CI's choice.
+
+- **`SETUP.md` Opus install table** — Windows entry now reads
+  `vcpkg install opusfile:x64-windows-static-md` (with the
+  explicit triplet). New section documents the local Windows
+  cmake invocation including the toolchain file flag, mirroring
+  what the CI does. Removed the "Windows users without vcpkg
+  have the roughest path here" warning since CI now handles the
+  Track A path automatically.
+
+### Naming / artifact summary
+
+After this release, all six Godot addon artifacts ship with full
+Opus support:
+
+| Platform           | Filename                                              | Opus |
+|--------------------|-------------------------------------------------------|------|
+| Linux x86_64       | `gool-X.Y.Z-godot-addon-linux-x86_64.tar.gz`         | ✓    |
+| Windows x86_64     | `gool-X.Y.Z-godot-addon-windows-x86_64.zip`          | ✓ (new) |
+| macOS arm64        | `gool-X.Y.Z-godot-addon-macos-arm64.tar.gz`          | ✓    |
+| Linux nightly      | `gool-nightly-godot-addon-linux-x86_64.tar.gz`       | ✓    |
+| Windows nightly    | `gool-nightly-godot-addon-windows-x86_64.zip`        | ✓ (new) |
+| macOS nightly      | `gool-nightly-godot-addon-macos-arm64.tar.gz`        | ✓    |
+
+The C++ static library archives (without `-godot-addon-` in the
+name) remain minimal — they're for embedders who pick their own
+codecs.
+
+### Verified locally
+
+- All three workflow YAML files re-parsed clean via `yaml.safe_load`
+- 36/36 engine regression tests passing at v0.11.10. Ducking
+  baseline locked at -17.20 dB. No engine code touched.
+
+### Not verified in this sandbox (verifiable only on a real Windows runner)
+
+- That `vcpkg install opusfile:x64-windows-static-md` succeeds on
+  `windows-latest`. The vcpkg port is well-maintained and standard;
+  this should be reliable.
+- That `find_package(OpusFile QUIET)` resolves against vcpkg's
+  installed package config when the toolchain file is set.
+  `OpusFile::opusfile` is the standard target name vcpkg's port
+  exposes. If the actual target name differs, the configure step
+  would fail with a "target not found" link error and we'd iterate.
+- That static-md-triplet libs link cleanly into a `/MD` (dynamic
+  CRT) host. This is exactly what `static-md` was designed for, so
+  it should work, but the only real test is the CI run.
+
+### What to expect on first push
+
+The first tagged release after this change pushes a Windows build
+through the new path. Likely outcomes, in order of probability:
+
+1. **Build succeeds, addon loads in Godot on Windows with Opus
+   support** → ship it, close the gap.
+2. **`find_package(OpusFile)` doesn't find vcpkg's package** → the
+   configure step warns, falls through to "could not resolve
+   libopusfile" error. Fix: adjust the find_package config search
+   paths or fall back to the manually-set lib paths via
+   `OPUSFILE_LIBRARY` / `OPUSFILE_INCLUDE_DIR`.
+3. **Linking fails on CRT mismatch** → switch triplet to a
+   different choice (`x64-windows`, ship the DLLs alongside;
+   `x64-windows-static`, change godot-cpp build to /MT).
+4. **Build succeeds but addon DLL won't load in Godot at runtime**
+   → likely a missing transitive dependency. Diagnose via Godot's
+   output panel.
+
+If iteration is needed, fail-fast=false ensures Linux + macOS
+artifacts still ship while Windows is iterated.
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+
+## [0.11.9] - 2026-05-10
+
+Default-flip release. The audio backend (miniaudio) and the WAV /
+OGG / FLAC decoders now default ON in `CMakeLists.txt`. The
+overwhelmingly common use case — Godot adopter, C++ game embedding
+the engine — gets sound and the standard codec set without passing
+any flags. Anyone who specifically wants a minimal build (audio
+analysis tools, headless servers, embedded use cases) opts out
+explicitly.
+
+### Rationale
+
+The old defaults (everything OFF) were honest about the engine
+library's flexibility but actively misleading about typical use:
+the README had to say "for a Godot-side build you almost certainly
+want at least…" — which is the canonical sign that the default is
+wrong. The bootstrap script and CI pipelines were already passing
+these flags as ON for every shipped binary; the engine library
+defaults were the only place still saying OFF, and the only place
+where it caused confusion.
+
+This is a behavior change for `cmake -S . -B build` with no flags.
+Before: minimal build, no decoders, no miniaudio, ~1 MB static lib.
+After: full build with miniaudio + WAV/OGG/FLAC decoders linked in,
+slightly larger static lib, FetchContent fetches the four
+single-header dependencies on demand.
+
+### Changed
+
+- **`CMakeLists.txt` defaults flipped to ON**:
+    - `AUDIO_ENGINE_BACKEND_MINIAUDIO`: OFF → ON
+    - `AUDIO_ENGINE_DECODERS_WAV`: OFF → ON
+    - `AUDIO_ENGINE_DECODERS_OGG`: OFF → ON
+    - `AUDIO_ENGINE_DECODERS_FLAC`: OFF → ON
+
+  Stays OFF (system-package or non-trivial-build dependency):
+    - `AUDIO_ENGINE_DECODERS_OPUS` (libopusfile, autotools-only)
+    - `AUDIO_ENGINE_VOICE_OPUS` (libopus, FetchContent works but
+      adds non-trivial build time)
+
+- **`README.md` "Build options"** reverted from a two-column
+  "Library default / Godot binding default" table to a clean
+  single-column table reflecting the new shared defaults. The note
+  about needing flags to enable the backend / decoders is gone —
+  they're the default now. Opt-out instructions for the minimal
+  build are documented inline.
+
+- **`SETUP.md` "Optional features"** updated the same way. The
+  "Godot-side build typical invocation" went from a 5-line cmake
+  command with explicit flags to a 2-line command with no audio
+  flags — the defaults handle it.
+
+### Preserved
+
+- **`.github/workflows/ci.yml` `build-and-test` job** explicitly
+  forces the flipped flags BACK to OFF
+  (`-DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+  -DAUDIO_ENGINE_DECODERS_WAV=OFF
+  -DAUDIO_ENGINE_DECODERS_OGG=OFF
+  -DAUDIO_ENGINE_DECODERS_FLAC=OFF`).
+  This preserves the existing test invariant: catch any code that
+  accidentally requires miniaudio or a specific decoder for the
+  core library to compile. The full-config compile is implicitly
+  tested by the `build-gdextension` job; the release pipeline
+  exercises full-config end-to-end.
+
+- **`.github/workflows/release.yml` engine-archive job** likewise
+  forces the flipped flags OFF. The C++ static library archive
+  (`gool-X.Y.Z-PLATFORM.tar.gz`) on the Releases page is for users
+  embedding `audio_engine` directly in their own C++ project; they
+  typically want a minimal static library and link whatever
+  decoders / backends they need themselves. The Godot-binding
+  archive (`gool-X.Y.Z-godot-addon-PLATFORM.tar.gz`) is built
+  full-config and is unaffected by this change.
+
+- **`scripts/bootstrap.sh`, `bootstrap.ps1`, and the GDExtension
+  configure steps** still pass the flags as `=ON` explicitly. They're
+  redundant after this change but harmless and self-documenting —
+  if a future change ever flipped a default back to OFF, these
+  workflows would still produce the correct binary.
+
+### Air-gapped builds
+
+`cmake -S . -B build` with no flags will now invoke `FetchContent`
+to pull `miniaudio.h`, `dr_wav.h`, `dr_flac.h`, `stb_vorbis.c` if
+they're not already present under `third_party/`. This requires
+network access. For air-gapped builds, either:
+
+- Run `scripts/fetch_miniaudio.sh` and `scripts/fetch_decoders.sh`
+  on a connected machine first, then the headers are present and
+  no fetch is needed.
+- Pass `-DAUDIO_ENGINE_FETCH_MINIAUDIO=OFF
+  -DAUDIO_ENGINE_FETCH_DECODERS=OFF` and supply the headers
+  yourself, OR
+- Pass `-DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+  -DAUDIO_ENGINE_DECODERS_WAV=OFF
+  -DAUDIO_ENGINE_DECODERS_OGG=OFF
+  -DAUDIO_ENGINE_DECODERS_FLAC=OFF` to opt out entirely.
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+  No engine code touched; the only source-tree changes are the
+  four `option()` lines in CMakeLists.txt and documentation
+  updates.
+
 ## [0.11.8] - 2026-05-10
 
 Ship Opus support in the Godot addon binaries on Linux + macOS. Until
@@ -2075,7 +2309,9 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.8...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.10...HEAD
+[0.11.10]: https://github.com/siliconight/gool/releases/tag/v0.11.10
+[0.11.9]: https://github.com/siliconight/gool/releases/tag/v0.11.9
 [0.11.8]: https://github.com/siliconight/gool/releases/tag/v0.11.8
 [0.11.7]: https://github.com/siliconight/gool/releases/tag/v0.11.7
 [0.11.6]: https://github.com/siliconight/gool/releases/tag/v0.11.6

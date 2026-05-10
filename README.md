@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.8 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.10 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -390,42 +390,45 @@ cmake --build build -j
 
 ### Build options
 
-These options have **two sets of defaults** depending on which entry
-point you build:
+| Option                              | Default | Effect                                     |
+|-------------------------------------|---------|--------------------------------------------|
+| `AUDIO_ENGINE_BUILD_TESTS`          | ON      | Build unit tests (`tests/unit/`)           |
+| `AUDIO_ENGINE_BUILD_EXAMPLES`       | ON      | Build examples (`examples/`)               |
+| `AUDIO_ENGINE_BACKEND_MINIAUDIO`    | ON      | Cross-platform device output via miniaudio |
+| `AUDIO_ENGINE_DECODERS_WAV`         | ON      | WAV file decoding (dr_wav)                 |
+| `AUDIO_ENGINE_DECODERS_OGG`         | ON      | Ogg Vorbis decoding (stb_vorbis)           |
+| `AUDIO_ENGINE_DECODERS_FLAC`        | ON      | FLAC decoding (dr_flac)                    |
+| `AUDIO_ENGINE_VOICE_OPUS`           | OFF     | Opus codec for voice chat (libopus)        |
+| `AUDIO_ENGINE_DECODERS_OPUS`        | OFF     | Ogg Opus file decoding (libopusfile)       |
+| `AUDIO_ENGINE_SHARED`               | OFF     | Build as shared library                    |
 
-- **Engine library standalone** (`cmake -S . -B build`) — the
-  defaults below. Audio-output and decoder options ship OFF so unit
-  tests, headless servers, and audio-analysis use cases get a small
-  binary with no platform/codec dependencies.
+The audio backend + WAV/OGG/FLAC decoders default ON because the
+overwhelmingly common use case (Godot adopter, C++ game embedding the
+engine) wants them. They're zero-system-dependency: miniaudio,
+dr_wav, dr_flac, and stb_vorbis are all single-header drops fetched
+on demand by `scripts/fetch_*.{sh,bat}` or by CMake's `FetchContent`
+fallback (controlled by `AUDIO_ENGINE_FETCH_*=ON`, also default).
 
-- **Godot binding** (`cmake -S godot -B build-godot`, what
-  `bootstrap.sh` and the release pipeline use) — additional options
-  default ON because a Godot adopter needs sound output and the
-  common decoders. Specifically, the bootstrap script and CI
-  workflows pass `-DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
-  -DAUDIO_ENGINE_DECODERS_WAV=ON -DAUDIO_ENGINE_DECODERS_OGG=ON
-  -DAUDIO_ENGINE_DECODERS_FLAC=ON`. **From v0.11.8 onward, Linux +
-  macOS Godot builds also enable `-DAUDIO_ENGINE_DECODERS_OPUS=ON
-  -DAUDIO_ENGINE_VOICE_OPUS=ON`** (libopusfile + libopus installed
-  via apt / brew during CI). Windows Godot builds keep Opus OFF for
-  now — vcpkg integration is a follow-up.
+To opt out — for a minimal embedded-engine build, an audio analysis
+tool, or an air-gapped checkout where FetchContent can't reach the
+network — pass the inverse: `-DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+-DAUDIO_ENGINE_DECODERS_WAV=OFF -DAUDIO_ENGINE_DECODERS_OGG=OFF
+-DAUDIO_ENGINE_DECODERS_FLAC=OFF`. The C++ static library released
+on the GitHub Releases page (`gool-X.Y.Z-PLATFORM.tar.gz` — distinct
+from the Godot addon archive) is built this way, since C++ embedders
+typically want minimal.
 
-| Option                              | Library default | Godot binding default | Effect                                     |
-|-------------------------------------|-----------------|------------------------|--------------------------------------------|
-| `AUDIO_ENGINE_BUILD_TESTS`          | ON              | n/a                   | Build unit tests (`tests/unit/`)           |
-| `AUDIO_ENGINE_BUILD_EXAMPLES`       | ON              | n/a                   | Build examples (`examples/`)               |
-| `AUDIO_ENGINE_BACKEND_MINIAUDIO`    | OFF             | **ON**                | Cross-platform device output via miniaudio |
-| `AUDIO_ENGINE_VOICE_OPUS`           | OFF             | **ON** (Linux/macOS)  | Opus codec for voice chat                  |
-| `AUDIO_ENGINE_DECODERS_WAV`         | OFF             | **ON**                | WAV file decoding (dr_wav)                 |
-| `AUDIO_ENGINE_DECODERS_OGG`         | OFF             | **ON**                | Ogg Vorbis decoding (stb_vorbis)           |
-| `AUDIO_ENGINE_DECODERS_FLAC`        | OFF             | **ON**                | FLAC decoding (dr_flac)                    |
-| `AUDIO_ENGINE_DECODERS_OPUS`        | OFF             | **ON** (Linux/macOS)  | Ogg Opus file decoding (libopusfile)       |
-| `AUDIO_ENGINE_SHARED`               | OFF             | n/a                   | Build as shared library                    |
-
-For the engine library standalone, all audio-relevant flags default
-OFF — pick what you need. For a Godot-side build, `bootstrap.sh`
-turns the right ones on automatically. See [SETUP.md](SETUP.md) for
-the manual flags if you're not using bootstrap.
+`AUDIO_ENGINE_VOICE_OPUS` and `AUDIO_ENGINE_DECODERS_OPUS` stay OFF
+by default in CMakeLists.txt. Voice chat brings in libopus
+(CMake-friendly, but non-trivial build time via FetchContent if not
+vendored). `.opus`-file playback brings in libopusfile (autotools,
+no FetchContent path — has to come from the system package manager:
+`apt install libopusfile-dev` / `brew install opusfile` / `vcpkg
+install opusfile`). The Godot release pipeline enables both on all
+three shipping platforms automatically (Linux via apt, macOS via
+brew, Windows via vcpkg with the `x64-windows-static-md` triplet so
+the libs link statically into the addon DLL with no extra runtime
+deps). Standalone-library users opt in by hand.
 
 ### Dependencies
 

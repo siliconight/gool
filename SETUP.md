@@ -418,35 +418,50 @@ and press Play.
 
 ## Optional features
 
-The engine has several opt-in build flags. By default everything is
-OFF — the core engine ships only with the silent `NullAudioBackend`,
-which is enough for unit tests and headless servers but doesn't
-produce sound. For a Godot-side build, you almost certainly want at
-least the miniaudio backend.
+The engine has several build flags. As of v0.11.9, the audio
+backend + WAV/OGG/FLAC decoders **default ON** because that's what
+Godot adopters and most C++ embedders need. Opus codecs default OFF
+because they require system packages (libopusfile is autotools, no
+FetchContent fallback). The C++ static library archive on the
+Releases page is built with everything OFF for embedders who prefer
+minimal.
 
 | CMake flag                       | Default | What it enables                         | Extra dependency             |
 |----------------------------------|---------|------------------------------------------|------------------------------|
-| `AUDIO_ENGINE_BACKEND_MINIAUDIO` | OFF     | Cross-platform audio device output      | `miniaudio.h` (fetch script) |
-| `AUDIO_ENGINE_DECODERS_WAV`      | OFF     | WAV file decoding                        | `dr_wav.h` (fetch script)    |
-| `AUDIO_ENGINE_DECODERS_OGG`      | OFF     | Ogg Vorbis decoding                      | `stb_vorbis.c` (fetch script)|
-| `AUDIO_ENGINE_DECODERS_FLAC`     | OFF     | FLAC decoding                            | `dr_flac.h` (fetch script)   |
+| `AUDIO_ENGINE_BACKEND_MINIAUDIO` | **ON**  | Cross-platform audio device output      | `miniaudio.h` (fetch script) |
+| `AUDIO_ENGINE_DECODERS_WAV`      | **ON**  | WAV file decoding                        | `dr_wav.h` (fetch script)    |
+| `AUDIO_ENGINE_DECODERS_OGG`      | **ON**  | Ogg Vorbis decoding                      | `stb_vorbis.c` (fetch script)|
+| `AUDIO_ENGINE_DECODERS_FLAC`     | **ON**  | FLAC decoding                            | `dr_flac.h` (fetch script)   |
 | `AUDIO_ENGINE_DECODERS_OPUS`     | OFF     | Ogg Opus file decoding                   | `libopusfile` (system pkg)   |
 | `AUDIO_ENGINE_VOICE_OPUS`        | OFF     | Opus codec for voice chat                | `libopus` (system / fetch)   |
 | `AUDIO_ENGINE_BUILD_TESTS`       | ON      | Build unit tests                         | none                         |
 | `AUDIO_ENGINE_BUILD_EXAMPLES`    | ON      | Build C++ examples                       | none                         |
 | `AUDIO_ENGINE_SHARED`            | OFF     | Build engine as shared library           | none                         |
 
-For a typical Godot-side build with everything sensible on:
+The fetched headers (`miniaudio.h`, `dr_wav.h`, `dr_flac.h`,
+`stb_vorbis.c`) come from `scripts/fetch_*.{sh,bat}` if you've run
+them, or from CMake's `FetchContent` fallback (controlled by
+`AUDIO_ENGINE_FETCH_*=ON`, default) if you haven't. The fetch
+scripts are friendlier to repeat builds; FetchContent is what runs
+on a fresh checkout via `cmake -S . -B build` with no flags.
+
+For air-gapped builds where FetchContent can't reach the network,
+either run the fetch scripts manually first OR pass
+`-DAUDIO_ENGINE_FETCH_*=OFF` and supply the headers yourself.
+
+For a Godot-side build with the v0.11.9 defaults, no audio flags
+need to be passed:
 
 ```bash
 cmake -S godot -B build-godot \
     -DGODOT_CPP_PATH=../godot-cpp \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON \
-    -DAUDIO_ENGINE_DECODERS_WAV=ON \
-    -DAUDIO_ENGINE_DECODERS_OGG=ON \
-    -DAUDIO_ENGINE_DECODERS_FLAC=ON
+    -DCMAKE_BUILD_TYPE=Release
 ```
+
+The miniaudio backend + WAV/OGG/FLAC decoders are picked up
+automatically. Add `-DAUDIO_ENGINE_DECODERS_OPUS=ON
+-DAUDIO_ENGINE_VOICE_OPUS=ON` if you have libopusfile + libopus
+installed and want Opus support.
 
 ### Adding Opus support
 
@@ -464,21 +479,37 @@ you can mix and match.
 
 | Platform        | Command                                                     |
 |-----------------|-------------------------------------------------------------|
-| Windows (vcpkg) | `vcpkg install opusfile`                                    |
+| Windows (vcpkg) | `vcpkg install opusfile:x64-windows-static-md`              |
 | Windows (other) | Build from [xiph/opusfile](https://github.com/xiph/opusfile) |
 | macOS           | `brew install opusfile`                                     |
 | Ubuntu / Debian | `sudo apt install libopusfile-dev`                          |
 | Fedora          | `sudo dnf install opusfile-devel`                           |
 | Arch            | `sudo pacman -S opusfile`                                   |
 
-Windows users without vcpkg have the roughest path here — libopusfile
-uses autotools, not CMake, so it doesn't drop into a Visual Studio
-build cleanly. If you're not already using vcpkg, leave
-`AUDIO_ENGINE_DECODERS_OPUS=OFF` and use WAV/Vorbis/FLAC for now.
+For Windows, the `x64-windows-static-md` triplet links libopusfile
+statically into your addon binary while keeping the dynamic CRT
+(matches godot-cpp's default), so the resulting DLL has no extra
+runtime dependencies. The Godot release pipeline uses the same
+triplet — adopters downloading Track A's Windows addon archive don't
+need vcpkg installed.
+
+If you're building locally on Windows with `bootstrap.ps1`, add the
+toolchain file to your cmake invocation:
+
+```powershell
+cmake -S godot -B build-godot `
+    -DGODOT_CPP_PATH=../godot-cpp `
+    -DCMAKE_BUILD_TYPE=Release `
+    -DAUDIO_ENGINE_DECODERS_OPUS=ON `
+    -DAUDIO_ENGINE_VOICE_OPUS=ON `
+    -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+    -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+```
 
 After installing, add `-DAUDIO_ENGINE_DECODERS_OPUS=ON` to your CMake
 invocation. CMake will find libopusfile via `find_package(OpusFile)`
-or `pkg-config opusfile` (whichever your install registered with).
+or `pkg-config opusfile` (whichever your install registered with),
+or via the vcpkg toolchain file on Windows.
 
 #### Installing libopus (for voice chat)
 

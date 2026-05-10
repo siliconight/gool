@@ -89,7 +89,21 @@ jobs:
       # ============================================================
 
       - name: Configure (C++ library)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUDIO_ENGINE_BUILD_EXAMPLES=OFF -DAUDIO_ENGINE_BUILD_TESTS=OFF -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+        # The C++ static-library archive is for users embedding
+        # audio_engine in their own C++ project. They typically want
+        # a minimal core (silent backend, no decoders) and link
+        # whatever they need themselves. As of v0.11.9 the
+        # CMakeLists.txt defaults are ON for these flags (Godot-side
+        # adopters benefit), so this job explicitly forces them back
+        # OFF to preserve the embedder-friendly static lib's character.
+        run: cmake -S . -B build
+              -DCMAKE_BUILD_TYPE=Release
+              -DAUDIO_ENGINE_BUILD_EXAMPLES=OFF
+              -DAUDIO_ENGINE_BUILD_TESTS=OFF
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+              -DAUDIO_ENGINE_DECODERS_WAV=OFF
+              -DAUDIO_ENGINE_DECODERS_OGG=OFF
+              -DAUDIO_ENGINE_DECODERS_FLAC=OFF
 
       - name: Build (C++ library)
         run: cmake --build build --config Release --target audio_engine --parallel
@@ -181,10 +195,15 @@ jobs:
       # Optional Opus support (DECODERS_OPUS + VOICE_OPUS)
       #
       # libopusfile is autotools, no CMake-friendly FetchContent path
-      # — has to come from the system package manager. Linux + macOS
-      # are easy (apt / brew); Windows requires vcpkg integration which
-      # is deferred to a follow-up iteration. Linux + macOS adopters get
-      # `.opus` file decoding + Opus voice chat out of the box.
+      # — has to come from the system package manager. All three
+      # platforms covered as of v0.11.10:
+      #   - Linux:   apt install libopusfile-dev libopus-dev
+      #   - macOS:   brew install opusfile opus
+      #   - Windows: vcpkg install opusfile:x64-windows-static-md opus:...
+      #              with the static-md triplet so the libs link into
+      #              gool_godot.dll without dragging extra DLLs into
+      #              the addon zip. windows-latest has vcpkg
+      #              preinstalled at C:\vcpkg.
       # ============================================================
 
       - name: Install Opus dependencies (Linux)
@@ -197,14 +216,31 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install opusfile opus
 
+      - name: Cache vcpkg-installed packages (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: C:/vcpkg/installed
+          # Bump trailing version when vcpkg's opus/opusfile portfiles
+          # change in a way that requires invalidating the cached binaries.
+          key: vcpkg-windows-opus-static-md-v1
+
+      - name: Install Opus dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          vcpkg install opusfile:x64-windows-static-md opus:x64-windows-static-md
+
       - name: Configure GDExtension
         shell: bash
         run: |
-          # Linux + macOS get Opus decoders + voice chat enabled. Windows
-          # stays OFF for this iteration (vcpkg integration is a follow-up).
-          OPUS_FLAGS=""
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            OPUS_FLAGS="-DAUDIO_ENGINE_DECODERS_OPUS=ON -DAUDIO_ENGINE_VOICE_OPUS=ON"
+          # All three platforms now ship the addon binary with Opus
+          # support enabled. Windows additionally needs the vcpkg
+          # toolchain file so find_package(OpusFile) picks up the
+          # static-md-triplet packages.
+          TOOLCHAIN_FLAG=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            TOOLCHAIN_FLAG="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
           fi
           cmake -S godot -B build-godot \
               -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \
@@ -213,7 +249,9 @@ jobs:
               -DAUDIO_ENGINE_DECODERS_WAV=ON \
               -DAUDIO_ENGINE_DECODERS_OGG=ON \
               -DAUDIO_ENGINE_DECODERS_FLAC=ON \
-              ${OPUS_FLAGS}
+              -DAUDIO_ENGINE_DECODERS_OPUS=ON \
+              -DAUDIO_ENGINE_VOICE_OPUS=ON \
+              ${TOOLCHAIN_FLAG}
 
       - name: Build GDExtension
         run: cmake --build build-godot --config Release --parallel

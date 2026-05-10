@@ -36,11 +36,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        # CI runs the silent NullAudioBackend — the test suite doesn't
-        # need a real audio device. Miniaudio is opt-in for local
-        # builds (see SETUP.md); CI keeps it off so the build doesn't
-        # depend on FetchContent network reliability.
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+        # CI's build-and-test job intentionally compiles the MINIMAL
+        # engine configuration: silent NullAudioBackend, no decoders.
+        # As of v0.11.9, those flags default ON in CMakeLists.txt
+        # (better experience for Godot adopters running cmake -S .),
+        # so this job overrides them back to OFF explicitly. The
+        # invariant: catch any code that accidentally requires
+        # miniaudio or a specific decoder for the core library to
+        # compile. The build-gdextension job below proves the full
+        # config compiles; the release.yml pipeline tests the full
+        # config end-to-end.
+        run: cmake -S . -B build
+              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+              -DAUDIO_ENGINE_DECODERS_WAV=OFF
+              -DAUDIO_ENGINE_DECODERS_OGG=OFF
+              -DAUDIO_ENGINE_DECODERS_FLAC=OFF
 
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
@@ -133,14 +144,27 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install opusfile opus
 
+      - name: Cache vcpkg-installed packages (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: C:/vcpkg/installed
+          key: vcpkg-windows-opus-static-md-v1
+
+      - name: Install Opus dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          vcpkg install opusfile:x64-windows-static-md opus:x64-windows-static-md
+
       - name: Configure GDExtension
         shell: bash
         run: |
-          # Linux + macOS get Opus decoders + voice chat enabled. Windows
-          # stays OFF for this iteration (vcpkg integration is a follow-up).
-          OPUS_FLAGS=""
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            OPUS_FLAGS="-DAUDIO_ENGINE_DECODERS_OPUS=ON -DAUDIO_ENGINE_VOICE_OPUS=ON"
+          # All three platforms verify the Opus-enabled build compiles.
+          # Windows uses vcpkg's toolchain file for find_package(OpusFile).
+          TOOLCHAIN_FLAG=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            TOOLCHAIN_FLAG="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
           fi
           cmake -S godot -B build-godot \
               -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \
@@ -149,7 +173,9 @@ jobs:
               -DAUDIO_ENGINE_DECODERS_WAV=ON \
               -DAUDIO_ENGINE_DECODERS_OGG=ON \
               -DAUDIO_ENGINE_DECODERS_FLAC=ON \
-              ${OPUS_FLAGS}
+              -DAUDIO_ENGINE_DECODERS_OPUS=ON \
+              -DAUDIO_ENGINE_VOICE_OPUS=ON \
+              ${TOOLCHAIN_FLAG}
 
       - name: Build GDExtension
         run: cmake --build build-godot --config Release --parallel

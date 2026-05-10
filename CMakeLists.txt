@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.11.8
+    VERSION 0.11.10
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -37,16 +37,16 @@ option(AUDIO_ENGINE_SHARED   "Build audio_engine as a shared library"  OFF)
 option(AUDIO_ENGINE_BUILD_EXAMPLES "Build examples" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_BUILD_TESTS    "Build unit tests" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O). Required for the audible examples (playback, hello_audio); the core library and tests build without it." OFF)
+option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O). Required for the audible examples (playback, hello_audio); the core library and tests build without it." ON)
 option(AUDIO_ENGINE_FETCH_MINIAUDIO   "Fetch miniaudio via FetchContent if not vendored locally" ON)
 
 # File-format decoders. Each is independent and off by default to keep the
 # core library dependency-free. When ON, the corresponding decoder TU pulls
 # in its single-header library (dr_wav / stb_vorbis / dr_flac) located either
 # under third_party/ or fetched via FetchContent.
-option(AUDIO_ENGINE_DECODERS_WAV   "Compile WAV decoder (uses dr_wav)"        OFF)
-option(AUDIO_ENGINE_DECODERS_OGG   "Compile Ogg Vorbis decoder (uses stb_vorbis)" OFF)
-option(AUDIO_ENGINE_DECODERS_FLAC  "Compile FLAC decoder (uses dr_flac)"      OFF)
+option(AUDIO_ENGINE_DECODERS_WAV   "Compile WAV decoder (uses dr_wav)"        ON)
+option(AUDIO_ENGINE_DECODERS_OGG   "Compile Ogg Vorbis decoder (uses stb_vorbis)" ON)
+option(AUDIO_ENGINE_DECODERS_FLAC  "Compile FLAC decoder (uses dr_flac)"      ON)
 option(AUDIO_ENGINE_DECODERS_OPUS  "Compile Ogg Opus file decoder (links libopusfile)" OFF)
 option(AUDIO_ENGINE_FETCH_DECODERS "Fetch dr_libs / stb via FetchContent if not vendored locally" ON)
 
