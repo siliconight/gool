@@ -1,10 +1,14 @@
+<p align="center">
+  <img src="docs/branding/gool_bone_mark.png" alt="gool" width="360">
+</p>
+
 # gool
 
 [![CI](https://github.com/siliconight/gool/actions/workflows/ci.yml/badge.svg)](https://github.com/siliconight/gool/actions/workflows/ci.yml)
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.11 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.14 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -308,6 +312,53 @@ positional emitters and a linear bus tree are the whole story.
 The moment you need any one row of that table, you're shopping
 for middleware. `gool` is the option that doesn't make you leave
 Godot to find it.
+
+---
+
+## Open by design — and AI-readable
+
+Open source isn't just a license tier; it's an integration model. When
+the engine surprises you, you can read the code that produced the
+surprise. When the README claims "97.8% audible-frame continuity at
+10% loss / 50 ms jitter," you can open
+[`tests/unit/jitter_buffer_test.cpp`](tests/unit/jitter_buffer_test.cpp)
+and check the methodology. When you need behavior the engine doesn't
+yet ship — a custom spatializer, a different priority-eviction policy,
+a specialized voice codec — the seams are there and the existing
+implementations sit right next to them as worked examples. The
+[Apache 2.0 license](LICENSE) covers forking the whole thing if you
+need to take it further.
+
+Closed middleware is a black box by necessity: vendor support is the
+only debug path, and what the docs cover is what you get. Both models
+work for different teams. An indie shipping their first multiplayer
+title usually benefits more from "I can step into this in my debugger
+and read the comments" than from "I can file a P3 bug with a vendor."
+
+### What changes in the AI-tooling era
+
+Open code compounds with AI-assisted engineering. Coding agents (Claude
+Code, Cursor, Copilot, etc.) can read the engine's full implementation,
+understand its architecture, and generate integration code against the
+actual API surface — not just public docs. With this codebase in
+context, an agent can:
+
+- **Implement an `IAudioBackend`** against your existing audio output
+  layer, matching the patterns in `NullAudioBackend` and
+  `MiniaudioBackend`.
+- **Write tests for your specific packet pattern** by reading
+  [`docs/multiplayer.md`](docs/multiplayer.md) and the existing
+  jitter-buffer tests as worked examples.
+- **Trace surprising behavior** through the actual code path
+  (`SubmitEvent` → `Update` → drain → spatializer → mixer command →
+  render thread) rather than guessing from API names.
+- **Propose a fix** to a bug it can see firsthand, with the trade-offs
+  visible in code rather than reverse-engineered from a stack trace.
+
+With closed middleware the agent works from headers and public docs
+only. It can scaffold integration, but it can't verify its own
+suggestions against the implementation, and it can't propose fixes
+for behavior it can't see.
 
 ---
 

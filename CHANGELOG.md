@@ -12,6 +12,201 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.14] - 2026-05-10
+
+**CI fix.** Four `.cpp` files existed on disk and were referenced by
+compiled code but were never added to `AUDIO_ENGINE_SOURCES` in
+`CMakeLists.txt`. The library shipped missing symbols; every test
+and example target that linked against `audio_engine.lib` failed
+with `LNK2019` (Windows) / `undefined reference` (Linux, macOS) at
+link time. CI has been red on this for v0.11.7 through v0.11.13.
+
+### Root cause
+
+Windows CI log surfaced the cascade most cleanly:
+
+```
+audio_engine.lib(bus_graph.obj) : error LNK2019: unresolved external
+symbol "public: __cdecl audio::SaturationEffect::SaturationEffect(
+struct audio::SaturationConfig const &)" referenced in function
+"private: enum audio::AudioResult __cdecl audio::BusGraph::
+BuildEffectsForBus(...)"
+```
+
+`SaturationEffect`'s constructor is defined in
+`src/audio_engine/dsp/saturation_effect.cpp`. `bus_graph.cpp` calls
+it via `std::make_unique<SaturationEffect>(cfg)`. With
+`saturation_effect.cpp` missing from `AUDIO_ENGINE_SOURCES`, the
+`audio_engine` library shipped without that symbol, and every
+downstream target failed to link.
+
+Three more files were in the same state, surfacing as separate
+errors in jobs that exercise their code paths:
+
+- `src/audio_engine/runtime/telemetry.cpp` — defines
+  `RingTelemetrySink::Size()`, used by the `audio_engine_telemetry`
+  example
+- `src/audio_engine/runtime/bus_config_loader.cpp` — defines
+  `BusConfigLoader::ParseFromJson()`, used by
+  `tests/unit/bus_config_loader_test.cpp`
+- `src/audio_engine/runtime/logging.cpp` — defines
+  `JsonLinesLoggingSink::Write()` etc., used by `audio_runtime.cpp`
+
+### Why local regression missed this
+
+The pre-existing sandbox regression compiled the audio_engine
+library by running `g++ -c` over every `.cpp` file under `src/`
+(via `find src -name "*.cpp"`). This compiles files that CMake
+*deliberately excludes* (like `miniaudio_backend.cpp` when
+`AUDIO_ENGINE_BACKEND_MINIAUDIO=OFF`) **and** files that CMake
+*accidentally excludes* (like the four above). The regression said
+"all tests pass" while a CMake build would fail at link time.
+
+**The regression methodology was lying.** It validated only that
+the source tree compiles together, not that the source tree CMake
+chooses to compile is sufficient.
+
+### Fixed
+
+- **`CMakeLists.txt`** — added the four missing files to
+  `AUDIO_ENGINE_SOURCES`:
+    - `src/audio_engine/dsp/saturation_effect.cpp` (after
+      `reverb_effect.cpp`)
+    - `src/audio_engine/runtime/bus_config_loader.cpp` (after
+      `audio_runtime.cpp`)
+    - `src/audio_engine/runtime/logging.cpp` (after
+      `bus_config_loader.cpp`)
+    - `src/audio_engine/runtime/telemetry.cpp` (after
+      `replication_rate_limiter.cpp`)
+
+  Library went from 33 to 37 object files. Headers don't
+  inline-define methods, so no risk of multiple-definition
+  errors.
+
+### Process change
+
+The local regression now compiles **only** the files listed in
+`AUDIO_ENGINE_SOURCES` (read from `CMakeLists.txt` at regression
+time), mirroring what CMake will actually compile. This means
+future "extra" files left out of `AUDIO_ENGINE_SOURCES` will be
+caught locally with the same link error CI would surface. Test
+methodology and CI now produce the same library.
+
+### Verified locally
+
+- Reproduced the exact `LNK2019` / `undefined reference to
+  audio::SaturationEffect::SaturationEffect` error by linking
+  `production_readiness_test` against a library built from the
+  *old* (33-file) `AUDIO_ENGINE_SOURCES`.
+- Confirmed the fix: with the 4 files added (37-file library),
+  link succeeds, `production_readiness_test` runs and passes.
+- Full regression in CMake-source-list mode: **36/36 tests
+  passing**. Ducking baseline still locked at -17.20 dB.
+
+### Expected CI impact
+
+The `engine / {ubuntu, macos, windows} / Release` jobs should now
+pass their build step and progress to ctest, which should produce
+36 passing tests.
+
+The `gdextension / {linux, macos, windows}` jobs are independent
+failures — different root causes (scons / godot-cpp on
+Linux/macOS, find_package(OpusFile) under vcpkg on Windows). Those
+need their own log excerpts to diagnose and will be addressed in a
+subsequent release.
+
+## [0.11.13] - 2026-05-10
+
+Positioning. New README section "Open by design — and AI-readable"
+articulates the open-source advantage as an integration model rather
+than just a license tier. No code changes; documentation only.
+
+### Background
+
+The README's "Why not Godot's built-in audio?" section already
+covers the differentiator vs Godot's native audio path. The
+parallel "why not closed middleware (FMOD / Wwise)" angle was
+implicit — `What you get → For your production` mentioned "no
+middleware licensing fees" but didn't articulate the larger point:
+when middleware is closed, debugging stops at the vendor's bug
+tracker and adapting it to your game stops at whatever extension
+points the vendor exposes. With open code, both have a path
+forward.
+
+The AI-tooling angle compounds this in 2026. Coding agents (Claude
+Code, Cursor, Copilot, etc.) can read the full implementation,
+generate integration code against the actual API surface, and
+propose fixes for behavior they can see firsthand. With closed
+middleware those agents work from headers and public docs only —
+they can scaffold integration, but can't verify their own
+suggestions against the implementation.
+
+### Added
+
+- **`README.md` — new "Open by design — and AI-readable" section**,
+  positioned after "Why not Godot's built-in audio?" and before
+  "Reader-specific guides". Two parts:
+    - Prose paragraph on the open-source-as-integration-model
+      argument: read code that produced surprising behavior, verify
+      claims against tests in the repo, fork via Apache 2.0 if
+      needed.
+    - Sub-section "What changes in the AI-tooling era" with concrete
+      bulleted examples of what an agent with the codebase in
+      context can do (implement a backend, generate tests, trace
+      behavior through the actual code path, propose fixes with
+      trade-offs visible).
+  ~50 lines added; no other README sections touched.
+
+### Tests
+
+- 36/36 passing. Ducking baseline locked at -17.20 dB. No engine
+  code touched.
+
+### Suggested follow-ups (not in this release)
+
+- **Add a row to the "What you get → For your engineers" bucket**
+  surfacing the same point in the at-a-glance feature list. Skipped
+  for this release to keep the change focused; the dedicated
+  section carries the full argument.
+- **Cross-link from the Asset Library submission template** if /
+  when that lands — same point, different audience.
+
+## [0.11.12] - 2026-05-10
+
+Branding. The repo now has an official logo mark, displayed at the
+top of the README. No code changes; documentation/asset only.
+
+### Added
+
+- **`docs/branding/gool_bone_mark.png`** — primary brand mark
+  (1536×1024, 234 KB, sepia-on-black). Skull-with-headphones
+  inside a thorn/bone-spike halo. Works on both GitHub light and
+  dark themes without needing a separate light-mode variant
+  thanks to the dark vignette already in the image.
+
+- **README hero block** — centered logo at 360px width, placed
+  above the `# gool` H1. Uses `<p align="center"><img></p>`
+  (the standard GitHub-Markdown idiom for centered images).
+
+### Tests
+
+- 36/36 passing. Ducking baseline locked at -17.20 dB. No engine
+  code touched.
+
+### Suggested follow-ups
+
+- **GitHub social preview** — upload the same image (or a
+  centered-crop variant) at **Settings → General → Social
+  preview**. This controls the Open Graph image rendered when
+  the repo is linked from Discord, Twitter, etc. Manual upload,
+  not part of the repo files.
+- **Asset Library banner** — when submitting to godotengine.org/
+  asset-library, the same mark works as the asset thumbnail.
+- **Light-mode variant** — if a future asset is high-contrast
+  enough to need it, add `gool_bone_mark_light.png` and switch
+  the README to a `<picture>` element with
+  `prefers-color-scheme` queries. Not needed for this image.
+
 ## [0.11.11] - 2026-05-10
 
 One-line install. Closes the last bit of friction in the Track A
@@ -2442,7 +2637,10 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.11...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.14...HEAD
+[0.11.14]: https://github.com/siliconight/gool/releases/tag/v0.11.14
+[0.11.13]: https://github.com/siliconight/gool/releases/tag/v0.11.13
+[0.11.12]: https://github.com/siliconight/gool/releases/tag/v0.11.12
 [0.11.11]: https://github.com/siliconight/gool/releases/tag/v0.11.11
 [0.11.10]: https://github.com/siliconight/gool/releases/tag/v0.11.10
 [0.11.9]: https://github.com/siliconight/gool/releases/tag/v0.11.9

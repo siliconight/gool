@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.11.11
+    VERSION 0.11.14
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -90,6 +90,7 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/dsp/biquad_filter.cpp
     src/audio_engine/dsp/compressor.cpp
     src/audio_engine/dsp/reverb_effect.cpp
+    src/audio_engine/dsp/saturation_effect.cpp
     src/audio_engine/decoders/decoder_factory.cpp
     src/audio_engine/decoders/resampling_decoder.cpp
     src/audio_engine/decoders/wav_decoder.cpp
@@ -99,8 +100,11 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/backend/null_audio_backend.cpp
     src/audio_engine/orchestrator/sequence_player.cpp
     src/audio_engine/runtime/audio_runtime.cpp
+    src/audio_engine/runtime/bus_config_loader.cpp
+    src/audio_engine/runtime/logging.cpp
     src/audio_engine/runtime/music_channel.cpp
     src/audio_engine/runtime/replication_rate_limiter.cpp
+    src/audio_engine/runtime/telemetry.cpp
     src/audio_engine/default_bounds_validator.cpp
     src/audio_engine/version.cpp
 )
