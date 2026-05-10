@@ -16,6 +16,7 @@ enum class AudioFileFormat : uint8_t {
     Wav,
     OggVorbis,
     Flac,
+    Opus,
 };
 
 } // namespace audio

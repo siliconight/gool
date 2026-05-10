@@ -1,0 +1,425 @@
+// tests/unit/bus_config_loader_test.cpp
+//
+// Pure C++ tests for the JSON → BusGraphConfig translator. No
+// Godot dependency. Verifies:
+//
+//   1. Minimal valid config parses (single Master bus).
+//   2. Multi-tier ducking config (Master / SfxAll / LocalSfx /
+//      RemoteSfx / Music) parses with correct parent + sidechain
+//      references resolved by name.
+//   3. Every effect kind round-trips its fields.
+//   4. category_routing maps to correct BusIds.
+//   5. Malformed JSON returns ok=false with line number.
+//   6. Unknown effect kind returns descriptive error.
+//   7. Unresolved bus reference (parent or sidechain_bus) returns
+//      descriptive error.
+//   8. The parsed BusGraphConfig actually initializes a real
+//      AudioRuntime — i.e. the engine accepts what we produced.
+
+#include "audio_engine/bus_config_loader.h"
+#include "audio_engine/audio_runtime.h"
+#include "audio_engine/backend.h"
+#include "audio_engine/backend/null_audio_backend.h"
+#include "audio_engine/bus.h"
+
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <string>
+#include <string_view>
+
+using namespace audio;
+
+namespace {
+
+#define EXPECT(cond) do {                                                       \
+        if (!(cond)) {                                                          \
+            std::fprintf(stderr, "FAIL: %s @ %s:%d\n", #cond, __FILE__, __LINE__); \
+            std::abort();                                                       \
+        }                                                                       \
+    } while (0)
+
+#define EXPECT_OK(r) do {                                                       \
+        if (!(r).ok) {                                                          \
+            std::fprintf(stderr, "FAIL: parse error '%s' on line %d @ %s:%d\n", \
+                          (r).error.c_str(), (r).errorLine, __FILE__, __LINE__); \
+            std::abort();                                                       \
+        }                                                                       \
+    } while (0)
+
+// =============================================================================
+// 1. Minimal config: single Master.
+// =============================================================================
+void TestMinimalConfig() {
+    std::printf("  [minimal config: single Master bus]\n");
+    constexpr std::string_view json = R"({
+        "buses": [
+            { "name": "Master", "gain_db": 0.0 }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(r);
+    EXPECT(r.busGraph.busCount == 1);
+    EXPECT(r.busGraph.buses[kBusMaster].id == kBusMaster);
+    EXPECT(r.busGraph.buses[kBusMaster].parent == kBusMaster);
+    EXPECT(r.busGraph.buses[kBusMaster].outputGainDb == 0.0f);
+    EXPECT(r.busGraph.buses[kBusMaster].effectCount == 0);
+    std::printf("    OK (1 bus, no effects)\n");
+}
+
+// =============================================================================
+// 2. Multi-tier ducking shape from examples/multi_tier_ducking.
+// =============================================================================
+void TestMultiTierDuckingShape() {
+    std::printf("  [multi-tier ducking: Master/Music/SfxAll/Local/Remote]\n");
+    // The exact L4D2-style shape: music ducks under LocalSfx, and
+    // RemoteSfx also ducks under LocalSfx. The local player's gun
+    // therefore wins over both music AND teammates' guns.
+    constexpr std::string_view json = R"({
+        "buses": [
+            { "name": "Master",   "gain_db": 0.0 },
+            { "name": "Music",    "parent": "Master", "gain_db": -3.0,
+              "effects": [
+                { "kind": "compressor",
+                  "threshold_db": -30.0, "ratio": 8.0,
+                  "attack_ms": 5.0, "release_ms": 250.0,
+                  "sidechain_bus": "LocalSfx" }
+              ] },
+            { "name": "SfxAll",   "parent": "Master" },
+            { "name": "LocalSfx", "parent": "SfxAll" },
+            { "name": "RemoteSfx","parent": "SfxAll",
+              "effects": [
+                { "kind": "compressor",
+                  "threshold_db": -30.0, "ratio": 8.0,
+                  "attack_ms": 5.0, "release_ms": 250.0,
+                  "sidechain_bus": "LocalSfx" }
+              ] }
+        ],
+        "category_routing": {
+            "music": "Music",
+            "sfx":   "LocalSfx"
+        }
+    })";
+    auto r = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(r);
+    EXPECT(r.busGraph.busCount == 5);
+
+    // Master at id 0.
+    EXPECT(r.busGraph.buses[kBusMaster].id == kBusMaster);
+
+    // Find the buses by their debug names. Their assigned IDs are
+    // declaration-order with Master pinned to kBusMaster.
+    auto findIdByName = [&](const char* name) -> BusId {
+        for (uint32_t i = 0; i < r.busGraph.busCount; ++i) {
+            if (std::string(r.busGraph.buses[i].debugName) == name) {
+                return r.busGraph.buses[i].id;
+            }
+        }
+        return kInvalidBusId;
+    };
+    BusId music     = findIdByName("Music");
+    BusId sfxAll    = findIdByName("SfxAll");
+    BusId localSfx  = findIdByName("LocalSfx");
+    BusId remoteSfx = findIdByName("RemoteSfx");
+    EXPECT(music     != kInvalidBusId);
+    EXPECT(sfxAll    != kInvalidBusId);
+    EXPECT(localSfx  != kInvalidBusId);
+    EXPECT(remoteSfx != kInvalidBusId);
+
+    // Parent relationships.
+    EXPECT(r.busGraph.buses[music].parent     == kBusMaster);
+    EXPECT(r.busGraph.buses[sfxAll].parent    == kBusMaster);
+    EXPECT(r.busGraph.buses[localSfx].parent  == sfxAll);
+    EXPECT(r.busGraph.buses[remoteSfx].parent == sfxAll);
+
+    // Compressor on Music should sidechain to LocalSfx.
+    EXPECT(r.busGraph.buses[music].effectCount == 1);
+    EXPECT(r.busGraph.buses[music].effects[0].kind == EffectKind::Compressor);
+    EXPECT(r.busGraph.buses[music].effects[0].compressorSidechainBus == localSfx);
+    EXPECT(r.busGraph.buses[music].effects[0].compressorRatio == 8.0f);
+
+    // Compressor on RemoteSfx should also sidechain to LocalSfx.
+    EXPECT(r.busGraph.buses[remoteSfx].effectCount == 1);
+    EXPECT(r.busGraph.buses[remoteSfx].effects[0].compressorSidechainBus == localSfx);
+
+    // Category routing.
+    EXPECT(r.busGraph.categoryMap.music == music);
+    EXPECT(r.busGraph.categoryMap.sfx   == localSfx);
+    // Unmapped categories stay at master (struct default).
+    EXPECT(r.busGraph.categoryMap.voice    == kBusMaster);
+    EXPECT(r.busGraph.categoryMap.dialogue == kBusMaster);
+
+    std::printf("    OK (multi-tier sidechain refs resolved by name)\n");
+}
+
+// =============================================================================
+// 3. All effect kinds parse their fields.
+// =============================================================================
+void TestAllEffectKinds() {
+    std::printf("  [all 5 effect kinds parse their fields]\n");
+    constexpr std::string_view json = R"({
+        "buses": [
+            { "name": "Master",
+              "effects": [
+                { "kind": "gain",       "gain_db": -2.0 },
+                { "kind": "biquad",     "biquad_type": "highshelf",
+                  "cutoff_hz": 8000.0, "q": 0.7, "biquad_gain_db": 3.0 },
+                { "kind": "compressor", "threshold_db": -18.0, "ratio": 4.0,
+                  "attack_ms": 10.0,    "release_ms": 100.0,
+                  "knee_width_db": 6.0, "mix_ratio": 0.7,
+                  "max_reduction_db": 12.0, "sidechain_hpf_hz": 150.0,
+                  "hold_ms": 30.0,      "detection_mode": "rms" },
+                { "kind": "reverb",     "room_size": 0.6, "damping": 0.4, "wet_gain_db": -2.0 },
+                { "kind": "saturation", "drive": 1.5, "mix": 0.15,
+                  "output_gain": 0.85,  "bias": 0.05 }
+              ] }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(r);
+    const auto& m = r.busGraph.buses[kBusMaster];
+    EXPECT(m.effectCount == 5);
+
+    EXPECT(m.effects[0].kind == EffectKind::Gain);
+    EXPECT(m.effects[0].gainDb == -2.0f);
+
+    EXPECT(m.effects[1].kind == EffectKind::BiquadFilter);
+    EXPECT(m.effects[1].biquadType == BiquadType::HighShelf);
+    EXPECT(m.effects[1].biquadCutoffHz == 8000.0f);
+    EXPECT(m.effects[1].biquadGainDb == 3.0f);
+
+    EXPECT(m.effects[2].kind == EffectKind::Compressor);
+    EXPECT(m.effects[2].compressorThresholdDb     == -18.0f);
+    EXPECT(m.effects[2].compressorKneeWidthDb     == 6.0f);
+    EXPECT(m.effects[2].compressorMixRatio        == 0.7f);
+    EXPECT(m.effects[2].compressorMaxReductionDb  == 12.0f);
+    EXPECT(m.effects[2].compressorSidechainHpfHz  == 150.0f);
+    EXPECT(m.effects[2].compressorHoldMs          == 30.0f);
+    EXPECT(m.effects[2].compressorDetectionMode   ==
+           EffectConfig::CompressorDetectionMode::Rms);
+
+    EXPECT(m.effects[3].kind == EffectKind::Reverb);
+    EXPECT(m.effects[3].reverbRoomSize == 0.6f);
+    EXPECT(m.effects[3].reverbDamping  == 0.4f);
+
+    EXPECT(m.effects[4].kind == EffectKind::Saturation);
+    EXPECT(m.effects[4].saturationDrive      == 1.5f);
+    EXPECT(m.effects[4].saturationMix        == 0.15f);
+    EXPECT(m.effects[4].saturationOutputGain == 0.85f);
+    EXPECT(m.effects[4].saturationBias       == 0.05f);
+
+    std::printf("    OK (all effect kinds + their fields)\n");
+}
+
+// =============================================================================
+// 4. Engine integration: parsed config Initialize()s a real runtime.
+// =============================================================================
+void TestEndToEndInitialize() {
+    std::printf("  [end-to-end: parsed config drives a real AudioRuntime]\n");
+    constexpr std::string_view json = R"({
+        "buses": [
+            { "name": "Master" },
+            { "name": "Music",  "parent": "Master", "gain_db": -3.0,
+              "effects": [
+                { "kind": "compressor",
+                  "threshold_db": -30.0, "ratio": 8.0,
+                  "attack_ms": 5.0, "release_ms": 250.0,
+                  "sidechain_bus": "Sfx" }
+              ] },
+            { "name": "Sfx", "parent": "Master" }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(r);
+
+    AudioRuntime rt;
+    AudioConfig cfg;
+    cfg.sampleRate = 48000;
+    cfg.bufferSize = 256;
+    cfg.outputMode = AudioOutputMode::Stereo;
+    cfg.busGraph   = r.busGraph;
+
+    AudioRuntimeDependencies deps;
+    deps.backend = std::make_unique<NullAudioBackend>();
+    auto rc = rt.Initialize(cfg, std::move(deps));
+    EXPECT(rc == AudioResult::Success);
+    rt.Shutdown();
+    std::printf("    OK (engine accepted parsed config)\n");
+}
+
+// =============================================================================
+// 5. Malformed JSON returns ok=false with line number.
+// =============================================================================
+void TestMalformedJsonReportsLine() {
+    std::printf("  [malformed JSON: error has line number]\n");
+    // Syntactically invalid: missing closing brace.
+    constexpr std::string_view bad = R"({
+        "buses": [
+            { "name": "Master"
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(bad);
+    EXPECT(!r.ok);
+    EXPECT(!r.error.empty());
+    EXPECT(r.errorLine > 0);
+    std::printf("    error: '%s' at line %d\n", r.error.c_str(), r.errorLine);
+}
+
+// =============================================================================
+// 6. Unknown effect kind returns descriptive error.
+// =============================================================================
+void TestUnknownEffectKind() {
+    std::printf("  [unknown effect kind: error names the bad value]\n");
+    constexpr std::string_view bad = R"({
+        "buses": [
+            { "name": "Master",
+              "effects": [{ "kind": "magic_distortion" }] }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(bad);
+    EXPECT(!r.ok);
+    EXPECT(r.error.find("magic_distortion") != std::string::npos);
+    std::printf("    error: '%s'\n", r.error.c_str());
+}
+
+// =============================================================================
+// 7. Unresolved sidechain bus reference returns descriptive error.
+// =============================================================================
+void TestUnresolvedSidechainBus() {
+    std::printf("  [unresolved sidechain_bus: error names the missing bus]\n");
+    constexpr std::string_view bad = R"({
+        "buses": [
+            { "name": "Master" },
+            { "name": "Music", "parent": "Master",
+              "effects": [
+                { "kind": "compressor", "threshold_db": -20.0,
+                  "sidechain_bus": "DoesNotExist" }
+              ] }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(bad);
+    EXPECT(!r.ok);
+    EXPECT(r.error.find("DoesNotExist") != std::string::npos);
+    std::printf("    error: '%s'\n", r.error.c_str());
+}
+
+// =============================================================================
+// 8. Unresolved parent reference also errors.
+// =============================================================================
+void TestUnresolvedParent() {
+    std::printf("  [unresolved parent: error names the missing parent]\n");
+    constexpr std::string_view bad = R"({
+        "buses": [
+            { "name": "Master" },
+            { "name": "Music", "parent": "Nope" }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(bad);
+    EXPECT(!r.ok);
+    EXPECT(r.error.find("Nope") != std::string::npos);
+    std::printf("    error: '%s'\n", r.error.c_str());
+}
+
+// =============================================================================
+// 9. Tolerates unknown keys (forward-compat).
+// =============================================================================
+void TestForwardCompatUnknownKeys() {
+    std::printf("  [forward compat: unknown keys ignored, not failed]\n");
+    constexpr std::string_view json = R"({
+        "version": "v999",
+        "buses": [
+            { "name": "Master", "future_field": 42,
+              "effects": [{ "kind": "gain", "future_param": "test" }] }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(r);
+    EXPECT(r.busGraph.buses[kBusMaster].effectCount == 1);
+    std::printf("    OK (unknown keys skipped)\n");
+}
+
+// =============================================================================
+// 10. Backward-compat: old config without "buses" key still parses,
+//     producing an empty bus graph the engine auto-fills with
+//     master-only at Initialize.
+// =============================================================================
+void TestBackwardCompatNoBusesKey() {
+    std::printf("  [back-compat: no buses key → empty graph (engine auto-builds master)]\n");
+    constexpr std::string_view json = R"({
+        "sample_rate": 48000,
+        "buffer_size": 512
+    })";
+    auto r = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(r);
+    EXPECT(r.busGraph.busCount == 0);
+    std::printf("    OK (busCount=0; engine auto-builds master)\n");
+}
+
+// =============================================================================
+// 11. AudioRuntime::FindBusIdByName resolves buses by their debug
+//     name. Bridges the gap between code that knows bus names
+//     (configs, hosts) and code that needs BusId tokens.
+// =============================================================================
+void TestFindBusIdByName() {
+    std::printf("  [FindBusIdByName: resolves by debugName after Initialize]\n");
+    constexpr std::string_view json = R"({
+        "buses": [
+            { "name": "Master" },
+            { "name": "Music",    "parent": "Master" },
+            { "name": "LocalSfx", "parent": "Master" },
+            { "name": "RemoteSfx","parent": "Master" }
+        ]
+    })";
+    auto pr = BusConfigLoader::ParseFromJson(json);
+    EXPECT_OK(pr);
+
+    AudioRuntime rt;
+    AudioConfig cfg;
+    cfg.sampleRate = 48000;
+    cfg.bufferSize = 256;
+    cfg.outputMode = AudioOutputMode::Stereo;
+    cfg.busGraph   = pr.busGraph;
+    AudioRuntimeDependencies deps;
+    deps.backend = std::make_unique<NullAudioBackend>();
+    auto rc = rt.Initialize(cfg, std::move(deps));
+    EXPECT(rc == AudioResult::Success);
+
+    // Each name resolves to a valid, distinct BusId.
+    BusId master    = rt.FindBusIdByName("Master");
+    BusId music     = rt.FindBusIdByName("Music");
+    BusId localSfx  = rt.FindBusIdByName("LocalSfx");
+    BusId remoteSfx = rt.FindBusIdByName("RemoteSfx");
+    EXPECT(master    == kBusMaster);   // Master is always pinned to id 0
+    EXPECT(music     != kInvalidBusId);
+    EXPECT(localSfx  != kInvalidBusId);
+    EXPECT(remoteSfx != kInvalidBusId);
+    EXPECT(music     != localSfx);
+    EXPECT(localSfx  != remoteSfx);
+
+    // Unknown names return kInvalidBusId.
+    EXPECT(rt.FindBusIdByName("DoesNotExist") == kInvalidBusId);
+    EXPECT(rt.FindBusIdByName("")             == kInvalidBusId);
+
+    rt.Shutdown();
+    std::printf("    OK (4/4 resolved, unknowns return kInvalidBusId)\n");
+}
+
+} // namespace
+
+int main() {
+    std::printf("[bus_config_loader_test]\n");
+    TestMinimalConfig();
+    TestMultiTierDuckingShape();
+    TestAllEffectKinds();
+    TestEndToEndInitialize();
+    TestMalformedJsonReportsLine();
+    TestUnknownEffectKind();
+    TestUnresolvedSidechainBus();
+    TestUnresolvedParent();
+    TestForwardCompatUnknownKeys();
+    TestBackwardCompatNoBusesKey();
+    TestFindBusIdByName();
+    std::printf("[bus_config_loader_test] PASSED\n");
+    return 0;
+}

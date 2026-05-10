@@ -710,21 +710,105 @@ authoritative for replication but skips the mixer entirely.
 validates events from 32 clients without consuming any voice
 slot or mixer cycle; clients hear the validated audio.
 
-### 4.7 Telemetry hooks — **S**
+### 4.7 Telemetry hooks — **S** [SHIPPED in 0.6.0]
 
 **Outcome:** teams running real games can wire gool's stats into
 their existing observability stack (Prometheus, Datadog, custom
-analytics).
+analytics) at a configurable cadence, plus query in-process time
+series for debug overlays and post-mortems without leaving the
+process.
 
-**Work:**
-- `IRuntimeTelemetrySink` seam: sink receives stats counters at
-  configurable intervals, emits whatever format the host wants.
-- Default implementation: structured stdout / JSON lines.
-- Sample integration: Prometheus exposition format adapter.
+**Status:** Shipped. New `include/audio_engine/telemetry.h` exposes
+`IRuntimeTelemetrySink` plus three built-in implementations:
+`JsonLinesTelemetrySink` (one JSON object per emit to any `FILE*`),
+`PrometheusTelemetrySink` (thread-safe exposition-format snapshot
+for `/metrics` HTTP handlers, with HELP / TYPE blocks and per-category
+labels), and `RingTelemetrySink` (in-memory circular buffer of last
+N samples for time-series queries — at the default 250 ms cadence
+the default 512-sample capacity gives ~2 minutes of rolling history).
+Wired through `AudioRuntimeDependencies::telemetrySink` (host-owned
+raw pointer) and `AudioConfig::telemetryIntervalMs` (default 0 =
+disabled). Update step 12 emits via accumulator-based scheduling
+that catches up rather than dropping samples on long host frames,
+and wraps the sink call in `try`/`catch` so a misbehaving host sink
+can't break Update mid-flight. Working sample at
+`examples/telemetry/main.cpp`.
 
-**DoD:** running game emits jitter buffer continuity, eviction
-rate, bandwidth utilization to a Prometheus endpoint that a
-real-time dashboard scrapes.
+**DoD:** `tests/unit/telemetry_test.cpp` (9 sub-tests) covers each
+sink's output format, runtime emit cadence (9 samples over 1 s at
+100 ms — within ±1 expected slack), interval=0 disables emission,
+nullptr sink with non-zero interval is safe, end-to-end ring sink
+fed by runtime captures monotonic time series. Sample program runs
+end-to-end and produces a valid Prometheus exposition body that a
+real scrape endpoint can serve verbatim.
+
+**Limitations carried into the next iteration:**
+- Per-player voice metrics (jitter, packet loss per player) are not
+  pushed through the sink automatically. Cardinality is host-dependent
+  (player IDs come and go), so the sink interface only carries
+  global stats. Hosts that need per-player breakdowns iterate active
+  players themselves on the same cadence and call
+  `GetVoiceNetworkStats(playerId)` — pattern is self-evident from
+  the test setup but not codified in the sink interface yet. Could
+  be revisited with a `OnVoiceNetworkStats(playerId, stats)` hook
+  if real users need it.
+- No event-level structured logging. Counters tell you *that*
+  something happened; logging would tell you *why*. See 4.8 below.
+
+### 4.8 Event-level structured logging — **S** [SHIPPED in 0.7.0]
+
+**Outcome:** dev-loop visibility into individual events that drove
+counters: which voice packets were rejected and why, which one-shot
+got evicted, which RTPC binding hit its budget, which replication
+event the validator rejected. Distinct from telemetry (which
+aggregates state); same observability shape (host-supplied sink,
+configurable level, structured fields) but called per-event rather
+than per-interval.
+
+**Status:** Shipped. New `include/audio_engine/logging.h` exposes
+`IRuntimeLogSink` plus `JsonLinesLogSink` (one compact JSON object
+per event, atomic at FD level for typical line sizes) and
+`RingLogSink` (in-memory circular buffer of last N events for
+in-process queries — debug overlays, post-mortems, replay
+correlation; deep-copies StrView fields so stored events outlive
+the originating call). Wired through
+`AudioRuntimeDependencies::logSink` (host-owned raw pointer) and
+`AudioConfig::logMinLevel` (default Info — Trace and Debug events
+stay disabled in shipped builds unless explicitly enabled).
+
+**Hook points** wired in v0.7.0: late event discard (game and
+replicated paths), RTPC budget exceeded, one-shot eviction,
+one-shot drops (full-pool and post-eviction-failure variants),
+replication policy violation, replication validator rejection,
+replication rate-limit rejection, and render-thread underrun delta
+detection (game thread observes the counter delta and emits the
+log line — render thread never logs directly).
+
+**Threading:** the runtime serializes sink calls via one global
+mutex so sink implementations don't need to be thread-safe
+themselves. `ShouldLog_(level)` fast-paths via a nullptr check on
+the sink pointer + uint8 level compare on members that don't
+change after Initialize, so disabled categories cost a branch, not
+a sink call. Field-array construction at the call site is also
+skipped via `ShouldLog_` so the disabled path doesn't pay for
+field formatting.
+
+**DoD:** `tests/unit/logging_test.cpp` (9 sub-tests) — sink
+formats, level filtering both ways, null-safety, end-to-end RTPC
+budget overflow + replication policy violation + late-event
+discard each producing exactly one log line of the expected
+category and level with the expected structured fields.
+
+**Limitations carried forward:**
+- Single global mutex; no per-category locks. Highly contended
+  rejection paths would serialize through this mutex, but rejections
+  are rare by definition.
+- Per-category level filtering not exposed in v0.7.0 — only global
+  `logMinLevel`. Hosts can filter inside their sink if they need
+  finer control.
+- No log rotation / retention / compression in built-in sinks.
+  Those concerns belong to the host's log shipper (vector,
+  fluentd, journald).
 
 ---
 

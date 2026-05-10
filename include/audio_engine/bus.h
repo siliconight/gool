@@ -46,6 +46,7 @@ enum class EffectKind : uint8_t {
     BiquadFilter,   // LPF / HPF / BPF
     Compressor,     // envelope-driven gain reduction; supports sidechain
     Reverb,         // Schroeder/Freeverb-style algorithmic reverb
+    Saturation,     // tanh waveshaper; subtle bus glue / impact reinforcement
 };
 
 enum class BiquadType : uint8_t {
@@ -85,6 +86,40 @@ struct EffectConfig {
     float compressorMakeupDb     = 0.0f;
     BusId compressorSidechainBus = kInvalidBusId;  // self-sidechain when invalid
 
+    // ---- Tier-A (v0.8) compressor parameters ----
+    // Soft-knee width in dB. 0 = hard knee (default, matches legacy
+    // behavior). Typical values 3–12 dB; the gain reduction curve
+    // transitions quadratically from no-compression to full-compression
+    // across this width centered on the threshold.
+    float compressorKneeWidthDb  = 0.0f;
+    // Parallel-compression dry/wet mix. 1.0 = fully wet (default,
+    // matches legacy behavior). 0.0 = bypass. Useful for "New York"-
+    // style drum thickening, gunshots, etc.
+    float compressorMixRatio     = 1.0f;
+    // Maximum gain reduction in dB. Caps the compressor's authority
+    // so a runaway transient can't fully duck the signal. Default
+    // 60 dB = effectively unlimited; useful values 6–18 dB.
+    float compressorMaxReductionDb = 60.0f;
+    // Sidechain high-pass filter cutoff in Hz. 0 = bypass (default).
+    // Filters the detection signal so low-frequency content (kicks,
+    // explosions) doesn't over-trigger the compressor — modern game
+    // audio table stakes for music ducking under VO.
+    float compressorSidechainHpfHz = 0.0f;
+    // Hold time in ms. After the detection envelope drops below the
+    // threshold, the release stage is delayed by this duration. 0 =
+    // no hold (default). Stabilizes dialogue ducking and avoids
+    // chatter when the trigger source has gaps.
+    float compressorHoldMs       = 0.0f;
+    // Detection mode. Peak (default) = instantaneous |sample|; reacts
+    // hard to transients. Rms = sqrt(mean(square)); smoother, more
+    // musical, common for music/dialogue ducking.
+    enum class CompressorDetectionMode : uint8_t {
+        Peak = 0,
+        Rms  = 1,
+    };
+    CompressorDetectionMode compressorDetectionMode =
+        CompressorDetectionMode::Peak;
+
     // Reverb (Schroeder/Freeverb-derived)
     //   roomSize  0..1; feedback gain → tail length
     //   damping   0..1; high-frequency rolloff in feedback path
@@ -95,6 +130,24 @@ struct EffectConfig {
     float reverbRoomSize  = 0.7f;
     float reverbDamping   = 0.5f;
     float reverbWetGainDb = 0.0f;
+
+    // Saturation (tanh waveshaper)
+    //   drive       ; pre-shaper input gain. > 1 generates harmonics.
+    //                  1.0 = no harmonics. Typical 1.5–4.0.
+    //   mix         ; dry/wet blend. 0 = bypass (default — installing
+    //                  the effect on a bus is a no-op until you turn
+    //                  this up). Subtle glue lives at 0.10–0.30.
+    //   outputGain  ; post-shaper trim. Compensates for loudness
+    //                  change drive introduces; rule of thumb
+    //                  ~ 1.0/sqrt(drive).
+    //   bias        ; DC offset before shaping (DC-corrected at
+    //                  output). 0 = symmetric (odd harmonics only,
+    //                  "tape"-ish). Non-zero introduces even
+    //                  harmonics ("tube"/"warmth"). Typical 0.05–0.20.
+    float saturationDrive       = 1.0f;
+    float saturationMix         = 0.0f;
+    float saturationOutputGain  = 1.0f;
+    float saturationBias        = 0.0f;
 };
 
 // Parameter IDs accepted by SetEffectParameter. Not every effect honors
@@ -112,6 +165,21 @@ namespace EffectParameter {
     constexpr uint16_t Reverb_Damping           = 10;
     constexpr uint16_t Reverb_WetGainDb         = 11;
     constexpr uint16_t Biquad_GainDb            = 12;
+    // Tier-A (v0.8) compressor parameters. SetEffectParameter accepts
+    // floats, so the detection-mode IDs are encoded as 0.0f = Peak,
+    // 1.0f = Rms (any other value clamps to Peak for safety).
+    constexpr uint16_t Compressor_KneeWidthDb   = 13;
+    constexpr uint16_t Compressor_MixRatio      = 14;
+    constexpr uint16_t Compressor_MaxReductionDb = 15;
+    constexpr uint16_t Compressor_SidechainHpfHz = 16;
+    constexpr uint16_t Compressor_HoldMs        = 17;
+    constexpr uint16_t Compressor_DetectionMode = 18;
+    // Saturation (v0.9). All four are realtime-tunable; parameter
+    // changes take effect on the next Process() call without ramp.
+    constexpr uint16_t Saturation_Drive         = 19;
+    constexpr uint16_t Saturation_Mix           = 20;
+    constexpr uint16_t Saturation_OutputGain    = 21;
+    constexpr uint16_t Saturation_Bias          = 22;
 }
 
 // ---- Bus configuration ----------------------------------------------------

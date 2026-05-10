@@ -39,6 +39,14 @@ namespace audio {
 // Forward declaration for pimpl. Defined in src/audio_engine/runtime/.
 class AudioRuntimeImpl;
 
+// Forward declare to avoid pulling telemetry.h into every translation
+// unit that includes audio_runtime.h. The host opts in by including
+// audio_engine/telemetry.h where it constructs the sink.
+class IRuntimeTelemetrySink;
+
+// Same pattern for the event-level log sink (Phase 4.8).
+class IRuntimeLogSink;
+
 // Optional dependency injection. Any null pointer is replaced with the
 // engine's built-in stub (NullAudioBackend, DistancePanSpatializer,
 // NullGeometryQuery, StubVoiceCodec). The runtime takes ownership of any
@@ -48,6 +56,27 @@ struct AudioRuntimeDependencies {
     std::unique_ptr<ISpatializer>        spatializer;
     std::unique_ptr<IAudioGeometryQuery> geometryQuery;
     std::unique_ptr<IVoiceCodec>         voiceCodec;
+
+    // Optional telemetry sink. When non-null and
+    // AudioConfig::telemetryIntervalMs > 0, the runtime calls into
+    // OnRuntimeStats() every N ms from Update(). Lifetime is the
+    // host's responsibility — the runtime stores the pointer
+    // verbatim and never deletes it. This is a raw pointer
+    // intentionally: typical usage has the sink outlive the runtime
+    // (e.g. Prometheus sink lives as long as the HTTP server) and
+    // ownership doesn't transfer.
+    IRuntimeTelemetrySink*               telemetrySink = nullptr;
+
+    // Optional event-level log sink. When non-null, the runtime calls
+    // into OnLogEvent() at the listed hook points (late-event
+    // discard, RTPC budget exceeded, replication validator
+    // rejection, mixer-underrun delta, ...). The runtime serializes
+    // calls via an internal mutex so sinks don't need to be
+    // thread-safe themselves. Lifetime is host-managed; the runtime
+    // never deletes the pointer. Pass nullptr (default) to disable
+    // logging entirely; ShouldLog fast-paths via the nullptr check
+    // before any field-array construction.
+    IRuntimeLogSink*                     logSink       = nullptr;
 };
 
 class AUDIO_ENGINE_EXPORT AudioRuntime {
@@ -269,6 +298,16 @@ public:
     // The bus graph is defined in AudioConfig and immutable after Initialize.
     // These methods update parameter values on existing buses and effects.
 
+    // Resolve a bus by its `debugName` (set via BusConfig::debugName at
+    // build time, including by the JSON loader's `name` field). Returns
+    // `kInvalidBusId` if no bus with that name exists. Use this to bridge
+    // the gap between code that knows bus names (config files, hosts)
+    // and code that needs BusId tokens (per-sound targeting,
+    // SetBusGainDb, SetEffectParameter). O(N) over kMaxBuses; intended
+    // for init-time and registration-time use, not per-frame.
+    BusId FindBusIdByName(std::string_view name) const
+        AUDIO_REQUIRES(GameThread);
+
     // Sets the output gain of a bus in dB. Smoothed internally by the
     // gain-applying stage on the render thread (~5 ms ramp); abrupt changes
     // do not click.
@@ -489,6 +528,15 @@ public:
         // `ReplicationRateLimitConfig::maxNewPlayersPerTick`) or an
         // active id-cycling attack.
         uint64_t replicationEventsRejectedNewIdBudget = 0;
+        // Exceptions thrown by host-supplied telemetry sink during
+        // OnRuntimeStats(). The runtime catches and counts them here
+        // so a misbehaving sink can't break Update(); non-zero in
+        // steady state means the sink is buggy. Built-in sinks
+        // (JsonLines / Prometheus / Ring) never throw.
+        uint64_t telemetrySinkExceptions = 0;
+        // Same for the log sink's OnLogEvent(). Counted per-event;
+        // a sink that throws every call will increment fast.
+        uint64_t logSinkExceptions = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
 

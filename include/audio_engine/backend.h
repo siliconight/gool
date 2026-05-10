@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include "audio_engine/result.h"
+#include "audio_engine/thread_annotations.h"
 
 namespace audio {
 
@@ -24,9 +25,16 @@ public:
 
     // Fill `output` with `frames` interleaved float samples across `channels`.
     // Buffer size is frames * channels floats. Output range is [-1, 1].
+    //
+    // Annotated AUDIO_REQUIRES(RenderThread) so under Clang Thread Safety
+    // Analysis, only call sites holding a RenderThread capability can
+    // invoke this. The render thread itself does no allocations, no
+    // locks, no syscalls, no exceptions — implementations are expected
+    // to honor the same constraints.
     virtual void OnRender(float*   output,
                           uint32_t frames,
-                          uint32_t channels) noexcept = 0;
+                          uint32_t channels) noexcept
+        AUDIO_REQUIRES(RenderThread) AUDIO_NO_ALLOC AUDIO_RENDER_PATH = 0;
 };
 
 struct AudioBackendConfig {

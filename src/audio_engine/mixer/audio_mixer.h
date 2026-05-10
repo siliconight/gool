@@ -54,7 +54,8 @@ public:
 
     bool PostCommand(const MixerCommand& cmd) noexcept;
 
-    void OnRender(float* output, uint32_t frames, uint32_t channels) noexcept override;
+    void OnRender(float* output, uint32_t frames, uint32_t channels) noexcept override
+        AUDIO_REQUIRES(RenderThread) AUDIO_NO_ALLOC AUDIO_RENDER_PATH;
 
     uint32_t MaxMixVoices()   const noexcept { return maxVoices_; }
     uint32_t OutputChannels() const noexcept { return outputChannels_; }

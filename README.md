@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.5.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -191,6 +191,15 @@ For a complete working scene with all seven prefabs wired up
 reverb zone, networked event, networked emitter), open
 `examples/quickstart` in Godot and press Play.
 
+For a more complete co-op shooter audio architecture demo —
+single-host scene with a playable character + three AI bots,
+three weapon types, footsteps for everyone, music that adapts to
+gunfire intensity, ambient bed, and the full
+replicate-gameplay-events / play-audio-locally pattern from
+`docs/multiplayer.md` — open `examples/coop_shooter_template`.
+That project is the proof the primitives compose into something
+a Godot dev can build a co-op shooter on top of.
+
 ## Who this is for
 
 **Best fit:**
@@ -302,6 +311,22 @@ thread.
   Analysis; render thread does no allocations, no locks, no
   syscalls, no exceptions. See [Engine architecture](#engine-architecture)
   in the Reference.
+- **Telemetry:** `IRuntimeTelemetrySink` seam plus three built-in
+  sinks (JSON Lines, Prometheus exposition, in-memory ring buffer
+  for time series). Wires the runtime's `Stats` snapshot into your
+  observability stack at a configurable cadence. See
+  [`examples/telemetry/main.cpp`](examples/telemetry/main.cpp) for a
+  working integration that produces a Prometheus `/metrics` body
+  verbatim.
+- **Event-level logging:** `IRuntimeLogSink` seam plus JSON Lines
+  and ring-buffer sinks. Telemetry tells you *that* a counter
+  moved; logging tells you *why*. Hook points fire on late-event
+  discard, RTPC budget exceeded, one-shot drops/evictions,
+  replication policy/validator/rate-limit rejections, and
+  render-thread underrun delta detection. Configurable
+  `logMinLevel`; disabled categories cost a branch, not a sink
+  call. See
+  [`include/audio_engine/logging.h`](include/audio_engine/logging.h).
 
 ---
 
@@ -485,7 +510,10 @@ ops/sec.
 Hierarchical buses with per-bus effect chains. Effects shipped:
 gain, biquad EQ (LP / HP / BP / low-shelf / high-shelf /
 parametric peak — RBJ cookbook coefficients, ±0.05 dB out-of-band
-accuracy), sidechain compressor, Freeverb-derived reverb send.
+accuracy), sidechain compressor (with soft knee, parallel mix,
+range cap, sidechain HPF, hold timer, and switchable RMS/Peak
+detection), tanh saturation waveshaper for subtle bus glue and
+hit reinforcement, and a Freeverb-derived reverb send.
 
 The L4D2 multi-tier ducking pattern (local gun > nearby remote
 gun > music) composes from primitives: hierarchical buses plus
@@ -494,6 +522,49 @@ sidechain compressors keyed off a `LocalSfx` bus. See
 
 Baseline measured at -17.20 dB before ducking, -32.0 dB at
 deepest duck, ~250 ms recovery. Reproduces at every CI run.
+
+#### Effect profiles
+
+Two header-only profile libraries ship curated, opinionated
+parameter bundles for common game-audio scenarios. Each profile
+is one `inline constexpr` function returning a populated
+`EffectConfig`. Drop them straight into a bus's effect chain;
+the one parameter every profile takes is `thresholdDb` (or
+`drive` for saturation), because that's the one value that
+genuinely depends on host loudness targets. Override anything
+else after the call.
+
+```cpp
+#include "audio_engine/compressor_profiles.h"
+#include "audio_engine/saturation_profiles.h"
+
+bus.effects.push_back(audio::CompressorProfiles::VoiceSmoothing());
+bus.effects.push_back(audio::SaturationProfiles::BusGlue());
+```
+
+`compressor_profiles.h` covers nine profiles across four families:
+**punch** (`DrumBusPunch`, `FootstepGlue`, `GunshotSnap`),
+**impact** (`ExplosionImpact`, `BassImpact`),
+**glue / smoothing** (`MasterBusGlue`, `VoiceSmoothing`), and
+**sidechain duckers** (`MusicDuckUnderVoice`, `MusicDuckUnderSfx`).
+
+`saturation_profiles.h` covers five profiles: `BusGlue`,
+`DialogueWarmth`, `WeaponBody`, `ImpactCharacter`, and
+`TapeColor`. Drives stay in 1.3–4.0 and mixes in 0.10–0.45 — the
+intent is light enhancement, not heavy distortion. Anything more
+aggressive belongs in the DAW.
+
+Numbers come from common production-engineering rules of thumb
+(Wwise default templates, FMOD Studio presets, mastering-engineer
+guidance). Where two sources disagreed, the safer choice ("never
+destructive") was taken. These are starting points, not religion.
+
+Profile libraries are intentionally additive — the menu will grow
+as more game-audio scenarios get a "we use this every project"
+recipe (vehicle-engine compression, cinematic-trailer hits, UI
+feedback shaping, ambience layering). Hosts can also build their
+own profile namespace by following the same pattern: a constexpr
+function returning a populated `EffectConfig`.
 
 #### Multiplayer
 
@@ -568,7 +639,7 @@ audio_engine/
 
 ### Test suite
 
-30 unit tests in `tests/unit/`, all wired into CTest and the CI
+36 unit tests in `tests/unit/`, all wired into CTest and the CI
 matrix. Headline coverage:
 
 | Test                            | Validates                                                  |
@@ -598,6 +669,8 @@ matrix. Headline coverage:
 | `version_test`                  | `audio::GetVersion()` returns the pinned version triple; catches drift between version.h and CMakeLists |
 | `global_parameter_test`         | RTPC store: HashParameterName stable + collision-aware, set/get/clear, budget enforced only on new IDs, NotInitialized + InvalidArgument paths |
 | `sound_rtpc_test`               | Render-thread RTPC modulation: Volume / Pitch / LowPass / multi-binding / linear+exp+inv-exp+scurve curves; audibility-verified end-to-end |
+| `telemetry_test`                | Telemetry sinks: JSON Lines / Prometheus exposition / in-memory ring buffer; runtime emit cadence; null-safety paths |
+| `logging_test`                  | Event-level structured logging: JSON Lines + Ring sinks, level filtering, end-to-end hook points (RTPC budget exceeded, replication policy violation, late-event discard) firing from real runtime code paths |
 | `integration_kitchen_sink_test` | 5-second simulation with all subsystems active             |
 
 CI runs the full suite on Ubuntu and Windows on every push. The

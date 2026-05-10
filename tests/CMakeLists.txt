@@ -2,6 +2,10 @@ add_executable(audio_engine_spsc_ring_test                unit/spsc_ring_test.cp
 add_executable(audio_engine_slot_map_test                 unit/slot_map_test.cpp)
 add_executable(audio_engine_bus_graph_test                unit/bus_graph_test.cpp)
 add_executable(audio_engine_compressor_test               unit/compressor_test.cpp)
+add_executable(audio_engine_compressor_profile_test       unit/compressor_profile_test.cpp)
+add_executable(audio_engine_saturation_test               unit/saturation_test.cpp)
+add_executable(audio_engine_saturation_profile_test       unit/saturation_profile_test.cpp)
+add_executable(audio_engine_bus_config_loader_test        unit/bus_config_loader_test.cpp)
 add_executable(audio_engine_decoder_test                  unit/decoder_test.cpp)
 add_executable(audio_engine_priority_eviction_test        unit/priority_eviction_test.cpp)
 add_executable(audio_engine_occlusion_lpf_test            unit/occlusion_lpf_test.cpp)
@@ -26,6 +30,8 @@ add_executable(audio_engine_default_bounds_validator_test unit/default_bounds_va
 add_executable(audio_engine_version_test                  unit/version_test.cpp)
 add_executable(audio_engine_global_parameter_test         unit/global_parameter_test.cpp)
 add_executable(audio_engine_sound_rtpc_test               unit/sound_rtpc_test.cpp)
+add_executable(audio_engine_telemetry_test                unit/telemetry_test.cpp)
+add_executable(audio_engine_logging_test                  unit/logging_test.cpp)
 add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitchen_sink_test.cpp)
 
 # Tests need access to internal headers (src/) for util classes that aren't
@@ -41,6 +47,10 @@ endforeach()
 target_link_libraries(audio_engine_spsc_ring_test                 PRIVATE Threads::Threads)
 target_link_libraries(audio_engine_bus_graph_test                 PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_compressor_test                PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_compressor_profile_test        PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_saturation_test                PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_saturation_profile_test        PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_bus_config_loader_test         PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_decoder_test                   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_priority_eviction_test         PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_occlusion_lpf_test             PRIVATE audio_engine::audio_engine)
@@ -65,12 +75,18 @@ target_link_libraries(audio_engine_default_bounds_validator_test  PRIVATE audio_
 target_link_libraries(audio_engine_version_test                   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_global_parameter_test          PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_sound_rtpc_test                PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_telemetry_test                 PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_logging_test                   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_integration_kitchen_sink_test  PRIVATE audio_engine::audio_engine)
 
 add_test(NAME spsc_ring_test                COMMAND audio_engine_spsc_ring_test)
 add_test(NAME slot_map_test                 COMMAND audio_engine_slot_map_test)
 add_test(NAME bus_graph_test                COMMAND audio_engine_bus_graph_test)
 add_test(NAME compressor_test               COMMAND audio_engine_compressor_test)
+add_test(NAME compressor_profile_test       COMMAND audio_engine_compressor_profile_test)
+add_test(NAME saturation_test               COMMAND audio_engine_saturation_test)
+add_test(NAME saturation_profile_test       COMMAND audio_engine_saturation_profile_test)
+add_test(NAME bus_config_loader_test        COMMAND audio_engine_bus_config_loader_test)
 add_test(NAME decoder_test                  COMMAND audio_engine_decoder_test)
 add_test(NAME priority_eviction_test        COMMAND audio_engine_priority_eviction_test)
 add_test(NAME occlusion_lpf_test            COMMAND audio_engine_occlusion_lpf_test)
@@ -95,4 +111,27 @@ add_test(NAME default_bounds_validator_test COMMAND audio_engine_default_bounds_
 add_test(NAME version_test                  COMMAND audio_engine_version_test)
 add_test(NAME global_parameter_test         COMMAND audio_engine_global_parameter_test)
 add_test(NAME sound_rtpc_test               COMMAND audio_engine_sound_rtpc_test)
+add_test(NAME telemetry_test                 COMMAND audio_engine_telemetry_test)
+add_test(NAME logging_test                   COMMAND audio_engine_logging_test)
 add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kitchen_sink_test)
+
+# -----------------------------------------------------------------------------
+# Benchmarks (deliberately NOT registered with add_test).
+#
+# Per Rule 9 ("measure before optimizing") and Rule 25 ("benchmark
+# critical systems") of the architecture rubric, these are the
+# baseline measurement tools for the engine's hot paths. They are
+# not pass/fail tests; running them produces a table of timings
+# the developer reads. Build with the rest of the project, run
+# manually:
+#
+#   ./build/tests/audio_engine_parameter_smoother_bench
+#   ./build/tests/audio_engine_rtpc_eval_bench
+#
+# Captured baseline numbers live in docs/perf.md. Future
+# optimization passes should compare against those.
+add_executable(audio_engine_parameter_smoother_bench bench/parameter_smoother_bench.cpp)
+target_link_libraries(audio_engine_parameter_smoother_bench PRIVATE audio_engine::audio_engine)
+
+add_executable(audio_engine_rtpc_eval_bench bench/rtpc_eval_bench.cpp)
+target_link_libraries(audio_engine_rtpc_eval_bench PRIVATE audio_engine::audio_engine)

@@ -13,6 +13,8 @@
 // and never touches Godot state.
 
 #include "audio_engine/audio_runtime.h"
+#include "audio_engine/audio_file_format.h"
+#include "audio_engine/bus_config_loader.h"
 #include "audio_engine/config.h"
 #include "audio_engine/emitter.h"
 #include "audio_engine/events.h"
@@ -23,6 +25,7 @@
 #include "audio_engine/version.h"
 
 #include <godot_cpp/classes/global_constants.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -75,6 +78,18 @@ public:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("init", "sample_rate", "buffer_size"),
                               &GoolAudioRuntime::init, DEFVAL(48000), DEFVAL(512));
+        // Richer init that takes a JSON bus-config document. Lets
+        // GDScript projects ship multi-tier sidechain ducking and
+        // per-bus effect chains without a binding-method per knob.
+        // Schema documented in include/audio_engine/bus_config_loader.h.
+        // Returns true on success, false on parse error or runtime
+        // init failure (errors are pushed to the engine error log).
+        ClassDB::bind_method(D_METHOD("init_with_config",
+                                       "config_json",
+                                       "sample_rate",
+                                       "buffer_size"),
+                              &GoolAudioRuntime::init_with_config,
+                              DEFVAL(48000), DEFVAL(512));
         ClassDB::bind_method(D_METHOD("shutdown"), &GoolAudioRuntime::shutdown);
         ClassDB::bind_method(D_METHOD("update", "delta"),
                               &GoolAudioRuntime::update);
@@ -95,13 +110,39 @@ public:
                                        "sample_rate", "channels"),
                               &GoolAudioRuntime::register_pcm_sound,
                               DEFVAL(48000), DEFVAL(1));
+        // Load a sound file (.wav / .ogg / .flac / .opus) from any
+        // Godot-readable path (including res://) and register it as
+        // a one-shot PCM asset. The binding reads the raw bytes via
+        // FileAccess and routes through the engine's
+        // RegisterSoundFromMemory path so it works in PCK-packaged
+        // builds, not just editor mode. Returns the AudioSoundId on
+        // success, 0 on failure (file missing, format unsupported,
+        // decoder compiled out — see CMake AUDIO_ENGINE_DECODERS_*).
+        ClassDB::bind_method(D_METHOD("register_sound_from_file",
+                                       "name", "path"),
+                              &GoolAudioRuntime::register_sound_from_file);
+        // Same as register_sound_from_file but takes already-loaded
+        // bytes (e.g. from a Resource pack the host manages itself).
+        // format_hint matches AudioFileFormat: 0=Auto, 1=Wav,
+        // 2=OggVorbis, 3=Flac, 4=Opus. Auto sniffs by magic bytes.
+        ClassDB::bind_method(D_METHOD("register_sound_from_bytes",
+                                       "name", "bytes", "format_hint"),
+                              &GoolAudioRuntime::register_sound_from_bytes,
+                              DEFVAL(0));
         ClassDB::bind_method(D_METHOD("register_sound_definition",
                                        "name", "spatialized", "looping",
                                        "min_distance", "max_distance",
-                                       "loop_crossfade_ms"),
+                                       "loop_crossfade_ms",
+                                       "category", "target_bus_name"),
                               &GoolAudioRuntime::register_sound_definition,
                               DEFVAL(true), DEFVAL(false),
-                              DEFVAL(1.0), DEFVAL(50.0), DEFVAL(0.0));
+                              DEFVAL(1.0), DEFVAL(50.0), DEFVAL(0.0),
+                              DEFVAL(0), DEFVAL(String()));
+        // Bus-name → BusId resolver. Returns -1 if no bus matches.
+        // Useful for hosts that need to call other BusId-taking
+        // bindings (set_bus_gain_db, set_effect_parameter) by name.
+        ClassDB::bind_method(D_METHOD("find_bus_id_by_name", "name"),
+                              &GoolAudioRuntime::find_bus_id_by_name);
         ClassDB::bind_method(D_METHOD("load_sound_bank_from_json",
                                        "json_string", "gpak_path"),
                               &GoolAudioRuntime::load_sound_bank_from_json,
@@ -247,6 +288,54 @@ public:
         return true;
     }
 
+    // Same as init() but takes a JSON config document describing the
+    // bus graph + category routing. Empty `config_json` → behaves
+    // identically to init(sample_rate, buffer_size). On parse error
+    // the engine push_error()s the line + message and returns false
+    // without modifying state — caller can retry with a corrected
+    // config.
+    bool init_with_config(const String& config_json,
+                            int sample_rate, int buffer_size) {
+        if (initialized_) return true;
+
+        audio::AudioConfig cfg;
+        cfg.sampleRate = static_cast<uint32_t>(sample_rate);
+        cfg.bufferSize = static_cast<uint32_t>(buffer_size);
+        cfg.outputMode = audio::AudioOutputMode::Stereo;
+
+        if (config_json.length() > 0) {
+            const auto utf8 = config_json.utf8();
+            const auto pr = audio::BusConfigLoader::ParseFromJson(
+                std::string_view(utf8.get_data(), utf8.length()));
+            if (!pr.ok) {
+                UtilityFunctions::push_error(
+                    String("GoolAudioRuntime: bus config parse failed at line ")
+                    + String::num_int64(pr.errorLine)
+                    + String(": ") + pr.error.c_str());
+                return false;
+            }
+            cfg.busGraph = pr.busGraph;
+        }
+
+        runtime_ = std::make_unique<audio::AudioRuntime>();
+        audio::AudioRuntimeDependencies deps;
+        deps.backend = std::make_unique<audio::MiniaudioBackend>();
+
+        const auto rc = runtime_->Initialize(cfg, std::move(deps));
+        if (rc != audio::AudioResult::Success) {
+            UtilityFunctions::push_error(
+                "GoolAudioRuntime: Initialize failed (with bus config)");
+            runtime_.reset();
+            return false;
+        }
+        audio::AudioListener listener;
+        runtime_->SetListener(listener);
+        bank_ = std::make_unique<audio::SoundBank>();
+        initialized_ = true;
+        emit_signal("ready_to_play");
+        return true;
+    }
+
     void shutdown() {
         if (!runtime_) return;
         bank_.reset();
@@ -302,20 +391,145 @@ public:
         return static_cast<int64_t>(id);
     }
 
+    // Maps an AudioResult to a human-readable diagnostic string.
+    // Used by the file-load bindings to push_error with helpful
+    // context when registration fails.
+    static const char* AudioResultText(audio::AudioResult rc) noexcept {
+        switch (rc) {
+            case audio::AudioResult::Success:           return "ok";
+            case audio::AudioResult::InvalidArgument:   return "invalid argument";
+            case audio::AudioResult::AssetMissing:      return "asset missing";
+            case audio::AudioResult::Unsupported:       return "format decoder not compiled in (set AUDIO_ENGINE_DECODERS_* in CMake)";
+            case audio::AudioResult::IoError:           return "I/O error reading file";
+            case audio::AudioResult::NotInitialized:    return "runtime not initialized";
+            case audio::AudioResult::AlreadyInitialized:return "already initialized";
+            case audio::AudioResult::BudgetExceeded:    return "budget exceeded";
+            case audio::AudioResult::QueueFull:         return "command queue full";
+            case audio::AudioResult::InternalError:     return "internal error";
+            case audio::AudioResult::InvalidHandle:     return "invalid handle";
+            case audio::AudioResult::BackendUnavailable:return "backend unavailable";
+        }
+        return "unknown";
+    }
+
+    int64_t register_sound_from_file(const String& name, const String& path) {
+        if (!runtime_) {
+            UtilityFunctions::push_error(
+                "GoolAudioRuntime: register_sound_from_file called before init");
+            return 0;
+        }
+        // Read bytes via Godot's FileAccess so res:// works in
+        // packaged builds. Real-fs paths work too (FileAccess
+        // accepts both res:// and absolute paths).
+        Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+        if (f.is_null()) {
+            UtilityFunctions::push_error(
+                String("GoolAudioRuntime: register_sound_from_file failed to open '")
+                + path + String("' (FileAccess error ")
+                + String::num_int64(static_cast<int64_t>(FileAccess::get_open_error()))
+                + String(")"));
+            return 0;
+        }
+        const int64_t len = static_cast<int64_t>(f->get_length());
+        if (len <= 0) {
+            UtilityFunctions::push_error(
+                String("GoolAudioRuntime: register_sound_from_file '")
+                + path + String("' is empty"));
+            return 0;
+        }
+        PackedByteArray bytes = f->get_buffer(len);
+        f->close();
+        return register_sound_from_bytes(name, bytes,
+                                           static_cast<int>(audio::AudioFileFormat::Auto));
+    }
+
+    int64_t register_sound_from_bytes(const String&            name,
+                                        const PackedByteArray&   bytes,
+                                        int                       format_hint) {
+        if (!runtime_) {
+            UtilityFunctions::push_error(
+                "GoolAudioRuntime: register_sound_from_bytes called before init");
+            return 0;
+        }
+        if (bytes.size() == 0) {
+            UtilityFunctions::push_error(
+                "GoolAudioRuntime: register_sound_from_bytes received empty buffer");
+            return 0;
+        }
+        // Clamp format hint to enum range; out-of-range maps to Auto.
+        audio::AudioFileFormat fmt = audio::AudioFileFormat::Auto;
+        if (format_hint >= 0 &&
+            format_hint <= static_cast<int>(audio::AudioFileFormat::Opus)) {
+            fmt = static_cast<audio::AudioFileFormat>(format_hint);
+        }
+        const audio::AudioSoundId id = HashName(name);
+        const auto rc = runtime_->RegisterSoundFromMemory(
+            id,
+            std::span<const uint8_t>(bytes.ptr(),
+                                       static_cast<size_t>(bytes.size())),
+            fmt);
+        if (rc != audio::AudioResult::Success) {
+            UtilityFunctions::push_error(
+                String("GoolAudioRuntime: register_sound failed for '")
+                + name + String("': ")
+                + String(AudioResultText(rc)));
+            return 0;
+        }
+        return static_cast<int64_t>(id);
+    }
+
     void register_sound_definition(const String& name,
                                     bool spatialized, bool looping,
                                     double min_distance, double max_distance,
-                                    double loop_crossfade_ms) {
+                                    double loop_crossfade_ms,
+                                    int category,
+                                    const String& target_bus_name) {
         if (!runtime_) return;
         audio::SoundDefinition def;
         def.soundId           = HashName(name);
         def.spatialized       = spatialized;
         def.looping           = looping;
-        def.targetBus         = audio::kBusMaster;
+        // Category determines which bus the runtime routes to when
+        // targetBus stays at kInvalidBusId. Hosts that don't pass
+        // category get SFX (the most common default for game-audio
+        // events). Out-of-range values clamp to SFX.
+        if (category >= 0 && category < static_cast<int>(audio::AudioCategory::Count)) {
+            def.category = static_cast<audio::AudioCategory>(category);
+        } else {
+            def.category = audio::AudioCategory::SFX;
+        }
+        // target_bus_name overrides category routing when non-empty.
+        // Empty (the default) → leave targetBus at kInvalidBusId so
+        // the runtime falls through to the configured category map.
+        // Unknown bus names are reported as a non-fatal warning;
+        // registration still succeeds with category routing.
+        if (target_bus_name.length() > 0) {
+            const auto utf8 = target_bus_name.utf8();
+            const audio::BusId busId = runtime_->FindBusIdByName(
+                std::string_view(utf8.get_data(), utf8.length()));
+            if (busId == audio::kInvalidBusId) {
+                UtilityFunctions::push_warning(
+                    String("GoolAudioRuntime: register_sound_definition(\"")
+                    + name + String("\") target_bus_name '") + target_bus_name
+                    + String("' not found; falling back to category routing"));
+            } else {
+                def.targetBus = busId;
+            }
+        }
         def.attenuation.minDistance = static_cast<float>(min_distance);
         def.attenuation.maxDistance = static_cast<float>(max_distance);
         def.loopCrossfadeMs   = static_cast<float>(loop_crossfade_ms);
         runtime_->RegisterSoundDefinition(def);
+    }
+
+    int find_bus_id_by_name(const String& name) const {
+        if (!runtime_) return -1;
+        const auto utf8 = name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(), utf8.length()));
+        return (id == audio::kInvalidBusId)
+            ? -1
+            : static_cast<int>(id);
     }
 
     bool load_sound_bank_from_json(const String& json_string,

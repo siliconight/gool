@@ -1,20 +1,19 @@
 // audio_engine/dsp/compressor.h
 //
-// Dynamic range compressor with optional sidechain input. Standard topology:
+// Dynamic range compressor with sidechain support. Topology:
 //
-//   input -> [envelope follower] -> [static gain computer] -> gain reduction
-//                  ^
-//                  |
-//             sidechain (or input if self-sidechained)
+//   input ──> [optional sidechain HPF on detect path] ──> [envelope
+//   follower (peak or RMS)] ──> [soft- or hard-knee gain computer] ──>
+//   [range cap] ──> [makeup gain] ──> [dry/wet mix] ──> output
 //
-// Envelope follower: peak detector with separate attack/release time
-// constants. Gain computer: hard-knee threshold + ratio with makeup gain.
+// The detection signal is the sidechain bus when one is configured
+// (see `CompressorConfig::sidechainBus`), otherwise the input itself
+// (self-sidechain). The optional HPF sits on the detection path only
+// — it shapes what frequencies trigger compression without coloring
+// the audio output.
 //
-// When `compressorSidechainBus` is set, the engine routes that bus's output
-// buffer to Process()'s `sidechain` pointer. The compressor then derives its
-// envelope from the sidechain signal but applies the resulting gain
-// reduction to the main signal it's processing; which is the entire point
-// of ducking ("compress Music when LocalGun fires").
+// Every parameter is runtime-tunable via SetEffectParameter using the
+// IDs in bus.h's EffectParameter namespace (Compressor_*).
 
 #ifndef AUDIO_ENGINE_DSP_COMPRESSOR_H
 #define AUDIO_ENGINE_DSP_COMPRESSOR_H
@@ -24,14 +23,29 @@
 
 namespace audio {
 
+// Configuration bundle. Defaults match the legacy 4:1 hard-knee
+// peak-detect compressor — i.e. v0.7 behavior — so a default-constructed
+// CompressorConfig is the historical compressor.
+struct CompressorConfig {
+    float thresholdDb     = -20.0f;
+    float ratio           = 4.0f;
+    float attackMs        = 10.0f;
+    float releaseMs       = 200.0f;
+    float makeupDb        = 0.0f;
+    BusId sidechainBus    = kInvalidBusId;
+    // Tier-A additions (v0.8):
+    float kneeWidthDb     = 0.0f;     // 0 = hard knee
+    float mixRatio        = 1.0f;     // 1.0 = fully wet
+    float maxReductionDb  = 60.0f;    // 60 dB ≈ unlimited
+    float sidechainHpfHz  = 0.0f;     // 0 = bypass
+    float holdMs          = 0.0f;     // 0 = no hold
+    EffectConfig::CompressorDetectionMode detectionMode =
+        EffectConfig::CompressorDetectionMode::Peak;
+};
+
 class CompressorEffect final : public IDspEffect {
 public:
-    CompressorEffect(float thresholdDb,
-                      float ratio,
-                      float attackMs,
-                      float releaseMs,
-                      float makeupDb,
-                      BusId sidechainBus);
+    explicit CompressorEffect(const CompressorConfig& cfg);
 
     void Prepare(uint32_t sampleRate, uint32_t channels) override;
     void Process(float* output, uint32_t frames, uint32_t channels,
@@ -47,23 +61,52 @@ public:
     float CurrentReductionDb() const noexcept { return lastReductionDb_; }
 
 private:
-    // Configuration (target values).
+    using DetectionMode = EffectConfig::CompressorDetectionMode;
+
+    // Recompute attack/release smoothing coefficients and the
+    // sidechain HPF coefficients. Cheap; called lazily.
+    void RecomputeCoeffs() noexcept;
+
+    // ---- Configuration (target values) ----
     float thresholdDb_;
     float ratio_;
     float attackMs_;
     float releaseMs_;
     float makeupDb_;
     BusId sidechainBus_;
+    float kneeWidthDb_;
+    float mixRatio_;
+    float maxReductionDb_;
+    float sidechainHpfHz_;
+    float holdMs_;
+    DetectionMode detectionMode_;
 
-    // Derived state.
-    uint32_t sampleRate_ = 48000;
-    float    attackCoeff_  = 0.0f;        // smoothing coefficient per sample
+    // ---- Derived state ----
+    uint32_t sampleRate_   = 48000;
+    float    attackCoeff_  = 0.0f;
     float    releaseCoeff_ = 0.0f;
     bool     coeffDirty_   = true;
 
-    // Envelope state in dB (running peak smoothed by attack/release).
+    // Hold counter — samples remaining where the envelope is held at
+    // its current value despite peak < env. Recharged to
+    // `holdSamples_` on every attack-stage frame.
+    uint32_t holdSamples_           = 0;
+    uint32_t holdSamplesRemaining_  = 0;
+
+    // Envelope state in dB. RMS mode converts via 20*log10(sqrt(mean))
+    // per frame, then smooths in dB with attack/release — keeps time-
+    // constant semantics consistent across modes.
     float envelopeDb_      = -120.0f;
     float lastReductionDb_ = 0.0f;
+
+    // ---- Inline mono biquad for sidechain HPF ----
+    // Direct-form-II-transposed. Engaged only when
+    // sidechainHpfHz_ > 0; otherwise bypassed. The detection signal
+    // is summed to mono before the filter / detector — standard
+    // shape for sidechain HPFs and avoids per-channel state.
+    float scB0_ = 1.0f, scB1_ = 0.0f, scB2_ = 0.0f;
+    float scA1_ = 0.0f, scA2_ = 0.0f;
+    float scZ1_ = 0.0f, scZ2_ = 0.0f;
 };
 
 } // namespace audio

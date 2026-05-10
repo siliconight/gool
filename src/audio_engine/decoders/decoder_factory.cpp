@@ -3,6 +3,7 @@
 #include "audio_engine/decoders/decoder_factory.h"
 #include "audio_engine/decoders/flac_decoder.h"
 #include "audio_engine/decoders/ogg_vorbis_decoder.h"
+#include "audio_engine/decoders/opus_file_decoder.h"
 #include "audio_engine/decoders/wav_decoder.h"
 
 #include <cstring>
@@ -39,6 +40,34 @@ const char* FindExtension(const char* path) noexcept {
     return dot;
 }
 
+// Both Vorbis and Opus use the Ogg container, both start with "OggS".
+// The codec identification lives in the first packet's payload, which
+// for a typical short Ogg page begins around byte 28. We probe a small
+// window starting there to find either "OpusHead" (8 bytes) or
+// "\x01vorbis" (7 bytes). Returns the resolved format, or OggVorbis
+// as the legacy default when we have OggS but can't see far enough
+// to disambiguate (the create-then-fallback path will sort it out).
+AudioFileFormat ResolveOggVariant(const uint8_t* data, uint64_t size) noexcept {
+    // Be generous about where the codec ID lives — Ogg page header is
+    // 27 bytes plus a variable-length segment table. Scan a 64-byte
+    // window starting at byte 27 for the magic strings.
+    constexpr size_t kProbeStart = 27;
+    constexpr size_t kProbeWindow = 64;
+    if (size < kProbeStart + 8) return AudioFileFormat::OggVorbis;
+    const size_t end = (size < kProbeStart + kProbeWindow)
+        ? static_cast<size_t>(size)
+        : kProbeStart + kProbeWindow;
+    for (size_t i = kProbeStart; i + 8 <= end; ++i) {
+        if (MatchAscii(data + i, "OpusHead", 8)) return AudioFileFormat::Opus;
+    }
+    for (size_t i = kProbeStart; i + 7 <= end; ++i) {
+        if (data[i] == 0x01 && MatchAscii(data + i + 1, "vorbis", 6)) {
+            return AudioFileFormat::OggVorbis;
+        }
+    }
+    return AudioFileFormat::OggVorbis; // legacy default
+}
+
 } // namespace
 
 AudioFileFormat DecoderFactory::SniffFormat(const uint8_t* data, uint64_t size) noexcept {
@@ -51,9 +80,10 @@ AudioFileFormat DecoderFactory::SniffFormat(const uint8_t* data, uint64_t size) 
         return AudioFileFormat::Wav;
     }
 
-    // OggS; Ogg page header magic.
+    // OggS; could be Vorbis OR Opus. Disambiguate by the codec magic
+    // in the first packet payload.
     if (MatchAscii(data, "OggS", 4)) {
-        return AudioFileFormat::OggVorbis;
+        return ResolveOggVariant(data, size);
     }
 
     // fLaC; FLAC stream marker.
@@ -70,6 +100,7 @@ AudioFileFormat DecoderFactory::FormatFromExtension(const char* path) noexcept {
     if (EqIgnoreCase(ext, ".wav"))  return AudioFileFormat::Wav;
     if (EqIgnoreCase(ext, ".ogg"))  return AudioFileFormat::OggVorbis;
     if (EqIgnoreCase(ext, ".oga"))  return AudioFileFormat::OggVorbis;
+    if (EqIgnoreCase(ext, ".opus")) return AudioFileFormat::Opus;
     if (EqIgnoreCase(ext, ".flac")) return AudioFileFormat::Flac;
     return AudioFileFormat::Auto;
 }
@@ -79,6 +110,7 @@ std::unique_ptr<IAudioDecoder> DecoderFactory::CreateForFile(const char* path) {
     switch (ext) {
         case AudioFileFormat::Wav:       return WavDecoder::CreateFromFile(path);
         case AudioFileFormat::OggVorbis: return OggVorbisDecoder::CreateFromFile(path);
+        case AudioFileFormat::Opus:      return OpusFileDecoder::CreateFromFile(path);
         case AudioFileFormat::Flac:      return FlacDecoder::CreateFromFile(path);
         case AudioFileFormat::Auto:      break;
     }
@@ -87,6 +119,10 @@ std::unique_ptr<IAudioDecoder> DecoderFactory::CreateForFile(const char* path) {
     // twice; instead, attempt each decoder in turn and return the first one
     // that initialises successfully.
     if (auto d = WavDecoder::CreateFromFile(path))         return d;
+    // Try Opus before Vorbis: an Ogg-Opus file given to OggVorbisDecoder
+    // would silently fail anyway, but Opus rejects non-Opus streams
+    // faster (header check) than Vorbis rejects non-Vorbis ones.
+    if (auto d = OpusFileDecoder::CreateFromFile(path))    return d;
     if (auto d = OggVorbisDecoder::CreateFromFile(path))   return d;
     if (auto d = FlacDecoder::CreateFromFile(path))        return d;
     return nullptr;
@@ -100,6 +136,7 @@ std::unique_ptr<IAudioDecoder> DecoderFactory::CreateForMemory(const uint8_t* da
     switch (fmt) {
         case AudioFileFormat::Wav:       return WavDecoder::CreateFromMemory(data, size);
         case AudioFileFormat::OggVorbis: return OggVorbisDecoder::CreateFromMemory(data, size);
+        case AudioFileFormat::Opus:      return OpusFileDecoder::CreateFromMemory(data, size);
         case AudioFileFormat::Flac:      return FlacDecoder::CreateFromMemory(data, size);
         case AudioFileFormat::Auto:      return nullptr;
     }

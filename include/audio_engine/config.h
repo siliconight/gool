@@ -190,6 +190,32 @@ struct AudioConfig {
     // ambient layers, music stingers — usually < 20 bindings); bump
     // for very large authored-RTPC catalogs.
     uint32_t maxSoundRtpcBindings = 256;
+
+    // Cadence at which the runtime calls into the configured telemetry
+    // sink (AudioRuntimeDependencies::telemetrySink). 0 disables
+    // telemetry emission entirely; the sink pointer is never
+    // dereferenced. Typical values:
+    //   * 100 ms (10 Hz): tight time series for diagnosing hitches and
+    //                      packet-loss events, modest overhead.
+    //   * 250 ms ( 4 Hz): comfortable for live dashboards (recommended
+    //                      starting point for sample integrations).
+    //   * 1000 ms (1 Hz): low overhead, fine for slow-moving metrics
+    //                      and shipped builds.
+    //
+    // The sink is invoked from the game thread inside Update(), so
+    // implementations should be cheap. Built-in sinks (JsonLines,
+    // Prometheus, Ring) are designed to fit comfortably at 4 Hz.
+    uint32_t telemetryIntervalMs = 0;
+
+    // Minimum severity for events sent to the configured log sink
+    // (AudioRuntimeDependencies::logSink). Events below this level
+    // are dropped before the sink is consulted, and field-array
+    // construction at the call site is skipped via ShouldLog. Default
+    // is Info — Trace and Debug events stay disabled in shipped
+    // builds unless explicitly enabled. Stored as uint8_t to match
+    // LogLevel's underlying type without pulling logging.h into
+    // every translation unit that includes config.h.
+    uint8_t  logMinLevel = 2;  // LogLevel::Info
 };
 
 } // namespace audio

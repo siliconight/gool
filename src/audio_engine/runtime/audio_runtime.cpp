@@ -5,6 +5,8 @@
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/runtime/audio_runtime_impl.h"
 #include "audio_engine/replication_validator.h"
+#include "audio_engine/telemetry.h"
+#include "audio_engine/logging.h"
 
 #include "audio_engine/backend/null_audio_backend.h"
 #include "audio_engine/spatial/default_spatializer.h"
@@ -113,6 +115,9 @@ bool AudioRuntime::GetVoiceNetworkStats(AudioPlayerId playerId,
 AudioResult AudioRuntime::SetBusGainDb(BusId busId, float gainDb) {
     return impl_->SetBusGainDb(busId, gainDb);
 }
+BusId AudioRuntime::FindBusIdByName(std::string_view name) const {
+    return impl_->FindBusIdByName(name);
+}
 AudioResult AudioRuntime::SetEffectParameter(BusId    busId,
                                               uint32_t effectIndex,
                                               uint16_t paramId,
@@ -198,6 +203,29 @@ AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,
     backend_     = deps.backend
         ? std::move(deps.backend)
         : std::unique_ptr<IAudioBackend>(new NullAudioBackend());
+
+    // Telemetry: raw pointer ownership stays with the host. Captured
+    // here for fast access from Update; nullptr means telemetry is
+    // disabled even if telemetryIntervalMs > 0.
+    telemetrySink_   = deps.telemetrySink;
+    telemetryAccumMs_ = 0;
+
+    // Event-level log sink: same ownership pattern. ShouldLog_ fast-
+    // paths via the nullptr check so disabled logging costs a branch
+    // per call site, not a sink invocation.
+    logSink_         = deps.logSink;
+    lastUnderruns_   = 0;
+
+    // Reserve hash-table capacity up front. The configured caps
+    // (maxGlobalParameters, maxSoundRtpcBindings) bound steady-state
+    // size, so reserving once eliminates the rehash bursts during
+    // the first dozen inserts. Soft-divide bindings by typical
+    // bindings-per-sound (~4 targets) — over-reservation here costs
+    // a few KB of buckets, which is fine; under-reservation just
+    // means a couple extra rehashes.
+    globalParameters_.reserve(config.maxGlobalParameters);
+    soundRtpcBindings_.reserve(
+        std::max<uint32_t>(1, config.maxSoundRtpcBindings / 4));
 
     // Subsystems
     assets_       = std::make_unique<AudioAssetRegistry>(config.budget.maxRegisteredSounds);
@@ -506,6 +534,19 @@ AudioResult AudioRuntimeImpl::SetSoundRtpc(AudioSoundId            soundId,
         // If the vector was just default-constructed by operator[] above
         // and is empty, erase it so we don't leak an empty entry.
         if (vec.empty()) soundRtpcBindings_.erase(soundId);
+        if (ShouldLog_(LogLevel::Warn)) {
+            const LogField fields[] = {
+                LogField::UInt("sound_id",   static_cast<uint64_t>(soundId)),
+                LogField::UInt("param_id",   static_cast<uint64_t>(binding.paramId)),
+                LogField::UInt("target",     static_cast<uint64_t>(binding.target)),
+                LogField::UInt("budget",     static_cast<uint64_t>(config_.maxSoundRtpcBindings)),
+                LogField::UInt("current",    static_cast<uint64_t>(soundRtpcBindingTotal_)),
+            };
+            Log_(static_cast<uint8_t>(LogLevel::Warn),
+                  LogCategory::kRtpc,
+                  "RTPC binding rejected: budget exceeded",
+                  fields);
+        }
         return AudioResult::BudgetExceeded;
     }
     vec.push_back(binding);
@@ -700,6 +741,27 @@ AudioResult AudioRuntimeImpl::SetBusGainDb(BusId busId, float gainDb) {
     return mixer_->PostCommand(cmd) ? AudioResult::Success : AudioResult::QueueFull;
 }
 
+BusId AudioRuntimeImpl::FindBusIdByName(std::string_view name) const {
+    // Walk config_.busGraph.buses[]. We only honor entries up to
+    // busCount; the rest are default-initialized junk. Compare against
+    // the trailing-NUL-terminated debugName field, but accept matches
+    // even when the input has no NUL (string_view) by length-checking
+    // first.
+    if (!initialized_) return kInvalidBusId;
+    const auto& g = config_.busGraph;
+    for (uint32_t i = 0; i < g.busCount; ++i) {
+        const char* dn = g.buses[i].debugName;
+        // Walk dn until NUL or sizeof; compare length-aware.
+        size_t dnLen = 0;
+        while (dnLen < sizeof(g.buses[i].debugName) && dn[dnLen] != '\0') ++dnLen;
+        if (dnLen == name.size() &&
+            std::memcmp(dn, name.data(), dnLen) == 0) {
+            return g.buses[i].id;
+        }
+    }
+    return kInvalidBusId;
+}
+
 AudioResult AudioRuntimeImpl::SetEffectParameter(BusId    busId,
                                                    uint32_t effectIndex,
                                                    uint16_t paramId,
@@ -786,6 +848,18 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     if (source == ReplicationSource::Client &&
         event.replicationPolicy == AudioReplicationPolicy::ServerAuthoritative) {
         replicationRateLimiter_.RecordPolicyViolation(event.playerId);
+        if (ShouldLog_(LogLevel::Warn)) {
+            const LogField fields[] = {
+                LogField::UInt("player_id",  static_cast<uint64_t>(event.playerId)),
+                LogField::UInt("sound_id",   static_cast<uint64_t>(event.soundId)),
+                LogField::UInt("category",   static_cast<uint64_t>(event.category)),
+                LogField::Str ("reason",     "client_sourced_server_authoritative"),
+            };
+            Log_(static_cast<uint8_t>(LogLevel::Warn),
+                  LogCategory::kReplication,
+                  "replication policy violation rejected",
+                  fields);
+        }
         return AudioResult::PolicyViolation;
     }
 
@@ -794,6 +868,17 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     if (replicationValidator_ != nullptr &&
         !replicationValidator_->ShouldAccept(event, event.playerId)) {
         replicationRateLimiter_.RecordValidatorRejection(event.playerId);
+        if (ShouldLog_(LogLevel::Debug)) {
+            const LogField fields[] = {
+                LogField::UInt("player_id",  static_cast<uint64_t>(event.playerId)),
+                LogField::UInt("sound_id",   static_cast<uint64_t>(event.soundId)),
+                LogField::UInt("category",   static_cast<uint64_t>(event.category)),
+            };
+            Log_(static_cast<uint8_t>(LogLevel::Debug),
+                  LogCategory::kReplication,
+                  "replication event rejected by host validator",
+                  fields);
+        }
         return AudioResult::PolicyViolation;
     }
 
@@ -806,6 +891,17 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     if (!replicationRateLimiter_.TryAccept(event.playerId,
                                             event.category,
                                             nowMs)) {
+        if (ShouldLog_(LogLevel::Debug)) {
+            const LogField fields[] = {
+                LogField::UInt("player_id",  static_cast<uint64_t>(event.playerId)),
+                LogField::UInt("category",   static_cast<uint64_t>(event.category)),
+                LogField::UInt("now_ms",     static_cast<uint64_t>(nowMs)),
+            };
+            Log_(static_cast<uint8_t>(LogLevel::Debug),
+                  LogCategory::kReplication,
+                  "replication event rate-limited",
+                  fields);
+        }
         return AudioResult::RateLimited;
     }
 
@@ -1073,6 +1169,18 @@ bool AudioRuntimeImpl::EvictLowestPriorityOneShotIfBeatenBy(int64_t incoming) {
     if (orchestrator_) orchestrator_->Smoother().Forget(victim);
     emitters_->Destroy(victim);
     ++statsLatest_.oneShotEvictions;
+    if (ShouldLog_(LogLevel::Debug)) {
+        const LogField fields[] = {
+            LogField::UInt("victim_handle", static_cast<uint64_t>(victim.index)),
+            LogField::UInt("victim_generation",
+                            static_cast<uint64_t>(victim.generation)),
+            LogField::Int ("incoming_priority", incoming),
+        };
+        Log_(static_cast<uint8_t>(LogLevel::Debug),
+              LogCategory::kEmitter,
+              "one-shot evicted: lower-priority slot freed for incoming",
+              fields);
+    }
     return true;
 }
 
@@ -1158,12 +1266,33 @@ void AudioRuntimeImpl::StartOneShotForSound(AudioSoundId soundId,
             EffectivePriorityForCandidate(pri, pos, listenerPos);
         if (!EvictLowestPriorityOneShotIfBeatenBy(incoming)) {
             ++statsLatest_.oneShotsDroppedFullPool;
+            if (ShouldLog_(LogLevel::Debug)) {
+                const LogField fields[] = {
+                    LogField::UInt("sound_id",  static_cast<uint64_t>(soundId)),
+                    LogField::UInt("priority",  static_cast<uint64_t>(pri)),
+                    LogField::Str ("reason",    "no_eviction_candidate"),
+                };
+                Log_(static_cast<uint8_t>(LogLevel::Debug),
+                      LogCategory::kEmitter,
+                      "one-shot dropped: pool full and no lower-priority candidate",
+                      fields);
+            }
             return;
         }
         h = emitters_->Create(desc, /*oneShot=*/!desc.isLooping);
         if (!h) {
             // Should not happen; eviction freed a slot. Defensive.
             ++statsLatest_.oneShotsDroppedFullPool;
+            if (ShouldLog_(LogLevel::Warn)) {
+                const LogField fields[] = {
+                    LogField::UInt("sound_id",  static_cast<uint64_t>(soundId)),
+                    LogField::Str ("reason",    "post_eviction_create_failed"),
+                };
+                Log_(static_cast<uint8_t>(LogLevel::Warn),
+                      LogCategory::kEmitter,
+                      "one-shot dropped: emitter create failed after eviction",
+                      fields);
+            }
             return;
         }
     }
@@ -1254,6 +1383,19 @@ void AudioRuntimeImpl::Update(float deltaSeconds) {
             ++statsLatest_.eventsDrainedLastTick;
             if (IsEventTooLateWithOverride(e.timestampMs, nowMs, e.maxStalenessMs)) {
                 ++statsLatest_.lateEventsDiscardedLastTick;
+                if (ShouldLog_(LogLevel::Debug)) {
+                    const LogField fields[] = {
+                        LogField::UInt("event_ts_ms", e.timestampMs),
+                        LogField::UInt("now_ms",      nowMs),
+                        LogField::UInt("max_staleness_ms",
+                                        static_cast<uint64_t>(e.maxStalenessMs)),
+                        LogField::Bool("replicated",  true),
+                    };
+                    Log_(static_cast<uint8_t>(LogLevel::Debug),
+                          LogCategory::kEvents,
+                          "late event discarded",
+                          fields);
+                }
                 continue;
             }
             HandleEvent(e, /*replicated=*/true);
@@ -1271,6 +1413,19 @@ void AudioRuntimeImpl::Update(float deltaSeconds) {
             ++statsLatest_.eventsDrainedLastTick;
             if (IsEventTooLateWithOverride(e.timestampMs, nowMs, e.maxStalenessMs)) {
                 ++statsLatest_.lateEventsDiscardedLastTick;
+                if (ShouldLog_(LogLevel::Debug)) {
+                    const LogField fields[] = {
+                        LogField::UInt("event_ts_ms", e.timestampMs),
+                        LogField::UInt("now_ms",      nowMs),
+                        LogField::UInt("max_staleness_ms",
+                                        static_cast<uint64_t>(e.maxStalenessMs)),
+                        LogField::Bool("replicated",  false),
+                    };
+                    Log_(static_cast<uint8_t>(LogLevel::Debug),
+                          LogCategory::kEvents,
+                          "late event discarded",
+                          fields);
+                }
                 continue;
             }
             HandleEvent(e, /*replicated=*/false);
@@ -1556,6 +1711,33 @@ void AudioRuntimeImpl::Update(float deltaSeconds) {
     statsLatest_.mixerVoicesActive    = mixer_->ActiveVoicesApprox();
     statsLatest_.totalRenderCallbacks = mixer_->TotalCallbacks();
     statsLatest_.renderUnderruns      = mixer_->Underruns();
+
+    // Mixer-underrun delta detection. Underruns are incremented on the
+    // render thread; we surface them as log events on the game thread
+    // by diffing against last tick's snapshot. Each delta tick at
+    // most one log line — bursts collapse into a single "underruns:
+    // N" event so logs don't drown a flapping audio device.
+    if (statsLatest_.renderUnderruns > lastUnderruns_) {
+        const uint64_t delta = statsLatest_.renderUnderruns - lastUnderruns_;
+        if (ShouldLog_(LogLevel::Warn)) {
+            const LogField fields[] = {
+                LogField::UInt("delta", delta),
+                LogField::UInt("total", statsLatest_.renderUnderruns),
+            };
+            Log_(static_cast<uint8_t>(LogLevel::Warn),
+                  LogCategory::kMixer,
+                  "render-thread underrun(s) since last tick",
+                  fields);
+        }
+        lastUnderruns_ = statsLatest_.renderUnderruns;
+    }
+
+    // -------------------------------------------------------------------
+    // 12. Telemetry. If a sink is configured and the configured
+    //     interval has elapsed, publish a stats snapshot. Cheap
+    //     fast-path when telemetry is disabled (the typical case).
+    // -------------------------------------------------------------------
+    EmitTelemetry_(deltaSeconds);
 }
 
 AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
@@ -1577,7 +1759,107 @@ AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
         replicationRateLimiter_.TotalPolicyViolations();
     s.replicationEventsRejectedNewIdBudget =
         replicationRateLimiter_.TotalNewIdBudgetRejections();
+    s.telemetrySinkExceptions =
+        telemetrySinkExceptions_.load(std::memory_order_relaxed);
+    s.logSinkExceptions =
+        logSinkExceptions_.load(std::memory_order_relaxed);
     return s;
+}
+
+void AudioRuntimeImpl::Log_(uint8_t                          level,
+                              std::string_view                  category,
+                              std::string_view                  message,
+                              std::span<const LogField>         fields) const {
+    // Caller must already have checked ShouldLog_(); this is the
+    // mutex-and-emit half of the path. We re-check here defensively
+    // so direct calls are safe even if someone bypasses the macro.
+    if (logSink_ == nullptr) return;
+
+    LogEvent e{
+        controlClockMs_,
+        static_cast<LogLevel>(level),
+        category,
+        message,
+        fields,
+    };
+    // Mutex-serialize across game / network threads. Sinks therefore
+    // don't need their own thread-safety. Brief lock — sink call
+    // should be cheap. Defensive try/catch so a misbehaving host
+    // sink can't break Update mid-flight; exception count surfaced
+    // via Stats::logSinkExceptions so a buggy sink is observable.
+    try {
+        std::lock_guard<std::mutex> lk(logMutex_);
+        logSink_->OnLogEvent(e);
+    } catch (...) {
+        // Counter is atomic because hook points fire from game and
+        // network threads — read on game thread via GetStats.
+        logSinkExceptions_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void AudioRuntimeImpl::EmitTelemetry_(float deltaSeconds) {
+    // Fast-path: no sink configured, or interval is zero (= disabled).
+    // Branch-on-pointer is the cheapest possible no-op so the cost
+    // stays under noise for projects that never wire telemetry.
+    if (telemetrySink_ == nullptr || config_.telemetryIntervalMs == 0) {
+        return;
+    }
+
+    // Accumulate elapsed wall time. We use deltaSeconds rather than
+    // controlClockMs_ deltas because telemetryIntervalMs is meant to
+    // be host-cadence-relative (the host calls Update at its own
+    // rate); driving from controlClockMs_ would couple to network
+    // tick latency and emit late under packet loss.
+    telemetryAccumMs_ += static_cast<TimestampMs>(deltaSeconds * 1000.0f);
+    if (telemetryAccumMs_ < config_.telemetryIntervalMs) {
+        return;
+    }
+    // Reset the accumulator. We subtract rather than zero so a long
+    // host frame doesn't lose telemetry samples — the next Update
+    // catches up by emitting again immediately if still over budget.
+    telemetryAccumMs_ -= config_.telemetryIntervalMs;
+
+    // Build a fully-populated Stats snapshot the same way GetStats
+    // does for callers. The sink sees exactly what GetStats would
+    // return at this moment in time.
+    AudioRuntime::Stats fresh = statsLatest_;
+    if (mixer_) {
+        fresh.mixerVoicesActive    = mixer_->ActiveVoicesApprox();
+        fresh.totalRenderCallbacks = mixer_->TotalCallbacks();
+        fresh.renderUnderruns      = mixer_->Underruns();
+    }
+    for (size_t i = 0; i < 6; ++i) {
+        fresh.replicationEventsRateLimited[i] =
+            replicationRateLimiter_.TotalRateLimitedForCategory(
+                static_cast<AudioCategory>(i));
+    }
+    fresh.replicationEventsRejectedByValidator =
+        replicationRateLimiter_.TotalValidatorRejections();
+    fresh.replicationPolicyViolations =
+        replicationRateLimiter_.TotalPolicyViolations();
+    fresh.replicationEventsRejectedNewIdBudget =
+        replicationRateLimiter_.TotalNewIdBudgetRejections();
+    fresh.telemetrySinkExceptions =
+        telemetrySinkExceptions_.load(std::memory_order_relaxed);
+    fresh.logSinkExceptions =
+        logSinkExceptions_.load(std::memory_order_relaxed);
+
+    RuntimeStatsSample sample{controlClockMs_, fresh};
+    // Sink may throw, but throwing across the runtime boundary
+    // would leak Update mid-flight. Wrap defensively. Built-in
+    // sinks never throw; misbehaving host sinks lose their sample
+    // but the runtime keeps ticking — and the exception is now
+    // surfaced via Stats::telemetrySinkExceptions for observability
+    // (Stats can itself be reported through the same sink, so this
+    // counter shows up on the next non-throwing sample).
+    try {
+        telemetrySink_->OnRuntimeStats(sample);
+    } catch (...) {
+        // Atomic only for symmetry with logSinkExceptions_; this
+        // path is game-thread-only (EmitTelemetry_ is called from
+        // Update step 12) so a plain increment would also be safe.
+        telemetrySinkExceptions_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void AudioRuntimeImpl::SetReplicationValidator(

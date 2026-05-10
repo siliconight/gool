@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.5.0
+    VERSION 0.11.1
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -47,6 +47,7 @@ option(AUDIO_ENGINE_FETCH_MINIAUDIO   "Fetch miniaudio via FetchContent if not v
 option(AUDIO_ENGINE_DECODERS_WAV   "Compile WAV decoder (uses dr_wav)"        OFF)
 option(AUDIO_ENGINE_DECODERS_OGG   "Compile Ogg Vorbis decoder (uses stb_vorbis)" OFF)
 option(AUDIO_ENGINE_DECODERS_FLAC  "Compile FLAC decoder (uses dr_flac)"      OFF)
+option(AUDIO_ENGINE_DECODERS_OPUS  "Compile Ogg Opus file decoder (links libopusfile)" OFF)
 option(AUDIO_ENGINE_FETCH_DECODERS "Fetch dr_libs / stb via FetchContent if not vendored locally" ON)
 
 # Voice codec: libopus. Off by default. When ON, the build resolves
@@ -93,6 +94,7 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/decoders/resampling_decoder.cpp
     src/audio_engine/decoders/wav_decoder.cpp
     src/audio_engine/decoders/ogg_vorbis_decoder.cpp
+    src/audio_engine/decoders/opus_file_decoder.cpp
     src/audio_engine/decoders/flac_decoder.cpp
     src/audio_engine/backend/null_audio_backend.cpp
     src/audio_engine/orchestrator/sequence_player.cpp
@@ -265,6 +267,59 @@ if(AUDIO_ENGINE_DECODERS_OGG)
 endif()
 if(AUDIO_ENGINE_DECODERS_FLAC)
     target_compile_definitions(audio_engine PRIVATE AUDIO_ENGINE_DECODERS_FLAC=1)
+endif()
+
+# -------------------------------------------------------------------------
+# Optional: Opus file decoder (libopusfile)
+# -------------------------------------------------------------------------
+# libopusfile is a small C library that wraps libopus + libogg to read
+# .opus container files. Single-header vendoring isn't viable (it's a
+# real .c project with several TUs and platform glue), so resolution
+# is system-only:
+#   1. find_package(OpusFile QUIET) — modern installs ship one.
+#   2. pkg-config opusfile — most Linux/macOS distros register it.
+# AUDIO_ENGINE_FETCH_DECODERS does NOT cover libopusfile because its
+# build system is autotools; integrating it via FetchContent is more
+# trouble than it's worth. Adopters who can't install libopusfile via
+# their package manager can build it from xiph/opusfile manually and
+# point CMAKE_PREFIX_PATH at the install root.
+#
+# The wrapper TU at src/audio_engine/decoders/opus_file_decoder.cpp is
+# always in the source list. AUDIO_ENGINE_DECODERS_OPUS=1 flips it to
+# gated-on; in stub mode it expands to "Create returns nullptr".
+
+if(AUDIO_ENGINE_DECODERS_OPUS)
+    set(_AE_OPUSFILE_RESOLVED FALSE)
+
+    # 1. find_package (some distros ship a CMake config).
+    find_package(OpusFile QUIET)
+    if(OpusFile_FOUND)
+        message(STATUS "audio_engine: using system libopusfile via find_package(OpusFile)")
+        target_link_libraries(audio_engine PRIVATE OpusFile::opusfile)
+        set(_AE_OPUSFILE_RESOLVED TRUE)
+    endif()
+
+    # 2. pkg-config (most common path on Linux / macOS Homebrew).
+    if(NOT _AE_OPUSFILE_RESOLVED)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(OPUSFILE QUIET IMPORTED_TARGET opusfile)
+            if(OPUSFILE_FOUND)
+                message(STATUS "audio_engine: using libopusfile via pkg-config")
+                target_link_libraries(audio_engine PRIVATE PkgConfig::OPUSFILE)
+                set(_AE_OPUSFILE_RESOLVED TRUE)
+            endif()
+        endif()
+    endif()
+
+    if(NOT _AE_OPUSFILE_RESOLVED)
+        message(FATAL_ERROR
+            "AUDIO_ENGINE_DECODERS_OPUS=ON but libopusfile was not found.\n"
+            "Install via your package manager (e.g. apt install libopusfile-dev,\n"
+            "brew install opusfile, vcpkg install opusfile) and re-run CMake.")
+    endif()
+
+    target_compile_definitions(audio_engine PRIVATE AUDIO_ENGINE_DECODERS_OPUS=1)
 endif()
 
 # -------------------------------------------------------------------------

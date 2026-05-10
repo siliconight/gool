@@ -6,6 +6,7 @@
 #include "audio_engine/dsp/biquad_filter.h"
 #include "audio_engine/dsp/compressor.h"
 #include "audio_engine/dsp/reverb_effect.h"
+#include "audio_engine/dsp/saturation_effect.h"
 
 #include <algorithm>
 #include <cmath>
@@ -157,13 +158,21 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                     ec.biquadType, ec.biquadCutoffHz, ec.biquadQ, ec.biquadGainDb);
                 break;
             case EffectKind::Compressor: {
-                fx = std::make_unique<CompressorEffect>(
-                    ec.compressorThresholdDb,
-                    ec.compressorRatio,
-                    ec.compressorAttackMs,
-                    ec.compressorReleaseMs,
-                    ec.compressorMakeupDb,
-                    ec.compressorSidechainBus);
+                CompressorConfig cc;
+                cc.thresholdDb     = ec.compressorThresholdDb;
+                cc.ratio           = ec.compressorRatio;
+                cc.attackMs        = ec.compressorAttackMs;
+                cc.releaseMs       = ec.compressorReleaseMs;
+                cc.makeupDb        = ec.compressorMakeupDb;
+                cc.sidechainBus    = ec.compressorSidechainBus;
+                // Tier-A (v0.8) parameters:
+                cc.kneeWidthDb     = ec.compressorKneeWidthDb;
+                cc.mixRatio        = ec.compressorMixRatio;
+                cc.maxReductionDb  = ec.compressorMaxReductionDb;
+                cc.sidechainHpfHz  = ec.compressorSidechainHpfHz;
+                cc.holdMs          = ec.compressorHoldMs;
+                cc.detectionMode   = ec.compressorDetectionMode;
+                fx = std::make_unique<CompressorEffect>(cc);
                 if (ec.compressorSidechainBus != kInvalidBusId) {
                     const uint32_t scIdx = IndexOf(ec.compressorSidechainBus);
                     if (scIdx == kInvalidIndex) return AudioResult::InvalidArgument;
@@ -176,6 +185,14 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                     ec.reverbDamping,
                     ec.reverbWetGainDb);
                 break;
+            case EffectKind::Saturation: {
+                SaturationConfig sc;
+                sc.drive      = ec.saturationDrive;
+                sc.mix        = ec.saturationMix;
+                sc.outputGain = ec.saturationOutputGain;
+                sc.bias       = ec.saturationBias;
+                fx = std::make_unique<SaturationEffect>(sc);
+            } break;
         }
 
         bus.effects.push_back(std::move(fx));

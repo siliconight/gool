@@ -1,0 +1,126 @@
+[gd_scene load_steps=14 format=3 uid="uid://coop_shooter_main"]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/audio_setup.gd" id="2_audio_setup"]
+[ext_resource type="Script" path="res://scripts/weapon.gd" id="3_weapon"]
+[ext_resource type="Script" path="res://scripts/player_controller.gd" id="4_player"]
+[ext_resource type="Script" path="res://scripts/ai_bot.gd" id="5_bot"]
+[ext_resource type="Script" path="res://scripts/combat_music_director.gd" id="6_director"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/audio_emitter_3d.gd" id="7_emitter"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/music_state_controller.gd" id="8_music"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/footstep_surface_player.gd" id="9_footstep"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
+size = Vector3(40, 0.2, 40)
+
+[sub_resource type="BoxMesh" id="BoxMesh_floor"]
+size = Vector3(40, 0.2, 40)
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_char"]
+radius = 0.4
+height = 1.8
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_char"]
+radius = 0.4
+height = 1.8
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="Floor" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.1, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Floor"]
+shape = SubResource("BoxShape3D_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
+mesh = SubResource("BoxMesh_floor")
+
+[node name="Player" type="CharacterBody3D" parent="."]
+script = ExtResource("4_player")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+mesh = SubResource("CapsuleMesh_char")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_char")
+
+[node name="Weapon" type="Node3D" parent="Player" groups=["weapons"]]
+script = ExtResource("3_weapon")
+
+[node name="FootstepSurfacePlayer" type="Node3D" parent="Player"]
+script = ExtResource("9_footstep")
+
+[node name="BotPistol" type="CharacterBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0, 6)
+script = ExtResource("5_bot")
+weapon_kind = 0
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BotPistol"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+mesh = SubResource("CapsuleMesh_char")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BotPistol"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_char")
+
+[node name="Weapon" type="Node3D" parent="BotPistol" groups=["weapons"]]
+script = ExtResource("3_weapon")
+is_local = false
+
+[node name="FootstepSurfacePlayer" type="Node3D" parent="BotPistol"]
+script = ExtResource("9_footstep")
+
+[node name="BotRifle" type="CharacterBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -7, 0, 5)
+script = ExtResource("5_bot")
+weapon_kind = 1
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BotRifle"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+mesh = SubResource("CapsuleMesh_char")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BotRifle"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_char")
+
+[node name="Weapon" type="Node3D" parent="BotRifle" groups=["weapons"]]
+script = ExtResource("3_weapon")
+is_local = false
+
+[node name="FootstepSurfacePlayer" type="Node3D" parent="BotRifle"]
+script = ExtResource("9_footstep")
+
+[node name="BotShotgun" type="CharacterBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -8)
+script = ExtResource("5_bot")
+weapon_kind = 2
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BotShotgun"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+mesh = SubResource("CapsuleMesh_char")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BotShotgun"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_char")
+
+[node name="Weapon" type="Node3D" parent="BotShotgun" groups=["weapons"]]
+script = ExtResource("3_weapon")
+is_local = false
+
+[node name="FootstepSurfacePlayer" type="Node3D" parent="BotShotgun"]
+script = ExtResource("9_footstep")
+
+[node name="Music" type="Node" parent="."]
+script = ExtResource("8_music")
+
+[node name="MusicDirector" type="Node" parent="."]
+script = ExtResource("6_director")
+
+[node name="Ambience" type="Node3D" parent="."]
+script = ExtResource("7_emitter")
+
+[node name="Camera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.7660445, 0.6427876, 0, -0.6427876, 0.7660445, 0, 8, 12)

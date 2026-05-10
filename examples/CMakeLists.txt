@@ -16,6 +16,9 @@ target_link_libraries(audio_engine_sound_bank PRIVATE audio_engine::audio_engine
 add_executable(audio_engine_music_crossfade music_crossfade/main.cpp)
 target_link_libraries(audio_engine_music_crossfade PRIVATE audio_engine::audio_engine)
 
+add_executable(audio_engine_telemetry telemetry/main.cpp)
+target_link_libraries(audio_engine_telemetry PRIVATE audio_engine::audio_engine)
+
 if(AUDIO_ENGINE_BACKEND_MINIAUDIO)
     add_executable(audio_engine_playback playback/main.cpp)
     target_link_libraries(audio_engine_playback PRIVATE audio_engine::audio_engine)

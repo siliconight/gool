@@ -21,11 +21,14 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/backend.h"
+#include "audio_engine/logging.h"
 #include "audio_engine/spatializer.h"
 #include "audio_engine/voice_codec.h"
 #include "audio_engine/geometry_query.h"
@@ -119,6 +122,7 @@ public:
 
     // Bus / effect parameter control
     AudioResult           SetBusGainDb(BusId busId, float gainDb);
+    BusId                 FindBusIdByName(std::string_view name) const;
     AudioResult           SetEffectParameter(BusId    busId,
                                               uint32_t effectIndex,
                                               uint16_t paramId,
@@ -274,6 +278,64 @@ private:
 
     // Stats published to game thread.
     AudioRuntime::Stats statsLatest_{};
+
+    // Telemetry sink (host-owned, may be nullptr). When non-null and
+    // config_.telemetryIntervalMs > 0, the runtime calls into
+    // OnRuntimeStats() at that cadence from EmitTelemetry_(), which
+    // is invoked at the end of Update().
+    IRuntimeTelemetrySink* telemetrySink_   = nullptr;
+    // Accumulated milliseconds since the last telemetry emit. Reset
+    // to zero (modulo overshoot) each time we fire.
+    TimestampMs            telemetryAccumMs_ = 0;
+    void EmitTelemetry_(float deltaSeconds);
+
+    // Event-level log sink (host-owned, may be nullptr). The runtime
+    // takes logMutex_ around every OnLogEvent call so sinks don't
+    // have to be thread-safe themselves. ShouldLog_() inlines a
+    // nullptr+level fast-path so disabled categories cost a branch,
+    // not a sink call.
+    IRuntimeLogSink*       logSink_         = nullptr;
+    mutable std::mutex     logMutex_;
+
+    // Sink-exception counters. Surfaced via Stats. Atomic because
+    // log hooks fire from game and network threads; telemetry's is
+    // atomic only for symmetry (game-thread only in practice).
+    // Loaded with relaxed ordering during GetStats / EmitTelemetry —
+    // we don't need a happens-before guarantee, just a non-torn read.
+    // Mutable so const Log_ can fetch_add on the catch path.
+    mutable std::atomic<uint64_t>  telemetrySinkExceptions_{0};
+    mutable std::atomic<uint64_t>  logSinkExceptions_{0};
+
+    // Mixer underrun counter snapshot from the previous Update tick.
+    // Used to deduce render-thread underrun events on the game
+    // thread without crossing thread boundaries inside the sink call.
+    uint64_t               lastUnderruns_   = 0;
+
+    // Fast-path filter check. Returns true if the configured sink
+    // should receive an event at `level`. Inlined; cheap when
+    // disabled. Members read here (logSink_, config_.logMinLevel)
+    // don't change after Initialize, so no lock is needed for the
+    // check — only for the actual sink call inside Log_.
+    bool ShouldLog_(uint8_t level) const noexcept {
+        return logSink_ != nullptr && level >= config_.logMinLevel;
+    }
+    // LogLevel overload: keeps call sites free of static_cast noise.
+    // Equivalent to the uint8 overload (Rule 14: hide implementation
+    // details — config_.logMinLevel is uint8 only because logging.h
+    // shouldn't have to be pulled into config.h, not because callers
+    // should care).
+    bool ShouldLog_(LogLevel level) const noexcept {
+        return ShouldLog_(static_cast<uint8_t>(level));
+    }
+
+    // Emit a log event. Caller must have already checked ShouldLog_;
+    // this skips the level filter and goes straight to the sink
+    // under logMutex_. The fields span is borrowed; the sink either
+    // formats immediately (JSON Lines) or deep-copies (Ring).
+    void Log_(uint8_t                            level,
+              std::string_view                   category,
+              std::string_view                   message,
+              std::span<const struct LogField>   fields = {}) const;
 
     // Tick-to-tick interpolation alpha state (host-clock based).
     float interpAlpha_     = 1.0f;
