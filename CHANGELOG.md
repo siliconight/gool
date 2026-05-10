@@ -12,6 +12,146 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.15] - 2026-05-10
+
+**Second CI fix pass.** v0.11.14 fixed the missing-sources cascade
+(LNK2019 across all targets); this release fixes the five
+remaining failures the full log revealed across the three engine
+jobs and the Windows gdextension job. The lesson: my regression
+was lying about which include paths each test target actually gets.
+
+### Background
+
+After v0.11.14 cleared the link errors and brought Windows engine
+build down from 30 min to 1m 35s, the actual underlying compile
+errors became visible in the logs. Six distinct problems:
+
+1. **Tests including private headers** — three test files
+   (`saturation_test`, `saturation_profile_test`,
+   `compressor_profile_test`) include
+   `audio_engine/dsp/saturation_effect.h` and
+   `audio_engine/dsp/compressor.h`, which live in `src/` not
+   `include/`. The existing foreach in `tests/CMakeLists.txt`
+   that adds `src/` to a test's include path missed these three
+   targets.
+
+2. **Benches including private headers** — `parameter_smoother_bench`
+   includes `audio_engine/orchestrator/parameter_smoother.h`,
+   another private header. Same fix.
+
+3. **Apple Clang thread-safety analysis** — `AUDIO_REQUIRES(GameThread)`
+   expanded to `__attribute__((requires_capability(GameThread)))`.
+   Clang's `requires_capability` takes a *value* (typically a
+   capability-typed variable), not a *type*. The header declared
+   `GameThread`/`RenderThread`/`ControlThread`/`NetworkThread` as
+   struct types, so Apple Clang errored with "does not refer to a
+   value". GCC and MSVC didn't surface this because their
+   `AUDIO_TSA_ATTR` expands to nothing — the `GameThread` token
+   was never parsed.
+
+4. **Windows MSVC: `open_memstream` not found** —
+   `telemetry_test.cpp` and `logging_test.cpp` use POSIX
+   `open_memstream` to capture sink output. Not available on
+   Windows. Replaced with a portable `std::tmpfile`-backed helper.
+
+5. **Windows gdextension: `drwav_init_file: identifier not found`** —
+   `wav_decoder.cpp` had `#define DR_WAV_NO_STDIO 0`, intending to
+   "enable stdio". But `dr_wav.h` checks `#ifndef DR_WAV_NO_STDIO`,
+   so *defining* the macro to *any* value (including 0) excludes
+   `drwav_init_file` and its siblings. Pure misreading of dr_wav's
+   API. Removed the line; default behavior (macro undefined →
+   stdio helpers present) is what we want.
+
+6. **gdextension Linux exit 126 / macOS exit 1** — these failed
+   silently in the log we have (no captured error message between
+   step start and exit code). Not addressed in this release;
+   their fix is gated on a new log capture.
+
+### Fixed
+
+- **`tests/CMakeLists.txt`** — added `saturation`,
+  `saturation_profile`, `compressor_profile` to the
+  `include + src` foreach. Added a separate small foreach for
+  the two bench targets (`parameter_smoother_bench`,
+  `rtpc_eval_bench`) so they also get `src/` on their include
+  path.
+
+- **`include/audio_engine/thread_annotations.h`** — renamed the
+  four capability tag types from `GameThread` → `GameThreadTag`
+  (etc.) and added `inline GameThreadTag GameThread;` (etc.)
+  as instances. The instances are C++17 inline variables so
+  every TU including the header gets the same definition with
+  no ODR violation. The structs are empty and the instances
+  optimize away to zero runtime cost. Code that uses
+  `AUDIO_REQUIRES(GameThread)` now refers to a value, which is
+  what Clang's `requires_capability` expects.
+
+  Verified by grep: nothing in the codebase used `GameThread`
+  etc. as a *type* (only inside `AUDIO_REQUIRES(...)` macros),
+  so the rename is non-breaking.
+
+- **`src/audio_engine/decoders/wav_decoder.cpp`** — removed
+  `#define DR_WAV_NO_STDIO 0`. Comment added inline explaining
+  the dr_wav API gotcha so this isn't re-introduced.
+
+- **`tests/unit/test_memfile_helpers.h`** (new file) — a portable
+  replacement for POSIX `open_memstream`. Exposes
+  `test_helpers::OpenMemFile()` returning a `std::tmpfile()`
+  handle plus `ReadAndClose()` to collect everything written
+  and close the file. Works on Linux, macOS, and Windows.
+
+- **`tests/unit/telemetry_test.cpp` + `tests/unit/logging_test.cpp`**
+  — replaced all three `open_memstream` call sites with the
+  helper. Logic is identical; the only difference is the bytes
+  briefly transit a tmp file instead of memory, which is fine
+  for unit-test scratch capture.
+
+### Improved (regression methodology)
+
+The sandbox regression now reads the `foreach(_t ...)` list from
+`tests/CMakeLists.txt` at regression time, and per test target,
+compiles with either:
+
+- `-I include -I src -I tests/unit` (for tests in the foreach
+  list, which CMake also gives `src/` access to)
+- `-I include -I tests/unit` (for everything else)
+
+Before v0.11.15, the regression compiled every test with
+`-I include -I src` indiscriminately, masking the "test
+accidentally includes a private header without being in the
+foreach" bug. After v0.11.15, that class of bug fails locally
+with the same compile error CI surfaces.
+
+This is the second methodology fix in two releases (v0.11.14
+added "match CMake's source list, not raw find"; v0.11.15 adds
+"match CMake's per-target include paths"). With both in place,
+the gap between local regression and CI behavior is closed for
+this class of bug.
+
+### What's left
+
+The gdextension jobs (linux-x86_64, macos-arm64) had silent
+failures in the captured log — exit code 126 (Linux) / 1 (macOS)
+with no error message in the failed-step output. The most likely
+cause for Linux's exit 126 is `scons` not being on the bash
+session's PATH after `pip install scons` drops it under
+`/home/runner/.local/bin/`; macOS exit 1 needs separate
+investigation. Both are gated on a new log capture once
+v0.11.15's engine fixes go green.
+
+Windows gdextension's `drwav_init_file` fix should clear that
+particular failure but more may surface; we'll see in the run
+log after pushing.
+
+### Verified locally
+
+- All 36 unit tests pass under the new CMake-faithful
+  regression methodology (per-target include paths matching
+  CMake's `foreach`).
+- The 5 source-file changes (CMakeLists, thread_annotations.h,
+  wav_decoder.cpp, telemetry_test.cpp, logging_test.cpp) plus
+  the new test helper header compile cleanly under g++ -std=c++20.
+
 ## [0.11.14] - 2026-05-10
 
 **CI fix.** Four `.cpp` files existed on disk and were referenced by
@@ -2637,7 +2777,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.14...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.15...HEAD
+[0.11.15]: https://github.com/siliconight/gool/releases/tag/v0.11.15
 [0.11.14]: https://github.com/siliconight/gool/releases/tag/v0.11.14
 [0.11.13]: https://github.com/siliconight/gool/releases/tag/v0.11.13
 [0.11.12]: https://github.com/siliconight/gool/releases/tag/v0.11.12

@@ -36,10 +36,21 @@ add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitch
 
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
-foreach(_t spsc_ring slot_map bus_graph compressor decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry biquad_eq integration_kitchen_sink)
+foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry biquad_eq integration_kitchen_sink)
     target_include_directories(audio_engine_${_t}_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)
+endforeach()
+
+# Benches reach into the same private headers as their unit-test
+# counterparts (parameter_smoother is in src/audio_engine/orchestrator/,
+# the RTPC eval bench drives the runtime's internal RTPC graph).
+foreach(_b parameter_smoother_bench rtpc_eval_bench)
+    if(TARGET audio_engine_${_b})
+        target_include_directories(audio_engine_${_b} PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/src)
+    endif()
 endforeach()
 
 # Tests that exercise compiled implementations link against the library.

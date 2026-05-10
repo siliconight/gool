@@ -21,6 +21,7 @@
 #include "audio_engine/config.h"
 #include "audio_engine/logging.h"
 #include "audio_engine/types.h"
+#include "test_memfile_helpers.h"
 
 #include <cassert>
 #include <cstdio>
@@ -98,9 +99,7 @@ void InitRuntimeWithLogSink(audio::AudioRuntime& rt,
 
 void TestJsonLinesProducesCompactLine() {
     std::cout << "  [json lines: one compact JSON object per event]\n";
-    char* buf = nullptr;
-    size_t bufSize = 0;
-    FILE* mem = open_memstream(&buf, &bufSize);
+    FILE* mem = test_helpers::OpenMemFile();
     assert(mem != nullptr);
 
     audio::JsonLinesLogSink sink(mem);
@@ -118,10 +117,7 @@ void TestJsonLinesProducesCompactLine() {
         std::span<const audio::LogField>(fields, 4),
     };
     sink.OnLogEvent(e);
-    std::fflush(mem);
-    const std::string out(buf, bufSize);
-    std::fclose(mem);
-    std::free(buf);
+    const std::string out = test_helpers::ReadAndClose(mem);
 
     std::cout << "    out=" << out;
     // One newline at end.
@@ -142,9 +138,7 @@ void TestJsonLinesProducesCompactLine() {
 
 void TestJsonLinesEscapesSpecialCharacters() {
     std::cout << "  [json lines: special chars escape correctly]\n";
-    char* buf = nullptr;
-    size_t bufSize = 0;
-    FILE* mem = open_memstream(&buf, &bufSize);
+    FILE* mem = test_helpers::OpenMemFile();
     audio::JsonLinesLogSink sink(mem);
 
     const audio::LogField fields[] = {
@@ -155,9 +149,7 @@ void TestJsonLinesEscapesSpecialCharacters() {
         std::span<const audio::LogField>(fields, 1),
     };
     sink.OnLogEvent(e);
-    std::fflush(mem);
-    const std::string out(buf, bufSize);
-    std::fclose(mem); std::free(buf);
+    const std::string out = test_helpers::ReadAndClose(mem);
 
     // Tabs, newlines, and quotes all escaped.
     assert(out.find("\\n") != std::string::npos);

@@ -19,6 +19,7 @@
 #include "audio_engine/backend.h"
 #include "audio_engine/config.h"
 #include "audio_engine/telemetry.h"
+#include "test_memfile_helpers.h"
 
 #include <cassert>
 #include <cstdio>
@@ -96,21 +97,19 @@ audio::AudioRuntime::Stats SyntheticStats() {
 void TestJsonLinesSinkProducesAllFields() {
     std::cout << "  [json lines: every documented field appears in output]\n";
 
-    // Capture stdout to a memstream-backed FILE*.
-    char* buf = nullptr;
-    size_t bufSize = 0;
-    FILE* mem = open_memstream(&buf, &bufSize);
+    // Capture sink output via test_helpers::OpenMemFile, a portable
+    // replacement for POSIX open_memstream. Returns a FILE* you can
+    // write to with normal stdio; ReadAndClose collects the contents
+    // and closes the file.
+    FILE* mem = test_helpers::OpenMemFile();
     assert(mem != nullptr);
 
     audio::JsonLinesTelemetrySink sink(mem);
     auto stats = SyntheticStats();
     sink.OnRuntimeStats(audio::RuntimeStatsSample{1234, stats});
     sink.OnRuntimeStats(audio::RuntimeStatsSample{2468, stats});
-    std::fflush(mem);
 
-    const std::string out(buf, bufSize);
-    std::fclose(mem);
-    std::free(buf);
+    const std::string out = test_helpers::ReadAndClose(mem);
 
     // Two lines, one per emit.
     size_t newlines = 0;

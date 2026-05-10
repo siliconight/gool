@@ -23,7 +23,11 @@
 #endif
 
 #define DR_WAV_IMPLEMENTATION
-#define DR_WAV_NO_STDIO 0
+// IMPORTANT: do NOT define DR_WAV_NO_STDIO here. dr_wav.h checks
+// `#ifndef DR_WAV_NO_STDIO` to gate the stdio helpers (`drwav_init_file`
+// etc.), which means *defining* the macro — to any value, including 0 —
+// excludes those helpers. We rely on `drwav_init_file` below, so the
+// default (macro undefined → stdio helpers present) is what we want.
 #include "dr_wav.h"
 
 #if defined(__GNUC__)
