@@ -12,6 +12,142 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.16] - 2026-05-10
+
+**Third CI fix pass.** v0.11.15 unblocked the engine jobs almost
+all the way; v0.11.16 closes the remaining three failures the
+new log surfaced cleanly.
+
+### Background
+
+After v0.11.15 cleared the main engine errors (saturation tests,
+thread annotations, open_memstream), only a handful of failures
+remained. The cleaner log made the root causes obvious:
+
+1. **`parameter_smoother_bench` still fails on all 3 engine platforms.**
+   My v0.11.15 fix added a bench foreach with `if(TARGET ...)` guards,
+   but I placed the foreach at line 48 — *before* the
+   `add_executable` calls at line 144. CMake evaluates top-to-bottom,
+   so when the foreach ran, neither bench target existed yet, the
+   `if(TARGET ...)` guard returned false, and `target_include_directories`
+   was never called. Silent no-op.
+
+2. **Windows gdextension can't find `audio_engine/miniaudio_backend.h`.**
+   `godot/src/gool_godot.cpp` includes the path
+   `audio_engine/miniaudio_backend.h`, but the actual header lives
+   at `include/audio_engine/backend/miniaudio_backend.h` — the
+   `backend/` subdirectory was missing from the path. Windows
+   surfaced this; Linux/macOS gdextension would too if they got
+   that far (they didn't — see #3).
+
+3. **gdextension Linux exit 126, macOS exit 1.** Their silent
+   failures had a clear message all along — I just hadn't scrolled
+   far enough in the previous log:
+
+   ```
+   ./scripts/fetch_miniaudio.sh: Permission denied
+   ```
+
+   This is the classic Windows-git-strips-executable-bits problem.
+   When the v0.11.x tarballs were extracted on a Windows machine
+   and committed via `git add`, Windows git (which defaults to
+   `core.fileMode=false`) didn't preserve the `+x` bits on the
+   `.sh` files. CI checks out on Linux/macOS, the `.sh` files
+   lack `+x`, and `./scripts/fetch_miniaudio.sh` errors with
+   "Permission denied" — exit 126 on Linux, exit 1 on macOS.
+
+### Fixed
+
+- **`tests/CMakeLists.txt`** — moved the bench foreach to *after*
+  the `add_executable(audio_engine_parameter_smoother_bench ...)`
+  and `add_executable(audio_engine_rtpc_eval_bench ...)` lines.
+  Removed the `if(TARGET ...)` guard since the targets are
+  unconditionally defined right above. Added an inline comment
+  explaining the ordering trap so this doesn't regress.
+
+- **`godot/src/gool_godot.cpp`** — corrected the include path
+  from `"audio_engine/miniaudio_backend.h"` to
+  `"audio_engine/backend/miniaudio_backend.h"`. Verified all four
+  formerly-affected includes resolve under `include/` only (no
+  `src/` access needed):
+    - `audio_engine/audio_runtime.h` ✓
+    - `audio_engine/backend/miniaudio_backend.h` ✓ (this fix)
+    - `audio_engine/config.h` ✓
+    - `audio_engine/bus_config_loader.h` ✓
+
+- **`.github/workflows/ci.yml`, `nightly.yml`, `release.yml`** —
+  changed `./scripts/fetch_miniaudio.sh` and
+  `./scripts/fetch_decoders.sh` invocations to
+  `bash scripts/fetch_miniaudio.sh` and
+  `bash scripts/fetch_decoders.sh`. Invoking via `bash` doesn't
+  depend on the file's executable bit being set — the
+  interpreter is told explicitly. Six total invocations across
+  three workflow files. YAML re-parsed clean.
+
+### Optional: fix the index permanently
+
+The workflow `bash …` change makes CI robust to missing `+x`
+bits, but for hygiene (and so `./scripts/foo.sh` works for
+adopters cloning the repo on Linux/macOS), the executable bit
+should also be set in the git index. From any machine — even
+Windows, where `core.fileMode=false` doesn't prevent this:
+
+```bash
+git update-index --chmod=+x scripts/*.sh
+git commit -m "Mark scripts/*.sh executable in git index"
+git push
+```
+
+This stores the mode in the index, gets committed, and survives
+future Windows checkins regardless of `core.fileMode` setting.
+Not required for CI to pass after v0.11.16 (the `bash` invocation
+is sufficient), but a one-time cleanup that closes the broader
+issue.
+
+### What this regression still doesn't catch
+
+Two methodology gaps surfaced this round that the local
+regression doesn't yet cover:
+
+- **gool_godot.cpp's includes.** The regression compiles unit
+  tests against the library but doesn't compile any file from
+  `godot/`. A real fix would attempt to `g++ -fsyntax-only` the
+  gdextension binding's .cpp files against `include/`-only paths
+  to catch private-header leaks like the `miniaudio_backend.h`
+  case. Tracked as a follow-up.
+- **CMake target-ordering bugs.** The bench foreach problem was
+  invisible until CI ran because the regression doesn't actually
+  use CMake. A faithful regression would shell out to `cmake -S .`
+  + `cmake --build` if cmake were available in the sandbox.
+  Tracked as a follow-up; for now, ordering bugs surface in CI.
+
+### Verified locally
+
+- All three workflow YAML files re-parse cleanly via `yaml.safe_load`.
+- Sandbox-faithful regression (per-target include paths matching
+  `tests/CMakeLists.txt`): **36/36 passing.**
+- `gool_godot.cpp`'s four audio_engine includes all resolve against
+  `include/` only (godot-cpp's own headers obviously don't, but
+  those come from a separate `-I` path in real builds).
+
+### Expected CI behavior
+
+After this release pushes:
+
+- **Engine jobs (3 platforms)** — should all go green for the
+  first time since v0.11.3. This is the milestone.
+- **gdextension Linux + macOS** — should progress past the
+  `fetch_miniaudio.sh` step. Likely to surface whatever the
+  *next* gdextension issue is. Most probable: `scons` PATH issue
+  (`pip install scons` drops it at `~/.local/bin` which the
+  bash session doesn't have on PATH).
+- **gdextension Windows** — should progress past the
+  `miniaudio_backend.h` include error and try to actually compile
+  the binding. May surface a different issue downstream.
+
+If the engine jobs go green and gdextension still has issues,
+we'll be down to a focused gdextension fix pass.
+
 ## [0.11.15] - 2026-05-10
 
 **Second CI fix pass.** v0.11.14 fixed the missing-sources cascade
@@ -2777,7 +2913,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.15...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.16...HEAD
+[0.11.16]: https://github.com/siliconight/gool/releases/tag/v0.11.16
 [0.11.15]: https://github.com/siliconight/gool/releases/tag/v0.11.15
 [0.11.14]: https://github.com/siliconight/gool/releases/tag/v0.11.14
 [0.11.13]: https://github.com/siliconight/gool/releases/tag/v0.11.13

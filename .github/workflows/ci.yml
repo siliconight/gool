@@ -107,8 +107,8 @@ jobs:
       - name: Fetch single-header dependencies (Unix)
         if: runner.os != 'Windows'
         run: |
-          ./scripts/fetch_miniaudio.sh
-          ./scripts/fetch_decoders.sh
+          bash scripts/fetch_miniaudio.sh
+          bash scripts/fetch_decoders.sh
 
       - name: Fetch single-header dependencies (Windows)
         if: runner.os == 'Windows'

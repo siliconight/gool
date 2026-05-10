@@ -42,17 +42,6 @@ foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation
         ${CMAKE_SOURCE_DIR}/src)
 endforeach()
 
-# Benches reach into the same private headers as their unit-test
-# counterparts (parameter_smoother is in src/audio_engine/orchestrator/,
-# the RTPC eval bench drives the runtime's internal RTPC graph).
-foreach(_b parameter_smoother_bench rtpc_eval_bench)
-    if(TARGET audio_engine_${_b})
-        target_include_directories(audio_engine_${_b} PRIVATE
-            ${CMAKE_SOURCE_DIR}/include
-            ${CMAKE_SOURCE_DIR}/src)
-    endif()
-endforeach()
-
 # Tests that exercise compiled implementations link against the library.
 # Header-only tests (spsc_ring, slot_map) don't need to.
 target_link_libraries(audio_engine_spsc_ring_test                 PRIVATE Threads::Threads)
@@ -146,3 +135,15 @@ target_link_libraries(audio_engine_parameter_smoother_bench PRIVATE audio_engine
 
 add_executable(audio_engine_rtpc_eval_bench bench/rtpc_eval_bench.cpp)
 target_link_libraries(audio_engine_rtpc_eval_bench PRIVATE audio_engine::audio_engine)
+
+# Benches reach into the same private headers as their unit-test
+# counterparts (parameter_smoother is in src/audio_engine/orchestrator/,
+# the RTPC eval bench drives the runtime's internal RTPC graph). This
+# foreach must come AFTER the add_executable lines above — earlier in
+# v0.11.15 it was placed near the test foreach and the if(TARGET ...)
+# guard silently no-op'd because CMake hadn't seen the target yet.
+foreach(_b parameter_smoother_bench rtpc_eval_bench)
+    target_include_directories(audio_engine_${_b} PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src)
+endforeach()

@@ -19,7 +19,7 @@
 #include "audio_engine/emitter.h"
 #include "audio_engine/events.h"
 #include "audio_engine/gpak.h"
-#include "audio_engine/miniaudio_backend.h"
+#include "audio_engine/backend/miniaudio_backend.h"
 #include "audio_engine/music_channel.h"
 #include "audio_engine/sound_bank.h"
 #include "audio_engine/version.h"
