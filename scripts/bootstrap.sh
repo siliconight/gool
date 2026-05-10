@@ -200,13 +200,32 @@ step "Step 4/5: building gool's GDExtension binding"
 
 BUILD_DIR="${REPO_ROOT}/build-godot"
 
+# Opportunistic Opus support: if libopusfile + libopus are installed
+# system-wide (detectable via pkg-config), enable both Opus features
+# in the build. If not, skip them silently and log a hint — the rest
+# of the build still produces a working addon for WAV/OGG/FLAC.
+OPUS_FLAGS=()
+if command -v pkg-config >/dev/null 2>&1 \
+   && pkg-config --exists opusfile \
+   && pkg-config --exists opus; then
+    echo "  ✓ libopusfile + libopus detected — enabling Opus support"
+    OPUS_FLAGS+=( "-DAUDIO_ENGINE_DECODERS_OPUS=ON" "-DAUDIO_ENGINE_VOICE_OPUS=ON" )
+else
+    echo "  · libopusfile not detected — building without Opus support"
+    echo "    (install via:"
+    echo "       apt: sudo apt install libopusfile-dev libopus-dev"
+    echo "       brew: brew install opusfile opus"
+    echo "       yum/dnf: sudo dnf install opusfile-devel opus-devel)"
+fi
+
 cmake -S "${REPO_ROOT}/godot" -B "${BUILD_DIR}" \
     -DGODOT_CPP_PATH="${GODOT_CPP_PATH}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON \
     -DAUDIO_ENGINE_DECODERS_WAV=ON \
     -DAUDIO_ENGINE_DECODERS_OGG=ON \
-    -DAUDIO_ENGINE_DECODERS_FLAC=ON
+    -DAUDIO_ENGINE_DECODERS_FLAC=ON \
+    "${OPUS_FLAGS[@]}"
 
 cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" "-j${JOBS}"
 

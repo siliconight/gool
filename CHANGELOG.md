@@ -12,6 +12,107 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.8] - 2026-05-10
+
+Ship Opus support in the Godot addon binaries on Linux + macOS. Until
+this release, the addon shipped from CI didn't have
+`AUDIO_ENGINE_DECODERS_OPUS=ON` or `AUDIO_ENGINE_VOICE_OPUS=ON` —
+adopters who tried to register `.opus` audio files via
+`Gool.register_sound_from_file()` got a "decoder gated off" error
+even though the engine code path was fully implemented. This closes
+that gap for the platforms where libopusfile is a one-liner system
+install (Linux apt, macOS brew); Windows still needs vcpkg setup
+which is a follow-up.
+
+### Added
+
+- **Opus dependency install + flag enablement** in
+  `.github/workflows/release.yml`, `.github/workflows/nightly.yml`,
+  and `.github/workflows/ci.yml` (the `build-gdextension` job).
+  Two new steps before "Configure GDExtension":
+    - **Linux**: `sudo apt-get install -y libopusfile-dev libopus-dev`
+    - **macOS**: `brew install opusfile opus`
+  The configure step then conditionally appends
+  `-DAUDIO_ENGINE_DECODERS_OPUS=ON -DAUDIO_ENGINE_VOICE_OPUS=ON`
+  on non-Windows runners. Adopters who download the v0.11.8
+  Linux/macOS addon archive get Opus file decoding + Opus voice
+  chat out of the box.
+
+- **`scripts/bootstrap.sh`** — opportunistic Opus detection. Before
+  the cmake configure step, checks `pkg-config --exists opusfile`
+  and `pkg-config --exists opus`. If both are present, adds
+  `-DAUDIO_ENGINE_DECODERS_OPUS=ON -DAUDIO_ENGINE_VOICE_OPUS=ON`
+  to the build. If absent, prints a hint with platform-specific
+  install commands (apt / brew / yum / dnf) and proceeds without
+  Opus. Adopters who want Opus support locally just install the
+  packages once and re-run the script.
+
+### Changed
+
+- **`README.md` "Build options" section** — was a one-dimensional
+  table that said "everything OFF by default" without explaining
+  that the Godot binding build (release pipeline, bootstrap script)
+  uses different defaults. Reformatted as a two-column "Library
+  default / Godot binding default" table that makes the distinction
+  explicit. Adopters reading the README no longer have to read
+  through the bootstrap script to understand what the shipped
+  binary actually contains.
+
+### Notes for adopters
+
+- **Linux + macOS addon archives ship with Opus support from
+  v0.11.8 onward.** No additional configuration needed in your
+  Godot project — `Gool.register_sound_from_file("rifle",
+  "res://audio/rifle.opus")` just works.
+
+- **Windows addon archives still ship without Opus.** vcpkg setup
+  for libopusfile in CI is more involved than the Linux/macOS
+  one-liner package installs and is deferred to a follow-up. Windows
+  users who need Opus support can use Track B (build from source)
+  with `vcpkg install opusfile opus` and the bootstrap script will
+  auto-detect.
+
+- **The engine library standalone defaults are unchanged.** This
+  release does not flip CMakeLists.txt option defaults — anyone
+  embedding `audio_engine` directly in their C++ project still gets
+  a minimal build by default. The change applies only to the
+  Godot-binding build path that bootstrap.sh and the CI pipeline
+  use.
+
+### Verified
+
+- All three workflow YAML files re-parsed clean via `yaml.safe_load`
+  after the changes
+- `bootstrap.sh` syntax-checks clean; opus-detection guard tested
+  in the build sandbox (correctly reports "Opus not detected" since
+  sandbox doesn't have libopusfile installed)
+- 36/36 engine regression tests still passing (no engine code
+  touched). Ducking baseline locked at -17.20 dB
+
+### Not verified in this release (verifiable only by tagging)
+
+- The actual Linux + macOS Opus install + build pipeline. The
+  package names (`libopusfile-dev`, `libopus-dev` on Ubuntu;
+  `opusfile`, `opus` on Homebrew) are well-established. The
+  failure modes if either install hits a transient apt/brew issue:
+  the install step fails → entire job fails → that platform's
+  artifact doesn't ship that release. fail-fast=false keeps the
+  Windows artifact safe.
+- The actual `find_package(OpusFile)` resolution after install on
+  the GitHub runners. The CMakeLists.txt has both `find_package`
+  and `pkg_check_modules` paths; one of them should succeed.
+
+### What's still missing
+
+- **Windows Opus support** — vcpkg integration in CI. Feasible
+  (vcpkg is preinstalled on `windows-latest`) but adds enough
+  surface area that it gets its own iteration.
+- **Engine library default flip** for the standalone build. The
+  user may eventually want WAV/OGG/FLAC defaulting ON in the
+  CMakeLists.txt itself — they're single-header drops with zero
+  system deps. Deferred because it's a behavior change for
+  C++-embedding adopters who may rely on the current OFF defaults.
+
 ## [0.11.7] - 2026-05-10
 
 Hardening pass on v0.11.6 before tagging the macOS-support release.
@@ -1974,7 +2075,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.7...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.8...HEAD
+[0.11.8]: https://github.com/siliconight/gool/releases/tag/v0.11.8
 [0.11.7]: https://github.com/siliconight/gool/releases/tag/v0.11.7
 [0.11.6]: https://github.com/siliconight/gool/releases/tag/v0.11.6
 [0.11.5]: https://github.com/siliconight/gool/releases/tag/v0.11.5
