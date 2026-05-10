@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.10 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.11 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -126,16 +126,32 @@ events. The middleware handles the rest.
 > Setup is documented in **[SETUP.md](SETUP.md)** — full per-platform
 > instructions with troubleshooting. Two paths:
 >
-> **Track A — Use the prebuilt addon (fastest, recommended):**
+> **Track A — Use the prebuilt addon (fastest, recommended).**
 >
-> 1. Download `gool-X.Y.Z-godot-addon-<platform>.tar.gz` (or `.zip`
->    on Windows) from the [Releases page](https://github.com/siliconight/gool/releases)
-> 2. Extract `addons/gool/` into your Godot project's root
-> 3. Open the project, **Project Settings → Plugins → gool → Enable**
+> *One-line install* — run from inside your Godot project directory:
 >
-> No compiler required. Linux x86_64, Windows x86_64, and macOS
-> supported (macOS support new in v0.11.6 — please file issues if
-> you hit anything unexpected).
+> ```powershell
+> # Windows PowerShell:
+> iwr -useb https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.ps1 | iex
+> ```
+>
+> ```bash
+> # Linux / macOS:
+> curl -sSL https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.sh | bash
+> ```
+>
+> The script downloads the latest release's prebuilt addon for your
+> platform, drops it into `addons/gool/`, and prints the one manual
+> step left (enable the plugin in **Project Settings → Plugins**).
+> No compiler, no CMake, no godot-cpp.
+>
+> *Manual install* (if you'd rather not pipe a script): grab
+> `gool-X.Y.Z-godot-addon-<platform>.{tar.gz,zip}` from the
+> [Releases page](https://github.com/siliconight/gool/releases),
+> extract `addons/gool/` into your Godot project, enable the plugin.
+>
+> Linux x86_64, Windows x86_64, and macOS arm64 (Apple Silicon)
+> supported.
 >
 > **Track B — Build from source** (for contributors, custom platforms,
 > or if Track A's binary doesn't match your Godot version):

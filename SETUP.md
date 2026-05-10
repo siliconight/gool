@@ -32,8 +32,51 @@ hits a binary-compatibility issue with your specific Godot version.
 
 This is the fastest path. No C++ compiler, no SCons, no godot-cpp
 build. Suitable for any Godot 4.2+ project on Linux x86_64,
-Windows x86_64, or macOS. (macOS support is new in v0.11.6 — please
-file an issue if you hit anything unexpected.)
+Windows x86_64, or macOS arm64. (macOS support is new in v0.11.6 —
+please file an issue if you hit anything unexpected.)
+
+### Option 1: One-line install (recommended)
+
+Run from inside your Godot project directory (the one containing
+`project.godot`).
+
+**Windows (PowerShell):**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.ps1 | iex
+```
+
+**Linux / macOS:**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.sh | bash
+```
+
+The script:
+1. Detects your platform (Windows x86_64 / Linux x86_64 / macOS
+   arm64) and downloads the matching addon archive from the latest
+   release
+2. Extracts `addons/gool/` into your Godot project
+3. Replaces an existing `addons/gool/` if present (with a visible
+   "Replacing existing..." line)
+4. Prints the one manual step left
+
+The scripts are at [`scripts/quickinstall.ps1`](https://github.com/siliconight/gool/blob/main/scripts/quickinstall.ps1)
+and [`scripts/quickinstall.sh`](https://github.com/siliconight/gool/blob/main/scripts/quickinstall.sh)
+in the repo — readable before you pipe them, if you'd like to
+audit them first.
+
+After the script finishes, in Godot:
+
+- **Project Settings → Plugins → gool → Enable.** This wires up
+  the editor plugin (which writes a default `gool/config.json`)
+  and adds the `Gool` autoload.
+
+Skip to [§Verifying it worked](#verifying-it-worked) below.
+
+### Option 2: Manual install
+
+If you'd rather not pipe a script:
 
 1. Go to the [Releases page](https://github.com/siliconight/gool/releases).
 

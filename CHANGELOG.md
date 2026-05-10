@@ -12,6 +12,139 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.11] - 2026-05-10
+
+One-line install. Closes the last bit of friction in the Track A
+("just use the addon, no compiler") path. From v0.11.11 onward, a
+Godot game dev on Windows / Linux / macOS can install gool with a
+single PowerShell or bash command — no browser, no manual download,
+no manual extraction, no drag-drop into the project's addons
+directory.
+
+### Background
+
+Track A pre-v0.11.11 was already compiler-free, but still required
+seven UI actions: open browser → navigate to releases → click latest
+release → identify the right archive (filename has `-godot-addon-`
+in it, distinguishing from the C++ static lib) → download → extract
+→ drag `addons/gool/` into the project. Adopters who reached for
+the terminal (winget / scoop / oh-my-posh experience) expected the
+modern Windows-native install pattern, and didn't get it.
+
+### Added
+
+- **`scripts/quickinstall.ps1`** — Windows PowerShell quickinstaller.
+  Designed to be invoked via the standard Windows `iwr | iex`
+  pattern from inside the user's Godot project directory:
+
+  ```powershell
+  iwr -useb https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.ps1 | iex
+  ```
+
+  What it does:
+    1. Validates the current directory contains `project.godot`
+       (real Godot project, not just any directory)
+    2. Hits the GitHub API to resolve the latest release tag
+    3. Downloads `gool-X.Y.Z-godot-addon-windows-x86_64.zip`
+    4. Verifies the download's size sanity-check (>50 KB; smaller is
+       likely a 404 or corrupted)
+    5. Extracts and copies `addons/gool/` into the project, replacing
+       any existing addon (with a visible "Replacing existing..." line)
+    6. Cleans up temp files
+    7. Prints the one manual step left: enable the plugin
+
+  Configurable via `-ProjectPath`, `-Version` (pin a specific tag,
+  e.g. `v0.11.10`), `-Repo` (point at a fork or staging repo).
+
+- **`scripts/quickinstall.sh`** — Linux / macOS bash equivalent.
+  Same three-step approach. Auto-detects platform via `uname` —
+  Linux → `linux-x86_64`, Darwin arm64 → `macos-arm64`, Darwin
+  x86_64 (Intel Mac) → clear error pointing at Track B since we
+  don't ship Intel Mac binaries yet. Uses `curl` if available,
+  falls back to `wget`. Configurable via `--project-path`,
+  `--version`, `--repo`, `--help`.
+
+  Designed invocation:
+
+  ```bash
+  curl -sSL https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.sh | bash
+  ```
+
+### Changed
+
+- **`README.md` Quick start setup block** — Track A now leads with
+  the one-liner. Manual install (browser → releases page → drag
+  drop) is the secondary path for adopters who'd rather not pipe a
+  script.
+
+- **`SETUP.md` Track A** — restructured into "Option 1: One-line
+  install (recommended)" and "Option 2: Manual install" subsections.
+  The script's behaviour (validation, download, replacement,
+  cleanup) is documented up front so adopters know what they're
+  agreeing to before piping. Both quickinstall scripts are linked
+  by URL so the pipe target is auditable.
+
+### What this compresses
+
+| Step                        | Before                                      | After     |
+|-----------------------------|---------------------------------------------|-----------|
+| Open browser                | ✓                                          | —         |
+| Navigate to Releases        | ✓                                          | —         |
+| Find right archive          | ✓ (`-godot-addon-` filename disambig)       | —         |
+| Download                    | ✓                                          | (auto)    |
+| Extract                     | ✓                                          | (auto)    |
+| Drag `addons/gool/` to proj | ✓                                          | (auto)    |
+| Enable plugin in Godot      | ✓                                          | ✓         |
+
+Seven steps → one terminal command. Track B (`bootstrap.sh`) was
+already a one-liner for source builds; Track A now matches.
+
+### Verified
+
+- Both scripts pass `bash -n` / PowerShell syntax checks
+- `quickinstall.sh --help` outputs usage text correctly
+- Error paths smoke-tested in the build sandbox:
+  - Non-existent target dir → clear error message
+  - Real dir without project.godot → clear error message + remediation
+- Validation up to download-attempt smoke-tested for happy-path:
+  the script correctly resolves platform → archive name, attempts
+  the correct download URL, and falls through cleanly when the
+  release doesn't exist (since v0.11.11 isn't tagged yet at sandbox
+  test time).
+- Engine regression: 36/36 passing at v0.11.11. Ducking baseline
+  locked at -17.20 dB.
+
+### Not verified in the sandbox (verifiable only by tagging + invocation)
+
+- That `iwr -useb https://raw.githubusercontent.com/...quickinstall.ps1 | iex`
+  works end-to-end on a real Windows runner against a real release.
+  Requires v0.11.11 to be tagged on GitHub first; then invoke the
+  one-liner against a fresh Godot project.
+- That `curl -sSL .../quickinstall.sh | bash` works end-to-end on
+  Linux / macOS the same way.
+- That GitHub's raw.githubusercontent.com domain serves the script
+  promptly without rate-limiting on first invocation.
+
+### What's next for installation friction
+
+Three candidate further steps, ranked by impact:
+
+1. **Godot Asset Library submission.** Adopters open Godot →
+   AssetLib tab → search "gool" → install. Zero leaving Godot.
+   Requires submitting to godotengine.org/asset-library, which is a
+   manual user action (we'd write the submission template and
+   checklist). Highest impact long-term; right move once the
+   project has more public visibility.
+
+2. **Bundle gool into a starter Godot project template.** New
+   adopters create a project from the template; gool is preinstalled.
+   Niche but useful for people starting fresh.
+
+3. **Custom domain for the install URL.** Instead of
+   `raw.githubusercontent.com/siliconight/gool/main/scripts/...`,
+   serve from `gool.siliconight.com/install.ps1` or similar.
+   Cosmetic; matches winget/scoop's polish. Requires a domain.
+
 ## [0.11.10] - 2026-05-10
 
 Closes the Windows Opus gap. From v0.11.10 onward, the Windows
@@ -2309,7 +2442,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.10...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.11...HEAD
+[0.11.11]: https://github.com/siliconight/gool/releases/tag/v0.11.11
 [0.11.10]: https://github.com/siliconight/gool/releases/tag/v0.11.10
 [0.11.9]: https://github.com/siliconight/gool/releases/tag/v0.11.9
 [0.11.8]: https://github.com/siliconight/gool/releases/tag/v0.11.8
