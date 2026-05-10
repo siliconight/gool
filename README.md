@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.3 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.7 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -123,35 +123,37 @@ events. The middleware handles the rest.
 
 > ### Setup
 >
-> Setup is documented in **[SETUP.md](SETUP.md)** — per-platform
-> prerequisites with package manager commands (winget / Chocolatey
-> on Windows, Homebrew on macOS, apt / dnf / pacman on Linux), the
-> full build-from-source procedure, and a troubleshooting section.
+> Setup is documented in **[SETUP.md](SETUP.md)** — full per-platform
+> instructions with troubleshooting. Two paths:
 >
-> **Status:** prebuilt addon binaries aren't shipping yet, so right
-> now everyone goes through the build-from-source path. The build
-> works on Linux + Windows; macOS is currently broken (tracked).
+> **Track A — Use the prebuilt addon (fastest, recommended):**
 >
-> The 30-second version, after prerequisites are installed:
+> 1. Download `gool-X.Y.Z-godot-addon-<platform>.tar.gz` (or `.zip`
+>    on Windows) from the [Releases page](https://github.com/siliconight/gool/releases)
+> 2. Extract `addons/gool/` into your Godot project's root
+> 3. Open the project, **Project Settings → Plugins → gool → Enable**
+>
+> No compiler required. Linux x86_64, Windows x86_64, and macOS
+> supported (macOS support new in v0.11.6 — please file issues if
+> you hit anything unexpected).
+>
+> **Track B — Build from source** (for contributors, custom platforms,
+> or if Track A's binary doesn't match your Godot version):
 >
 > ```bash
 > git clone https://github.com/siliconight/gool.git && cd gool
 > ./scripts/bootstrap.sh --install-to /path/to/your/godot/project
 > ```
 >
-> That one script verifies prerequisites, fetches dependencies,
-> clones and builds godot-cpp, builds gool's GDExtension, and
-> installs the addon into your Godot project. Idempotent — safe
-> to re-run.
+> One script verifies prerequisites, fetches dependencies, clones
+> and builds godot-cpp, builds gool's GDExtension, and installs the
+> addon into your project. Idempotent — safe to re-run. Windows
+> users run `scripts\bootstrap.ps1 -InstallTo <path>` from the
+> **x64 Native Tools Command Prompt for VS 2022**.
 >
-> Windows users run `scripts\bootstrap.ps1 -InstallTo <path>` from
-> the **x64 Native Tools Command Prompt for VS 2022**.
->
-> Then in Godot: **Project Settings → Plugins → gool → Enable**.
->
-> Full per-platform prerequisite commands (winget / Chocolatey for
-> Windows, Homebrew for macOS, apt / dnf / pacman for Linux) and
-> the manual phase-by-phase walkthrough are in [SETUP.md](SETUP.md).
+> Per-platform prerequisites (winget / Chocolatey for Windows,
+> Homebrew for macOS, apt / dnf / pacman for Linux) and the manual
+> phase-by-phase walkthrough are in [SETUP.md](SETUP.md).
 
 ### First lines of GDScript
 

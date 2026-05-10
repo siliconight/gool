@@ -32,6 +32,19 @@ if exist "%DEST%\.git" (
     exit /b 0
 )
 
+if exist "%DEST%" (
+    REM Directory exists but no .git — likely a partial / interrupted
+    REM previous clone, or a manually-unpacked archive. Bail clearly
+    REM rather than letting git fail with a less helpful message.
+    echo ERROR: %DEST% exists but is not a git checkout. >&2
+    echo. >&2
+    echo This usually means a previous clone was interrupted. Resolve: >&2
+    echo   rmdir /s /q "%DEST%" >&2
+    echo and re-run this script. >&2
+    endlocal
+    exit /b 1
+)
+
 where git >nul 2>&1
 if errorlevel 1 (
     echo ERROR: git is not installed. Install it first:                         >&2

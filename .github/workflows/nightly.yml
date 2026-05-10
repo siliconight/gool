@@ -1,0 +1,165 @@
+name: Nightly
+
+# Builds the Godot addon archive on every push to `main` (and on
+# manual dispatch from the Actions tab) and uploads it as a workflow
+# artifact. NOT a release — releases come from tag pushes via
+# release.yml. This workflow lets adopters who can't wait for a
+# tagged release grab the bleeding edge by clicking "Artifacts" on
+# the latest run.
+#
+# Artifacts are kept by GitHub for 90 days by default (configurable
+# in the action below). Each run produces:
+#
+#   gool-nightly-godot-addon-linux-x86_64.tar.gz
+#   gool-nightly-godot-addon-windows-x86_64.zip
+#
+# (No "version" in the filename because nightlies don't have a
+# semantic version — the workflow run number and commit SHA are in
+# the GitHub UI alongside the artifact, which is enough for adopters
+# to track which build they downloaded.)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  GODOT_CPP_REF: '4.2'
+
+jobs:
+  build-addon:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            archive_ext: tar.gz
+            scons_platform: linux
+            binary_path: build-godot/libgool_godot.so
+          - os: windows-latest
+            platform: windows-x86_64
+            archive_ext: zip
+            scons_platform: windows
+            binary_path: build-godot/Release/gool_godot.dll
+          - os: macos-latest
+            platform: macos-arm64
+            archive_ext: tar.gz
+            scons_platform: macos
+            binary_path: build-godot/libgool_godot.dylib
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute artifact name
+        id: name
+        shell: bash
+        run: |
+          ADDON_ARCHIVE_NAME="gool-nightly-godot-addon-${{ matrix.platform }}"
+          echo "addon_archive_name=$ADDON_ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Nightly addon archive: $ADDON_ARCHIVE_NAME"
+
+      - name: Set up MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install scons
+        shell: bash
+        run: pip install scons
+
+      - name: Fetch single-header dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./scripts/fetch_miniaudio.sh
+          ./scripts/fetch_decoders.sh
+
+      - name: Fetch single-header dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call scripts\fetch_miniaudio.bat
+          call scripts\fetch_decoders.bat
+
+      - name: Cache godot-cpp build
+        id: godot-cpp-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/godot-cpp
+          key: godot-cpp-${{ matrix.platform }}-${{ env.GODOT_CPP_REF }}-v1
+
+      - name: Clone + build godot-cpp (cache miss)
+        if: steps.godot-cpp-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${{ env.GODOT_CPP_REF }}" \
+              https://github.com/godotengine/godot-cpp.git \
+              third_party/godot-cpp
+          cd third_party/godot-cpp
+          scons platform=${{ matrix.scons_platform }} target=template_release -j2
+
+      - name: Configure GDExtension
+        shell: bash
+        run: |
+          cmake -S godot -B build-godot \
+              -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON \
+              -DAUDIO_ENGINE_DECODERS_WAV=ON \
+              -DAUDIO_ENGINE_DECODERS_OGG=ON \
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      - name: Build GDExtension
+        run: cmake --build build-godot --config Release --parallel
+
+      - name: Stage addon archive (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.name.outputs.addon_archive_name }}
+          BINARY_PATH: ${{ matrix.binary_path }}
+        run: |
+          dest="stage/${ADDON_ARCHIVE_NAME}/addons/gool"
+          mkdir -p "${dest}/bin" "${dest}/prefabs"
+          cp godot/addons/gool/runtime_singleton.gd      "${dest}/"
+          cp godot/addons/gool/audio_relevancy_filter.gd "${dest}/"
+          cp godot/addons/gool/plugin.gd                 "${dest}/"
+          cp godot/addons/gool/plugin.cfg                "${dest}/"
+          cp -r godot/addons/gool/prefabs/.              "${dest}/prefabs/"
+          cp godot/gool.gdextension                      "${dest}/"
+          cp "${BINARY_PATH}"                            "${dest}/bin/"
+          cp LICENSE      "stage/${ADDON_ARCHIVE_NAME}/"
+          cp README.md    "stage/${ADDON_ARCHIVE_NAME}/"
+          cp CHANGELOG.md "stage/${ADDON_ARCHIVE_NAME}/"
+          cp SETUP.md     "stage/${ADDON_ARCHIVE_NAME}/"
+          cd stage && tar -czf "../${ADDON_ARCHIVE_NAME}.tar.gz" "${ADDON_ARCHIVE_NAME}"
+
+      - name: Stage addon archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.name.outputs.addon_archive_name }}
+          BINARY_PATH: ${{ matrix.binary_path }}
+        run: |
+          $dest = "stage\$env:ADDON_ARCHIVE_NAME\addons\gool"
+          New-Item -ItemType Directory -Force -Path "$dest\bin"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "$dest\prefabs" | Out-Null
+          Copy-Item godot\addons\gool\runtime_singleton.gd      $dest -Force
+          Copy-Item godot\addons\gool\audio_relevancy_filter.gd $dest -Force
+          Copy-Item godot\addons\gool\plugin.gd                 $dest -Force
+          Copy-Item godot\addons\gool\plugin.cfg                $dest -Force
+          Copy-Item godot\addons\gool\prefabs\* "$dest\prefabs"  -Recurse -Force
+          Copy-Item godot\gool.gdextension                      $dest -Force
+          Copy-Item $env:BINARY_PATH                            "$dest\bin\" -Force
+          Copy-Item LICENSE      "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Copy-Item README.md    "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Copy-Item CHANGELOG.md "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Copy-Item SETUP.md     "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Compress-Archive -Path "stage\$env:ADDON_ARCHIVE_NAME" -DestinationPath "$env:ADDON_ARCHIVE_NAME.zip"
+
+      - name: Upload addon archive as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.addon_archive_name }}
+          path: ${{ steps.name.outputs.addon_archive_name }}.${{ matrix.archive_ext }}
+          retention-days: 30

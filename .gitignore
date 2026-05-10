@@ -5,6 +5,12 @@ out/
 cmake-build-*/
 .cache/
 
+# Source archives produced by scripts/make_source_archive.{sh,ps1}
+dist/
+gool-*.tar.gz
+gool-*.zip
+gool-*.tgz
+
 # CMake
 CMakeCache.txt
 CMakeFiles/

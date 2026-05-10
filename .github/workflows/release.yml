@@ -5,6 +5,20 @@ name: Release
 # becomes part of the artifact filename so different releases coexist on
 # the GitHub Releases page.
 #
+# Two artifact families per platform:
+#
+#   1. C++ static library archive (gool-X.Y.Z-PLATFORM.tar.gz / .zip)
+#      For users embedding the engine into their own C++ build.
+#      Contains: lib/libaudio_engine.a (or .lib), include/audio_engine/,
+#      LICENSE, README, CHANGELOG.
+#
+#   2. Godot addon archive (gool-X.Y.Z-godot-addon-PLATFORM.tar.gz / .zip)
+#      For users dropping gool into a Godot project. Contains an
+#      `addons/gool/` directory ready to copy into a Godot project's
+#      root, with the prebuilt GDExtension binary in `addons/gool/bin/`.
+#      No C++ build required by the adopter. This is the artifact most
+#      adopters want.
+#
 # See RELEASING.md for the full release procedure.
 
 on:
@@ -12,22 +26,45 @@ on:
     tags:
       - 'v*'
 
+env:
+  # godot-cpp branch to build against. Matches the `compatibility_minimum`
+  # in godot/gool.gdextension. Bumping this to a newer Godot minor (4.3,
+  # 4.4) requires also bumping the manifest's compatibility_minimum.
+  GODOT_CPP_REF: '4.2'
+
 jobs:
   release:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # macOS is temporarily disabled (see ci.yml). To re-enable,
-        # add the macos-latest entry back here.
+        # macOS support added in v0.11.6 (the Apple-Clang Wmaybe-uninitialized
+        # pragma issue is fixed). If a release run fails on macOS but
+        # Linux/Windows succeed, the simplest mitigation is to revert
+        # this matrix entry and ship the other two while the fix is
+        # iterated.
+        #
+        # macos-arm64 (not macos-universal): macos-latest is Apple
+        # Silicon, and SCons platform=macos produces a single-arch
+        # arm64 binary. The artifact name reflects this honestly.
+        # An Intel Mac entry (macos-13 + arch=x86_64) is a follow-up.
         include:
           - os: ubuntu-latest
             platform: linux-x86_64
             archive_ext: tar.gz
+            scons_platform: linux
+            binary_path: build-godot/libgool_godot.so
           - os: windows-latest
             platform: windows-x86_64
             archive_ext: zip
+            scons_platform: windows
+            binary_path: build-godot/Release/gool_godot.dll
+          - os: macos-latest
+            platform: macos-arm64
+            archive_ext: tar.gz
+            scons_platform: macos
+            binary_path: build-godot/libgool_godot.dylib
 
     steps:
       - uses: actions/checkout@v4
@@ -39,18 +76,25 @@ jobs:
           # Tag is like "v0.2.0". Strip the leading "v" → "0.2.0".
           VERSION="${GITHUB_REF_NAME#v}"
           ARCHIVE_NAME="gool-${VERSION}-${{ matrix.platform }}"
-          echo "version=$VERSION"           >> "$GITHUB_OUTPUT"
-          echo "archive_name=$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
-          echo "Derived version: $VERSION"
-          echo "Archive name:    $ARCHIVE_NAME"
+          ADDON_ARCHIVE_NAME="gool-${VERSION}-godot-addon-${{ matrix.platform }}"
+          echo "version=$VERSION"                       >> "$GITHUB_OUTPUT"
+          echo "archive_name=$ARCHIVE_NAME"             >> "$GITHUB_OUTPUT"
+          echo "addon_archive_name=$ADDON_ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Derived version:        $VERSION"
+          echo "C++ archive name:       $ARCHIVE_NAME"
+          echo "Godot addon archive:    $ADDON_ARCHIVE_NAME"
 
-      - name: Configure
+      # ============================================================
+      # Artifact 1: C++ static library archive
+      # ============================================================
+
+      - name: Configure (C++ library)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUDIO_ENGINE_BUILD_EXAMPLES=OFF -DAUDIO_ENGINE_BUILD_TESTS=OFF -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
 
-      - name: Build library
+      - name: Build (C++ library)
         run: cmake --build build --config Release --target audio_engine --parallel
 
-      - name: Stage artifact (Unix)
+      - name: Stage C++ archive (Unix)
         if: runner.os != 'Windows'
         env:
           ARCHIVE_NAME: ${{ steps.version.outputs.archive_name }}
@@ -64,7 +108,7 @@ jobs:
           cp CHANGELOG.md "stage/${ARCHIVE_NAME}/"
           cd stage && tar -czf "../${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 
-      - name: Stage artifact (Windows)
+      - name: Stage C++ archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -79,10 +123,132 @@ jobs:
           Copy-Item "CHANGELOG.md" "stage/$env:ARCHIVE_NAME/"
           Compress-Archive -Path "stage/$env:ARCHIVE_NAME" -DestinationPath "$env:ARCHIVE_NAME.zip"
 
+      # ============================================================
+      # Artifact 2: Godot addon archive
+      # ============================================================
+      #
+      # Steps:
+      #   - Set up MSVC dev environment on Windows so cl.exe is on PATH
+      #     (scons + cmake both need it for the GDExtension build)
+      #   - Install scons (Python is preinstalled on GitHub runners)
+      #   - Fetch the single-header deps (miniaudio, dr_libs, stb_vorbis)
+      #   - Restore godot-cpp build from cache; on miss, clone + build
+      #   - Configure + build the GDExtension via cmake
+      #   - Stage addons/gool/ + the binary into a release directory
+      #   - Pack as tar.gz / zip
+
+      - name: Set up MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install scons
+        shell: bash
+        run: pip install scons
+
+      - name: Fetch single-header dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./scripts/fetch_miniaudio.sh
+          ./scripts/fetch_decoders.sh
+
+      - name: Fetch single-header dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call scripts\fetch_miniaudio.bat
+          call scripts\fetch_decoders.bat
+
+      - name: Cache godot-cpp build
+        id: godot-cpp-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/godot-cpp
+          # Bump the trailing `v1` if godot-cpp build inputs change in
+          # a way that requires invalidating the cache (rare).
+          key: godot-cpp-${{ matrix.platform }}-${{ env.GODOT_CPP_REF }}-v1
+
+      - name: Clone + build godot-cpp (cache miss)
+        if: steps.godot-cpp-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${{ env.GODOT_CPP_REF }}" \
+              https://github.com/godotengine/godot-cpp.git \
+              third_party/godot-cpp
+          cd third_party/godot-cpp
+          scons platform=${{ matrix.scons_platform }} target=template_release -j2
+
+      - name: Configure GDExtension
+        shell: bash
+        run: |
+          cmake -S godot -B build-godot \
+              -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON \
+              -DAUDIO_ENGINE_DECODERS_WAV=ON \
+              -DAUDIO_ENGINE_DECODERS_OGG=ON \
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      - name: Build GDExtension
+        run: cmake --build build-godot --config Release --parallel
+
+      - name: Stage addon archive (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
+          BINARY_PATH: ${{ matrix.binary_path }}
+        run: |
+          dest="stage/${ADDON_ARCHIVE_NAME}/addons/gool"
+          mkdir -p "${dest}/bin" "${dest}/prefabs"
+          # Addon GDScript files
+          cp godot/addons/gool/runtime_singleton.gd      "${dest}/"
+          cp godot/addons/gool/audio_relevancy_filter.gd "${dest}/"
+          cp godot/addons/gool/plugin.gd                 "${dest}/"
+          cp godot/addons/gool/plugin.cfg                "${dest}/"
+          cp -r godot/addons/gool/prefabs/.              "${dest}/prefabs/"
+          # gdextension manifest (lives one level up from addons/gool/ in source)
+          cp godot/gool.gdextension                      "${dest}/"
+          # Built binary
+          cp "${BINARY_PATH}"                            "${dest}/bin/"
+          # Top-level docs + license
+          cp LICENSE      "stage/${ADDON_ARCHIVE_NAME}/"
+          cp README.md    "stage/${ADDON_ARCHIVE_NAME}/"
+          cp CHANGELOG.md "stage/${ADDON_ARCHIVE_NAME}/"
+          cp SETUP.md     "stage/${ADDON_ARCHIVE_NAME}/"
+          cd stage && tar -czf "../${ADDON_ARCHIVE_NAME}.tar.gz" "${ADDON_ARCHIVE_NAME}"
+
+      - name: Stage addon archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
+          BINARY_PATH: ${{ matrix.binary_path }}
+        run: |
+          $dest = "stage\$env:ADDON_ARCHIVE_NAME\addons\gool"
+          New-Item -ItemType Directory -Force -Path "$dest\bin"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "$dest\prefabs" | Out-Null
+          Copy-Item godot\addons\gool\runtime_singleton.gd      $dest -Force
+          Copy-Item godot\addons\gool\audio_relevancy_filter.gd $dest -Force
+          Copy-Item godot\addons\gool\plugin.gd                 $dest -Force
+          Copy-Item godot\addons\gool\plugin.cfg                $dest -Force
+          Copy-Item godot\addons\gool\prefabs\* "$dest\prefabs"  -Recurse -Force
+          Copy-Item godot\gool.gdextension                      $dest -Force
+          Copy-Item $env:BINARY_PATH                            "$dest\bin\" -Force
+          Copy-Item LICENSE      "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Copy-Item README.md    "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Copy-Item CHANGELOG.md "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Copy-Item SETUP.md     "stage\$env:ADDON_ARCHIVE_NAME\" -Force
+          Compress-Archive -Path "stage\$env:ADDON_ARCHIVE_NAME" -DestinationPath "$env:ADDON_ARCHIVE_NAME.zip"
+
+      # ============================================================
+      # Upload both artifacts to the release
+      # ============================================================
+
       - name: Upload to release
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ steps.version.outputs.archive_name }}.${{ matrix.archive_ext }}
+          files: |
+            ${{ steps.version.outputs.archive_name }}.${{ matrix.archive_ext }}
+            ${{ steps.version.outputs.addon_archive_name }}.${{ matrix.archive_ext }}
           fail_on_unmatched_files: true
           generate_release_notes: true
         env:

@@ -12,6 +12,469 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.7] - 2026-05-10
+
+Hardening pass on v0.11.6 before tagging the macOS-support release.
+Surfaced and fixed five issues that would have shipped to adopters
+otherwise. No engine code changes; entirely a CI/scripts/docs
+correctness pass.
+
+### Fixed
+
+- **macOS artifact name was misleading.** v0.11.6 named the macOS
+  artifact `gool-X.Y.Z-godot-addon-macos-universal.tar.gz`, but
+  `macos-latest` (Apple Silicon) + SCons `platform=macos` produces
+  a single-arch arm64 binary, not a universal one. An Intel Mac
+  user downloading what's labeled "universal" would hit a silent
+  load failure in Godot. Renamed throughout to `macos-arm64` to
+  match what's actually built. A real universal binary (lipo + dual
+  arch builds) is a follow-up; the rename makes the current
+  limitation honest.
+
+  Files: `.github/workflows/release.yml`, `nightly.yml`, `SETUP.md`
+  Track A platform list, SETUP.md macOS troubleshooting section.
+
+- **CI cache key was inconsistent with release/nightly.** `ci.yml`
+  used `matrix.os` (e.g. `ubuntu-latest`) in the godot-cpp cache
+  key, while `release.yml` and `nightly.yml` used `matrix.platform`
+  (e.g. `linux-x86_64`). Result: each workflow rebuilt godot-cpp on
+  first run instead of sharing the cache. Aligned ci.yml's
+  `build-gdextension` matrix to use the same `platform` field as
+  the other workflows. Cache key now identical: a successful
+  populate by any workflow benefits the others, saving ~10 minutes
+  of CI time on cache hits.
+
+- **`install_addon.ps1` only checked the MSBuild Release path.**
+  If a Windows user used the Ninja generator instead of the default
+  MSBuild generator, the binary would be at `build-godot/gool_godot.dll`
+  (no `Release/` subdir) and install_addon.ps1 would print a
+  confusing "binary not found" error. Now checks both candidates,
+  matching the pattern bootstrap.ps1 already uses.
+
+- **`fetch_godot_cpp.sh` / `.bat` failed silently on partial-clone
+  state.** If a previous clone was interrupted leaving a `third_party/godot-cpp/`
+  directory without a `.git/` subdirectory, the script would
+  proceed past its idempotency check and `git clone` would fail
+  with "destination path already exists" — a less-than-helpful
+  error. Both variants now detect this case explicitly and print
+  an actionable message ("rm -rf the directory and re-run").
+
+- **Dead `binary_name` matrix field in release.yml.** Set in each
+  matrix entry and exported as a `BINARY_NAME` env var to staging
+  steps, but never actually referenced in any of the staging
+  scripts. Removed both the matrix entries and the env var lines.
+  Cosmetic cleanup; doesn't change behavior.
+
+### Process notes
+
+This was a hardening pass commissioned to find issues before
+adopters hit them. Five issues found, five fixed. The audit
+covered:
+
+- Workflow YAML correctness and matrix variable references
+- Script error handling and edge-case behavior (paths with spaces,
+  partial state, wrong CWD, target already-installed)
+- Documentation accuracy vs. shipped code
+- Cross-workflow consistency (cache keys, naming conventions)
+- Apple Clang vs GCC behavior in the existing pragma fixes
+
+Two larger improvements were identified but deferred:
+
+- **True universal macOS binary.** Requires `lipo` and separate
+  arch builds (one matrix entry for arm64 on macos-latest, one
+  for x86_64 on macos-13). The current single-arch arm64 binary
+  works for Apple Silicon users; Intel users go through Track B
+  for now.
+
+- **Refactor `release.yml` + `nightly.yml` shared staging logic.**
+  ~30 lines of staging code is duplicated between the two workflows.
+  Could be extracted into a shared script invoked by both. Drift
+  risk is real but bounded; a real refactor is a follow-up.
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+  No engine code touched.
+
+- All three workflow YAML files re-verified parse-clean via
+  `yaml.safe_load`. Bash scripts pass `bash -n` syntax checks.
+  Smoke-tested `fetch_godot_cpp.sh` against a partial-clone state
+  in the build sandbox: emits the expected actionable error.
+
+### Naming convention is now fully consistent
+
+After this release, every macOS reference in the codebase agrees:
+
+| Location                                  | Says                  |
+|-------------------------------------------|-----------------------|
+| release.yml matrix `platform:`            | `macos-arm64`         |
+| nightly.yml matrix `platform:`            | `macos-arm64`         |
+| ci.yml matrix `platform:`                 | `macos-arm64`         |
+| Release artifact filename                 | `gool-X.Y.Z-godot-addon-macos-arm64.tar.gz` |
+| SETUP.md Track A platform list            | `macos-arm64`         |
+| SETUP.md macOS troubleshooting            | `macos-arm64`         |
+
+No more `macos-universal`. Same self-labeling, version-stamped,
+project-branded shape across every shipped artifact.
+
+## [0.11.6] - 2026-05-10
+
+macOS build fix. The Apple-Clang-incompatible compiler pragma that
+made macOS builds fatal under `-Werror` is gated correctly now. CI
+re-enables macOS in the build matrix; release.yml ships a third
+addon archive (`gool-X.Y.Z-godot-addon-macos-universal.tar.gz`)
+alongside the existing Linux + Windows artifacts.
+
+This is the first release attempting macOS support since the
+project's CI matrix was tightened. **Treat the macOS binary as
+provisional**: it builds clean against Apple Clang in this fix, but
+the broader codebase has been Linux-and-Windows-tested for months
+and the first real macOS users may surface secondary issues. File
+issues with concrete reproductions and they'll get prioritized.
+
+### Fixed
+
+- **`src/audio_engine/decoders/ogg_vorbis_decoder.cpp`** — the
+  pragma block suppressing stb_vorbis warnings included
+  `#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"`. That
+  warning name is a GCC extension; Apple Clang defines `__GNUC__`
+  for compatibility but doesn't recognize it, so the existing
+  `#if defined(__GNUC__)` guard wasn't enough. Combined with
+  `-Werror` (CMakeLists.txt line 420), Apple Clang's "unknown
+  warning option" message became fatal — the Linux build was
+  fine, the macOS build never compiled past stb_vorbis inclusion.
+
+  Fix: split the pragma block. Shared warnings (`-Wshadow`,
+  `-Wpedantic`, `-Wsign-conversion`, `-Wconversion`,
+  `-Wunused-function`, `-Wcast-qual`, `-Wmissing-field-initializers`)
+  remain under `#if defined(__GNUC__)` since those work on both
+  GCC and Clang. `-Wmaybe-uninitialized` is now in its own
+  `#if defined(__GNUC__) && !defined(__clang__)` block — active on
+  GCC, silent on Apple Clang.
+
+  `wav_decoder.cpp` and `flac_decoder.cpp` audited; their pragma
+  blocks only contain shared warnings (no `-Wmaybe-uninitialized`),
+  so no change needed.
+
+### Changed
+
+- **`.github/workflows/ci.yml`** — re-enabled `macos-latest` in
+  both the engine `build-and-test` matrix and the
+  `build-gdextension` matrix. Comment in the file documents why
+  it was disabled and how to re-disable if a regression appears.
+  `Verify binary was produced` step now also looks for
+  `build-godot/libgool_godot.dylib` and prints all
+  `libgool_godot*` candidates on failure for diagnostics.
+
+- **`.github/workflows/release.yml`** — re-enabled `macos-latest`
+  in the matrix. New entry produces
+  `gool-X.Y.Z-macos-universal.tar.gz` (C++ static library) and
+  `gool-X.Y.Z-godot-addon-macos-universal.tar.gz` (Godot addon
+  with the `.dylib` GDExtension binary in `addons/gool/bin/`).
+  `binary_path` is `build-godot/libgool_godot.dylib`.
+
+- **`.github/workflows/nightly.yml`** — same re-enable for nightly
+  addon archive on every push to main.
+
+- **`SETUP.md`** — every "macOS broken" warning replaced with a
+  cautious-support note pointing at v0.11.6. Track A's supported
+  platforms list now includes macOS. Macos-specific troubleshooting
+  section rewritten from "pretty much anything" doom to actionable
+  guidance: verify Xcode CLI is installed, check Apple Clang
+  version (need 14+ for `std::span`), Apple Silicon vs Intel notes.
+  macOS prerequisites no longer carry the upfront
+  "expect errors" disclaimer.
+
+- **`README.md`** — Track A platform list updated to include macOS.
+
+- **`scripts/bootstrap.sh`** — replaced the "macOS builds are
+  currently broken" warning that ran at startup with a less
+  alarming "macOS support landed in v0.11.6, file issues if you
+  hit problems" note.
+
+### Verified locally
+
+- Engine still builds clean: 36/36 tests passing on Linux g++.
+  Ducking baseline locked at -17.20 dB.
+- Pragma syntax valid: `g++ -E` preprocesses
+  `ogg_vorbis_decoder.cpp` without errors.
+- All three workflow YAML files parse cleanly via `yaml.safe_load`.
+- Version uniqueness: grep'd CHANGELOG for `0.11.6` before bumping;
+  not previously taken.
+
+### Not verified locally (requires GitHub Actions macos-latest)
+
+- **The actual macOS build with Apple Clang.** The fix is
+  reasoned: the `__GNUC__` && `!__clang__` guard pattern is the
+  standard way to gate GCC-only pragmas. But this sandbox is
+  Linux-only and `clang++` couldn't be installed (network blocked).
+  The validation comes from pushing the tag and watching the macOS
+  job in the CI matrix.
+- **`std::span` availability on the GitHub macos-latest Apple
+  Clang.** As of mid-2025, `macos-latest` runs Xcode 15+ which
+  includes Apple Clang 15+ — `std::span` is supported. If a future
+  GitHub Actions image change drops back to an older toolchain,
+  the build would fail with a different error and we'd need to
+  iterate.
+- **Universal binary correctness.** The matrix entry uses
+  `platform=macos-universal` for the artifact name but the SCons
+  build invocation just uses `platform=macos`, which on Apple
+  Silicon runners produces an arm64 binary. If you need a true
+  universal (Intel + Apple Silicon) binary, that's a follow-up;
+  the current artifact is single-arch and will run on whichever
+  arch the runner uses.
+
+### What to expect
+
+The first tagged release after this change pushes a macOS build
+through the full release pipeline. Likely outcomes, in order of
+probability:
+
+1. **Build succeeds, addon loads in Godot on macOS** → ship it,
+   close the macOS gap.
+2. **Build succeeds, addon doesn't load** (binary architecture
+   mismatch or signing issue) → file an issue with the load error
+   from Godot's output panel; iterate.
+3. **Build fails on a different macOS-specific issue** → the CI
+   logs name the specific compile error; iterate. Most likely
+   candidates: another pragma elsewhere, a Linux-specific header
+   I missed, or a `-Wpedantic` warning that's stricter on Apple
+   Clang. The pragma audit covered all three decoders; other code
+   should be fine but I haven't compiled it against Apple Clang.
+
+If outcome 3 happens, the next iteration is small (find the
+specific failure, fix it, re-tag). The CI matrix is set up to
+fail-fast=false so Linux + Windows still ship even if macOS
+breaks.
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+  No engine code changes; the only source-tree change is the
+  pragma split in one decoder file, which doesn't affect runtime
+  behavior on any platform.
+
+## [0.11.5] - 2026-05-10
+
+Source-archive branding + versioning. Tarballs and zips produced
+from the source tree are now self-labeling: filename and top-level
+extracted directory both carry the project name and version. No
+more generic `audio_engine.tar.gz` extracting into a `audio_engine/`
+folder with no version stamp.
+
+### Added
+
+- **`scripts/make_source_archive.sh`** — produces a clean source
+  archive from the work tree, named `gool-X.Y.Z.tar.gz` containing
+  `gool-X.Y.Z/`. Reads the version from
+  `include/audio_engine/version.h`'s `kVersionString` constant —
+  the same source of truth the release procedure already keeps in
+  sync with CMakeLists.txt and the version test. No external
+  dependencies; works in non-git checkouts (no `git archive`
+  requirement).
+
+  Default output: `dist/gool-X.Y.Z.tar.gz`. Custom path: pass as
+  the first argument. Stdout: pass `-`.
+
+  Excludes: `build/`, `build-*/`, `out/`, `cmake-build-*/`,
+  `third_party/`, `dist/`, `.git/`, build artifacts (`*.o`, `*.a`,
+  `*.so`, `*.dylib`, `*.dll`, `*.lib`, `*.exe`, `*.pdb`), Python
+  caches, IDE noise (`.swp`, `.DS_Store`, `Thumbs.db`).
+
+  Includes: everything else — `src/`, `include/`, `godot/`,
+  `examples/`, `tests/`, `scripts/`, `docs/`, `tools/`, `.github/`,
+  `CMakeLists.txt`, `README.md`, `SETUP.md`, `RELEASING.md`,
+  `CHANGELOG.md`, `LICENSE`, `.gitignore`.
+
+- **`scripts/make_source_archive.ps1`** — Windows variant. Uses
+  `tar.exe` (built into Windows 10 1803+ and Windows 11) for
+  `.tar.gz` output; falls back to `Compress-Archive` for `.zip`
+  on older Windows. Same naming convention. Stages files via
+  `robocopy` with the same exclusion list.
+
+### Changed
+
+- **`.gitignore`** — added `dist/`, `gool-*.tar.gz`, `gool-*.zip`,
+  `gool-*.tgz` so accidentally-built archives don't get committed.
+
+- **`RELEASING.md`** Step 6 — documents the source-archive
+  convention alongside the release-pipeline artifacts. Notes that
+  GitHub auto-attaches its own source archives to every tag (named
+  identically: `gool-X.Y.Z.tar.gz`); the new script produces a
+  cleaner, deterministic version filtered against the deliberate
+  ship-set rather than the broader repo state.
+
+### Naming convention summary
+
+After this release, every artifact users see follows the same shape:
+
+| Artifact                                   | Filename                                                  |
+|--------------------------------------------|-----------------------------------------------------------|
+| Source archive (this script)               | `gool-X.Y.Z.tar.gz`                                       |
+| GitHub auto-source archive (from tag)      | `gool-X.Y.Z.tar.gz` / `.zip`                              |
+| C++ static library (release.yml)           | `gool-X.Y.Z-linux-x86_64.tar.gz` / `-windows-x86_64.zip` |
+| Godot addon (release.yml + nightly.yml)    | `gool-X.Y.Z-godot-addon-linux-x86_64.tar.gz`             |
+|                                            | `gool-X.Y.Z-godot-addon-windows-x86_64.zip`              |
+|                                            | `gool-nightly-godot-addon-linux-x86_64.tar.gz` (nightly)  |
+
+Every filename starts with `gool-`. Every filename includes the
+version (or `nightly` for unstamped builds). Top-level directory
+inside each archive matches the filename's stem. No more `audio_engine/`
+in any user-facing artifact.
+
+### Verified
+
+- Script syntax: `bash -n scripts/make_source_archive.sh` passes
+- End-to-end: ran the script in the build sandbox, produced
+  `dist/gool-0.11.4.tar.gz` (488 KB), extracted into a clean
+  directory, confirmed it produces a single `gool-0.11.4/` folder
+  with all the right contents and none of the excluded artifacts
+- The PowerShell variant could not be runtime-tested in this Linux
+  sandbox; will be exercised by Windows users first
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+  No engine code changes; this is a packaging release.
+
+## [0.11.4] - 2026-05-10
+
+Bootstrap-experience overhaul, **phase C: release pipeline**.
+Closes the bootstrap story. The release workflow now produces a
+prebuilt Godot addon archive on every tag — adopters can drop
+`addons/gool/` into their project without ever touching a C++
+compiler. CI catches binding drift on every PR. A nightly workflow
+produces bleeding-edge addon archives between tagged releases.
+
+### Added
+
+- **`.github/workflows/release.yml`** — extended to produce **two
+  artifact families per platform** instead of one. The existing
+  C++ static library archive (`gool-X.Y.Z-PLATFORM.tar.gz/zip`)
+  remains for users embedding the engine in their own C++ build.
+  A new **Godot addon archive** (`gool-X.Y.Z-godot-addon-PLATFORM.tar.gz/zip`)
+  contains an `addons/gool/` directory ready to copy into a Godot
+  project root, with the prebuilt GDExtension binary in
+  `addons/gool/bin/`. Linux x86_64 + Windows x86_64 only (macOS
+  still broken).
+
+  The new pipeline:
+    1. Sets up MSVC dev environment on Windows (`ilammy/msvc-dev-cmd`)
+    2. Installs SCons (`pip install scons`)
+    3. Runs the existing `scripts/fetch_*` to download single-header deps
+    4. Caches godot-cpp build via `actions/cache@v4` (key: platform +
+       godot-cpp ref) — first build is slow (5–20 min), subsequent
+       runs hit the cache
+    5. Builds godot-cpp at `GODOT_CPP_REF=4.2` (matches
+       `compatibility_minimum` in the gdextension manifest)
+    6. Builds the GDExtension via `cmake -S godot` with
+       `AUDIO_ENGINE_BACKEND_MINIAUDIO=ON` + the WAV/OGG/FLAC
+       decoders enabled
+    7. Stages `addons/gool/` + the binary into a release directory
+    8. Uploads both archive families to the GitHub Release
+
+- **`.github/workflows/nightly.yml`** — new file. Builds the
+  Godot addon archive on every push to `main` (and on manual
+  workflow dispatch). Uploads as a **workflow artifact** (not a
+  release — the Releases page stays clean for tagged versions).
+  30-day retention. Adopters who can't wait for a tagged release
+  can grab `gool-nightly-godot-addon-<platform>` from the Actions
+  tab.
+
+### Changed
+
+- **`.github/workflows/ci.yml`** — added a second job
+  (`build-gdextension`) that builds the GDExtension on every PR.
+  Catches binding drift between releases — godot-cpp ABI changes
+  or signature drift in `gool_godot.cpp` would have silently
+  shipped to a release before. Now the binding compiles on every
+  PR alongside the engine library.
+
+  The existing `build-and-test` job is unchanged; it continues
+  to build the engine library + run the 36-test suite.
+
+  Total CI time goes up on cache misses (~10 min for godot-cpp's
+  first build), but the cache makes subsequent runs fast.
+
+- **`SETUP.md` Track A** — promoted from "coming soon" placeholder
+  to live procedure. Now documents the actual download / extract /
+  enable flow against the new archive family. Track A is the
+  recommended path for most adopters (no compiler required); Track
+  B remains for contributors and adopters whose platform isn't
+  covered by the release pipeline (macOS, ARM64, embedded).
+
+  Also documents how to grab nightlies for adopters who want the
+  bleeding edge between tagged releases.
+
+- **`SETUP.md` "Pick a path" status table** — Track A status changed
+  from "Coming soon" to "Available from v0.11.4 onward".
+
+- **`README.md`** Quick start — Track A is now the leading path,
+  with Track B (the bootstrap script flow from v0.11.3) as the
+  secondary option for contributors and custom platforms.
+
+- **`RELEASING.md`** — Step 6 (verify the GitHub Release) rewritten
+  to describe both artifact families, the build pipeline they
+  share, and a smoke-test step (download the addon archive,
+  extract into a real Godot project, verify it loads).
+
+### Notes for adopters
+
+- **Existing C++ archive consumers are unaffected.** The format and
+  contents of `gool-X.Y.Z-PLATFORM.tar.gz/zip` are unchanged. The
+  addon archive is a strict addition.
+
+- **The first release workflow run after this change will be slow
+  on godot-cpp's first build** (cache miss). Subsequent runs (until
+  `GODOT_CPP_REF` changes) hit the cache and run in ~3 min.
+
+- **godot-cpp ref pinning matters across three workflows.** When
+  bumping (Godot 4.2 → 4.3 etc), update `GODOT_CPP_REF` in
+  `release.yml`, `ci.yml`, AND `nightly.yml` AND the
+  `compatibility_minimum` in `godot/gool.gdextension`. They must
+  match. RELEASING.md calls this out.
+
+### Verified
+
+- All three workflow YAML files parse cleanly via `yaml.safe_load`
+- Matrix references (`matrix.binary_path`, `matrix.scons_platform`,
+  `matrix.archive_ext`) consistent across the new and existing steps
+
+### Not verified in this release (verifiable only by tagging)
+
+- The release workflow end-to-end run on a real GitHub Actions
+  matrix. The risk surfaces are (a) the godot-cpp build on Windows
+  through SCons + MSVC, (b) the exact CMake output path for the
+  Windows binary (`build-godot/Release/gool_godot.dll` per the
+  default MSBuild generator), and (c) the action versions
+  (`ilammy/msvc-dev-cmd@v1`, `actions/cache@v4`,
+  `actions/upload-artifact@v4`, `softprops/action-gh-release@v1`).
+  All four are well-established public actions.
+- macOS still disabled across all three workflows. The release
+  archive ships only Linux + Windows binaries until the macOS
+  build is fixed.
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+  No engine code changes; this is a CI/release pipeline release.
+
+### What's complete
+
+This was Phase C of the planned three-phase bootstrap overhaul.
+With v0.11.2 (docs), v0.11.3 (bootstrap automation), and now
+v0.11.4 (release pipeline), the full bootstrap story is in place:
+
+- **For adopters who just want gool:** download the addon archive
+  from Releases, extract, enable. ~30 seconds.
+- **For contributors / custom platforms:** clone the repo, run
+  `scripts/bootstrap.sh --install-to <project>`. ~5 minutes plus
+  godot-cpp's first build.
+- **For people following development:** grab the nightly addon
+  archive from the Actions tab.
+
+Documentation, scripts, and CI all point at the same flow.
+
 ## [0.11.3] - 2026-05-10
 
 Bootstrap-experience overhaul, **phase B: automation**. Collapses
@@ -1511,7 +1974,11 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.7...HEAD
+[0.11.7]: https://github.com/siliconight/gool/releases/tag/v0.11.7
+[0.11.6]: https://github.com/siliconight/gool/releases/tag/v0.11.6
+[0.11.5]: https://github.com/siliconight/gool/releases/tag/v0.11.5
+[0.11.4]: https://github.com/siliconight/gool/releases/tag/v0.11.4
 [0.11.3]: https://github.com/siliconight/gool/releases/tag/v0.11.3
 [0.11.2]: https://github.com/siliconight/gool/releases/tag/v0.11.2
 [0.11.1]: https://github.com/siliconight/gool/releases/tag/v0.11.1

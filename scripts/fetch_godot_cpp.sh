@@ -41,6 +41,19 @@ if [ -d "${DEST}/.git" ]; then
     exit 0
 fi
 
+if [ -d "${DEST}" ]; then
+    # Directory exists but isn't a git repo — likely a previous clone
+    # was interrupted, or someone manually unpacked an archive. Don't
+    # silently proceed (git clone would fail with "destination path
+    # already exists" and a less clear error). Make the user choose.
+    echo "ERROR: ${DEST} exists but is not a git checkout (no .git directory)." >&2
+    echo                                                                        >&2
+    echo "This usually means a previous clone was interrupted. Resolve by:"     >&2
+    echo "  rm -rf ${DEST}"                                                     >&2
+    echo "and re-running this script."                                          >&2
+    exit 1
+fi
+
 if ! command -v git >/dev/null 2>&1; then
     echo "ERROR: git is not installed. Install via your package manager:" >&2
     echo "  Ubuntu/Debian: sudo apt install git"                            >&2

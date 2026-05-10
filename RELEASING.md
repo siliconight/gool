@@ -105,21 +105,85 @@ the `v` to derive the artifact filename suffix.
 
 ### 6. Verify the GitHub Release
 
-The release workflow runs on every `v*` tag and:
+The release workflow runs on every `v*` tag and produces **two
+artifact families per platform**:
 
-1. Builds `audio_engine` static library on each OS in the matrix
-   (Linux, Windows; macOS deferred)
-2. Stages headers + library + LICENSE + README
-3. Archives as `gool-X.Y.Z-<platform>.<ext>`
-4. Creates a GitHub Release named `vX.Y.Z` and attaches the
-   archives
+**1. C++ static library archive** — for users embedding the engine
+in their own C++ build:
+
+```
+gool-X.Y.Z-linux-x86_64.tar.gz
+gool-X.Y.Z-windows-x86_64.zip
+```
+
+Contents: `lib/libaudio_engine.{a,lib}`, `include/audio_engine/`,
+LICENSE, README, CHANGELOG.
+
+**2. Godot addon archive** — for users dropping gool into a Godot
+project (the artifact 95% of adopters want):
+
+```
+gool-X.Y.Z-godot-addon-linux-x86_64.tar.gz
+gool-X.Y.Z-godot-addon-windows-x86_64.zip
+```
+
+Contents: an `addons/gool/` directory ready to copy into a Godot
+project root, with the prebuilt GDExtension binary in
+`addons/gool/bin/`. The adopter does not need a C++ compiler.
+
+GitHub also auto-attaches its own `Source code (zip)` and `Source
+code (tar.gz)` to every tag. Those are convenient but unbranded
+beyond the project name (filename: `gool-X.Y.Z.tar.gz`, top-level
+folder: `gool-X.Y.Z/`). They include the full repo state at the
+tag — useful for archival but include `.git/` references and
+unbuilt third-party fetches.
+
+If you want a clean, deterministic source archive (filtering out
+build artifacts, third-party fetches, and IDE noise), run
+`scripts/make_source_archive.sh` (or `.ps1` on Windows) on a
+fresh checkout. It produces `dist/gool-X.Y.Z.tar.gz` containing
+`gool-X.Y.Z/` with only the deliberate ship-set:
+
+```bash
+./scripts/make_source_archive.sh
+# → dist/gool-X.Y.Z.tar.gz (~500 KB)
+```
+
+The script reads the version from `include/audio_engine/version.h`
+and uses that for the archive name and the top-level directory
+inside, so the artifact is always self-labeling. This is the same
+convention release.yml uses for compiled artifacts (`gool-X.Y.Z-PLATFORM`)
+and the addon archive (`gool-X.Y.Z-godot-addon-PLATFORM`).
+
+The workflow runs roughly:
+
+1. Builds the `audio_engine` static library
+2. Stages + packages the C++ archive
+3. Sets up MSVC dev env (Windows), installs SCons, fetches the
+   single-header dependencies via `scripts/fetch_*` scripts
+4. Restores godot-cpp build from cache (key: platform + ref); on
+   miss, clones godot-cpp at `GODOT_CPP_REF` (currently `4.2`)
+   and builds it with SCons (5–20 min on cache miss)
+5. Configures + builds the GDExtension via `cmake -S godot`
+6. Stages `addons/gool/` + the binary into the addon archive
+7. Uploads both archives to the GitHub Release
 
 Open https://github.com/siliconight/gool/releases and confirm:
 
 - The release page shows the new tag
-- All expected platforms have artifacts attached
+- All four artifacts are attached (2 archive families × 2 platforms)
 - The release notes auto-generated from the tag message look right
   (or paste the relevant `CHANGELOG.md` section if not)
+- Smoke-test the addon archive: download
+  `gool-X.Y.Z-godot-addon-linux-x86_64.tar.gz`, extract `addons/gool/`
+  into a Godot project, enable the plugin, verify `Gool` autoload
+  initializes without error
+
+If the godot-cpp branch needs to bump (Godot 4.2 → 4.3 etc), update
+`GODOT_CPP_REF` in `.github/workflows/release.yml` AND
+`.github/workflows/ci.yml` AND `.github/workflows/nightly.yml` AND
+`compatibility_minimum` in `godot/gool.gdextension`. They must
+match.
 
 ## What to do when the release breaks
 

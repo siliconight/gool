@@ -11,38 +11,93 @@ There are two ways to get gool into a Godot project:
 
 | Path                                | When to use                                                | Status              |
 |-------------------------------------|------------------------------------------------------------|---------------------|
-| **Track A — Use prebuilt addon**    | You just want to use gool in your game                     | Coming soon (see [§Track A](#track-a--use-the-prebuilt-addon)) |
-| **Track B — Build from source**     | Track A isn't ready yet, OR you want to modify gool        | Works today         |
+| **Track A — Use prebuilt addon**    | You just want to use gool in your game                     | Available from v0.11.4 onward |
+| **Track B — Build from source**     | You want to modify gool, or your platform isn't covered    | Works today         |
 
-Until prebuilt addon releases ship (tracked work), **everyone goes
-through Track B**. The plan to fix this is in the project roadmap;
-for now, the build-from-source flow is well-defined and works on
-Linux + Windows out of the box.
+Track A is the fastest path for most adopters. It works on Linux
+x86_64, Windows x86_64, and macOS — the platforms the release
+pipeline builds binaries for. macOS support is **new in v0.11.6**;
+it builds clean against Apple Clang now but hasn't been smoke-tested
+across Apple Silicon and Intel as thoroughly as the other platforms.
+Please file an issue if you hit anything.
 
-A note on macOS: the build is **currently broken** on macOS (Apple
-Clang has compiler-specific issues we haven't resolved yet). The CI
-matrix has macOS disabled for the same reason. macOS users can try
-the steps below but should expect to file a bug.
+Track B is required if you want to modify gool, contribute changes,
+or build for a platform the release pipeline doesn't cover yet
+(macOS, ARM64, embedded). It also works as a fallback if Track A
+hits a binary-compatibility issue with your specific Godot version.
 
 ---
 
 ## Track A — Use the prebuilt addon
 
-*This section will be the entire setup process once binary releases
-ship. Right now, it's a placeholder.*
+This is the fastest path. No C++ compiler, no SCons, no godot-cpp
+build. Suitable for any Godot 4.2+ project on Linux x86_64,
+Windows x86_64, or macOS. (macOS support is new in v0.11.6 — please
+file an issue if you hit anything unexpected.)
 
-When prebuilt addon releases land:
+1. Go to the [Releases page](https://github.com/siliconight/gool/releases).
 
-1. Download `gool-X.Y.Z-godot-addon.zip` from the
-   [Releases page](https://github.com/siliconight/gool/releases)
-2. Extract `addons/gool/` from the zip into your Godot project's root
-3. Open the project in Godot 4.2 or later
-4. **Project Settings → Plugins → gool → Enable**
-5. Done. The `Gool` autoload is now available globally.
+2. Download the addon archive matching your platform from the
+   latest release:
+
+   - **Linux:** `gool-X.Y.Z-godot-addon-linux-x86_64.tar.gz`
+   - **Windows:** `gool-X.Y.Z-godot-addon-windows-x86_64.zip`
+   - **macOS (Apple Silicon):** `gool-X.Y.Z-godot-addon-macos-arm64.tar.gz`
+
+   *(Note the `-godot-addon-` segment in the filename. The other
+   archive without that segment is the C++ static library — useful
+   only if you're embedding the engine in a C++ build.)*
+
+3. Extract the archive. Inside, you'll find an `addons/gool/`
+   directory containing all the GDScript files, the prefab tree,
+   the `gool.gdextension` manifest, and a prebuilt binary in
+   `addons/gool/bin/`.
+
+4. Copy the entire `addons/gool/` directory into your Godot
+   project's root, alongside your `project.godot`:
+
+   ```
+   <my_godot_project>/
+   ├── project.godot
+   └── addons/
+       └── gool/
+           ├── bin/
+           │   └── libgool_godot.so       (or gool_godot.dll)
+           ├── prefabs/
+           ├── runtime_singleton.gd
+           ├── audio_relevancy_filter.gd
+           ├── plugin.cfg
+           ├── plugin.gd
+           └── gool.gdextension
+   ```
+
+5. Open the project in Godot 4.2 or later.
+
+6. **Project Settings → Plugins → gool → Enable.** This wires up
+   the editor plugin (which writes a default `gool/config.json`)
+   and adds the `Gool` autoload.
+
+7. (Optional) **Project Settings → Autoload** — verify `Gool` is
+   listed and pointing at `res://addons/gool/runtime_singleton.gd`.
+   The plugin should add this automatically; if it didn't, add it
+   manually.
 
 Skip to [§Verifying it worked](#verifying-it-worked) below.
 
-Until binary releases ship, follow Track B instead.
+### Don't want to wait for a tagged release?
+
+The `nightly` GitHub Actions workflow produces an addon archive on
+every push to `main`. Get the latest by:
+
+1. Go to the project's [Actions tab → Nightly](https://github.com/siliconight/gool/actions/workflows/nightly.yml)
+2. Click the most recent successful run
+3. Scroll to "Artifacts" at the bottom
+4. Download `gool-nightly-godot-addon-<platform>` for your platform
+
+These are signed off only by the CI's "the build compiled" — they
+haven't been smoke-tested before being uploaded. Use tagged releases
+for production projects; nightlies for following along with active
+development.
 
 ---
 
@@ -154,8 +209,10 @@ pip3 install scons
 If you don't have Homebrew, install it first via the one-liner at
 [brew.sh](https://brew.sh).
 
-**Heads-up:** the build is currently broken on macOS. You can run
-the steps in Phase 2 anyway and report what fails, but expect errors.
+macOS support landed in v0.11.6. The build cleanly handles Apple
+Clang's pragma differences from GCC. If you hit any compile error
+that's specific to your macOS version or Xcode toolchain, please
+file an issue.
 
 #### Linux — Debian / Ubuntu
 
@@ -313,7 +370,7 @@ The build produces the GDExtension shared library:
    # Linux:
    cp /path/to/gool/build-godot/libgool_godot.so /path/to/your/project/addons/gool/bin/
 
-   # macOS (when working):
+   # macOS:
    cp /path/to/gool/build-godot/libgool_godot.dylib /path/to/your/project/addons/gool/bin/
 
    # Windows:
@@ -543,11 +600,31 @@ The GDExtension is loading but the class wasn't picked up. Either:
   doesn't match what the binary exports. If you've modified the
   binding source, verify the export.
 
-### macOS: pretty much anything
+### macOS-specific issues
 
-The build is known broken on macOS. If you've made progress, please
-file an issue describing what you fixed — that's the kind of input
-that gets the broken state resolved fastest.
+The Apple Clang pragma issue that broke macOS builds before v0.11.6
+is fixed. If you hit a different macOS-specific compile error after
+that:
+
+- **Make sure Xcode CLI is installed** (`xcode-select --install`).
+  The system compiler must be Apple Clang, not GCC from Homebrew —
+  the binding code is written for the system toolchain.
+- **Check your Apple Clang version**: `clang --version`. The C++20
+  features used (`std::span`, designated initializers) need Apple
+  Clang 14+ (Xcode 14 / June 2022 or later). On macOS 11 with an
+  older Xcode, you may hit "no member named 'span' in namespace
+  'std'" — upgrade Xcode.
+- **Apple Silicon vs Intel**: the release pipeline ships a
+  `macos-arm64` binary built on macos-latest (which is Apple
+  Silicon). It loads in Apple Silicon Godot. **If you're on Intel
+  Mac, this binary won't load** — Track A doesn't ship an Intel
+  binary yet; use Track B (build from source) to produce one. A
+  proper universal binary (Intel + Apple Silicon) is a follow-up
+  that will use `lipo` to combine separately-built arch slices.
+
+If the failure is reproducible and you can capture the compile
+error, please open an issue. macOS support is new and the team
+needs concrete reproductions to harden it.
 
 ---
 

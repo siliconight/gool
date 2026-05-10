@@ -6,18 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Pin to the same godot-cpp branch the release workflow uses, so
+  # CI proves the binding compiles against the version we'll ship.
+  # Bump in lockstep with .github/workflows/release.yml and
+  # godot/gool.gdextension's `compatibility_minimum`.
+  GODOT_CPP_REF: '4.2'
+
 jobs:
+  # ----------------------------------------------------------------
+  # Job 1: build the engine library + run the unit-test suite.
+  # ----------------------------------------------------------------
   build-and-test:
-    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    name: engine / ${{ matrix.os }} / ${{ matrix.build_type }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is temporarily disabled — the engine builds and
-        # tests pass on Linux + Windows; macOS has Apple-Clang-specific
-        # build issues that we'll address separately. To re-enable, add
-        # macos-latest back to the os list.
-        os: [ubuntu-latest, windows-latest]
+        # macOS support: the ogg_vorbis_decoder.cpp Wmaybe-uninitialized
+        # pragma was Apple-Clang-incompatible (Clang doesn't recognize that
+        # warning name; combined with -Werror it was fatal). Fixed in
+        # v0.11.6 by gating the pragma on __GNUC__ && !__clang__.
+        # If macOS regresses, the simplest mitigation is to re-disable
+        # macos-latest in the matrix and file an issue.
+        os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Release]
 
     steps:
@@ -26,7 +38,7 @@ jobs:
       - name: Configure
         # CI runs the silent NullAudioBackend — the test suite doesn't
         # need a real audio device. Miniaudio is opt-in for local
-        # builds (see README); CI keeps it off so the build doesn't
+        # builds (see SETUP.md); CI keeps it off so the build doesn't
         # depend on FetchContent network reliability.
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
 
@@ -36,3 +48,109 @@ jobs:
       - name: Test
         working-directory: build
         run: ctest --output-on-failure -C ${{ matrix.build_type }}
+
+  # ----------------------------------------------------------------
+  # Job 2: build the GDExtension binding.
+  #
+  # Catches binding drift between releases. Today the engine builds
+  # cleanly via the `build-and-test` job, but the GDExtension can
+  # break independently (godot-cpp ABI changes, binding signature
+  # drift). This job proves the binding compiles on every PR.
+  #
+  # Doesn't run unit tests — the binding's correctness is exercised
+  # implicitly by the engine tests it links against. The win is
+  # catching compile failures early.
+  # ----------------------------------------------------------------
+  build-gdextension:
+    name: gdextension / ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Platform names match release.yml and nightly.yml so the
+        # godot-cpp cache (keyed on platform + ref) is shared across
+        # all three workflows. A successful cache populate by any
+        # workflow benefits the others.
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            scons_platform: linux
+          - os: windows-latest
+            platform: windows-x86_64
+            scons_platform: windows
+          - os: macos-latest
+            platform: macos-arm64
+            scons_platform: macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install scons
+        shell: bash
+        run: pip install scons
+
+      - name: Fetch single-header dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./scripts/fetch_miniaudio.sh
+          ./scripts/fetch_decoders.sh
+
+      - name: Fetch single-header dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call scripts\fetch_miniaudio.bat
+          call scripts\fetch_decoders.bat
+
+      - name: Cache godot-cpp build
+        id: godot-cpp-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/godot-cpp
+          key: godot-cpp-${{ matrix.platform }}-${{ env.GODOT_CPP_REF }}-v1
+
+      - name: Clone + build godot-cpp (cache miss)
+        if: steps.godot-cpp-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${{ env.GODOT_CPP_REF }}" \
+              https://github.com/godotengine/godot-cpp.git \
+              third_party/godot-cpp
+          cd third_party/godot-cpp
+          scons platform=${{ matrix.scons_platform }} target=template_release -j2
+
+      - name: Configure GDExtension
+        shell: bash
+        run: |
+          cmake -S godot -B build-godot \
+              -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON \
+              -DAUDIO_ENGINE_DECODERS_WAV=ON \
+              -DAUDIO_ENGINE_DECODERS_OGG=ON \
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      - name: Build GDExtension
+        run: cmake --build build-godot --config Release --parallel
+
+      - name: Verify binary was produced
+        shell: bash
+        run: |
+          # On Linux:   build-godot/libgool_godot.so
+          # On macOS:   build-godot/libgool_godot.dylib
+          # On Windows: build-godot/Release/gool_godot.dll
+          if [ -f build-godot/libgool_godot.so ] || \
+             [ -f build-godot/libgool_godot.dylib ] || \
+             [ -f build-godot/Release/gool_godot.dll ] || \
+             [ -f build-godot/gool_godot.dll ]; then
+              echo "GDExtension binary produced."
+          else
+              echo "ERROR: GDExtension binary not found at expected paths." >&2
+              find build-godot -type f -name "gool_godot*" 2>/dev/null      >&2
+              find build-godot -type f -name "libgool_godot*" 2>/dev/null   >&2
+              exit 1
+          fi

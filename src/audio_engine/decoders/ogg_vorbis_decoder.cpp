@@ -8,6 +8,11 @@
 
 #if defined(AUDIO_ENGINE_DECODERS_OGG)
 
+// stb_vorbis is decade-old C with aggressive macros; suppress noisy
+// warnings under -Wpedantic / -Wshadow etc when building under -Werror.
+// Apple Clang defines __GNUC__ for compatibility but does NOT recognize
+// -Wmaybe-uninitialized — keep that pragma in a GCC-only sub-block so
+// Clang doesn't fail with "unknown warning option" under -Werror.
 #if defined(__GNUC__)
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wshadow"
@@ -15,9 +20,11 @@
 #  pragma GCC diagnostic ignored "-Wsign-conversion"
 #  pragma GCC diagnostic ignored "-Wconversion"
 #  pragma GCC diagnostic ignored "-Wunused-function"
-#  pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #  pragma GCC diagnostic ignored "-Wcast-qual"
 #  pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
 
 extern "C" {

@@ -92,13 +92,12 @@ case "$( uname -s )" in
 esac
 
 if [ "${PLATFORM}" = "macos" ]; then
-    cat <<EOF
-
-WARNING: macOS builds are currently broken on Apple Clang. The CI
-matrix has macOS disabled for the same reason. This script will run,
-but expect compile errors. See SETUP.md.
-
-EOF
+    echo
+    echo "Note: macOS support landed in v0.11.6. If you hit a build error"
+    echo "      that's specific to your macOS version or Xcode toolchain,"
+    echo "      please file an issue at https://github.com/siliconight/gool/issues"
+    echo "      with the exact failing command and its output."
+    echo
 fi
 
 # ----------------------------------------------------------------------

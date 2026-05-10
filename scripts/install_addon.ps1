@@ -43,8 +43,22 @@ if (-not (Test-Path (Join-Path $TargetProject "project.godot"))) {
 }
 
 # Default binary location.
+# Default MSBuild generator outputs to build-godot\Release\gool_godot.dll;
+# Ninja generator outputs to build-godot\gool_godot.dll. Check both so
+# users aren't tied to one CMake generator choice.
 if ($Binary -eq "") {
-    $Binary = Join-Path $RepoRoot "build-godot\Release\gool_godot.dll"
+    $Candidates = @(
+        (Join-Path $RepoRoot "build-godot\Release\gool_godot.dll"),
+        (Join-Path $RepoRoot "build-godot\gool_godot.dll")
+    )
+    foreach ($C in $Candidates) {
+        if (Test-Path $C) { $Binary = $C; break }
+    }
+    if ($Binary -eq "") {
+        # Use first candidate for the upcoming error message — it's the
+        # more common one (default MSBuild generator).
+        $Binary = $Candidates[0]
+    }
 }
 
 if (-not (Test-Path -PathType Leaf $Binary)) {
