@@ -57,6 +57,44 @@ Three phases:
 The first phase is the longest. The other two each take a few
 minutes once everything's installed.
 
+### The fast path: `scripts/bootstrap.sh` / `bootstrap.ps1`
+
+After the platform prerequisites are installed (Phase 1 below),
+phases 2 and 3 collapse into one command:
+
+**Linux / macOS:**
+
+```bash
+./scripts/bootstrap.sh                         # build only
+./scripts/bootstrap.sh --install-to ~/MyGame   # build + install into your project
+```
+
+**Windows** (from the **x64 Native Tools Command Prompt for VS 2022**):
+
+```powershell
+scripts\bootstrap.ps1
+scripts\bootstrap.ps1 -InstallTo C:\path\to\my_godot_project
+```
+
+What it does:
+
+1. Verifies prerequisites are on PATH (git / cmake / python / scons / C++ compiler)
+2. Runs the `fetch_*.sh` / `.bat` scripts to get the single-header
+   dependencies (miniaudio, dr_libs, stb_vorbis)
+3. Clones godot-cpp at the pinned ref (default: `4.2`, override
+   with `GODOT_CPP_REF=4.3`) into `third_party/godot-cpp/` and
+   builds it with SCons
+4. Configures and builds gool's GDExtension via CMake
+5. (If `--install-to` / `-InstallTo` is given) copies the addon
+   files and the built binary into the target Godot project
+
+The script is **idempotent** — every step checks if its work is
+already done before repeating it. Re-running is cheap.
+
+If the bootstrap script fails partway through, the manual walkthrough
+below documents what each step does, so you can resume from where
+the script left off.
+
 ---
 
 ### Phase 1: Install prerequisites

@@ -12,6 +12,111 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.3] - 2026-05-10
+
+Bootstrap-experience overhaul, **phase B: automation**. Collapses
+the multi-step build-from-source procedure into a single command.
+After installing platform prerequisites (one-time per machine),
+adopters now run:
+
+```
+./scripts/bootstrap.sh --install-to /path/to/godot/project
+```
+
+…and end up with the addon installed in their Godot project. The
+script verifies prerequisites, fetches dependencies, clones and
+builds godot-cpp at a pinned ref, builds gool's GDExtension, and
+copies everything into the target project. Idempotent.
+
+### Added
+
+- **`scripts/fetch_godot_cpp.sh`** + **`scripts/fetch_godot_cpp.bat`**
+  — shallow-clone helper for godot-cpp, mirroring the pattern of
+  `scripts/fetch_opus.sh` (which already clones xiph/opus the same
+  way). Default branch `4.2` (matches the gdextension manifest's
+  `compatibility_minimum`); override with positional arg or
+  `GODOT_CPP_REF` env var. Skips the clone if the directory
+  already has a `.git/`.
+
+- **`scripts/install_addon.sh`** + **`scripts/install_addon.ps1`** —
+  takes a target Godot project path and copies the addon GDScript
+  files (runtime singleton, audio relevancy filter, plugin, all
+  seven prefabs) plus the `gool.gdextension` manifest plus the
+  built GDExtension binary into `<target>/addons/gool/`. Validates
+  that the target is a real Godot project (has `project.godot`)
+  and that the binary exists. Default binary path matches the
+  bootstrap script's CMake output; override with `GOOL_BINARY` env
+  var (bash) or `-Binary` flag (PowerShell).
+
+- **`scripts/bootstrap.sh`** — Linux/macOS one-command setup. Five
+  phases:
+    1. Prerequisite checks (git / cmake / python3 / scons / g++ or clang++)
+    2. Fetch single-header dependencies (miniaudio, dr_libs, stb_vorbis)
+       — skips if already present
+    3. Clone + build godot-cpp at pinned ref — skips if already built
+    4. Configure + build gool's GDExtension via CMake (with miniaudio
+       backend + WAV/OGG/FLAC decoders enabled by default)
+    5. Optional install via `--install-to <path>`
+
+  Configurable via env vars: `GODOT_CPP_REF`, `BUILD_TYPE`, `JOBS`,
+  `GODOT_CPP_PATH`, `SKIP_GODOT_CPP`. `--help` flag prints the
+  full usage text. macOS run prints an upfront warning about the
+  known-broken state instead of letting the user hit cryptic
+  errors mid-build.
+
+- **`scripts/bootstrap.ps1`** — PowerShell variant for Windows.
+  Same five-phase logic. Detects MSVC via `cl` on PATH and
+  prompts the user to open the **x64 Native Tools Command Prompt
+  for VS 2022** if not. Same `-InstallTo` / `-GodotCppRef` /
+  `-BuildType` / `-Jobs` / `-SkipGodotCpp` parameter surface as
+  the bash variant's env vars.
+
+### Changed
+
+- **`SETUP.md`** — Track B section now leads with the bootstrap
+  fast path. The manual phase-by-phase walkthrough remains for
+  adopters who want to understand each step (or recover when
+  bootstrap fails partway through). Phase 2 / Phase 3 are now
+  documented as "what bootstrap does for you" with the manual
+  procedure as the second-class explanation.
+
+- **`README.md`** Quick start install block — collapsed from a
+  10-line sequence to two lines (`git clone` + `bootstrap.sh
+  --install-to`). Points at SETUP.md for prerequisites and the
+  manual walkthrough.
+
+### Verified
+
+The bash scripts pass `bash -n` syntax checks. `install_addon.sh`
+end-to-end smoke-tested in the build sandbox: 14 files copied
+into the right places (4 top-level GDScript files, the manifest,
+7 prefabs, plus the binary in `bin/`). Error paths verified:
+non-existent target, real dir without `project.godot`, real
+project without a built binary — each fires its descriptive
+error message and exits cleanly.
+
+The PowerShell scripts couldn't be runtime-tested in this
+Linux-only sandbox; they'll be exercised by adopters or by Phase
+C's CI matrix. Risk surface there is shell-quoting differences
+on Windows paths and the exact MSBuild output layout for the
+GDExtension binary (handled with two candidate paths +
+descriptive fallback if neither matches).
+
+### Tests
+
+- Total **36/36** passing. Ducking baseline locked at -17.20 dB.
+  No engine code changes; this release only adds scripts.
+
+### What's next
+
+Phase C closes the bootstrap story:
+
+- **Phase C (planned):** release pipeline rewrite. CI builds the
+  GDExtension binary per platform on tag push, packages
+  `gool-X.Y.Z-godot-addon.zip` ready to drop into a Godot project
+  (no compiler required by the adopter). Closes the Track A gap
+  in `SETUP.md`.
+
 ## [0.11.2] - 2026-05-10
 
 Bootstrap-experience overhaul, phase A: documentation. Closes the
@@ -1406,7 +1511,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/siliconight/gool/releases/tag/v0.11.3
 [0.11.2]: https://github.com/siliconight/gool/releases/tag/v0.11.2
 [0.11.1]: https://github.com/siliconight/gool/releases/tag/v0.11.1
 [0.11.0]: https://github.com/siliconight/gool/releases/tag/v0.11.0

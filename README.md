@@ -4,7 +4,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.2 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.3 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -132,28 +132,26 @@ events. The middleware handles the rest.
 > now everyone goes through the build-from-source path. The build
 > works on Linux + Windows; macOS is currently broken (tracked).
 >
-> The 30-second version of build-from-source, after prerequisites
-> are installed:
+> The 30-second version, after prerequisites are installed:
 >
 > ```bash
 > git clone https://github.com/siliconight/gool.git && cd gool
-> ./scripts/fetch_miniaudio.sh && ./scripts/fetch_decoders.sh
-> git clone --branch 4.2 https://github.com/godotengine/godot-cpp.git
-> (cd godot-cpp && scons platform=linux target=template_release -j$(nproc))
-> cmake -S godot -B build-godot \
->     -DGODOT_CPP_PATH=../godot-cpp \
->     -DCMAKE_BUILD_TYPE=Release \
->     -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
-> cmake --build build-godot --config Release -j
+> ./scripts/bootstrap.sh --install-to /path/to/your/godot/project
 > ```
 >
-> Then copy `build-godot/libgool_godot.so` (or `.dylib` / `.dll`)
-> into your Godot project's `addons/gool/bin/` directory, copy the
-> contents of `godot/addons/gool/` into your project's `addons/gool/`,
-> and enable the plugin in **Project Settings → Plugins**.
+> That one script verifies prerequisites, fetches dependencies,
+> clones and builds godot-cpp, builds gool's GDExtension, and
+> installs the addon into your Godot project. Idempotent — safe
+> to re-run.
 >
-> Full per-platform commands and troubleshooting in
-> [SETUP.md](SETUP.md).
+> Windows users run `scripts\bootstrap.ps1 -InstallTo <path>` from
+> the **x64 Native Tools Command Prompt for VS 2022**.
+>
+> Then in Godot: **Project Settings → Plugins → gool → Enable**.
+>
+> Full per-platform prerequisite commands (winget / Chocolatey for
+> Windows, Homebrew for macOS, apt / dnf / pacman for Linux) and
+> the manual phase-by-phase walkthrough are in [SETUP.md](SETUP.md).
 
 ### First lines of GDScript
 
