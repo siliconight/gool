@@ -6,6 +6,7 @@
 
 #include "audio_engine/telemetry.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -116,10 +117,18 @@ void AppendCounter(std::string& out,
         "# TYPE gool_%s counter\n"
         "gool_%s{job=\"%s\"} %llu\n",
         name, help, name, name, job.c_str(), value);
-    if (n > 0) out.append(buf, static_cast<size_t>(n));
+    if (n > 0) {
+        // snprintf returns the would-have-been length, not the
+        // actually-written length. If the format string overflowed
+        // `buf`, n > sizeof(buf) and `out.append(buf, n)` would read
+        // past the end of the buffer (stack-buffer-overflow caught by
+        // ASAN). Clamp to the actually-written length (sizeof(buf)-1
+        // accounting for the implicit null terminator).
+        const size_t toCopy =
+            std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+        out.append(buf, toCopy);
+    }
 }
-
-// Format a gauge (point-in-time value).
 void AppendGauge(std::string& out,
                   const std::string& job,
                   const char* name,
@@ -131,7 +140,12 @@ void AppendGauge(std::string& out,
         "# TYPE gool_%s gauge\n"
         "gool_%s{job=\"%s\"} %llu\n",
         name, help, name, name, job.c_str(), value);
-    if (n > 0) out.append(buf, static_cast<size_t>(n));
+    if (n > 0) {
+        // Same clamping rule as AppendCounter above — see comment there.
+        const size_t toCopy =
+            std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+        out.append(buf, toCopy);
+    }
 }
 
 // Counter with a category label (used for the per-category replication
@@ -149,7 +163,12 @@ void AppendCategoryCounter(std::string& out,
         "# TYPE gool_%s counter\n"
         "gool_%s{job=\"%s\",category=\"%s\"} %llu\n",
         name, help, name, name, job.c_str(), category, value);
-    if (n > 0) out.append(buf, static_cast<size_t>(n));
+    if (n > 0) {
+        // Same clamping rule as AppendCounter above — see comment there.
+        const size_t toCopy =
+            std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+        out.append(buf, toCopy);
+    }
 }
 
 } // namespace

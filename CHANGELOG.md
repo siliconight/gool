@@ -12,6 +12,200 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.12.2] - 2026-05-11
+
+**Sanitizer CI (audit item 6).** Adds ASAN+UBSAN and TSAN jobs to
+ci.yml, plus the `AUDIO_ENGINE_SANITIZE_ASAN` / `AUDIO_ENGINE_SANITIZE_TSAN`
+CMake options that drive them. Sanitizers ran locally first and
+surfaced **one real bug + one orphan test + one regression methodology
+gap**, all fixed in this release.
+
+### What the sanitizers found (immediately, as expected)
+
+**1. Stack-buffer-overflow in `telemetry.cpp` — REAL BUG.**
+
+`PrometheusTelemetrySink::OnRuntimeStats` calls three helper
+functions (`AppendCounter`, `AppendGauge`, `AppendCategoryCounter`)
+that each format a Prometheus exposition line into a fixed
+256-byte stack buffer via `snprintf`, then `string::append(buf, n)`.
+
+The bug: `snprintf` returns the *would-have-been* length, not the
+*actually-written* length. When the format string would produce
+more than 256 chars (long help text + 21-char `uint64_t` value +
+escape sequences), the return value exceeds buffer size, and
+`string::append(buf, 262)` reads 262 bytes from a 256-byte buffer
+— stack overflow.
+
+ASAN caught this in `telemetry_test.cpp:182` on the very first
+sanitizer run:
+
+```
+==2075==ERROR: AddressSanitizer: stack-buffer-overflow
+READ of size 262 at 0x... thread T0
+    #5 AppendCounter src/audio_engine/runtime/telemetry.cpp:119
+    #6 PrometheusTelemetrySink::OnRuntimeStats ... :216
+```
+
+**Fix:** clamp `snprintf`'s return value to `sizeof(buf) - 1` at
+all three sites before passing to `string::append`. Added inline
+comments documenting the gotcha so this doesn't regress.
+
+```cpp
+if (n > 0) {
+    const size_t toCopy = std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+    out.append(buf, toCopy);
+}
+```
+
+In practice the overflow rarely triggered because typical
+formatter inputs stayed under 256 chars, but it was always one
+long help string away from corrupting whatever the stack frame
+adjacent to `buf` contained. Latent for who-knows-how-long;
+caught the first day sanitizers ran.
+
+**2. Orphan test `material_occlusion_test.cpp` — DEAD CODE.**
+
+`tests/unit/material_occlusion_test.cpp` exists in the repo and
+contains a real, useful test (verifies AudioMaterial presets
+produce distinguishable spatial signatures), but it was *never
+registered* in `tests/CMakeLists.txt`. CMake didn't build it;
+CI didn't run it.
+
+My sandbox regression iterated `ls tests/unit/*.cpp` and so
+silently *did* build it — but with the wrong include path (no
+`-I src/`, so its `#include "audio_engine/spatial/occlusion_system.h"`
+failed). The regression "passed" only because the failure
+counted as a fail-to-compile that my script's earlier output
+formatting glossed over.
+
+**Fix:** registered `material_occlusion_test` properly in three
+places of `tests/CMakeLists.txt` (`add_executable`,
+`target_link_libraries`, `add_test`) and added
+`material_occlusion` to the `include-src` foreach so it gets
+private-header access.
+
+**3. Regression methodology gap (third now).**
+
+My sandbox regression iterated `ls tests/unit/*.cpp`. CMake's
+build iterates the explicit `add_executable` lines. The two sets
+diverged when `material_occlusion_test.cpp` existed without a
+CMake registration. The regression compiled a test CI didn't.
+
+**Fix:** the regression now reads the test list from
+`tests/CMakeLists.txt`'s `add_executable` lines:
+
+```bash
+grep -oE "add_executable\(audio_engine_\w+_test\s+\w+/\w+\.cpp" \
+    tests/CMakeLists.txt | grep -oE "unit/\w+\.cpp"
+```
+
+This is the third methodology improvement in three releases:
+
+- v0.11.14: regression reads `AUDIO_ENGINE_SOURCES` (not `find` all .cpp)
+- v0.11.15: regression respects per-target include paths
+- v0.12.2 (this): regression iterates only CMake-registered tests
+
+The gap between "my local sandbox" and "what CI builds" is now
+closed across the three classes of mismatch I've hit.
+
+### TSAN microbench wrinkle (not a real bug)
+
+`jitter_buffer_test` includes a performance microbench that
+asserts `opsPerSec > 5e6` (5M ops/sec floor). Under TSAN's
+5-15× overhead, the test runs at ~1.5M ops/sec — well below the
+threshold for non-instrumented builds.
+
+This isn't a bug in the audio engine code (TSAN found no data
+races); the test threshold is set for *release* builds and
+doesn't apply to sanitizer overhead.
+
+**Fix:** skip the perf assertion under sanitizer builds via:
+
+```cpp
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    constexpr bool kSanitizerBuild = true;
+#elif defined(__has_feature)
+  #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    constexpr bool kSanitizerBuild = true;
+  #else
+    constexpr bool kSanitizerBuild = false;
+  #endif
+#else
+    constexpr bool kSanitizerBuild = false;
+#endif
+if (!kSanitizerBuild) {
+    EXPECT(opsPerSec > 5e6);
+}
+```
+
+Works on GCC (`__SANITIZE_ADDRESS__` / `__SANITIZE_THREAD__`)
+and Clang (`__has_feature`). Skipped output prints
+`[perf assertions skipped — sanitizer overhead expected]` so
+sanitizer logs make it clear why the assertion didn't run.
+
+### Files added/modified
+
+**Added:**
+- Nothing — this release is bug-fix + plumbing only.
+
+**Modified:**
+- `src/audio_engine/runtime/telemetry.cpp` — clamping fix in all
+  three Append* helpers + `#include <algorithm>`.
+- `tests/unit/jitter_buffer_test.cpp` — sanitizer-skip wrapping
+  around perf assertion.
+- `tests/CMakeLists.txt` — register `material_occlusion_test`;
+  add `material_occlusion` to include-src foreach.
+- `CMakeLists.txt` — new options `AUDIO_ENGINE_SANITIZE_ASAN`
+  and `AUDIO_ENGINE_SANITIZE_TSAN` with mutually-exclusive check
+  + compile/link flag injection.
+- `.github/workflows/ci.yml` — two new jobs:
+  - `sanitize-asan-ubsan` (Linux GCC, `-fsanitize=address,undefined`)
+  - `sanitize-tsan` (Linux GCC, `-fsanitize=thread`,
+    `--timeout 600` to absorb TSAN's slowdown)
+
+### Local verification
+
+Three full regressions, all green:
+
+| Build | Tests | Outcome |
+|---|---|---|
+| Default `-O2` | 38 | 38/38 passed |
+| `-O1 -fsanitize=address,undefined` | 38 | 38/38 passed |
+| `-O1 -fsanitize=thread` | 38 | 38/38 passed |
+
+ASAN's leak detection enabled (`detect_leaks=1`), UBSAN
+configured with `halt_on_error=1` so any UB stops the test
+immediately. No suppressions used — every sanitizer finding was
+a real bug, fixed in source.
+
+### Expected CI behavior
+
+After this release pushes, two new jobs appear in the CI matrix:
+
+- **`sanitize / asan+ubsan / ubuntu`** — expected ~2-3 min runtime
+  (ASAN slowdown). Catches any new memory bug introduced by
+  future commits.
+- **`sanitize / tsan / ubuntu`** — expected ~5-10 min runtime (TSAN
+  slowdown). Catches any new data race or lock-order issue.
+
+Both jobs use the same minimal config as `build-and-test`
+(backend OFF, decoders OFF) — the bugs sanitizers find are
+platform-feature-agnostic, so the minimal config gets full
+coverage at lowest cost.
+
+### Audit follow-up status
+
+- ✓ Item 1: map `reserve()` (already in place, verified v0.12.0)
+- ✓ Item 2: page-touching comments (v0.12.0)
+- ✓ Item 3: `approxBytesAllocated` stats (v0.12.0)
+- ✓ Item 4: `LockEngineMemory()` API (v0.12.0)
+- ✓ Item 5: aligned hot-path buffers (v0.12.1)
+- ✓ Item 6: ASAN/TSAN/UBSAN in CI (this release)
+- Item 7: real-time thread scheduling audit (still open;
+  separate scope, not memory-management)
+- Optional: mixing throughput bench to measure v0.12.1's
+  alignment win under `-march=native` (still open)
+
 ## [0.12.1] - 2026-05-11
 
 **Aligned-storage buffer type for hot-path mixing.** Audit item 5 of
@@ -3626,7 +3820,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/siliconight/gool/releases/tag/v0.12.2
 [0.12.1]: https://github.com/siliconight/gool/releases/tag/v0.12.1
 [0.12.0]: https://github.com/siliconight/gool/releases/tag/v0.12.0
 [0.11.19]: https://github.com/siliconight/gool/releases/tag/v0.11.19

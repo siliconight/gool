@@ -414,8 +414,28 @@ void TestPerformanceMillionOps() {
 
     std::printf("  [performance: 2M push+pop ops in %.3f s = %.2f Mops/s]\n",
                 seconds, opsPerSec / 1e6);
-    EXPECT(opsPerSec > 5e6);     // 5M ops/s floor on any sane CPU
-    EXPECT(seconds   < 2.0);     // sanity ceiling
+
+    // Skip the throughput floor under sanitizer builds. ASan adds ~2-3x
+    // overhead, TSan 5-15x; the 5 Mops/s bar is for untraced builds. The
+    // performance microbench's purpose is to catch perf regressions in
+    // release-mode code, not to validate sanitizer overhead.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    constexpr bool kSanitizerBuild = true;
+#elif defined(__has_feature)
+  #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    constexpr bool kSanitizerBuild = true;
+  #else
+    constexpr bool kSanitizerBuild = false;
+  #endif
+#else
+    constexpr bool kSanitizerBuild = false;
+#endif
+    if (!kSanitizerBuild) {
+        EXPECT(opsPerSec > 5e6);     // 5M ops/s floor on any sane CPU
+        EXPECT(seconds   < 2.0);     // sanity ceiling
+    } else {
+        std::printf("  [perf assertions skipped — sanitizer overhead expected]\n");
+    }
 }
 
 } // namespace

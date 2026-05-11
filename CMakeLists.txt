@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.12.1
+    VERSION 0.12.2
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -37,6 +37,52 @@ option(AUDIO_ENGINE_SHARED   "Build audio_engine as a shared library"  OFF)
 option(AUDIO_ENGINE_BUILD_EXAMPLES "Build examples" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_BUILD_TESTS    "Build unit tests" ${AUDIO_ENGINE_TOP_LEVEL})
 option(AUDIO_ENGINE_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+
+# Sanitizer builds. Audit follow-up (item 6 of the v0.12.x memory-management
+# audit). Mutually exclusive — ASAN and TSAN don't compose. Recommended
+# compile mode: Debug or RelWithDebInfo + -O1 for readable stacks.
+#
+# ASAN catches: heap/stack overflows, use-after-free, leaks (with LSan),
+#               double-free, init-order issues. Combined with UBSan in this
+#               option to catch signed overflow / null deref / misaligned
+#               loads in one build.
+# TSAN catches: data races, lock-order inversions, threadsafe-library misuse.
+#               5-15x slowdown; expect long test runs.
+#
+# CI runs both as separate jobs (.github/workflows/ci.yml). Local use:
+#   cmake -S . -B build-asan -DAUDIO_ENGINE_SANITIZE_ASAN=ON
+#   cmake -S . -B build-tsan -DAUDIO_ENGINE_SANITIZE_TSAN=ON
+option(AUDIO_ENGINE_SANITIZE_ASAN "Build with AddressSanitizer + UBSan" OFF)
+option(AUDIO_ENGINE_SANITIZE_TSAN "Build with ThreadSanitizer"          OFF)
+if(AUDIO_ENGINE_SANITIZE_ASAN AND AUDIO_ENGINE_SANITIZE_TSAN)
+    message(FATAL_ERROR
+        "AUDIO_ENGINE_SANITIZE_ASAN and AUDIO_ENGINE_SANITIZE_TSAN are "
+        "mutually exclusive — ASan and TSan are incompatible at link time. "
+        "Enable one or the other.")
+endif()
+if(AUDIO_ENGINE_SANITIZE_ASAN)
+    if(NOT (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+            CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+            CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
+        message(WARNING
+            "AUDIO_ENGINE_SANITIZE_ASAN tested only on GCC/Clang. "
+            "MSVC has /fsanitize=address support but UBSan is unavailable; "
+            "this option may not work as expected.")
+    endif()
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+if(AUDIO_ENGINE_SANITIZE_TSAN)
+    if(NOT (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+            CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+        message(WARNING
+            "AUDIO_ENGINE_SANITIZE_TSAN tested only on GCC/Clang on Linux. "
+            "AppleClang's TSan support is flakier; MSVC has no TSan.")
+    endif()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+endif()
+
 option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O). Required for the audible examples (playback, hello_audio); the core library and tests build without it." ON)
 option(AUDIO_ENGINE_FETCH_MINIAUDIO   "Fetch miniaudio via FetchContent if not vendored locally" ON)
 

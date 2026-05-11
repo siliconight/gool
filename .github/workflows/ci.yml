@@ -61,6 +61,79 @@ jobs:
         run: ctest --output-on-failure -C ${{ matrix.build_type }}
 
   # ----------------------------------------------------------------
+  # Job 1b: sanitizer builds.
+  #
+  # ASAN+UBSAN catches: heap/stack overflows, use-after-free, leaks,
+  # double-free, signed-int overflow, null derefs, misaligned loads,
+  # bad shifts. ~2-3x runtime overhead. Combined into one job since
+  # the two sanitizers compose.
+  #
+  # TSAN catches: data races, lock-order inversions, threadsafe-library
+  # misuse. ~5-15x runtime overhead. Separate job because TSAN is
+  # incompatible with ASAN at link time.
+  #
+  # Linux only. macOS Clang's TSAN is flakier and adds runner cost;
+  # Windows MSVC has no TSAN at all and patchy UBSAN. The bugs these
+  # sanitizers find are platform-independent, so Linux coverage gives
+  # us the full diagnostic value.
+  #
+  # `AUDIO_ENGINE_SANITIZE_ASAN` and `AUDIO_ENGINE_SANITIZE_TSAN` are
+  # mutually exclusive CMake options; both blocks below also pass
+  # `-DCMAKE_BUILD_TYPE=RelWithDebInfo` for readable sanitizer
+  # stacktraces.
+  # ----------------------------------------------------------------
+  sanitize-asan-ubsan:
+    name: sanitize / asan+ubsan / ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build-asan
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo
+              -DAUDIO_ENGINE_SANITIZE_ASAN=ON
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+              -DAUDIO_ENGINE_DECODERS_WAV=OFF
+              -DAUDIO_ENGINE_DECODERS_OGG=OFF
+              -DAUDIO_ENGINE_DECODERS_FLAC=OFF
+
+      - name: Build
+        run: cmake --build build-asan --config RelWithDebInfo --parallel
+
+      - name: Test
+        working-directory: build-asan
+        env:
+          ASAN_OPTIONS:  "detect_leaks=1:halt_on_error=1:print_stacktrace=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: ctest --output-on-failure -C RelWithDebInfo
+
+  sanitize-tsan:
+    name: sanitize / tsan / ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build-tsan
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo
+              -DAUDIO_ENGINE_SANITIZE_TSAN=ON
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF
+              -DAUDIO_ENGINE_DECODERS_WAV=OFF
+              -DAUDIO_ENGINE_DECODERS_OGG=OFF
+              -DAUDIO_ENGINE_DECODERS_FLAC=OFF
+
+      - name: Build
+        run: cmake --build build-tsan --config RelWithDebInfo --parallel
+
+      - name: Test
+        working-directory: build-tsan
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+        # TSAN slows tests by ~5-15x; allow more wall time per test
+        # via ctest's per-test timeout knob.
+        run: ctest --output-on-failure -C RelWithDebInfo --timeout 600
+
+  # ----------------------------------------------------------------
   # Job 2: build the GDExtension binding.
   #
   # Catches binding drift between releases. Today the engine builds
