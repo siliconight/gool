@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.11.19
+    VERSION 0.12.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -102,6 +102,8 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/runtime/audio_runtime.cpp
     src/audio_engine/runtime/bus_config_loader.cpp
     src/audio_engine/runtime/logging.cpp
+    src/audio_engine/runtime/memory_budget.cpp
+    src/audio_engine/runtime/memory_locking.cpp
     src/audio_engine/runtime/music_channel.cpp
     src/audio_engine/runtime/replication_rate_limiter.cpp
     src/audio_engine/runtime/telemetry.cpp

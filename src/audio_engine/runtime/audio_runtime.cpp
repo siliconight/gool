@@ -4,6 +4,7 @@
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/runtime/audio_runtime_impl.h"
+#include "audio_engine/memory_budget.h"
 #include "audio_engine/replication_validator.h"
 #include "audio_engine/telemetry.h"
 #include "audio_engine/logging.h"
@@ -1763,6 +1764,7 @@ AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
         telemetrySinkExceptions_.load(std::memory_order_relaxed);
     s.logSinkExceptions =
         logSinkExceptions_.load(std::memory_order_relaxed);
+    s.approxBytesAllocated = EstimateBaselineBytes(config_);
     return s;
 }
 

@@ -133,6 +133,13 @@ AudioMixer::AudioMixer(uint32_t maxMixVoices,
     // ITD plus headroom at sample rates up to 96 kHz: ITD_max at 48 kHz
     // is ~32 samples, so 192 samples covers up to 96 kHz with margin.
     // Allocated here once per voice; never resized after Initialize.
+    //
+    // IMPORTANT: `.assign(N, 0.0f)` writes a value to every page of the
+    // buffer at init time. This is load-bearing for real-time safety —
+    // it forces the OS to back every page with real RAM (rather than
+    // copy-on-write zero pages), so the first render callback doesn't
+    // stall on page faults. Don't change to `.reserve(N)` + later
+    // `.resize(N)` (which default-constructs and may not touch pages).
     constexpr uint32_t kBinauralDelayCapacity = 192;
     for (auto& v : voices_) {
         v.delayBufL.assign(kBinauralDelayCapacity, 0.0f);

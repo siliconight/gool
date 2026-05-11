@@ -36,6 +36,17 @@ AudioResult BusGraph::Build(const BusGraphConfig& cfg,
     if (auto rc = ValidateAndBuildBuses(cfg); rc != AudioResult::Success) return rc;
     if (auto rc = BuildRenderOrder();        rc != AudioResult::Success) return rc;
 
+    // Bus input/output buffers, pre-sized to the worst-case render
+    // block (maxFrames * channels floats each).
+    //
+    // IMPORTANT: `.assign(N, 0.0f)` writes a value to every byte of
+    // each buffer at init time. This is load-bearing for real-time
+    // safety — it forces the OS to back every page with real RAM
+    // rather than a copy-on-write zero page. Without it, the first
+    // render callback would page-fault into every buffer as it writes,
+    // potentially blowing the audio callback's deadline. Don't change
+    // to `reserve(N)` + later `resize(N)` (which default-constructs
+    // floats without necessarily touching every page).
     for (auto& bp : buses_) {
         bp->input.assign(static_cast<size_t>(maxFrames) * channels, 0.0f);
         bp->output.assign(static_cast<size_t>(maxFrames) * channels, 0.0f);

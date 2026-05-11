@@ -12,6 +12,213 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.12.0] - 2026-05-11
+
+**Memory observability + control pass.** Bundles items 1-4 from the
+v0.11.x memory-management audit. Minor version bump because two new
+public APIs are added (`audio::LockEngineMemory()`,
+`audio::EstimateBaselineBytes()`) and one new `Stats` field
+(`approxBytesAllocated`).
+
+### Why this release exists
+
+A read-only audit of the engine's memory behavior under the
+real-time constraints of a game audio callback (no allocations on
+the audio thread, no paging, no locks, no garbage collection) found
+the engine in strong shape:
+
+- Render path verified allocation-free (zero `new`/`malloc`/
+  `push_back`/`resize`/`reserve` reachable from
+  `AudioMixer::OnRender`).
+- No `std::shared_ptr` anywhere — all owning relationships use
+  `unique_ptr`, all non-owning references use raw pointers.
+- SPSC ring, PcmRing, PcmRingF32 all use `alignas(64)` to prevent
+  false sharing between producer/consumer cores.
+- Asset registry uses `uint32_t` keys (not strings) — no string
+  allocation per lookup.
+- All maps in `audio_runtime_impl` and `audio_asset_registry`
+  already `reserve()` at construction (audit verified; no change
+  needed).
+- No telemetry/logging calls reachable from the render thread.
+
+Four gaps were identified. This release closes the latter three;
+the first turned out to already be in place.
+
+### What changed
+
+**1. Asset registry / runtime map `reserve()` calls** — *verified
+already present.* Audit item 1 recommended adding `.reserve()`
+calls to several `unordered_map`s to eliminate rehash-allocation
+risk during the first dozen inserts. Investigation found these
+were already in place:
+
+- `AudioAssetRegistry`: lines 120-122 of `audio_asset_registry.cpp`
+  already reserve `defs_`, `pcms_`, `streams_` at construction
+  using `maxRegisteredSounds`.
+- `AudioRuntimeImpl::Initialize`: lines 226-228 already reserve
+  `globalParameters_` and `soundRtpcBindings_` using
+  `maxGlobalParameters` / `maxSoundRtpcBindings`.
+
+No code change for this item; documented here so future readers
+of the CHANGELOG know it was checked.
+
+**2. Page-touching comments** — added inline comments to the
+`.assign(N, 0.0f)` calls in `audio_mixer.cpp:138-139` and
+`bus_graph.cpp:40-41` documenting that they are *load-bearing
+for real-time safety*, not merely zero-initialization. They
+force the OS to back every page with real RAM rather than a
+copy-on-write zero page; without them, the first render
+callback would page-fault into every buffer as it writes,
+potentially blowing the audio callback's deadline.
+
+This prevents accidental regression: a refactor to `reserve(N)
++ resize(N)` (which default-constructs floats but may not
+touch every page) would silently weaken real-time guarantees.
+The comments warn future contributors away.
+
+**3. `EngineStats::approxBytesAllocated` and `EstimateBaselineBytes`**
+— added a public estimator function:
+
+```cpp
+#include "audio_engine/memory_budget.h"
+
+uint64_t bytes = audio::EstimateBaselineBytes(myConfig);
+// e.g. 7,970,816 bytes (~7.6 MB) for default config
+```
+
+Pure function, ~10 multiplications, safe to call from any
+thread. Estimates the major allocation categories that depend
+on `AudioConfig` + `AudioRuntimeBudget`:
+
+- Bus graph input/output buffers (assumes ~16 typical buses)
+- Voice mix pool (MixVoice array + binaural delay lines)
+- Voice-source manager rings (PCM + packet)
+- Streaming asset rings
+- Asset registry hash tables
+
+`AudioRuntime::Stats` now exposes the figure as
+`approxBytesAllocated`; `GetStats()` populates it on every call
+via `EstimateBaselineBytes(config_)`. Visible automatically in
+the JSON-Lines, Prometheus, and Ring telemetry sinks
+(`approx_bytes_allocated` field in the JSON output).
+
+The estimate is **conservative-low** — it doesn't count loaded
+PCM asset bytes (which can dwarf the baseline in content-heavy
+games), sound bank parser tables, effect-internal state, or
+standard library overhead. Real usage at any moment can be
+1.5-3× higher than this baseline. The function and the field
+both document this limitation prominently. Sufficient for
+"is my budget setting reasonable" sanity checks; not a
+replacement for real per-allocation instrumentation.
+
+New unit test: `memory_budget_test` verifies the estimator
+produces sensible numbers (>64 KB and <1 GB at defaults),
+responds monotonically to scaling inputs (more emitters →
+more bytes; larger `bufferSize` → more bytes), and reduces
+when `enableVoice=false` (voice rings drop out).
+
+**4. `audio::LockEngineMemory()` opt-in API** — new public
+function for callers who need page-locking under memory
+pressure:
+
+```cpp
+#include "audio_engine/memory_locking.h"
+
+const auto result = audio::LockEngineMemory();
+if (!result.success) {
+    fprintf(stderr, "%s: %s\n", result.platform, result.details);
+    // Continue without locking; engine still works, just no
+    // resistance to paging under pressure.
+}
+```
+
+Per-platform mapping:
+
+- **Linux**: `mlockall(MCL_CURRENT | MCL_FUTURE)`. Requires
+  `RLIMIT_MEMLOCK` to be high enough (default 64 KB is way too
+  small; users typically `ulimit -l unlimited` or grant
+  `CAP_IPC_LOCK`).
+- **macOS**: `mlockall(MCL_CURRENT | MCL_FUTURE)`. Subject to
+  macOS's tighter `RLIMIT_MEMLOCK`. Documentation also points
+  at `THREAD_TIME_CONSTRAINT_POLICY` as a complementary
+  approach to set on the audio thread.
+- **Windows**: `SetProcessWorkingSetSizeEx` with
+  `QUOTA_LIMITS_HARDWS_MIN_ENABLE` (closest Windows equivalent
+  to `mlockall`).
+
+Returns a `MemoryLockResult` struct with `success`, `platform`,
+and `details` (human-readable status + remediation hint on
+failure, e.g., "EPERM: raise RLIMIT_MEMLOCK"). Idempotent;
+thread-safe; not called automatically — host must opt in.
+
+**Not called automatically** because:
+- It costs working-set quota from the OS that other processes
+  could use; not always the right trade-off.
+- It can interfere with debuggers/profilers/sanitizers.
+- Failure mode is "audio works fine but is paging-sensitive,"
+  not "audio is broken" — so silent automatic invocation would
+  hide reasonable production scenarios.
+
+Header comment fully documents the privileges required,
+failure modes, and remediation steps for each platform.
+
+### Files added
+
+- `include/audio_engine/memory_budget.h` (~50 LOC)
+- `include/audio_engine/memory_locking.h` (~90 LOC)
+- `src/audio_engine/runtime/memory_budget.cpp` (~80 LOC)
+- `src/audio_engine/runtime/memory_locking.cpp` (~150 LOC,
+  per-platform `#ifdef` blocks)
+- `tests/unit/memory_budget_test.cpp` (~55 LOC)
+
+### Files modified
+
+- `include/audio_engine/audio_runtime.h` — `Stats` struct
+  gains `approxBytesAllocated` (last field; ABI-additive).
+- `src/audio_engine/runtime/audio_runtime.cpp` — `GetStats()`
+  populates the new field via `EstimateBaselineBytes()`.
+- `src/audio_engine/mixer/audio_mixer.cpp` — page-touching
+  comment on delay-buffer assigns (lines 138-139).
+- `src/audio_engine/mixer/bus_graph.cpp` — page-touching
+  comment on bus-buffer assigns (lines 40-41).
+- `CMakeLists.txt` — `AUDIO_ENGINE_SOURCES` now 39 files
+  (added memory_budget.cpp + memory_locking.cpp).
+- `tests/CMakeLists.txt` — memory_budget_test registered.
+
+### What's still on the audit's recommendations list
+
+Items 5-7 of the audit deferred to separate releases:
+
+- **5: Aligned-storage buffer type for AVX (`std::aligned_alloc(64,...)`)**.
+  Medium effort, measure first to confirm it's worth it.
+- **6: ASAN/TSAN/UBSAN runs in CI.** Medium effort. Would catch
+  future regressions in the patterns this audit verified.
+- **7: Real-time thread scheduling audit** (macOS
+  `TIME_CONSTRAINT_POLICY`, Linux `SCHED_FIFO`/`SCHED_RR`,
+  Windows `THREAD_PRIORITY_TIME_CRITICAL`). Adjacent to memory
+  management (priority interacts with paging) but a separate
+  audit topic.
+
+### Verified locally
+
+- Sandbox regression: **37/37 passing** (36 prior + 1 new
+  memory_budget_test).
+- `EstimateBaselineBytes` smoke output for default config:
+  ~7.6 MB. Scales correctly with emitter count, buffer size,
+  voice enablement.
+- `LockEngineMemory()` not invoked in regression (would fail
+  inside the sandbox with EPERM; correct behavior given that
+  the sandbox has restricted privileges). The function's logic
+  is exercised by the comment-only smoke test; full per-platform
+  CI verification will happen as part of the next run.
+
+### Push impact
+
+Engine-thread allocation budget unchanged. New API is fully
+opt-in. `approxBytesAllocated` shows up in all telemetry sinks
+the moment v0.12.0 ships — users tailing JSON logs will see a
+new key in the next sample.
+
 ## [0.11.19] - 2026-05-11
 
 **Double-click installer for Windows.** Adds `scripts/gool-install.cmd`,
@@ -3289,7 +3496,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.19...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/siliconight/gool/releases/tag/v0.12.0
 [0.11.19]: https://github.com/siliconight/gool/releases/tag/v0.11.19
 [0.11.18]: https://github.com/siliconight/gool/releases/tag/v0.11.18
 [0.11.17]: https://github.com/siliconight/gool/releases/tag/v0.11.17

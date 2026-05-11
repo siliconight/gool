@@ -537,6 +537,14 @@ public:
         // Same for the log sink's OnLogEvent(). Counted per-event;
         // a sink that throws every call will increment fast.
         uint64_t logSinkExceptions = 0;
+        // Approximate resident bytes the engine holds at the current
+        // configuration. Computed from AudioConfig + AudioRuntimeBudget
+        // via EstimateBaselineBytes() — see memory_budget.h for what
+        // this does and doesn't count. Conservative-low; tracking the
+        // exact figure would need per-allocation instrumentation.
+        // Stable across ticks unless config changes mid-lifetime
+        // (which the runtime doesn't currently support).
+        uint64_t approxBytesAllocated = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
 
