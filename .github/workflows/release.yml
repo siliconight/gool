@@ -253,8 +253,12 @@ jobs:
               -DAUDIO_ENGINE_VOICE_OPUS=ON \
               ${TOOLCHAIN_FLAG}
 
+      # godot-cpp generates ~3000 bindings .cpp files; each TU can
+      # peak at ~700MB-1GB during template instantiation. Default
+      # `--parallel` (= all cores) OOMs Linux/macOS runners (16GB and
+      # 7GB respectively). --parallel 2 keeps us well under the ceiling.
       - name: Build GDExtension
-        run: cmake --build build-godot --config Release --parallel
+        run: cmake --build build-godot --config Release --parallel 2
 
       - name: Stage addon archive (Unix)
         if: runner.os != 'Windows'

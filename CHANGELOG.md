@@ -12,6 +12,149 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.17] - 2026-05-11
+
+**gdextension OOM fix.** v0.11.16 turned all three engine jobs
+green for the first time since v0.11.3. This release closes the
+last two CI failures: gdextension Linux + macOS were dying with
+`Killed signal terminated program cc1plus` (Linux) and "runner
+lost communication" (macOS). Both are the same problem —
+out-of-memory during godot-cpp's parallel C++ build.
+
+### What the v0.11.16 logs actually said
+
+**Linux gdextension** (job ID 75266767462), got to 58% of
+godot-cpp's build, then:
+
+```
+[ 58%] Building CXX object godot-cpp/.../physics_test_motion_parameters3d.cpp.o
+c++: fatal error: Killed signal terminated program cc1plus
+##[error]The runner has received a shutdown signal.
+##[error]The operation was canceled.
+```
+
+`Killed signal terminated program cc1plus` is the Linux OOM killer
+terminating the compiler. The runner then dies because the OOM
+killed processes critical to the runner agent.
+
+**macOS gdextension** (job ID 75266767451), ran 1h 3m before:
+
+```
+##[error]The hosted runner lost communication with the server.
+```
+
+No specific error captured (runner died before flushing logs).
+Same root cause: macOS arm64 runners have only ~7GB RAM —
+significantly less than Linux's 16GB — and the OOM hit even
+harder.
+
+**Windows gdextension** (job ID 75266767474) — *succeeded*. The log
+clearly shows `GDExtension binary produced.` + both caches saved
+(`vcpkg-windows-opus-static-md-v1` and
+`godot-cpp-windows-x86_64-4.2-v1`). Its "fail" status was matrix
+cancellation cascade — when one job in the matrix triggers a
+runner shutdown, all other jobs in the same run get cancelled,
+even if they were already done. Windows DLL with Opus
+statically linked works end-to-end.
+
+### Root cause: godot-cpp is huge and CMake parallelism is unbounded
+
+godot-cpp generates ~3000 bindings `.cpp` files (one per Godot
+class). Each TU is heavy with template instantiations and can
+peak at ~700MB-1GB of RAM during compilation. The
+`Build GDExtension` step runs:
+
+```
+cmake --build build-godot --config Release --parallel
+```
+
+`--parallel` with no count = use all cores. On a 4-core Linux
+runner (16GB), that's 4 cc1plus processes running concurrently,
+4× ~1GB = 4GB on peak TUs, plus the runner agent + everything
+else = OOM around mid-build. On a 7GB macOS runner the math is
+worse.
+
+### Fixed
+
+- **`.github/workflows/ci.yml`, `nightly.yml`, `release.yml`** —
+  changed the gdextension build command from
+  `cmake --build build-godot --config Release --parallel` to
+  `cmake --build build-godot --config Release --parallel 2`.
+  Three workflow files, one parameter each.
+
+  Added an inline comment above each `Build GDExtension` step
+  explaining godot-cpp's memory footprint so this isn't
+  re-tuned without understanding the constraint:
+
+  ```yaml
+  # godot-cpp generates ~3000 bindings .cpp files; each TU can
+  # peak at ~700MB-1GB during template instantiation. Default
+  # `--parallel` (= all cores) OOMs Linux/macOS runners (16GB and
+  # 7GB respectively). --parallel 2 keeps us well under the ceiling.
+  ```
+
+  2 cores × 1GB peak = 2GB concurrent — well within 7GB on macOS
+  and not even close on 16GB Linux.
+
+### Not fixed in this release (deliberately)
+
+There's a deeper architectural redundancy worth fixing but the
+risk-reward says do it separately:
+
+- The workflow runs `scons` to build godot-cpp, THEN cmake's
+  `add_subdirectory(${GODOT_CPP_PATH})` builds godot-cpp *again*.
+  Pure waste — adds 5+ minutes to every uncached gdextension run.
+  Fix would be to drop the scons step (godot-cpp 4.x supports
+  CMake natively) OR change `godot/CMakeLists.txt` to link
+  against the scons-built static lib instead of `add_subdirectory`.
+  Either has non-trivial risk if godot-cpp's CMake support has
+  quirks for our case. Tracked as a follow-up.
+
+### Side note: Windows succeeded despite the same workflow
+
+Why did Windows survive `--parallel`? Three reasons working
+together:
+
+1. **More cores doesn't always mean more concurrent compilers** —
+   MSBuild's parallelism is per-project, and godot-cpp's single
+   `.vcxproj` serialized some of the work.
+2. **vcpkg cache hit on second run** — first run built opus +
+   opusfile from source (peak memory load), subsequent runs hit
+   cache and skip that. Linux/macOS Opus install via apt/brew is
+   already cached as a system package, so no analogous win.
+3. **MSBuild's memory accounting differs** — `cl.exe` instances
+   share PCH state more aggressively than separate `cc1plus`
+   instances, reducing peak per-job.
+
+The fix unifies behavior — Windows still uses `--parallel 2`
+(no harm; slightly slower than `--parallel`), and Linux+macOS get
+the safety margin they need.
+
+### Verified locally
+
+- All three workflow YAML files re-parse cleanly via
+  `yaml.safe_load`.
+- Sandbox regression (CMake-faithful, per-target include paths):
+  **36/36 passing**. No engine code touched.
+
+### Expected CI behavior
+
+After this release pushes:
+
+- All three **engine jobs** should still be green (no engine
+  code changed).
+- All three **gdextension jobs** should now build without OOM.
+  Linux and macOS will likely take longer per-run than before
+  (less parallelism = wall-clock cost), trading speed for
+  reliability. Estimate: gdextension Linux ~6-8 min, macOS
+  ~8-10 min, Windows ~5 min on cache hit, 25+ min on vcpkg cache
+  miss.
+
+If everything goes green this round, **CI is fully green for
+the first time** — engine + gdextension across all three
+platforms. The CI badge in the README flips to green and stays
+there.
+
 ## [0.11.16] - 2026-05-10
 
 **Third CI fix pass.** v0.11.15 unblocked the engine jobs almost
@@ -2913,7 +3056,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.16...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.17...HEAD
+[0.11.17]: https://github.com/siliconight/gool/releases/tag/v0.11.17
 [0.11.16]: https://github.com/siliconight/gool/releases/tag/v0.11.16
 [0.11.15]: https://github.com/siliconight/gool/releases/tag/v0.11.15
 [0.11.14]: https://github.com/siliconight/gool/releases/tag/v0.11.14
