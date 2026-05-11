@@ -12,6 +12,101 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.19] - 2026-05-11
+
+**Double-click installer for Windows.** Adds `scripts/gool-install.cmd`,
+a single `.cmd` file users download and double-click. Closes the
+"new-user-who-isn't-a-developer needs one icon to click" gap.
+
+### What changed
+
+- **New file: `scripts/gool-install.cmd`** — Windows batch script
+  that:
+    1. Validates the .cmd is sitting inside a Godot project
+       (checks for `project.godot` in the current folder)
+    2. Pipes `scripts/quickinstall.ps1` from `main` through
+       PowerShell (`iwr -useb … | iex`), running the existing
+       installer logic
+    3. Pauses at the end so the user can read the output before
+       the console window closes (without `pause`, Windows
+       Explorer closes the window the moment the script exits,
+       leaving the user with no feedback)
+
+  Written to be readable as documentation, not just executable:
+  the file's top comment explains how to use it, what it does,
+  what dependencies it has (none — uses Windows' built-in
+  PowerShell), and the common troubleshooting cases (SmartScreen
+  prompt, "project.godot not found" error, no internet). A new
+  user who opens the .cmd in Notepad before running it gets a
+  clear picture of what's about to happen on their machine.
+
+  Single file. No installer wizard, no MSI, no winget package.
+  Just one `.cmd` you put in your project folder and double-click.
+
+- **README.md "Quick start" section restructured** — install paths
+  are now ordered easiest-first:
+    1. **Track A: Double-click installer** (new — Windows)
+    2. **Track B: One-line install** (Windows PowerShell, Linux,
+       macOS terminal)
+    3. **Track C: Build from source**
+
+  Track A's section includes a right-click-save-as link
+  pointing directly at the .cmd's raw URL, the "drop into project
+  folder + double-click" instructions, and an honest note about
+  SmartScreen (the .cmd is unsigned because code-signing
+  certificates cost money for an open-source project).
+
+### Why this matters
+
+The pre-v0.11.19 install paths were all terminal-first:
+
+- One-line script (`iwr … | iex`) → needs a terminal open and
+  willingness to paste a shell command. Designers and hobbyist
+  Godot users overwhelmingly won't do this.
+- Per-platform addon archive download → 3-4 manual steps
+  (download → unzip → drag folder → confirm).
+- Manual `git clone` + build → developer-only.
+
+The .cmd file is a single icon you download and double-click. It
+matches the install UX of most consumer software on Windows.
+Adoption-wise, this is the single biggest UX improvement we
+could ship without going through the Godot Asset Library — and
+the Asset Library submission (next on the roadmap) is the
+*better* long-term answer for in-Godot install, but takes time
+to review and approve. The .cmd works today.
+
+### Not included in this release
+
+- **macOS equivalent.** macOS doesn't have a true double-clickable
+  shell-script idiom that works without Gatekeeper friction
+  (unsigned scripts trigger "cannot be opened because Apple
+  cannot check it for malicious software"). Path B (curl + bash
+  one-liner) remains the easiest macOS install. The cross-platform
+  one-click experience really is the Godot Asset Library — also
+  on the roadmap.
+- **Linux equivalent.** Linux desktop conventions vary too widely
+  for a single double-clickable file to work across all
+  distributions. Path B (curl + bash) works everywhere.
+- **Asset Library submission.** Tracked separately; submission
+  requires repo restructure decisions and Anthropic-side
+  approval lag time.
+
+### Verified locally
+
+- Sandbox regression: 36/36 passing (no engine code changed).
+- `gool-install.cmd` syntax-checked by inspection; runs against
+  `quickinstall.ps1` which is unchanged from v0.11.11 and has
+  been working in CI's manual-install pathway since.
+
+### Push impact
+
+This release adds one new file and edits README; no CI changes,
+no binary changes, no engine code changes. The `gool-install.cmd`
+file becomes available at
+`https://raw.githubusercontent.com/siliconight/gool/main/scripts/gool-install.cmd`
+the moment v0.11.19 lands on `main`. README's Track A link starts
+working immediately.
+
 ## [0.11.18] - 2026-05-11
 
 **macOS gdextension opusfile include-path fix.** v0.11.17 turned
@@ -3194,7 +3289,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.18...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.19...HEAD
+[0.11.19]: https://github.com/siliconight/gool/releases/tag/v0.11.19
 [0.11.18]: https://github.com/siliconight/gool/releases/tag/v0.11.18
 [0.11.17]: https://github.com/siliconight/gool/releases/tag/v0.11.17
 [0.11.16]: https://github.com/siliconight/gool/releases/tag/v0.11.16

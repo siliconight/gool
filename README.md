@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.11.18 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.11.19 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -128,11 +128,24 @@ events. The middleware handles the rest.
 > ### Setup
 >
 > Setup is documented in **[SETUP.md](SETUP.md)** — full per-platform
-> instructions with troubleshooting. Two paths:
+> instructions with troubleshooting. Three paths, easiest first:
 >
-> **Track A — Use the prebuilt addon (fastest, recommended).**
+> **Track A — Double-click installer (Windows, easiest).**
 >
-> *One-line install* — run from inside your Godot project directory:
+> 1. Right-click [**`gool-install.cmd`**](https://raw.githubusercontent.com/siliconight/gool/main/scripts/gool-install.cmd) → *Save link as…* → drop it into your Godot project folder (the one with `project.godot`)
+> 2. Double-click it
+>
+> A console window opens, downloads the latest gool addon for Windows,
+> extracts `addons/gool/` into your project, and tells you the project
+> is ready. Open Godot — gool's C++ classes are immediately available.
+> No terminal, no plugin enabling, no CMake or compiler. SmartScreen may
+> prompt the first time (click *More info → Run anyway* — the file is
+> unsigned because code-signing certificates cost real money for a free
+> open-source project).
+>
+> **Track B — One-line install (Linux, macOS, or Windows terminal).**
+>
+> Run from inside your Godot project directory:
 >
 > ```powershell
 > # Windows PowerShell:
@@ -144,21 +157,20 @@ events. The middleware handles the rest.
 > curl -sSL https://raw.githubusercontent.com/siliconight/gool/main/scripts/quickinstall.sh | bash
 > ```
 >
-> The script downloads the latest release's prebuilt addon for your
-> platform, drops it into `addons/gool/`, and prints the one manual
-> step left (enable the plugin in **Project Settings → Plugins**).
-> No compiler, no CMake, no godot-cpp.
+> Same outcome as Track A but works on every platform and doesn't need
+> a file download first. Same script Track A's `.cmd` invokes
+> internally.
 >
 > *Manual install* (if you'd rather not pipe a script): grab
 > `gool-X.Y.Z-godot-addon-<platform>.{tar.gz,zip}` from the
 > [Releases page](https://github.com/siliconight/gool/releases),
-> extract `addons/gool/` into your Godot project, enable the plugin.
+> extract `addons/gool/` into your Godot project, done.
 >
 > Linux x86_64, Windows x86_64, and macOS arm64 (Apple Silicon)
 > supported.
 >
-> **Track B — Build from source** (for contributors, custom platforms,
-> or if Track A's binary doesn't match your Godot version):
+> **Track C — Build from source** (for contributors, custom platforms,
+> or if Track A/B's binary doesn't match your Godot version):
 >
 > ```bash
 > git clone https://github.com/siliconight/gool.git && cd gool
