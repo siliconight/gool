@@ -12,6 +12,136 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.12.1] - 2026-05-11
+
+**Aligned-storage buffer type for hot-path mixing.** Audit item 5 of
+the v0.11.x memory-management audit. Replaces `std::vector<float>` on
+two hot-path member buffer pairs with a 64-byte-aligned RAII type.
+
+### Honest framing of what this release does (and doesn't)
+
+The audit recommended this as "AVX throughput on hot paths" but
+also said "Profile before/after with the existing bench to confirm
+it's worth it." The honest assessment:
+
+- **CMakeLists.txt has zero `-march=native` / `-mavx2` flags.** Default
+  x86-64 builds target SSE2 (16-byte vector ops). On modern CPUs
+  (Sandy Bridge+), `movaps` (aligned) vs `movups` (unaligned) loads
+  are nearly identical performance — the historical penalty largely
+  went away.
+- **The compile-flag-implied win is for AVX2/AVX-512 builds** that the
+  user enables via `-march=native` or similar. Without those flags,
+  the compiler doesn't generate 32/64-byte loads anyway, so 64-byte
+  alignment doesn't change emitted code.
+- **We don't have a representative mixing throughput bench**, so
+  "before/after measurement" isn't directly possible. Building one is
+  separate work (~150 LOC + harness).
+
+So this release ships **groundwork**:
+
+1. The hot buffers are now guaranteed 64-byte aligned. Any future
+   `-march=native` build immediately benefits.
+2. The buffers can no longer accidentally `.push_back` / `.resize` /
+   `.reserve` — these methods don't exist on the new type. One whole
+   class of "accidental allocation on the audio thread" bugs becomes
+   a compile-time error.
+3. Move-only semantics on hot-path buffers — copying a 4KB bus buffer
+   was always going to be a bug; now it's a compile error.
+
+If the perf win materializes today, great; if it doesn't, the change
+costs ~0 and pays off the day someone enables AVX. The compile-time
+error class for accidental growth is the more reliable benefit.
+
+### Files added
+
+- **`src/audio_engine/util/aligned_float_buffer.h`** (~135 LOC,
+  header-only). `audio::util::AlignedFloatBuffer` — a 64-byte-aligned
+  RAII float buffer with minimal API:
+    - `assign(count, value)` — allocates if size differs, fills every
+      element (page-touching contract preserved)
+    - `size()`, `data()`, `operator[]`, `begin()/end()`
+    - Move-only (copy ctor/assign deleted)
+    - Per-platform allocation: `_aligned_malloc` on Windows,
+      `posix_memalign` on POSIX
+  
+  Inline implementation. No new .cpp file in `AUDIO_ENGINE_SOURCES`.
+
+- **`tests/unit/aligned_float_buffer_test.cpp`** (~110 LOC). Verifies:
+    - 64-byte alignment of `data()` after `assign()`
+    - Re-assign with same size reuses allocation (no realloc)
+    - Re-assign with different size reallocates correctly
+    - Every element is written (page-touching contract)
+    - Move ctor/assignment transfer ownership correctly
+    - Copy ops are deleted (compile-time `static_assert`s)
+    - Iterator support (`begin()`/`end()` for range-for)
+    - Move ctor is `noexcept` (required for `vector<MixVoice>` storage
+      with strong exception guarantee)
+
+### Files modified
+
+- **`src/audio_engine/mixer/bus_graph.h`** — `Bus::input` and
+  `Bus::output` swapped from `std::vector<float>` to
+  `audio::util::AlignedFloatBuffer`. Inline comment explains
+  alignment + no-growth contract.
+
+- **`src/audio_engine/mixer/audio_mixer.h`** — `MixVoice::delayBufL`
+  and `MixVoice::delayBufR` swapped from `std::vector<float>` to
+  `AlignedFloatBuffer`. Same comment pattern.
+
+- **`src/audio_engine/mixer/audio_mixer.cpp`** — one `readDelayed`
+  lambda's parameter type (line 488) updated from
+  `const std::vector<float>&` to `const AlignedFloatBuffer&`.
+  Lambda body unchanged (uses only `[]` and an `N` captured from the
+  enclosing scope).
+
+- **`tests/CMakeLists.txt`** — registers
+  `aligned_float_buffer_test`. Adds `aligned_float_buffer` to the
+  `include-src` foreach so the test can `#include
+  "audio_engine/util/aligned_float_buffer.h"` from its private path.
+
+### Why these two buffer pairs specifically
+
+Buffer | Where | Why aligned matters
+---|---|---
+`Bus::input` / `Bus::output` | per-bus mixing | 4 KB each at default config, scanned linearly every render callback by every effect's `Process()` — the largest, hottest scans in the engine
+`MixVoice::delayBufL` / `delayBufR` | per-voice binaural | 768 bytes each, accessed per binaural voice per render — small but cache-line-hot
+
+Not changed in this release (deliberately):
+
+- **`pcm_ring_f32.h::storage_`** — ring access pattern (read N from
+  index i, often less than a cache line), so alignment helps less.
+- **Asset registry decoded-PCM buffers** — cold path (load time, not
+  render).
+- **`streamingDecodeScratch_`** — control thread, not render.
+- **All other `std::vector<float>` in the codebase** — by-design
+  vector usage for resizable / non-hot data.
+
+### Verification
+
+- Sandbox regression: **38/38 passing** (37 prior + 1 new
+  `aligned_float_buffer_test`).
+- Alignment guarantee verified at runtime: every `assign()` call
+  produces a `data()` pointer where `reinterpret_cast<uintptr_t>
+  (data()) % 64 == 0`. Tested across small (1-float), medium
+  (2 KB), and large (16 KB) sizes.
+- Move-only enforced at compile time via `static_assert`s in the
+  test.
+- No regression in any existing tests; the `readDelayed` lambda
+  signature change was the only ripple effect.
+
+### Audit follow-up items remaining
+
+- **Item 6: ASAN/TSAN/UBSAN runs in CI.** Medium effort. Would
+  catch future regressions in the patterns audited in v0.12.0.
+- **Item 7: Real-time thread scheduling audit** (macOS
+  `TIME_CONSTRAINT_POLICY`, Linux `SCHED_FIFO`/`SCHED_RR`,
+  Windows `THREAD_PRIORITY_TIME_CRITICAL`). Adjacent to memory
+  management; separate audit.
+- **A mixing throughput bench** to actually measure the alignment
+  win under `-march=native`. Would let us promote this from
+  "groundwork" to "verified speedup" honestly. Tracked as
+  potential v0.12.x work.
+
 ## [0.12.0] - 2026-05-11
 
 **Memory observability + control pass.** Bundles items 1-4 from the
@@ -3496,7 +3626,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/siliconight/gool/releases/tag/v0.12.1
 [0.12.0]: https://github.com/siliconight/gool/releases/tag/v0.12.0
 [0.11.19]: https://github.com/siliconight/gool/releases/tag/v0.11.19
 [0.11.18]: https://github.com/siliconight/gool/releases/tag/v0.11.18

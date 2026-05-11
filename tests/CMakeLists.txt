@@ -29,6 +29,7 @@ add_executable(audio_engine_replication_rate_limit_test  unit/replication_rate_l
 add_executable(audio_engine_default_bounds_validator_test unit/default_bounds_validator_test.cpp)
 add_executable(audio_engine_version_test                  unit/version_test.cpp)
 add_executable(audio_engine_memory_budget_test            unit/memory_budget_test.cpp)
+add_executable(audio_engine_aligned_float_buffer_test     unit/aligned_float_buffer_test.cpp)
 add_executable(audio_engine_global_parameter_test         unit/global_parameter_test.cpp)
 add_executable(audio_engine_sound_rtpc_test               unit/sound_rtpc_test.cpp)
 add_executable(audio_engine_telemetry_test                unit/telemetry_test.cpp)
@@ -37,7 +38,7 @@ add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitch
 
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
-foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry biquad_eq integration_kitchen_sink)
+foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry biquad_eq integration_kitchen_sink aligned_float_buffer)
     target_include_directories(audio_engine_${_t}_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)
@@ -75,6 +76,7 @@ target_link_libraries(audio_engine_replication_rate_limit_test   PRIVATE audio_e
 target_link_libraries(audio_engine_default_bounds_validator_test  PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_version_test                   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_memory_budget_test             PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_aligned_float_buffer_test      PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_global_parameter_test          PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_sound_rtpc_test                PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_telemetry_test                 PRIVATE audio_engine::audio_engine)
@@ -112,6 +114,7 @@ add_test(NAME replication_rate_limit_test   COMMAND audio_engine_replication_rat
 add_test(NAME default_bounds_validator_test COMMAND audio_engine_default_bounds_validator_test)
 add_test(NAME version_test                  COMMAND audio_engine_version_test)
 add_test(NAME memory_budget_test            COMMAND audio_engine_memory_budget_test)
+add_test(NAME aligned_float_buffer_test     COMMAND audio_engine_aligned_float_buffer_test)
 add_test(NAME global_parameter_test         COMMAND audio_engine_global_parameter_test)
 add_test(NAME sound_rtpc_test               COMMAND audio_engine_sound_rtpc_test)
 add_test(NAME telemetry_test                 COMMAND audio_engine_telemetry_test)

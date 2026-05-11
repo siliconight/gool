@@ -32,6 +32,7 @@
 #include "audio_engine/backend.h"
 #include "audio_engine/bus.h"
 #include "audio_engine/types.h"
+#include "audio_engine/util/aligned_float_buffer.h"
 #include "audio_engine/util/spsc_ring.h"
 #include "audio_engine/mixer/mixer_command.h"
 
@@ -188,8 +189,12 @@ private:
         float  lpfBinZ1R = 0.0f, lpfBinZ2R = 0.0f;
         // Per-ear delay lines. Size set at MixVoice construction, never
         // resized. writePos advances modulo size on every push.
-        std::vector<float> delayBufL;
-        std::vector<float> delayBufR;
+        // 64-byte aligned for SIMD-friendly access (see
+        // util/aligned_float_buffer.h for rationale). Move-only; does
+        // not expose .push_back / .resize / .reserve, so accidental
+        // growth on the hot path is a compile-time error.
+        audio::util::AlignedFloatBuffer delayBufL;
+        audio::util::AlignedFloatBuffer delayBufR;
         uint32_t           delayWritePos = 0;
     };
 

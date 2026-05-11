@@ -29,6 +29,7 @@
 #include "audio_engine/bus.h"
 #include "audio_engine/result.h"
 #include "audio_engine/dsp/dsp_effect.h"
+#include "audio_engine/util/aligned_float_buffer.h"
 
 namespace audio {
 
@@ -112,8 +113,13 @@ private:
         ProximityCurve proximityCurve;
         std::atomic<float>     outputGainLinear{1.0f};
 
-        std::vector<float> input;
-        std::vector<float> output;
+        // Hot-path mixing buffers. 64-byte aligned so cache-line-straddle
+        // costs and AVX/AVX-512 unaligned-load penalties don't apply when
+        // the compiler is targeting AVX. Move-only and crucially does NOT
+        // expose `.push_back` / `.resize` / `.reserve` — these buffers
+        // are sized once at BuildGraph time and must never grow.
+        audio::util::AlignedFloatBuffer input;
+        audio::util::AlignedFloatBuffer output;
 
         std::vector<std::unique_ptr<IDspEffect>> effects;
         std::vector<uint32_t>                    sidechainSourceIndex; // per effect

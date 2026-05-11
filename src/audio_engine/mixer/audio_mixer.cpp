@@ -485,7 +485,7 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
                 v.delaySamplesLCurrent += dStepL;
                 v.delaySamplesRCurrent += dStepR;
 
-                auto readDelayed = [&](const std::vector<float>& buf, float delaySamps) -> float {
+                auto readDelayed = [&](const audio::util::AlignedFloatBuffer& buf, float delaySamps) -> float {
                     const float clamped = std::clamp(delaySamps, 0.0f,
                                                        static_cast<float>(N) - 2.0f);
                     const uint32_t intPart  = static_cast<uint32_t>(clamped);
