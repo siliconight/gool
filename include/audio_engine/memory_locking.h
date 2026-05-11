@@ -17,10 +17,12 @@
 //   * macOS:   mlockall(MCL_CURRENT | MCL_FUTURE)
 //   * Windows: SetProcessWorkingSetSizeEx with QUOTA_LIMITS_HARDWS_MIN_ENABLE
 //
-// This is one tool among several. For full real-time safety on macOS,
-// also set the audio render thread to time-constraint scheduling via
-// thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY). On Linux, also
-// consider SCHED_FIFO or SCHED_RR for the render thread.
+// This is one tool among several. For full real-time safety, ALSO
+// elevate the audio-control thread's scheduler priority — see
+// `audio/thread_priority.h` (`SetCurrentThreadAudioPriority`). RT
+// scheduling without locked memory can still glitch when pages get
+// swapped; locked memory without RT scheduling can still glitch when
+// the OS deschedules the audio thread. They're complementary.
 //
 // PRIVILEGES REQUIRED:
 //

@@ -12,6 +12,193 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.12.3] - 2026-05-11
+
+**Real-time thread scheduling audit + helper API (audit item 7).**
+A separate audit complementing the memory-management audit. Conclusion:
+the engine itself spawns no real-time-critical threads and needs no
+internal scheduling changes. This release adds an opt-in helper API
+for hosts who want to elevate their own audio threads, plus a new doc
+explaining what the host should and shouldn't do.
+
+### The audit, in one sentence
+
+The engine's only `std::thread` is in `NullAudioBackend` (test-only,
+needs no priority); the real audio device callback thread is owned
+by the backend (miniaudio handles its own platform-appropriate
+priority); everything else runs on host threads. **Nothing inside
+the engine needs to change.**
+
+### Detailed findings
+
+**1. Thread inventory.** Exhaustive grep for thread creation
+(`std::thread`, `pthread_create`, `CreateThread`, `std::jthread`,
+`std::async`, `std::packaged_task`) across `src/`, `include/`,
+`examples/`, `godot/`:
+
+- `src/audio_engine/backend/null_audio_backend.cpp:28` — single
+  `std::thread` for the test backend's render-loop simulation.
+- `include/audio_engine/backend/null_audio_backend.h:41` — the
+  member declaration above.
+
+That's the entire list. The engine spawns one thread total, and it's
+for tests.
+
+**2. Real-backend render thread.** The real `IAudioBackend`
+implementation (default miniaudio) creates its own callback thread
+internally and applies platform-appropriate priority:
+
+| Platform | What miniaudio does |
+|---|---|
+| Linux | `pthread_setschedparam(SCHED_FIFO)` if `CAP_SYS_NICE` available, else default |
+| macOS | Core Audio HAL applies `THREAD_TIME_CONSTRAINT_POLICY` automatically |
+| Windows | `SetThreadPriority(TIME_CRITICAL)` + MMCSS `"Audio"` registration |
+
+This is correct and we don't override it.
+
+**3. All other engine work runs on the host's control thread.** The
+`AUDIO_REQUIRES` annotations in public headers define four logical
+thread roles (`GameThread`, `ControlThread`, `NetworkThread`,
+`RenderThread`), enforced via Clang's thread-safety analysis. Three
+of the four roles are *the host's threads* — the engine simply
+requires them, doesn't create them. The fourth (`RenderThread`) is
+the backend's.
+
+Voice decode (`DecodeAndPush`), streaming-asset pumping, telemetry
+emission, and asset registration all run on the host's
+`ControlThread` inside `Tick()` / `Update()`. There is no internal
+worker pool.
+
+**Conclusion**: a thread-priority audit that started looking for
+"where in the engine do we need to set priorities" finds the answer
+to be "nowhere." All RT-scheduling decisions belong to the host, or
+to a backend implementor.
+
+### What this release ships
+
+**1. New public API**: `audio::SetCurrentThreadAudioPriority()` —
+opt-in helper for hosts who want to apply platform-appropriate RT
+scheduling without writing per-platform `#ifdef` ladders themselves.
+
+```cpp
+#include "audio_engine/thread_priority.h"
+
+audio::ThreadPriorityResult result =
+    audio::SetCurrentThreadAudioPriority(
+        audio::AudioThreadKind::AudioControlThread);
+
+if (!result.success) {
+    std::fprintf(stderr,
+        "Could not elevate audio thread priority on %s: %s\n",
+        result.platform, result.details);
+}
+```
+
+Per-platform mapping:
+
+- **Linux**: `pthread_setschedparam(SCHED_FIFO, priority=5)`.
+  Conservative — well below kernel threads (50+), above all normal
+  threads.
+- **macOS**: `thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY)`
+  with period=5ms / computation=2ms / constraint=5ms.
+- **Windows**: `SetThreadPriority(THREAD_PRIORITY_TIME_CRITICAL)`.
+  MMCSS (avrt.lib) is *not* used to keep Windows link
+  dependency-free; hosts wanting MMCSS can call
+  `AvSetMmThreadCharacteristics("Audio")` themselves on top.
+
+Same shape as the v0.12.0 `LockEngineMemory()` API — returns a
+`ThreadPriorityResult{ success, platform, details }` struct,
+idempotent, thread-safe, not auto-invoked.
+
+**2. New doc**: `docs/THREADING.md` (~200 LOC).
+
+Comprehensive host-side guidance:
+
+- Full thread inventory (the table from this CHANGELOG)
+- When to use the helper (constrained hardware, profiled scheduler
+  latency, long-tail other-subsystem spikes)
+- When *not* to use it (general-purpose threads, threads holding
+  shared locks, the backend's callback thread)
+- Per-platform failure modes and remediation
+- Cross-reference to `LockEngineMemory()` — the two APIs are
+  complementary
+
+**3. Cross-reference from `memory_locking.h`.** The v0.12.0
+`memory_locking.h` already pointed readers at "consider also setting
+the audio thread to TIME_CONSTRAINT_POLICY" — that pointer now lands
+on the new `SetCurrentThreadAudioPriority()` API.
+
+### Files added
+
+- `include/audio_engine/thread_priority.h` (~95 LOC). API + docstrings.
+- `src/audio_engine/runtime/thread_priority.cpp` (~165 LOC). Per-platform
+  impl with `#ifdef` ladders for Linux / macOS / Windows / unsupported.
+- `tests/unit/thread_priority_test.cpp` (~55 LOC). Verifies the API
+  contract (returns a populated `ThreadPriorityResult` with a known
+  platform string), idempotency, and that both `AudioThreadKind` values
+  are accepted. Doesn't assert success — the sandbox/CI may or may not
+  have the privileges, and the test should pass regardless.
+- `docs/THREADING.md` (~200 LOC). Audit findings + host-side guidance.
+
+### Files modified
+
+- `include/audio_engine/memory_locking.h` — replaced the "consider
+  also setting TIME_CONSTRAINT_POLICY" stub with a cross-reference to
+  `thread_priority.h`.
+- `CMakeLists.txt` — `AUDIO_ENGINE_SOURCES` now 40 files (added
+  `thread_priority.cpp`).
+- `tests/CMakeLists.txt` — registers `thread_priority_test`.
+
+### Verified locally
+
+Three full regressions, all clean:
+
+| Build | Tests | Result |
+|---|---|---|
+| Default `-O2` | 39 | 39/39 |
+| `-O1 -fsanitize=address,undefined` | 39 | 39/39 |
+| `-O1 -fsanitize=thread` | 39 | 39/39 |
+
+The new `thread_priority_test` runs successfully on the sandbox; on
+this Linux environment, `SCHED_FIFO` priority=5 is actually applied
+(test reports `success: true` with details
+"SCHED_FIFO priority=5 applied"). CI runners may or may not allow
+this depending on container privileges; the test is structured to
+pass either way.
+
+### What this release deliberately doesn't do
+
+- **No automatic priority elevation inside `AudioRuntime`.** Setting
+  `SCHED_FIFO` on a thread that does general-purpose work (rendering,
+  physics, networking) can starve those subsystems. The host knows
+  best whether their game-loop thread can afford RT scheduling.
+- **No MMCSS on Windows.** Linking `avrt.lib` would add a runtime
+  DLL dependency every distribution carries. The helper achieves
+  good Windows behavior via `SetThreadPriority` alone; hosts wanting
+  MMCSS can add it in one call.
+- **No backend-side priority changes.** miniaudio handles its render
+  thread correctly; touching it would be wrong.
+- **No new threads inside the engine.** The single-control-thread
+  + backend-render-thread architecture is good; the audit
+  reinforced rather than challenged it.
+
+### Audit progress (entire v0.12.x program)
+
+- ✓ Item 1: map `reserve()` (already in place, verified v0.12.0)
+- ✓ Item 2: page-touching comments (v0.12.0)
+- ✓ Item 3: `approxBytesAllocated` stats (v0.12.0)
+- ✓ Item 4: `LockEngineMemory()` API (v0.12.0)
+- ✓ Item 5: aligned hot-path buffers (v0.12.1)
+- ✓ Item 6: ASAN/TSAN/UBSAN in CI (v0.12.2; caught 1 real bug)
+- ✓ Item 7: RT thread scheduling audit + helper API (this release)
+- Optional: mixing throughput bench (would let v0.12.1 promote
+  from "groundwork" to "measured win" under `-march=native`)
+
+The audit-recommendation program is complete. v0.12.x as a whole
+substantially raised the engine's resilience and observability under
+real-time constraints, found and fixed one latent stack-buffer-overflow
+bug, and documented every recommendation's trade-offs honestly.
+
 ## [0.12.2] - 2026-05-11
 
 **Sanitizer CI (audit item 6).** Adds ASAN+UBSAN and TSAN jobs to
@@ -3820,7 +4007,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/siliconight/gool/releases/tag/v0.12.3
 [0.12.2]: https://github.com/siliconight/gool/releases/tag/v0.12.2
 [0.12.1]: https://github.com/siliconight/gool/releases/tag/v0.12.1
 [0.12.0]: https://github.com/siliconight/gool/releases/tag/v0.12.0
