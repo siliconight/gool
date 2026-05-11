@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.11.17
+    VERSION 0.11.18
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -323,6 +323,22 @@ if(AUDIO_ENGINE_DECODERS_OPUS)
             "brew install opusfile, vcpkg install opusfile) and re-run CMake.")
     endif()
 
+    # On macOS Homebrew, opusfile.pc's `Cflags: -I${includedir}/opus`
+    # adds the `opus/` subdirectory itself, not its parent. Our code
+    # does `#include <opus/opusfile.h>` (the Linux convention), so the
+    # compiler needs the *parent* of the `opus/` directory on the
+    # include path. On Linux apt this falls out for free because
+    # /usr/include is implicit; on Apple Silicon Homebrew (/opt/homebrew)
+    # and Intel Homebrew (/usr/local) it isn't. Add it explicitly when
+    # the file is actually there.
+    if(APPLE)
+        foreach(_prefix /opt/homebrew /usr/local)
+            if(EXISTS "${_prefix}/include/opus/opusfile.h")
+                target_include_directories(audio_engine PRIVATE "${_prefix}/include")
+            endif()
+        endforeach()
+    endif()
+
     target_compile_definitions(audio_engine PRIVATE AUDIO_ENGINE_DECODERS_OPUS=1)
 endif()
 
@@ -410,7 +426,51 @@ if(AUDIO_ENGINE_VOICE_OPUS)
             "the libopus source tree under third_party/opus/.")
     endif()
 
+    # Same Homebrew prefix quirk as the DECODERS_OPUS block above:
+    # opus.pc's Cflags point at the `opus/` subdirectory, but our
+    # code does `#include <opus.h>` (no prefix) — wait, actually for
+    # libopus the include is `<opus.h>` and Homebrew puts it at
+    # /opt/homebrew/include/opus/opus.h, so we DO need the `opus/`
+    # subdir on the path. opus.pc gets this right; this fallback
+    # is belt-and-suspenders for when find_package(Opus) succeeds
+    # but doesn't propagate include dirs cleanly.
+    if(APPLE)
+        foreach(_prefix /opt/homebrew /usr/local)
+            if(EXISTS "${_prefix}/include/opus/opus.h")
+                target_include_directories(audio_engine PRIVATE "${_prefix}/include/opus")
+            endif()
+        endforeach()
+    endif()
+
     target_compile_definitions(audio_engine PRIVATE AUDIO_ENGINE_VOICE_OPUS=1)
+endif()
+
+# -------------------------------------------------------------------------
+# Apple Silicon Homebrew quirk: opusfile.pc ships
+#     Cflags: -I${includedir}/opus
+# which is the WRONG prefix for our `#include <opus/opusfile.h>` style.
+# pkg-config hands CMake `/opt/homebrew/Cellar/opusfile/X.Y/include/opus`,
+# then the compiler looks for `opus/opusfile.h` relative to that path —
+# resolving to `.../include/opus/opus/opusfile.h`, which doesn't exist.
+#
+# On Linux apt this is invisible: /usr/include is on the implicit search
+# path, so `<opus/opusfile.h>` resolves to /usr/include/opus/opusfile.h
+# regardless of what opusfile.pc claims. On macOS /opt/homebrew/include
+# is NOT implicit, so we add it explicitly when the relevant headers
+# actually live under it.
+#
+# Idempotent: target_include_directories dedupes, so this is a no-op if
+# the prefix was already on the path. The `if EXISTS` guards keep us
+# from polluting the include path with directories that don't exist.
+# -------------------------------------------------------------------------
+if(APPLE AND (AUDIO_ENGINE_DECODERS_OPUS OR AUDIO_ENGINE_VOICE_OPUS))
+    foreach(_brew_prefix /opt/homebrew /usr/local)
+        foreach(_header opus/opusfile.h opus/opus.h)
+            if(EXISTS "${_brew_prefix}/include/${_header}")
+                target_include_directories(audio_engine PRIVATE "${_brew_prefix}/include")
+            endif()
+        endforeach()
+    endforeach()
 endif()
 
 if(MSVC)

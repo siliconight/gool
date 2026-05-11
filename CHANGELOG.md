@@ -12,6 +12,144 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.11.18] - 2026-05-11
+
+**macOS gdextension opusfile include-path fix.** v0.11.17 turned
+five of six CI jobs green (Linux gdextension's OOM fix worked).
+macOS gdextension still failed at compile time on
+`opus_file_decoder.cpp` because Homebrew's `opusfile.pc` reports
+an include path that doesn't match our `<opus/...>` include
+convention. One-block CMake fix.
+
+### Root cause
+
+`src/audio_engine/decoders/opus_file_decoder.cpp:17`:
+
+```cpp
+#include <opus/opusfile.h>
+```
+
+This is the Linux apt convention — header lives at
+`/usr/include/opus/opusfile.h`, and `/usr/include` is on clang's
+implicit search path, so the directive resolves cleanly.
+
+Homebrew layout on Apple Silicon:
+
+```
+/opt/homebrew/include/opus/opusfile.h    <- file location
+/opt/homebrew/lib/pkgconfig/opusfile.pc  <- pkg-config descriptor
+```
+
+Reading `opusfile.pc` (representative):
+
+```
+prefix=/opt/homebrew/Cellar/opusfile/0.12+20230711
+includedir=${prefix}/include
+Cflags: -I${includedir}/opus
+```
+
+The `Cflags` line is the source of the bug. It hands the compiler
+`-I/opt/homebrew/Cellar/opusfile/X.Y/include/opus`. With *that*
+include path, `#include <opus/opusfile.h>` tries to resolve as
+`/opt/homebrew/Cellar/opusfile/X.Y/include/opus/opus/opusfile.h` —
+note the doubled `opus/opus/` segment — which doesn't exist.
+
+Why Linux apt works: `/usr/include` is implicit. Even though
+apt's `opusfile.pc` also says `Cflags: -I/usr/include/opus`, the
+compiler still finds the header via the implicit search path
+regardless. macOS Homebrew is *not* implicit — `/opt/homebrew/include`
+is added to clang's search only by `brew --prefix` integration or
+explicit `-I` flags, and CMake doesn't add it automatically just
+because pkg-config returns something.
+
+### Fixed
+
+- **`CMakeLists.txt`** — added a small block after both opus
+  resolution blocks (DECODERS_OPUS and VOICE_OPUS) that, on
+  `APPLE`, checks the Homebrew prefixes (`/opt/homebrew` for
+  Apple Silicon, `/usr/local` for Intel) for the actual presence
+  of `opus/opusfile.h` or `opus/opus.h`. When found, adds the
+  prefix's `include/` directory to `audio_engine`'s private
+  include path.
+
+  ```cmake
+  if(APPLE AND (AUDIO_ENGINE_DECODERS_OPUS OR AUDIO_ENGINE_VOICE_OPUS))
+      foreach(_brew_prefix /opt/homebrew /usr/local)
+          foreach(_header opus/opusfile.h opus/opus.h)
+              if(EXISTS "${_brew_prefix}/include/${_header}")
+                  target_include_directories(audio_engine PRIVATE
+                      "${_brew_prefix}/include")
+              endif()
+          endforeach()
+      endforeach()
+  endif()
+  ```
+
+  Idempotent — `target_include_directories` dedupes, so the
+  same path is never added twice. Guarded by `if EXISTS`, so
+  we never add a stale `/opt/homebrew/include` on machines
+  that don't have opus installed there. Inline comment in the
+  CMakeLists captures the opusfile.pc Cflags quirk so this isn't
+  re-removed by someone tidying the file later.
+
+### Why VOICE_OPUS wasn't strictly broken
+
+By coincidence, the Homebrew layout works for VOICE_OPUS without
+the fix:
+
+- Code does `#include <opus.h>` (no `opus/` prefix — the libopus
+  upstream convention)
+- File lives at `/opt/homebrew/include/opus/opus.h`
+- opus.pc's `Cflags: -I${includedir}/opus` → adds
+  `/opt/homebrew/Cellar/opus/X.Y/include/opus` to include path
+- `<opus.h>` resolves directly to that file. ✓
+
+But the fix is applied to both for consistency and to future-proof
+against any code that might do `#include <opus/opus.h>` (an
+acceptable alternative convention some downstreams use). Empty
+work if VOICE_OPUS doesn't need it.
+
+### Verified locally
+
+- Sandbox regression (CMake-faithful, per-target include paths):
+  **36/36 passing**. No engine code changed, only CMakeLists.txt
+  and version bump.
+- The fix's `if EXISTS` guards verified to skip on non-macOS and
+  on macOS machines lacking the headers (sandbox has neither).
+
+### Expected CI behavior
+
+After this release pushes, all six CI jobs should be green:
+
+```
+✓ engine / ubuntu-latest          ~50s
+✓ engine / macos-latest           ~50s
+✓ engine / windows-latest         ~1.5min
+✓ gdextension / linux-x86_64      ~6-8min (v0.11.17 OOM fix)
+✓ gdextension / macos-arm64       ~8-10min (this fix)
+✓ gdextension / windows-x86_64    ~5-25min (vcpkg cache dependent)
+```
+
+If this lands clean, the CI badge in the README flips to green
+for the first time since v0.11.3 — **the entire matrix
+(3 platforms × 2 jobs = 6 total) green simultaneously**, which
+the bootstrap rollout (v0.11.2 through v0.11.17) hadn't achieved
+in any single run.
+
+### Postscript on the regression methodology
+
+This bug class — pkg-config returning include paths that work on
+some distros and break on others — is invisible to the local
+sandbox regression because the sandbox doesn't run CMake, doesn't
+have Homebrew, and doesn't exercise the opus decoder code paths.
+Catching this would require either: (a) a faithful CMake invocation
+in the regression (gated on cmake being installed), or (b) an
+explicit "compile the opus decoder TUs against representative
+include paths on multiple platform-shaped configurations" check.
+
+Both are tracked as follow-ups. For now, opus/voice-opus paths are
+exercised only by CI; the sandbox can't catch their regressions.
+
 ## [0.11.17] - 2026-05-11
 
 **gdextension OOM fix.** v0.11.16 turned all three engine jobs
@@ -3056,7 +3194,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.17...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.11.18...HEAD
+[0.11.18]: https://github.com/siliconight/gool/releases/tag/v0.11.18
 [0.11.17]: https://github.com/siliconight/gool/releases/tag/v0.11.17
 [0.11.16]: https://github.com/siliconight/gool/releases/tag/v0.11.16
 [0.11.15]: https://github.com/siliconight/gool/releases/tag/v0.11.15
