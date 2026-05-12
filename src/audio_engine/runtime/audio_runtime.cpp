@@ -531,7 +531,7 @@ Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& d
 
 AudioResult AudioRuntimeImpl::DestroyEmitter(EmitterHandle handle, float fadeOutMs) {
     if (!initialized_) return AudioResult::NotInitialized;
-    if (auto* rec = emitters_->Get(handle); rec && rec->mixerStarted) {
+    if (const auto* rec = emitters_->Get(handle); rec && rec->mixerStarted) {
         StopMixerAndResetStreamingFor(*rec, std::max(0.0f, fadeOutMs));
     }
     orchestrator_->Smoother().Forget(handle);
@@ -909,7 +909,7 @@ Result<VoiceSourceHandle> AudioRuntimeImpl::RegisterVoiceSource(AudioPlayerId pl
 
 AudioResult AudioRuntimeImpl::UnregisterVoiceSource(VoiceSourceHandle h) {
     if (!initialized_) return AudioResult::NotInitialized;
-    if (auto* rec = voices_->Get(h); rec && rec->mixerStarted) {
+    if (const auto* rec = voices_->Get(h); rec && rec->mixerStarted) {
         PostMixerStopForEmitter(rec->mixSlot);
     }
     return voices_->Unregister(h);
@@ -1458,7 +1458,7 @@ bool AudioRuntimeImpl::EvictLowestPriorityOneShotIfBeatenBy(int64_t incoming) {
     // same slot (which happens when the eviction is followed
     // immediately by the incoming sound's PostMixerStartForEmitter)
     // preempts the fade. For non-eviction stops the fade plays out.
-    if (auto* rec = emitters_->Get(victim)) {
+    if (const auto* rec = emitters_->Get(victim)) {
         StopMixerAndResetStreamingFor(*rec, /*fadeOutMs=*/20.0f);
     }
     if (orchestrator_) orchestrator_->Smoother().Forget(victim);
@@ -1616,7 +1616,7 @@ void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
             StartOneShotForSound(e.soundId, e.position, e.priority, e.predictionId);
             break;
         case AudioEventType::StopEmitter:
-            if (auto* rec = emitters_->Get(e.emitter)) {
+            if (const auto* rec = emitters_->Get(e.emitter)) {
                 if (rec->mixerStarted) StopMixerAndResetStreamingFor(*rec);
                 emitters_->Destroy(e.emitter);
             }

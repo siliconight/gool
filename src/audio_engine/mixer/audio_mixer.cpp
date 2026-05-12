@@ -357,7 +357,8 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
         reverbDst = busGraph_->InputBuffer(reverbBusIndex_);
     }
 
-    float gL = v.gain, gR = v.gain;
+    float gL = v.gain;
+    float gR = gL;
     if (channels == 2) {
         float panL = 1.0f, panR = 1.0f;
         EqualPowerPan(v.pan, panL, panR);

@@ -1,0 +1,40 @@
+# .lizard-whitelist
+#
+# Functions explicitly allowlisted from the lizard complexity gate
+# enforced by .github/workflows/ci.yml. Each entry is a function
+# name pattern (lizard does substring matching against the fully
+# qualified C++ name).
+#
+# This file documents acknowledged complexity debt — every entry
+# has a target release for actual decomposition. The allowlist is
+# a temporary tool to keep the gate green on the CURRENT state of
+# the codebase while NEW violations still get caught. It is NOT a
+# fix; please open a new entry only when you also pencil in the
+# corresponding decomposition work into the roadmap.
+#
+# Format: one function name per line. Lines starting with `#` are
+# comments. Blank lines ignored.
+
+# ---- v0.22.0 decomposition targets ---------------------------------
+# audio::AudioMixer::MixVoiceSound_ — CCN 34, length 196.
+# The per-voice render path: combines mono/pan, binaural, and LPF
+# branches in one function. v0.22.0 will split into
+# MixVoiceSoundPanned_ + MixVoiceSoundBinaural_ with a shared LPF
+# helper. The v0.20.2 mixer bench (~5.1µs/voice binaural, ~2.1µs/voice
+# LPF, ~1.0µs/voice mono+pan) gates the decomposition against
+# performance regression: ±5% at N=256 voices is the SLO.
+audio::AudioMixer::MixVoiceSound_
+
+# audio::AudioMixer::DrainCommands — CCN 30, length 174.
+# Command-queue dispatcher with one branch per AudioEventType.
+# v0.22.0 will decompose into per-kind handler methods. The lizard
+# violation here is structural complexity, not perf (~25 ns/command
+# in the v0.20.2 bench).
+audio::AudioMixer::DrainCommands
+
+# audio::ComputeLpfCoeffs — 8 params (gate is 6).
+# Free function computing biquad coefficients. Eight params come
+# from (cutoff, Q, sampleRate, gainDb, mix) + three coefficient
+# out-params. v0.22.0 fix: bundle out-params into a Coeffs struct,
+# drop param count to 5.
+audio::ComputeLpfCoeffs

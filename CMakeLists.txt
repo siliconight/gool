@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.21.2
+    VERSION 0.21.3
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -387,10 +387,23 @@ if(AUDIO_ENGINE_DECODERS_OPUS)
     # /usr/include is implicit; on Apple Silicon Homebrew (/opt/homebrew)
     # and Intel Homebrew (/usr/local) it isn't. Add it explicitly when
     # the file is actually there.
+    #
+    # Parallel issue for the link side (v0.21.3): when audio_engine is
+    # consumed by a downstream shared library (libgool_godot.dylib),
+    # the transitive `-lopus` from opusfile.pc's Requires: needs a
+    # matching `-L/opt/homebrew/lib` at the consumer's link step.
+    # PkgConfig::OPUSFILE's INTERFACE_LINK_DIRECTORIES doesn't always
+    # propagate cleanly through a PRIVATE-linked static lib, so we
+    # add the Homebrew prefix's lib directory PUBLIC on audio_engine.
+    # PUBLIC (not PRIVATE) is intentional: the search path must be
+    # visible to whatever links audio_engine.a, not just audio_engine
+    # itself. This complements but doesn't replace the v0.21.2
+    # CMAKE_PREFIX_PATH hint in the CI workflows.
     if(APPLE)
         foreach(_prefix /opt/homebrew /usr/local)
             if(EXISTS "${_prefix}/include/opus/opusfile.h")
                 target_include_directories(audio_engine PRIVATE "${_prefix}/include")
+                target_link_directories(audio_engine PUBLIC "${_prefix}/lib")
             endif()
         endforeach()
     endif()

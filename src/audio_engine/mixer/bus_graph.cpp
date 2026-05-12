@@ -47,7 +47,7 @@ AudioResult BusGraph::Build(const BusGraphConfig& cfg,
     // potentially blowing the audio callback's deadline. Don't change
     // to `reserve(N)` + later `resize(N)` (which default-constructs
     // floats without necessarily touching every page).
-    for (auto& bp : buses_) {
+    for (const auto& bp : buses_) {
         bp->input.assign(static_cast<size_t>(maxFrames) * channels, 0.0f);
         bp->output.assign(static_cast<size_t>(maxFrames) * channels, 0.0f);
     }
@@ -61,7 +61,7 @@ AudioResult BusGraph::Build(const BusGraphConfig& cfg,
         }
     }
 
-    for (auto& bp : buses_) {
+    for (const auto& bp : buses_) {
         for (auto& fx : bp->effects) {
             fx->Prepare(sampleRate_, channels_);
         }
@@ -123,7 +123,7 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
         buses_.push_back(std::move(b));
     }
 
-    for (auto& bp : buses_) {
+    for (const auto& bp : buses_) {
         if (bp->id == kBusMaster) { bp->parentIndex = kInvalidIndex; continue; }
         const BusConfig* bcfg = nullptr;
         for (uint32_t i = 0; i < cfg.busCount; ++i) {
@@ -274,7 +274,7 @@ uint32_t BusGraph::IndexForCategory(AudioCategory cat) const noexcept {
 
 void BusGraph::ClearAllInputBuffers(uint32_t frames, uint32_t channels) noexcept {
     const size_t bytes = static_cast<size_t>(frames) * channels * sizeof(float);
-    for (auto& bp : buses_) {
+    for (const auto& bp : buses_) {
         std::memset(bp->input.data(), 0, bytes);
     }
 }

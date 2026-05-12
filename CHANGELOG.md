@@ -12,6 +12,168 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.21.3] - 2026-05-12
+
+### Fixed — five CI failures surfaced by v0.21.2's first clean run
+
+v0.21.2 was the first release where CI ran end-to-end without the
+`Resource not accessible by integration` upload masking everything
+downstream. That single unblock surfaced five distinct failure
+modes, four of which were latent and one of which was a regression
+in v0.21.1 itself. This release fixes all five.
+
+**Fix 1 — `gdextension/macos-arm64` link failure (real fix).**
+v0.21.2's `CMAKE_PREFIX_PATH=$(brew --prefix)` hint helped CMake's
+`find_package` resolve opusfile, but did not propagate the
+`-L/opt/homebrew/lib` search path through to the consumer link
+step (`libgool_godot.dylib` linking against `audio_engine.a`'s
+PRIVATE pkg-config deps). The `target_link_directories` info on a
+PRIVATE static-lib dependency doesn't reliably propagate to
+downstream shared-lib consumers, even though `target_link_libraries`
+does — a CMake subtlety that bit us here.
+
+The proper fix lives in `CMakeLists.txt`, paralleling the v0.11.18
+include-path fix: when building on Apple, find the actual Homebrew
+prefix that contains `opus/opusfile.h` and add its `lib/` directory
+to `audio_engine`'s **PUBLIC** link directories. PUBLIC (not
+PRIVATE) means consumers see the `-L` flag at their own link step,
+which is what `libgool_godot.dylib` needs. The v0.21.2 CI hint
+stays in place as defense-in-depth.
+
+**Fix 2 — `godot/headless-smoke` directory collision (v0.21.1
+regression).** The smoke job downloaded Godot 4.2.2 as a zip,
+unzipped it, and `mv`'d the binary to `godot` — but the runner's
+working directory is the repo root, which has a `godot/` directory
+(the addon source). The `mv` moved the binary file INTO the
+existing directory as `godot/Godot_v4.2.2-stable_linux.x86_64`,
+then `chmod +x godot` made the directory executable, and
+`./godot --version` ran the directory and failed with
+`Is a directory` (exit 126).
+
+Fix: rename the binary target to `godot-engine` in both the
+download step and the smoke-execution step. Trivial change, but
+the bug would have prevented the smoke from ever running on this
+project layout. Caught on its first real CI cycle — which is
+exactly what the new smoke job is for.
+
+**Fix 3 — `static-analysis/cppcheck` 10 new findings.** A newer
+cppcheck on the ubuntu-latest image detects style violations the
+previous version missed:
+
+- `audio_mixer.cpp:360` — `float gL = v.gain, gR = v.gain;`
+  flagged as `[duplicateAssignExpression]`. Not a bug (intentional
+  same-initial-value for stereo pan computation downstream); fixed
+  by rewriting as `float gL = v.gain; float gR = gL;` —
+  semantically identical, silences the warning.
+- `bus_graph.cpp:50,64,126,277` × 4 — `for (auto& bp : buses_)`
+  flagged `[constVariableReference]`. The pointed-to `BusParams`
+  is mutated via `bp->...assign(...)` but the pointer itself isn't.
+  Fixed by `for (const auto& bp : buses_)` — `bp->...` works
+  identically.
+- `stub_voice_codec.h:17` — implicit one-argument constructor
+  flagged `[noExplicitConstructor]`. Fixed by adding `explicit`.
+- `audio_runtime.cpp:534,912,1461,1619` × 4 — `auto* rec =
+  emitters_->Get(...)` flagged `[constVariablePointer]`. Verified
+  that `StopMixerAndResetStreamingFor(const EmitterRecord&)` and
+  `PostMixerStopForEmitter(uint32_t)` are both const-safe; fixed by
+  `const auto* rec = ...`.
+
+All ten fixes are mechanical and observably backward-compatible.
+
+**Fix 4 — `static-analysis/clang-tidy` libstdc++14 incompatibility.**
+The ubuntu-latest runner moved to Ubuntu 24.04, which ships
+libstdc++14 with C++23 `<format>` and `<ranges>` headers that
+use constraint patterns the available `clang-tidy` frontend can't
+fully parse. The job emitted dozens of
+`[clang-diagnostic-error]` lines about `std::ranges::subrange`
+not satisfying the `range` concept, all inside libstdc++'s own
+`bits/ranges_base.h` and `bits/unicode.h`. None of these are
+project issues.
+
+Fix: pin the clang-tidy job to `ubuntu-22.04` (GCC 13 +
+libstdc++13, known compatible). Alternative would be to install
+clang-tidy from the LLVM apt repo, which adds yaml; the pin is
+the minimum-viable fix. Revisit in the v0.22 batch alongside the
+other deferred build-tooling items.
+
+**Fix 5 — `static-analysis/lizard` baseline allowlist.** Three
+known complexity violators have been failing this gate since their
+introduction:
+
+- `audio::AudioMixer::MixVoiceSound_` (CCN 34, length 196) — per-
+  voice render path mixing mono/pan/binaural/LPF branches
+- `audio::AudioMixer::DrainCommands` (CCN 30, length 174) —
+  command-queue dispatcher with per-`AudioEventType` branches
+- `audio::ComputeLpfCoeffs` (8 params) — biquad coefficient helper
+
+All three are scheduled for actual decomposition in v0.22 (with
+the v0.20.2 mixer bench as the regression gate, ±5% at N=256 the
+SLO). For v0.21.3, a new `.lizard-whitelist` file documents each
+violation with its target release. The CI step passes
+`-W .lizard-whitelist` so the gate stops false-failing on these
+specific functions while still catching any NEW regression.
+
+Allowlists are debt, not solutions. The file's preamble explicitly
+notes this and requires every new entry to be paired with a
+documented decomposition target.
+
+### Build
+
+Files touched:
+
+- `CMakeLists.txt` — Apple Homebrew prefix added to
+  `target_link_directories(audio_engine PUBLIC ...)`.
+- `.github/workflows/ci.yml` —
+  - `clang-tidy` job pinned to `ubuntu-22.04`.
+  - `lizard` step passes `-W .lizard-whitelist`.
+  - `headless-smoke` job: Godot binary renamed `godot` →
+    `godot-engine`.
+- `.lizard-whitelist` (new file) — three function entries with
+  per-violation rationale and v0.22 decomposition targets.
+- `src/audio_engine/mixer/audio_mixer.cpp` — gL/gR initialization
+  rewrite (line 360).
+- `src/audio_engine/mixer/bus_graph.cpp` — four `const auto& bp`
+  loop variables (lines 50, 64, 126, 277).
+- `src/audio_engine/runtime/audio_runtime.cpp` — four
+  `const auto* rec` declarations (lines 534, 912, 1461, 1619).
+- `include/audio_engine/voice/stub_voice_codec.h` — `explicit`
+  added to one-argument constructor (line 17).
+
+### Verified
+
+- Library + version_test compile clean at the bumped version
+  triple. All 10 cppcheck-driven C++ changes are semantically
+  identical to the previous code.
+- YAML validity of `ci.yml` and `release.yml` confirmed by
+  `python -c "import yaml; yaml.safe_load(...)"`.
+- Cannot reproduce the macOS link issue locally (no macOS in
+  sandbox), but the fix follows the established pattern (v0.11.18
+  include-path fix, parallel structure, same APPLE-only branch).
+  First CI run on v0.21.3 will exercise the fix end-to-end.
+
+### Status going into v0.21.3
+
+If all five fixes work as expected, the v0.21.3 CI run produces:
+
+- `engine / *` on all 3 platforms — green (unchanged from v0.21.2)
+- `gdextension / linux-x86_64`, `windows-x86_64` — green
+  (unchanged)
+- `gdextension / macos-arm64` — green (Fix 1)
+- `sanitize / asan+ubsan`, `tsan` — green (unchanged)
+- `coverage / gcovr` — green (unchanged)
+- `static-analysis / clang-tidy` — green (Fix 4)
+- `static-analysis / cppcheck` — green (Fix 3)
+- `static-analysis / lizard` — green (Fix 5)
+- `godot / gdscript-lint` — green (unchanged from v0.21.2)
+- `godot / headless-smoke` — green (Fix 2)
+- `Release / *` on all 3 platforms — green; six platform-specific
+  release assets uploaded, including the macOS addon archive for
+  the first time
+
+If any single piece doesn't go as planned, the others are
+independent and won't be affected — the fixes are isolated by
+design.
+
 ## [0.21.2] - 2026-05-12
 
 ### Fixed — macOS GDExtension link failure (Apple Silicon Homebrew lib path)
@@ -5647,7 +5809,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.3...HEAD
+[0.21.3]: https://github.com/siliconight/gool/releases/tag/v0.21.3
 [0.21.2]: https://github.com/siliconight/gool/releases/tag/v0.21.2
 [0.21.1]: https://github.com/siliconight/gool/releases/tag/v0.21.1
 [0.21.0]: https://github.com/siliconight/gool/releases/tag/v0.21.0

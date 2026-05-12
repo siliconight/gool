@@ -14,7 +14,7 @@ namespace audio {
 
 class StubVoiceCodec final : public IVoiceCodec {
 public:
-    StubVoiceCodec(uint32_t sampleRate = 48000,
+    explicit StubVoiceCodec(uint32_t sampleRate = 48000,
                    uint32_t channels   = 1,
                    uint32_t frameSize  = 960);   // 20 ms at 48 kHz
 
