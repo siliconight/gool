@@ -167,6 +167,36 @@ AudioResult AudioRuntime::UnregisterVoiceSource(VoiceSourceHandle h) {
     return impl_->UnregisterVoiceSource(h);
 }
 
+// --- 2.4 mute/volume proxies. impl_ owns the VoiceSourceManager; we
+// forward to its setters directly. Returns NotInitialized if the
+// runtime hasn't been Initialize()'d.
+AudioResult AudioRuntime::SetVoiceSourceMuted(AudioPlayerId p, bool muted) {
+    return impl_->SetVoiceSourceMuted(p, muted);
+}
+AudioResult AudioRuntime::SetVoiceSourceVolume(AudioPlayerId p, float volume) {
+    return impl_->SetVoiceSourceVolume(p, volume);
+}
+bool AudioRuntime::IsVoiceSourceMuted(AudioPlayerId p, bool& out) const {
+    return impl_->IsVoiceSourceMuted(p, out);
+}
+bool AudioRuntime::GetVoiceSourceVolume(AudioPlayerId p, float& out) const {
+    return impl_->GetVoiceSourceVolume(p, out);
+}
+
+// --- 2.6 bandwidth budget proxies.
+AudioResult AudioRuntime::SetVoiceBandwidthBudget(AudioPlayerId p,
+                                                    uint32_t bytesPerSec) {
+    return impl_->SetVoiceBandwidthBudget(p, bytesPerSec);
+}
+int32_t AudioRuntime::SuggestVoiceBitrate(AudioPlayerId p, uint32_t frameMs) {
+    return impl_->SuggestVoiceBitrate(p, frameMs);
+}
+AudioResult AudioRuntime::ReportVoiceBytesSent(AudioPlayerId p,
+                                                 uint32_t bytes,
+                                                 int32_t bitrateUsedBps) {
+    return impl_->ReportVoiceBytesSent(p, bytes, bitrateUsedBps);
+}
+
 AudioRuntime::Stats AudioRuntime::GetStats() const { return impl_->GetStats(); }
 
 void AudioRuntime::SetReplicationValidator(IReplicationValidator* v) noexcept {
@@ -809,6 +839,43 @@ AudioResult AudioRuntimeImpl::UnregisterVoiceSource(VoiceSourceHandle h) {
         PostMixerStopForEmitter(rec->mixSlot);
     }
     return voices_->Unregister(h);
+}
+
+// ---- 2.4 mute / volume ----------------------------------------------------
+
+AudioResult AudioRuntimeImpl::SetVoiceSourceMuted(AudioPlayerId p, bool muted) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    return voices_->SetMuted(p, muted);
+}
+AudioResult AudioRuntimeImpl::SetVoiceSourceVolume(AudioPlayerId p, float vol) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    return voices_->SetVolume(p, vol);
+}
+bool AudioRuntimeImpl::IsVoiceSourceMuted(AudioPlayerId p, bool& out) const {
+    if (!initialized_ || !voices_) return false;
+    return voices_->GetMuted(p, out);
+}
+bool AudioRuntimeImpl::GetVoiceSourceVolume(AudioPlayerId p, float& out) const {
+    if (!initialized_ || !voices_) return false;
+    return voices_->GetVolume(p, out);
+}
+
+// ---- 2.6 bandwidth budget --------------------------------------------------
+
+AudioResult AudioRuntimeImpl::SetVoiceBandwidthBudget(
+        AudioPlayerId p, uint32_t bytesPerSec) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    return voices_->SetBandwidthBudget(p, bytesPerSec);
+}
+int32_t AudioRuntimeImpl::SuggestVoiceBitrate(
+        AudioPlayerId p, uint32_t frameMs) {
+    if (!initialized_ || !voices_) return 32000;
+    return voices_->SuggestBitrate(p, frameMs);
+}
+AudioResult AudioRuntimeImpl::ReportVoiceBytesSent(
+        AudioPlayerId p, uint32_t bytes, int32_t bitrateUsedBps) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    return voices_->ReportBytesSent(p, bytes, bitrateUsedBps);
 }
 
 // ---- Network thread API ---------------------------------------------------
@@ -1765,6 +1832,15 @@ AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
     s.logSinkExceptions =
         logSinkExceptions_.load(std::memory_order_relaxed);
     s.approxBytesAllocated = EstimateBaselineBytes(config_);
+
+    // 2.4 + 2.6 voice counters: sum across all voice sources.
+    if (voices_) {
+        const auto agg = voices_->SnapshotCounters();
+        s.voiceFramesDroppedDueToMute = agg.framesDroppedDueToMute;
+        s.voiceBytesSent              = agg.bytesSent;
+        s.voiceFramesBudgetDowngraded = agg.framesBudgetDowngraded;
+        s.voiceFramesBudgetDropped    = agg.framesBudgetDropped;
+    }
     return s;
 }
 

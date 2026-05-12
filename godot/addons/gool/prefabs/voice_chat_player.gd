@@ -38,6 +38,27 @@ extends Node3D
 ## Packet-loss ratio (0..1) above which voice_quality_warning fires.
 @export_range(0.0, 1.0, 0.01) var loss_warning_ratio: float = 0.10
 
+## Mute this player's voice locally. Packets still arrive but are
+## dropped at the decode boundary (CPU savings real and measurable).
+## Persistence across sessions is YOUR job — gool doesn't own the
+## player database; save this value with the player's other prefs and
+## restore on reconnect.
+@export var muted: bool = false:
+    set(value):
+        muted = value
+        if _registered and _runtime != null:
+            _runtime.set_voice_source_muted(player_id, value)
+
+## Per-player volume attenuation. 1.0 = unchanged, 0.0 = silence, >1
+## = boost above unity (clamped to int16 at the engine boundary).
+## Default 1.0. Range exposed as 0..2 — values above 2 work but are
+## almost always wrong.
+@export_range(0.0, 2.0, 0.01) var volume: float = 1.0:
+    set(value):
+        volume = value
+        if _registered and _runtime != null:
+            _runtime.set_voice_source_volume(player_id, value)
+
 signal voice_quality_warning(jitter_ms: float, loss_ratio: float)
 
 var _runtime: Node = null
@@ -63,6 +84,13 @@ func _ready() -> void:
         if not _registered:
             push_warning("VoiceChatPlayer: register_voice_source(%d) failed"
                           % player_id)
+        else:
+            # Apply any property values set before _ready (e.g. via
+            # editor inspector or pre-instantiation assignment).
+            if muted:
+                _runtime.set_voice_source_muted(player_id, true)
+            if volume != 1.0:
+                _runtime.set_voice_source_volume(player_id, volume)
 
 func _process(delta: float) -> void:
     if not _registered or not quality_monitoring:

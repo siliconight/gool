@@ -12,6 +12,106 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.13.0] - 2026-05-12
+
+### Added — 2.4 Mute / volume per voice source
+
+Two new game-thread APIs on `AudioRuntime` plus their `IsVoiceSourceMuted` /
+`GetVoiceSourceVolume` accessors:
+
+- `SetVoiceSourceMuted(playerId, bool)` — full stop on Opus decode at
+  the control-thread decode boundary. Muted source's packets still
+  arrive (network thread keeps pushing into the jitter buffer) and the
+  jitter buffer drains naturally so it doesn't accumulate stale
+  packets, but `codec.Decode` is skipped and nothing is pushed to the
+  source's PCM ring. The mixer reads silence as the ring drains. CPU
+  savings are real and measurable — the explicit DoD outcome.
+- `SetVoiceSourceVolume(playerId, float)` — partial attenuation in
+  the `[0.0, 4.0]` range (values >1 boost above unity, clamped to
+  int16 at the decode-time multiplication). Applied to decoded PCM on
+  the control thread before pushing into the ring; the mixer's
+  per-voice gain logic is unchanged. Default 1.0.
+
+Persistence across sessions is the host's job — gool doesn't own the
+player database. Hosts query via `Get*`, persist, restore via `Set*` on
+reconnect.
+
+The Godot prefab `VoiceChatPlayer` (in `addons/gool/prefabs/`) exposes
+both as `@export` properties — `muted: bool` and `volume: float` (0..2
+range in the inspector) — with setters that call into the autoload.
+GDExtension bindings: `set_voice_source_muted`, `set_voice_source_volume`.
+
+New `Stats` field `voiceFramesDroppedDueToMute` counts frames the
+decode boundary dropped because their source was muted. Surfaced in
+telemetry as the JSON field `voice_frames_dropped_due_to_mute` and
+the Prometheus counter `voice_frames_dropped_due_to_mute_total`.
+
+### Added — 2.6 Outbound voice bandwidth budget (host-driven encode)
+
+Per-player upstream bandwidth budget via a token bucket. The engine
+owns the policy decision; the host owns the encoder.
+
+**Architectural choice:** gool's engine owns the INBOUND voice path
+(network → jitter buffer → decode → mix) but does NOT own the
+OUTBOUND encode path (mic capture → encode → network). We considered
+adding an engine-driven `EncodeVoicePacket` API but chose to keep the
+boundary intact — the engine doesn't capture mics or talk to networks.
+Budget enforcement uses consultation:
+
+- `SetVoiceBandwidthBudget(playerId, bytesPerSec)` — 0 = no
+  enforcement (default).
+- `SuggestVoiceBitrate(playerId, frameDurationMs) → int32_t` — returns
+  the highest Opus bitrate rung whose estimated packet size fits the
+  bucket: 32000, 24000, 16000 bps, or 0 (drop this frame).
+- `ReportVoiceBytesSent(playerId, bytes, bitrateUsedBps)` — host calls
+  after sending so the bucket can deduct and downgrade counters can
+  bump.
+
+The token bucket is sized at one second of budget (a small burst
+allowance over steady state). Refills proportional to wall-clock
+elapsed between calls. The downgrade ladder uses a constant per-frame
+size estimate based on bitrate, frame duration, and a 12-byte RTP/UDP
+overhead fudge.
+
+Three new `Stats` fields: `voiceBytesSent`, `voiceFramesBudgetDowngraded`,
+`voiceFramesBudgetDropped`. Surfaced via telemetry as the JSON fields
+`voice_bytes_sent` / `voice_frames_budget_downgraded` /
+`voice_frames_budget_dropped` and as the Prometheus counters
+`voice_bytes_sent_total` etc.
+
+GDExtension bindings: `set_voice_bandwidth_budget`,
+`suggest_voice_bitrate`, `report_voice_bytes_sent`.
+
+### Internal
+
+- `VoiceSourceRecord` got new state (atomic mute/volume, atomic
+  budget+bucket, plain-uint64 counters), plus a custom move
+  constructor / move-assignment so it can still live in the
+  `SlotMap` (atomics aren't move-constructible by default).
+- `voice_source_manager.cpp` gained `SetMuted` / `SetVolume` /
+  `SetBandwidthBudget` / `SuggestBitrate` / `ReportBytesSent` /
+  `SnapshotCounters` plus a `RefillBucket` helper. The `DecodeAndPush`
+  hot path checks `rec.muted` early (lock-free atomic load), drains
+  the jitter buffer in the muted branch, and applies `rec.volume` to
+  decoded int16 PCM before pushing to the ring.
+- New unit test `tests/unit/voice_mute_budget_test.cpp` covers
+  round-trip Get/Set, the muted-source-drops-frames invariant, and
+  the three rung-selection scenarios of the budget ladder (32000 /
+  24000 / 16000 / 0). 40/40 tests still pass at -O2, ASAN+UBSAN, and
+  TSAN.
+
+### Threading
+
+- Mute/volume state is read on the control thread (DecodeAndPush)
+  and written on the game thread (SetVoiceSourceMuted/Volume).
+  `std::atomic<bool>` and `std::atomic<float>` with release/acquire
+  ordering keep the hot path lock-free.
+- Bandwidth-budget state is read and written from whichever thread
+  the host runs its encode loop on — typically a single thread per
+  source. Atomics defend against the case where the host splits
+  Suggest/Report across threads.
+- TSAN regression clean — no new data races introduced.
+
 ## [0.12.3] - 2026-05-11
 
 **Real-time thread scheduling audit + helper API (audit item 7).**
@@ -4007,7 +4107,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/siliconight/gool/releases/tag/v0.13.0
 [0.12.3]: https://github.com/siliconight/gool/releases/tag/v0.12.3
 [0.12.2]: https://github.com/siliconight/gool/releases/tag/v0.12.2
 [0.12.1]: https://github.com/siliconight/gool/releases/tag/v0.12.1

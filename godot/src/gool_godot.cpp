@@ -216,6 +216,26 @@ public:
         ClassDB::bind_method(D_METHOD("get_voice_packet_loss_ratio", "player_id"),
                               &GoolAudioRuntime::get_voice_packet_loss_ratio);
 
+        // 2.4 voice-source mute/volume.
+        ClassDB::bind_method(D_METHOD("set_voice_source_muted",
+                                       "player_id", "muted"),
+                              &GoolAudioRuntime::set_voice_source_muted);
+        ClassDB::bind_method(D_METHOD("set_voice_source_volume",
+                                       "player_id", "volume"),
+                              &GoolAudioRuntime::set_voice_source_volume);
+
+        // 2.6 outbound bandwidth budget.
+        ClassDB::bind_method(D_METHOD("set_voice_bandwidth_budget",
+                                       "player_id", "bytes_per_sec"),
+                              &GoolAudioRuntime::set_voice_bandwidth_budget);
+        ClassDB::bind_method(D_METHOD("suggest_voice_bitrate",
+                                       "player_id", "frame_duration_ms"),
+                              &GoolAudioRuntime::suggest_voice_bitrate);
+        ClassDB::bind_method(D_METHOD("report_voice_bytes_sent",
+                                       "player_id", "bytes",
+                                       "bitrate_used_bps"),
+                              &GoolAudioRuntime::report_voice_bytes_sent);
+
         // Global (RTPC) parameter store. The GDScript autoload
         // wraps these as Gool.set_rtpc / Gool.get_rtpc.
         ClassDB::bind_method(D_METHOD("set_global_parameter", "name", "value"),
@@ -759,6 +779,59 @@ public:
         if (expected == 0) return 0.0;
         return static_cast<double>(stats.packetsLost) /
                 static_cast<double>(expected);
+    }
+
+    // ---- 2.4 voice-source mute / volume ------------------------------
+    // Returns true on success. False if no source is registered for
+    // that player_id or the runtime isn't initialized.
+
+    bool set_voice_source_muted(int64_t player_id, bool muted) {
+        if (!runtime_) return false;
+        return runtime_->SetVoiceSourceMuted(
+                   static_cast<audio::AudioPlayerId>(player_id), muted)
+                == audio::AudioResult::Success;
+    }
+
+    bool set_voice_source_volume(int64_t player_id, double volume) {
+        if (!runtime_) return false;
+        return runtime_->SetVoiceSourceVolume(
+                   static_cast<audio::AudioPlayerId>(player_id),
+                   static_cast<float>(volume))
+                == audio::AudioResult::Success;
+    }
+
+    // ---- 2.6 outbound bandwidth budget -------------------------------
+
+    bool set_voice_bandwidth_budget(int64_t player_id, int64_t bytes_per_sec) {
+        if (!runtime_) return false;
+        if (bytes_per_sec < 0) bytes_per_sec = 0;
+        return runtime_->SetVoiceBandwidthBudget(
+                   static_cast<audio::AudioPlayerId>(player_id),
+                   static_cast<uint32_t>(bytes_per_sec))
+                == audio::AudioResult::Success;
+    }
+
+    // Returns suggested bitrate in bps (32000 / 24000 / 16000) or 0
+    // for "drop this frame entirely." Returns 32000 if the runtime
+    // isn't initialized (fail-open: don't accidentally silence the
+    // mic because of a runtime hiccup).
+    int64_t suggest_voice_bitrate(int64_t player_id, int64_t frame_duration_ms) {
+        if (!runtime_) return 32000;
+        if (frame_duration_ms <= 0) return 32000;
+        return static_cast<int64_t>(runtime_->SuggestVoiceBitrate(
+            static_cast<audio::AudioPlayerId>(player_id),
+            static_cast<uint32_t>(frame_duration_ms)));
+    }
+
+    bool report_voice_bytes_sent(int64_t player_id, int64_t bytes,
+                                   int64_t bitrate_used_bps) {
+        if (!runtime_) return false;
+        if (bytes < 0) bytes = 0;
+        return runtime_->ReportVoiceBytesSent(
+                   static_cast<audio::AudioPlayerId>(player_id),
+                   static_cast<uint32_t>(bytes),
+                   static_cast<int32_t>(bitrate_used_bps))
+                == audio::AudioResult::Success;
     }
 
     int64_t hash_sound_name(const String& name) const {

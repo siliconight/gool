@@ -142,6 +142,21 @@ public:
     Result<VoiceSourceHandle> RegisterVoiceSource(AudioPlayerId playerId);
     AudioResult               UnregisterVoiceSource(VoiceSourceHandle h);
 
+    // 2.4 mute/volume
+    AudioResult SetVoiceSourceMuted(AudioPlayerId playerId, bool muted);
+    AudioResult SetVoiceSourceVolume(AudioPlayerId playerId, float volume);
+    bool        IsVoiceSourceMuted(AudioPlayerId playerId, bool& outMuted) const;
+    bool        GetVoiceSourceVolume(AudioPlayerId playerId, float& outVolume) const;
+
+    // 2.6 bandwidth budget
+    AudioResult SetVoiceBandwidthBudget(AudioPlayerId playerId,
+                                          uint32_t bytesPerSec);
+    int32_t     SuggestVoiceBitrate(AudioPlayerId playerId,
+                                      uint32_t frameDurationMs);
+    AudioResult ReportVoiceBytesSent(AudioPlayerId playerId,
+                                       uint32_t bytes,
+                                       int32_t  bitrateUsedBps);
+
     // Network thread API
     void        OnTickAdvanced(SimulationTick tick, TimestampMs serverTimeMs);
     AudioResult SubmitReplicatedEvent(const AudioEvent& event);

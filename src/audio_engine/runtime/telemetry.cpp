@@ -55,7 +55,11 @@ void JsonLinesTelemetrySink::OnRuntimeStats(const RuntimeStatsSample& sample) {
         "\"replication_rate_limited_dialogue\":%llu,"
         "\"replication_rejected_validator\":%llu,"
         "\"replication_policy_violations\":%llu,"
-        "\"replication_rejected_new_id_budget\":%llu"
+        "\"replication_rejected_new_id_budget\":%llu,"
+        "\"voice_frames_dropped_due_to_mute\":%llu,"
+        "\"voice_bytes_sent\":%llu,"
+        "\"voice_frames_budget_downgraded\":%llu,"
+        "\"voice_frames_budget_dropped\":%llu"
         "}\n",
         static_cast<unsigned long long>(sample.timestampMs),
         s.activeEmitters,
@@ -80,7 +84,11 @@ void JsonLinesTelemetrySink::OnRuntimeStats(const RuntimeStatsSample& sample) {
         static_cast<unsigned long long>(s.replicationEventsRateLimited[5]),
         static_cast<unsigned long long>(s.replicationEventsRejectedByValidator),
         static_cast<unsigned long long>(s.replicationPolicyViolations),
-        static_cast<unsigned long long>(s.replicationEventsRejectedNewIdBudget));
+        static_cast<unsigned long long>(s.replicationEventsRejectedNewIdBudget),
+        static_cast<unsigned long long>(s.voiceFramesDroppedDueToMute),
+        static_cast<unsigned long long>(s.voiceBytesSent),
+        static_cast<unsigned long long>(s.voiceFramesBudgetDowngraded),
+        static_cast<unsigned long long>(s.voiceFramesBudgetDropped));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +243,20 @@ void PrometheusTelemetrySink::OnRuntimeStats(const RuntimeStatsSample& sample) {
     AppendCounter(fresh, job_, "replication_rejected_new_id_budget_total",
                    "Replicated events rejected because the per-tick new-player admission cap was hit.",
                    static_cast<unsigned long long>(s.replicationEventsRejectedNewIdBudget));
+
+    // ---- Voice mute/budget counters (Phase 2.4 + 2.6) ----
+    AppendCounter(fresh, job_, "voice_frames_dropped_due_to_mute_total",
+                   "Voice frames dropped at decode boundary because their source was muted.",
+                   static_cast<unsigned long long>(s.voiceFramesDroppedDueToMute));
+    AppendCounter(fresh, job_, "voice_bytes_sent_total",
+                   "Total upstream voice bytes reported by the host via ReportVoiceBytesSent.",
+                   static_cast<unsigned long long>(s.voiceBytesSent));
+    AppendCounter(fresh, job_, "voice_frames_budget_downgraded_total",
+                   "Voice frames the host encoded at a downgraded bitrate due to bandwidth budget pressure.",
+                   static_cast<unsigned long long>(s.voiceFramesBudgetDowngraded));
+    AppendCounter(fresh, job_, "voice_frames_budget_dropped_total",
+                   "Voice frames the host dropped because SuggestVoiceBitrate returned 0 (budget exhausted).",
+                   static_cast<unsigned long long>(s.voiceFramesBudgetDropped));
 
     // ---- Per-category replication rate-limit counter ----
     static constexpr const char* kCategoryNames[6] = {

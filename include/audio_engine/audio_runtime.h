@@ -458,6 +458,82 @@ public:
     bool GetVoiceNetworkStats(AudioPlayerId playerId, VoiceNetworkStats& out) const
         AUDIO_REQUIRES(GameThread);
 
+    // ---- 2.4 Mute/volume per voice source (game thread) -------------------
+    //
+    // Per-player mute and volume controls for voice chat. Mute is a
+    // full-stop on Opus decode at the control-thread decode boundary:
+    // packets still arrive (network thread keeps pushing into the
+    // jitter buffer), but DecodeAndPush sees the muted flag and skips
+    // codec.Decode + skips PcmRing.Push for that source. CPU savings
+    // are real and measurable; the muted player's audio stops within
+    // one tick.
+    //
+    // Volume is partial attenuation applied to decoded int16 PCM
+    // before pushing into the ring. Range [0.0, 4.0]; values >1.0
+    // boost above unity (clamped to int16 at the multiplication
+    // boundary). Default 1.0.
+    //
+    // Persistence (the "remember across sessions" outcome from spec
+    // 2.4) is the HOST's job — gool doesn't own the player database.
+    // Hosts query state via Get*; persist; restore via Set* on
+    // reconnect.
+    AudioResult SetVoiceSourceMuted(AudioPlayerId playerId, bool muted)
+        AUDIO_REQUIRES(GameThread);
+    AudioResult SetVoiceSourceVolume(AudioPlayerId playerId, float volume)
+        AUDIO_REQUIRES(GameThread);
+    bool IsVoiceSourceMuted(AudioPlayerId playerId, bool& outMuted) const
+        AUDIO_REQUIRES(GameThread);
+    bool GetVoiceSourceVolume(AudioPlayerId playerId, float& outVolume) const
+        AUDIO_REQUIRES(GameThread);
+
+    // ---- 2.6 Bandwidth budget for outbound voice (game thread) ------------
+    //
+    // Per-player upstream bandwidth budget for voice. The engine
+    // maintains a token bucket and answers SuggestVoiceBitrate(...)
+    // with one of {32000, 24000, 16000, 0} bps — host encodes at the
+    // suggested rate, or drops the frame if the suggestion is 0.
+    //
+    // ARCHITECTURE NOTE: gool's engine owns the INBOUND voice path
+    // (network → jitter buffer → decode → mix) but DOES NOT own the
+    // outbound encode path (mic capture → encode → network). The
+    // budget is enforced via consultation: host calls SuggestBitrate
+    // before encoding, then calls ReportBytesSent after sending. This
+    // keeps the engine's "we don't capture mics or talk to networks"
+    // boundary intact while still letting hosts get reliable
+    // bandwidth management.
+    //
+    // Typical host integration loop (50 Hz / 20ms frame):
+    //
+    //   const int32_t br = runtime.SuggestVoiceBitrate(myId, 20);
+    //   if (br == 0) {
+    //       // dropped — budget exhausted, don't send anything
+    //       continue;
+    //   }
+    //   encoder.SetBitrate(br);
+    //   const uint32_t bytes = encoder.Encode(pcmFrame, packetBuf);
+    //   network.Send(packetBuf, bytes);
+    //   runtime.ReportVoiceBytesSent(myId, bytes, br);
+    //
+    // 0 (the default) = unlimited; SuggestBitrate always returns 32000.
+    AudioResult SetVoiceBandwidthBudget(AudioPlayerId playerId,
+                                          uint32_t bytesPerSec)
+        AUDIO_REQUIRES(GameThread);
+
+    // Consult the budget. Returns 32000 / 24000 / 16000 / 0 (drop).
+    // Refills the token bucket from elapsed wall time. Safe to call
+    // from any thread the host uses for encoding; serialize per-source
+    // calls if your encoder is multithreaded.
+    int32_t SuggestVoiceBitrate(AudioPlayerId playerId,
+                                  uint32_t frameDurationMs);
+
+    // Host reports the actual encoded packet size after sending. The
+    // engine deducts bytes from the bucket, bumps Stats::voiceBytesSent,
+    // and (if `bitrateUsedBps` reflects a downgraded rung)
+    // Stats::voiceFramesBudgetDowngraded.
+    AudioResult ReportVoiceBytesSent(AudioPlayerId playerId,
+                                       uint32_t      bytes,
+                                       int32_t       bitrateUsedBps);
+
     // ---- Debug / introspection (game thread) ------------------------------
     // Reads a snapshot of stats published by the control thread. Cheap; safe
     // to poll every frame. Render-thread-owned counters are surfaced via
@@ -545,6 +621,32 @@ public:
         // Stable across ticks unless config changes mid-lifetime
         // (which the runtime doesn't currently support).
         uint64_t approxBytesAllocated = 0;
+
+        // ---- 2.4: voice source mute counter -------------------------------
+        // Frames the decode boundary dropped because their source was
+        // muted via SetVoiceSourceMuted. Summed across all voice sources;
+        // monotonic. Use this to verify mute actually saved decode work
+        // (CPU profiling will confirm; this counter is the bookkeeping
+        // side).
+        uint64_t voiceFramesDroppedDueToMute = 0;
+
+        // ---- 2.6: bandwidth budget counters -------------------------------
+        // Total bytes the host has reported via ReportVoiceBytesSent
+        // (across all voice sources). Monotonic uint64.
+        uint64_t voiceBytesSent = 0;
+
+        // Frames where SuggestVoiceBitrate returned a downgraded rung
+        // (24000 or 16000 bps) instead of the default 32000. Incremented
+        // when the host reports back with `bitrateUsedBps < 32000`.
+        // High counts indicate sustained bandwidth pressure.
+        uint64_t voiceFramesBudgetDowngraded = 0;
+
+        // Frames where SuggestVoiceBitrate returned 0 (drop). Incremented
+        // at the policy decision boundary — the host is expected to NOT
+        // call ReportVoiceBytesSent for these. High counts indicate the
+        // budget is too tight or the encoder rate is too high; consider
+        // raising the budget or accepting lower quality.
+        uint64_t voiceFramesBudgetDropped = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
 

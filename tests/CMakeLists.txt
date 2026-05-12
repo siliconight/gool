@@ -18,6 +18,7 @@ add_executable(audio_engine_production_readiness_test    unit/production_readine
 add_executable(audio_engine_multiplayer_readiness_test   unit/multiplayer_readiness_test.cpp)
 add_executable(audio_engine_jitter_buffer_test           unit/jitter_buffer_test.cpp)
 add_executable(audio_engine_voice_telemetry_test         unit/voice_telemetry_test.cpp)
+add_executable(audio_engine_voice_mute_budget_test       unit/voice_mute_budget_test.cpp)
 add_executable(audio_engine_sound_bank_test              unit/sound_bank_test.cpp)
 add_executable(audio_engine_crossfade_test               unit/crossfade_test.cpp)
 add_executable(audio_engine_loop_crossfade_test          unit/loop_crossfade_test.cpp)
@@ -40,7 +41,7 @@ add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitch
 
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
-foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion)
+foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry voice_mute_budget biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion)
     target_include_directories(audio_engine_${_t}_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)
@@ -67,6 +68,7 @@ target_link_libraries(audio_engine_production_readiness_test     PRIVATE audio_e
 target_link_libraries(audio_engine_multiplayer_readiness_test    PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_jitter_buffer_test            PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_voice_telemetry_test          PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_voice_mute_budget_test        PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_sound_bank_test               PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_crossfade_test                PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_loop_crossfade_test           PRIVATE audio_engine::audio_engine)
@@ -107,6 +109,7 @@ add_test(NAME production_readiness_test     COMMAND audio_engine_production_read
 add_test(NAME multiplayer_readiness_test    COMMAND audio_engine_multiplayer_readiness_test)
 add_test(NAME jitter_buffer_test            COMMAND audio_engine_jitter_buffer_test)
 add_test(NAME voice_telemetry_test          COMMAND audio_engine_voice_telemetry_test)
+add_test(NAME voice_mute_budget_test        COMMAND audio_engine_voice_mute_budget_test)
 add_test(NAME sound_bank_test               COMMAND audio_engine_sound_bank_test)
 add_test(NAME crossfade_test                COMMAND audio_engine_crossfade_test)
 add_test(NAME loop_crossfade_test           COMMAND audio_engine_loop_crossfade_test)
