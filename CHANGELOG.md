@@ -12,6 +12,162 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.17.0] - 2026-05-12
+
+### Added — Tier-3 hardening: fuzz, commercial static analysis, contract docs
+
+The third and final layer of the resilience / security / performance
+program. Where Tier 1 closed the loud-failure gaps (noexcept hot path,
+render-thread barrier, unconditional `-Werror`, clang-tidy) and Tier 2
+attacked the structural surface that produces those failures (function
+decomposition, complexity gate, cppcheck, coverage), Tier 3 adds the
+two analysis layers that depth-first compound on top of everything
+before them: coverage-guided fuzzing of attacker-influenceable input,
+and the deepest commercial static analyzer in the ecosystem (PVS-Studio).
+The third item — an explicit contract for which methods throw and
+which don't — turns gool's existing-but-implicit exception discipline
+into a documented part of the API.
+
+#### Three libFuzzer harnesses for the external input surfaces
+
+Three new files under `tests/fuzz/`, each a small `LLVMFuzzerTestOneInput`
+that targets one of gool's attacker-influenceable input surfaces:
+
+  - **`fuzz_bus_config_json`** — feeds arbitrary bytes to
+    `BusConfigLoader::ParseFromJson(string_view)`. The parser owns
+    JSON tokenization (nlohmann_json), bus-graph topology validation
+    (parent references, cycles), effect-chain validation (kinds,
+    parameter ranges), and string length bounds. The harness is the
+    simplest of the three — one call per input, no setup.
+
+  - **`fuzz_audio_decoders`** — feeds arbitrary bytes through
+    `DecoderFactory::CreateForMemory(data, size, Auto)` and, on
+    successful sniff, drains up to 32 decode iterations + exercises
+    `Seek` past EOF. Covers WAV / Ogg Vorbis / FLAC end-to-end:
+    both the third-party parsers (dr_wav, stb_vorbis, dr_flac, each
+    with historical CVEs) and the gool-side wrapping logic (channel-
+    count clamps, sample-rate normalization).
+
+  - **`fuzz_opus_voice`** — feeds arbitrary bytes as the OPUS payload
+    of a synthetic `VoicePacket` through `OpusVoiceCodec::Decode`,
+    cycling through 8 playerIds to also stress the per-player decoder
+    cache and `DecodeLost` (packet-loss-concealment) paths. Built
+    only when `AUDIO_ENGINE_VOICE_OPUS=ON`.
+
+Each harness composes libFuzzer with ASAN + UBSan (`-fsanitize=fuzzer,
+address,undefined`), so findings surface as ASAN/UBSan reports with
+a reproducer testcase preserved alongside the artifact.
+
+#### Nightly fuzz workflow
+
+New `.github/workflows/fuzz.yml`, scheduled at 03:00 UTC daily plus
+manual `workflow_dispatch`. Builds with Clang-15 + libFuzzer; allocates
+a 5-minute time budget per harness; runs all three harnesses in
+parallel via matrix. On failure, uploads the entire findings directory
+(crash inputs, coverage data, stats) as a workflow artifact. Total
+workflow runtime: ~20 minutes.
+
+The fuzz workflow is intentionally NOT on the PR path. Coverage-guided
+fuzzing produces stochastic results — a finding that surfaces today
+may not surface tomorrow at the same input — and PR CI shouldn't
+block on noise that's not reproducibly correlated with the PR's
+changes. The nightly cadence catches regressions; the manual dispatch
+lets a maintainer trigger an ad-hoc run after touching a parser.
+
+Deferred for a later release: persistent corpora (each run currently
+starts from scratch, so coverage discovery resets nightly), dictionary
+files biasing toward valid-shaped inputs (JSON keywords + Opus packet
+structure), and OSS-Fuzz integration (Google's continuous fuzzing
+infrastructure; needs a 24h+ commitment).
+
+#### PVS-Studio workflow (scaffolded)
+
+New `.github/workflows/pvs-studio.yml`, scheduled weekly (Sundays 04:00
+UTC). PVS-Studio is a commercial static analyzer with the deepest
+known dataflow analysis in the C++ ecosystem; it catches several bug
+classes neither clang-tidy nor cppcheck reliably surfaces (copy-paste
+typos in similar code blocks, expression-always-true/false patterns,
+misuse of bitwise operators on bool, V1026 signed-overflow UB).
+
+The workflow is scaffolded — the steps are correct but gated on two
+repository secrets that aren't yet provisioned:
+
+  - `PVS_STUDIO_LICENSE_NAME`
+  - `PVS_STUDIO_LICENSE_KEY`
+
+Until those are set, the workflow's first step writes a "license not
+configured" message to the job log and exits cleanly. The license
+itself is free for open-source projects; request at
+[pvs-studio.com](https://pvs-studio.com/en/order/open-source-license/).
+Once provisioned, the workflow installs PVS-Studio, runs analysis
+across the codebase, converts findings to SARIF, and uploads to
+GitHub Code Scanning (which displays them in the Security tab on
+public repos with GitHub Advanced Security — free for public).
+
+#### Exception / noexcept contract documentation
+
+Added a documentation block at the head of `AudioRuntime` in
+`audio_runtime.h` that documents which methods provide which of the
+four exception guarantees (hard noexcept, soft noexcept, basic
+guarantee, strong guarantee — Microsoft's terminology). The block
+also documents the catch-policy at every sink and callback boundary:
+log sink (catches per-call, counts in `Stats::logSinkExceptions`),
+telemetry sink (per-emit, `telemetrySinkExceptions`), render callback
+(zeroes buffer + counts in `MiniaudioBackend::RenderCallbackExceptions`).
+
+The contract was already correct in code — every relevant `noexcept`
+qualifier and try/catch barrier was in place from v0.15.0–v0.16.0.
+v0.17.0 makes it documented and discoverable: a host developer
+integrating gool can now read the contract once at the top of the
+class instead of inferring it from method signatures one at a time.
+
+### Internal
+
+- `tests/fuzz/`: three new harnesses (one per input surface).
+- `CMakeLists.txt`: new `AUDIO_ENGINE_FUZZ` option; `audio_engine_add_fuzz_harness`
+  helper; per-harness target gated on Clang.
+- `.github/workflows/fuzz.yml`: new nightly fuzz workflow.
+- `.github/workflows/pvs-studio.yml`: new weekly PVS-Studio workflow
+  (license-gated).
+- `include/audio_engine/audio_runtime.h`: exception/noexcept contract
+  block prepended to `class AudioRuntime`.
+
+### Verified
+
+- C++ engine-side regression: 40/40 unit tests pass at `-O2`.
+- The fuzz harnesses compile against gool's API (verified by code
+  review; the harnesses can't run in the build sandbox because
+  libFuzzer needs Clang and a 5-minute budget per harness, which
+  doesn't fit a build-time check). The nightly workflow is the
+  first end-to-end run.
+- The PVS-Studio workflow's license-check step short-circuits
+  cleanly when secrets aren't set; verified by reading the YAML
+  flow (no scheduled run yet, the workflow goes live on the next
+  Sunday 04:00 UTC after the tag merges).
+
+### What's left
+
+This is the end of the survey-driven hardening program. The earlier
+Tier-1 → Tier-2 → Tier-3 sequence closed the gaps the four-article
+audit identified:
+
+  - PVS-Studio Toyota / Power-of-Ten lessons → Tier 1 (loud-failure
+    barriers) + Tier 2 (function-length / complexity decomposition).
+  - PVS-Studio 60-terrible-tips → Tier 1 (warnings-as-errors,
+    clang-tidy) + Tier 2 (cppcheck).
+  - Microsoft modern-exceptions → Tier 1 (noexcept hot path) + Tier 3
+    (documented exception contract).
+  - Lefticus performance → Tier 2 (function decomposition for i-cache
+    locality; cppcheck's `performance-*` group).
+
+Outside the survey program: the two remaining oversized functions
+(`Update_Phase9_SpatializeEmitters_` at ~155 lines, `bus_config_loader::
+ParseFromJson` at ~209 lines) are still scheduled for a future
+release that will sub-decompose them and let us tighten the lizard
+gate to NASA's `-C 15 -L 60`. None of the other roadmap items
+(more decoders, more Godot integration, Asset Library submission)
+depend on this hardening work being further along.
+
 ## [0.16.0] - 2026-05-12
 
 ### Added — Tier-2 structural hardening
@@ -4542,7 +4698,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/siliconight/gool/releases/tag/v0.17.0
 [0.16.0]: https://github.com/siliconight/gool/releases/tag/v0.16.0
 [0.15.0]: https://github.com/siliconight/gool/releases/tag/v0.15.0
 [0.14.0]: https://github.com/siliconight/gool/releases/tag/v0.14.0

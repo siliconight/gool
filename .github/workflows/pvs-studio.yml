@@ -1,0 +1,135 @@
+name: PVS-Studio
+
+# v0.17.0 Tier-3 hardening: PVS-Studio static analysis pass.
+#
+# PVS-Studio is a commercial static analyzer with a free license
+# for open-source projects (request at pvs-studio.com). Its analysis
+# is deeper than clang-tidy + cppcheck combined — it catches several
+# bug classes neither of the other two reliably surfaces (subtle
+# copy-paste typos in similar code blocks, expression-always-true /
+# always-false patterns, misuse of bitwise operators on bool, V1026
+# undefined-behavior-via-signed-overflow). The trade-off is run time
+# (15-30 min on a codebase the size of gool) and licensing.
+#
+# This workflow is SCAFFOLDED: the steps are correct but the action
+# is currently gated on the PVS_STUDIO_LICENSE_NAME and
+# PVS_STUDIO_LICENSE_KEY repository secrets. Until those secrets are
+# provisioned (request a free OSS license from pvs-studio.com and
+# paste the name + key into Settings → Secrets and variables →
+# Actions), the workflow is a no-op that reports "license not
+# configured" and exits cleanly. Once the secrets are in place, the
+# workflow runs weekly and dashboards findings.
+#
+# Schedule: Sunday 04:00 UTC weekly. Not on every push — PVS-Studio
+# is slow; weekly is enough cadence to catch regressions without
+# burning CI minutes.
+#
+# Roadmap:
+#   - Weekly scan: this workflow.
+#   - Per-PR diff scan: a future iteration that scans only files
+#     touched by the PR. Faster (~3-5 min) but needs the same
+#     license credentials. Wait until the weekly scan is stable
+#     and the baseline of expected findings is documented.
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'   # Sunday 04:00 UTC weekly
+  workflow_dispatch: {}
+
+jobs:
+  pvs-studio:
+    name: static-analysis / pvs-studio
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for PVS-Studio license
+        id: license_check
+        env:
+          PVS_LICENSE_NAME: ${{ secrets.PVS_STUDIO_LICENSE_NAME }}
+          PVS_LICENSE_KEY:  ${{ secrets.PVS_STUDIO_LICENSE_KEY }}
+        run: |
+          if [ -z "$PVS_LICENSE_NAME" ] || [ -z "$PVS_LICENSE_KEY" ]; then
+            echo "PVS-Studio license secrets not configured."
+            echo "To activate this workflow:"
+            echo "  1. Request a free OSS license at pvs-studio.com/en/order/open-source-license/"
+            echo "  2. Set repository secrets PVS_STUDIO_LICENSE_NAME and PVS_STUDIO_LICENSE_KEY"
+            echo "  3. Re-run this workflow."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "License configured; proceeding."
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Install PVS-Studio
+        if: steps.license_check.outputs.skip != 'true'
+        run: |
+          wget -q -O - https://files.pvs-studio.com/etc/pubkey.txt \
+              | sudo apt-key add -
+          sudo wget -O /etc/apt/sources.list.d/viva64.list \
+              https://files.pvs-studio.com/etc/viva64.list
+          sudo apt-get update
+          sudo apt-get install -y pvs-studio
+
+      - name: Register license
+        if: steps.license_check.outputs.skip != 'true'
+        env:
+          PVS_LICENSE_NAME: ${{ secrets.PVS_STUDIO_LICENSE_NAME }}
+          PVS_LICENSE_KEY:  ${{ secrets.PVS_STUDIO_LICENSE_KEY }}
+        run: |
+          pvs-studio-analyzer credentials \
+              "$PVS_LICENSE_NAME" "$PVS_LICENSE_KEY"
+
+      - name: Configure (export compile_commands.json)
+        if: steps.license_check.outputs.skip != 'true'
+        run: cmake -S . -B build-pvs
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+              -DCMAKE_BUILD_TYPE=Release
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
+              -DAUDIO_ENGINE_DECODERS_WAV=ON
+              -DAUDIO_ENGINE_DECODERS_OGG=ON
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      - name: Build (populates generated headers)
+        if: steps.license_check.outputs.skip != 'true'
+        run: cmake --build build-pvs --config Release --parallel 2
+
+      - name: Run PVS-Studio analyzer
+        if: steps.license_check.outputs.skip != 'true'
+        run: |
+          pvs-studio-analyzer analyze \
+              -f build-pvs/compile_commands.json \
+              -o pvs-studio.log \
+              -j 2 \
+              --exclude-path '*/third_party/*' \
+              --exclude-path '*/godot-cpp/*'
+
+      - name: Format findings as text + SARIF
+        if: steps.license_check.outputs.skip != 'true'
+        run: |
+          # Text report for human reading.
+          plog-converter \
+              -t fullhtml \
+              -o pvs-report.html \
+              pvs-studio.log
+          # SARIF for GitHub Security tab integration (when the repo
+          # has GitHub Advanced Security enabled — free for public
+          # repos).
+          plog-converter \
+              -t sarif \
+              -o pvs-report.sarif \
+              pvs-studio.log
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: steps.license_check.outputs.skip != 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pvs-report.sarif
+
+      - name: Upload HTML report as artifact
+        if: steps.license_check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvs-studio-report
+          path: pvs-report.html
+          retention-days: 90

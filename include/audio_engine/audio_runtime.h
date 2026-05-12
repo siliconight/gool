@@ -81,6 +81,110 @@ struct AudioRuntimeDependencies {
 
 class AUDIO_ENGINE_EXPORT AudioRuntime {
 public:
+    // =====================================================================
+    // Exception / noexcept contract (v0.17.0)
+    // =====================================================================
+    //
+    // gool follows the Microsoft modern-C++ guidance: exceptions for
+    // runtime errors that cross unrelated stack frames, error codes for
+    // tightly-coupled hot paths. In practice, gool's public API uses
+    // error codes (the AudioResult enum and Result<T> return type)
+    // exclusively — exceptions are never used as a signaling mechanism
+    // across the API boundary. This block documents the resulting
+    // contract on a per-category basis.
+    //
+    // The contract has four classes of methods:
+    //
+    // (1) HARD NOEXCEPT — the noexcept qualifier is on the signature.
+    //     The function will never propagate an exception. If the body
+    //     internally calls something that could throw (a host callback,
+    //     a third-party library), the implementation wraps the call in
+    //     a catch-all barrier and translates the failure into an
+    //     AudioResult or a stats counter (see Stats::
+    //     controlThreadExceptionsCaught). A compile-time
+    //     static_assert(noexcept(...)) pins the property in
+    //     audio_runtime.cpp so a refactor can't accidentally drop it.
+    //
+    //     Methods in this class:
+    //         - Update(float)                       // control-thread hot path
+    //         - IsInitialized() const               // pure accessor
+    //         - All atomic-counter getters and Stats snapshots
+    //
+    // (2) SOFT NOEXCEPT — the function doesn't have the noexcept
+    //     qualifier on its signature (so it's not a compile-time
+    //     guarantee), but the implementation is structured to never
+    //     throw. These are typically command-submission methods that
+    //     enqueue into pre-allocated rings; the ring's enqueue path is
+    //     a bounded sequence of stores with no allocation. The reason
+    //     they aren't marked hard noexcept is forward compatibility:
+    //     a future implementation may add validation that allocates
+    //     a diagnostic string on failure, and we don't want to lock
+    //     ourselves out of that.
+    //
+    //     Methods in this class:
+    //         - SubmitEvent(...)
+    //         - SetGlobalParameter(...) / SetRtpc(...)
+    //         - SetListener(...)
+    //         - All replicated-event entry points on the network thread
+    //         - DestroyEmitter(...) / Stop variants
+    //
+    //     Behavior on internal failure: returns AudioResult::Failed (or
+    //     equivalent error code) and increments an appropriate stats
+    //     counter. The caller is expected to inspect the return value.
+    //
+    // (3) BASIC GUARANTEE — the function MAY throw under documented
+    //     conditions. These are the lifecycle and asset-registration
+    //     methods that legitimately allocate, do file I/O, or decode
+    //     external data. If they throw, the program state remains
+    //     valid (no resource leaks, no partial registrations), but
+    //     the operation did not complete. Callers should be prepared
+    //     to catch std::exception or check the AudioResult return.
+    //
+    //     Methods in this class:
+    //         - Initialize(...)                     // allocates pools, opens device
+    //         - RegisterSoundFromFile(...)          // file I/O + decode
+    //         - RegisterSoundFromMemory(...)        // decode
+    //         - RegisterStreamingSoundFromFile(...) // file I/O
+    //         - Configure*(...) where the configuration touches
+    //             allocators
+    //
+    //     Note: in practice these methods catch their own exceptions
+    //     internally and translate to AudioResult, so callers rarely
+    //     observe an actual throw. The "basic guarantee" wording is
+    //     about the contract, not the typical runtime behavior.
+    //
+    // (4) STRONG GUARANTEE — the function either completes fully or
+    //     leaves the program in its pre-call state. None of gool's
+    //     public methods currently provide the strong guarantee
+    //     unconditionally; doing so requires copy-then-swap patterns
+    //     that don't compose well with the lock-free rings the
+    //     command-submission methods use. Where strong guarantees
+    //     matter (e.g., transactional bus-graph reconfiguration),
+    //     they're documented inline on the specific method.
+    //
+    // Sink and callback contracts:
+    //
+    //   - Host-supplied callbacks (IRuntimeLogSink, IRuntimeTelemetrySink,
+    //     IAudioRenderCallback) MAY throw; gool catches at every
+    //     boundary. Specifically:
+    //       - Log sink: Log_() in audio_runtime.cpp catches per-call
+    //         and increments Stats::logSinkExceptions.
+    //       - Telemetry sink: EmitTelemetry_() catches per-emit and
+    //         increments Stats::telemetrySinkExceptions.
+    //       - Render callback: MiniaudioBackend::DataCallback wraps
+    //         the OnRender call in catch-all + zeroes the output buffer;
+    //         increments MiniaudioBackend::RenderCallbackExceptions().
+    //   - Built-in sinks (JsonLinesLogSink, JsonLinesTelemetrySink,
+    //     RingTelemetrySink, PrometheusTelemetrySink, NullAudioBackend)
+    //     never throw.
+    //
+    // Thread-safety contract is documented separately via the
+    // AUDIO_REQUIRES annotation; see thread_annotations.h. The two
+    // contracts compose: a method may be both `noexcept` and
+    // `AUDIO_REQUIRES(ControlThread)`.
+    //
+    // =====================================================================
+
     AudioRuntime();
     ~AudioRuntime();
 

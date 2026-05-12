@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.16.0
+    VERSION 0.17.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -54,6 +54,13 @@ option(AUDIO_ENGINE_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 #   cmake -S . -B build-tsan -DAUDIO_ENGINE_SANITIZE_TSAN=ON
 option(AUDIO_ENGINE_SANITIZE_ASAN "Build with AddressSanitizer + UBSan" OFF)
 option(AUDIO_ENGINE_SANITIZE_TSAN "Build with ThreadSanitizer"          OFF)
+# v0.17.0 Tier-3 hardening: libFuzzer harnesses for the three external
+# input surfaces (JSON config, audio decoders, Opus voice packets).
+# Requires Clang (libFuzzer is a Clang-only sanitizer). Off by default
+# so the normal build is unaffected; turned on by the nightly fuzz CI
+# workflow and by anyone running the harnesses locally. See
+# tests/fuzz/*.cpp for the per-harness build instructions.
+option(AUDIO_ENGINE_FUZZ           "Build libFuzzer harnesses (clang only)" OFF)
 if(AUDIO_ENGINE_SANITIZE_ASAN AND AUDIO_ENGINE_SANITIZE_TSAN)
     message(FATAL_ERROR
         "AUDIO_ENGINE_SANITIZE_ASAN and AUDIO_ENGINE_SANITIZE_TSAN are "
@@ -554,4 +561,59 @@ endif()
 if(AUDIO_ENGINE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# v0.17.0 Tier-3 hardening: libFuzzer harnesses.
+#
+# Three harnesses, one per external input surface. Each is a small
+# .cpp under tests/fuzz/ that defines LLVMFuzzerTestOneInput and links
+# against audio_engine + libFuzzer + ASAN+UBSan. We build them only
+# when AUDIO_ENGINE_FUZZ=ON and the compiler is Clang (libFuzzer is a
+# Clang-only sanitizer; GCC has libFuzzer-compatible harnesses but the
+# -fsanitize=fuzzer flag is Clang-specific).
+#
+# The harnesses are NOT registered with ctest. They're long-running
+# fuzz binaries the nightly fuzz workflow invokes with a time budget;
+# they would not terminate under ctest's default test-run semantics.
+# ---------------------------------------------------------------------------
+if(AUDIO_ENGINE_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+       AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        message(FATAL_ERROR
+            "AUDIO_ENGINE_FUZZ requires Clang (libFuzzer is Clang-only). "
+            "Re-run with -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++.")
+    endif()
+
+    # Compose libFuzzer with ASAN+UBSan. Findings then surface as
+    # ASAN/UBSan reports with a reproducer testcase saved in the
+    # current working directory, which the nightly workflow uploads
+    # as an artifact.
+    set(_fuzz_flags "-fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g -O1")
+
+    function(audio_engine_add_fuzz_harness target source)
+        add_executable(${target} ${source})
+        target_link_libraries(${target} PRIVATE audio_engine)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=fuzzer,address,undefined
+            -fno-omit-frame-pointer
+            -g -O1)
+        target_link_options(${target} PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+        set_target_properties(${target} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    endfunction()
+
+    audio_engine_add_fuzz_harness(fuzz_bus_config_json
+                                    tests/fuzz/fuzz_bus_config_json.cpp)
+    audio_engine_add_fuzz_harness(fuzz_audio_decoders
+                                    tests/fuzz/fuzz_audio_decoders.cpp)
+
+    # Opus harness only built when libopus is available (the codec
+    # itself is opt-in). When AUDIO_ENGINE_VOICE_OPUS=OFF the harness
+    # would link against an unsupported codec and report no findings.
+    if(AUDIO_ENGINE_VOICE_OPUS)
+        audio_engine_add_fuzz_harness(fuzz_opus_voice
+                                        tests/fuzz/fuzz_opus_voice.cpp)
+    endif()
 endif()

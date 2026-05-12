@@ -1,0 +1,117 @@
+name: Fuzz
+
+# v0.17.0 Tier-3 hardening: scheduled libFuzzer runs over gool's three
+# external input surfaces (JSON config, audio decoders, Opus voice
+# packets).
+#
+# Schedule: 03:00 UTC daily, with manual workflow_dispatch. NOT run on
+# every PR — fuzz feedback is slow (minutes per harness, 100ms-cycle
+# discovery) and produces stochastic results; we don't want PRs
+# blocked on a fuzz finding that happens to surface that day. The
+# nightly cadence gives us early warning without coupling to PR
+# latency, and the workflow_dispatch lets a maintainer trigger an
+# ad-hoc run after touching a parser.
+#
+# Failure handling: if a harness crashes, libFuzzer writes the
+# offending input to crash-<sha1> in the working directory. The job
+# uploads the entire fuzz-output folder as an artifact and fails the
+# job. Re-running the harness locally on the artifact reproduces
+# the crash deterministically:
+#
+#   ./fuzz_<name> crash-<sha1>
+#
+# Time budget: 5 minutes per harness — long enough to find shallow
+# bugs reliably, short enough that the total workflow finishes
+# under 20 minutes. The first findings are typically in the first
+# 30 seconds; longer budgets give diminishing returns until the
+# corpus matures (which only happens with persistent corpora,
+# not implemented yet — see roadmap below).
+#
+# Roadmap (deferred to later releases):
+#   - Persistent corpus stored in a git branch / artifact bucket so
+#     each run benefits from prior coverage discovery.
+#   - Dictionary files (-dict) for JSON keywords + Opus packet
+#     structure to bias generation toward valid-shaped inputs.
+#   - OSS-Fuzz integration so Google's fuzzing infrastructure runs
+#     gool's harnesses continuously rather than just nightly.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  fuzz:
+    name: fuzz / ${{ matrix.harness }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - harness: fuzz_bus_config_json
+            # JSON parser needs nothing special.
+            extra_cmake: ''
+          - harness: fuzz_audio_decoders
+            # Decoders are gated on per-format flags; build all three on.
+            extra_cmake: |
+              -DAUDIO_ENGINE_DECODERS_WAV=ON
+              -DAUDIO_ENGINE_DECODERS_OGG=ON
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+          - harness: fuzz_opus_voice
+            # Opus codec is opt-in; the CMake guard above only builds
+            # this harness when AUDIO_ENGINE_VOICE_OPUS=ON.
+            extra_cmake: |
+              -DAUDIO_ENGINE_VOICE_OPUS=ON
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        # libFuzzer is a Clang sanitizer; Ubuntu's default GCC won't
+        # do here. clang-15 is the matched version we run clang-tidy
+        # against in ci.yml, so the same compiler is exercised
+        # twice — first for static analysis, then for fuzzing.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-15 libopus-dev libfuzzer-15-dev
+          clang-15 --version
+
+      - name: Configure
+        run: cmake -S . -B build-fuzz
+              -DCMAKE_C_COMPILER=clang-15
+              -DCMAKE_CXX_COMPILER=clang++-15
+              -DCMAKE_BUILD_TYPE=Release
+              -DAUDIO_ENGINE_FUZZ=ON
+              ${{ matrix.extra_cmake }}
+
+      - name: Build harness
+        run: cmake --build build-fuzz --target ${{ matrix.harness }} --parallel 2
+
+      - name: Run harness
+        # -max_total_time=300: 5-minute budget. libFuzzer exits 0 on
+        # timeout (the budget is the stop signal, not a failure), and
+        # exits non-zero only when a real crash is found.
+        # -print_final_stats=1: dumps coverage and execs-per-second
+        # in the job log.
+        # -timeout=10: per-input timeout. An input that takes longer
+        # than 10 seconds to process is treated as a hang (likely
+        # accidental infinite loop in the parser) and reported.
+        # -rss_limit_mb=2048: bound peak memory; OOM on large input
+        # is also a finding worth reporting.
+        run: |
+          cd build-fuzz
+          mkdir -p findings-${{ matrix.harness }}
+          cd findings-${{ matrix.harness }}
+          ../${{ matrix.harness }} \
+              -max_total_time=300 \
+              -print_final_stats=1 \
+              -timeout=10 \
+              -rss_limit_mb=2048
+
+      - name: Upload findings on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-${{ matrix.harness }}
+          path: build-fuzz/findings-${{ matrix.harness }}/
+          retention-days: 30
