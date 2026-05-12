@@ -12,12 +12,25 @@
 #  pragma GCC diagnostic ignored "-Wconversion"
 #  pragma GCC diagnostic ignored "-Wunused-function"
 #endif
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244)  // conversion: possible loss of data
+#  pragma warning(disable : 4245)  // signed/unsigned mismatch
+#  pragma warning(disable : 4267)  // size_t → smaller type
+#  pragma warning(disable : 4456)  // declaration hides previous local
+#  pragma warning(disable : 4701)  // potentially uninitialized local
+#  pragma warning(disable : 4703)  // potentially uninitialized local pointer
+#  pragma warning(disable : 4996)  // CRT deprecation
+#endif
 
 #define DR_FLAC_IMPLEMENTATION
 #include "dr_flac.h"
 
 #if defined(__GNUC__)
 #  pragma GCC diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#  pragma warning(pop)
 #endif
 
 namespace audio {

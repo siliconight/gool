@@ -583,8 +583,17 @@ ParseResult ParseFromJson(std::string_view json) {
             }
             out.parent = it->second;
         }
-        // Debug name (truncated).
+        // Debug name (truncated). MSVC C4996 flags strncpy as deprecated in
+        // favor of strncpy_s; the bounded copy + explicit NUL-termination on
+        // the next line is intentional and matches the rest of the codebase.
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4996)
+#endif
         std::strncpy(out.debugName, p.name.c_str(), sizeof(out.debugName) - 1);
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
         out.debugName[sizeof(out.debugName) - 1] = '\0';
 
         // Effects.

@@ -55,7 +55,7 @@ public:
     // Settings's default member initializers to be "complete" before the
     // enclosing class is, which they aren't.
     OpusVoiceCodec();
-    explicit OpusVoiceCodec(Settings settings);
+    explicit OpusVoiceCodec(const Settings& settings);
     ~OpusVoiceCodec() override;
 
     OpusVoiceCodec(const OpusVoiceCodec&)            = delete;

@@ -26,6 +26,18 @@
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244)  // conversion: possible loss of data
+#  pragma warning(disable : 4245)  // signed/unsigned mismatch
+#  pragma warning(disable : 4267)  // size_t → smaller type
+#  pragma warning(disable : 4456)  // declaration hides previous local
+#  pragma warning(disable : 4457)  // declaration hides function parameter
+#  pragma warning(disable : 4459)  // declaration hides global
+#  pragma warning(disable : 4701)  // potentially uninitialized local
+#  pragma warning(disable : 4703)  // potentially uninitialized local pointer
+#  pragma warning(disable : 4996)  // CRT deprecation (sprintf, etc.)
+#endif
 
 extern "C" {
 #include "stb_vorbis.c"     // canonical single-TU include
@@ -33,6 +45,9 @@ extern "C" {
 
 #if defined(__GNUC__)
 #  pragma GCC diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#  pragma warning(pop)
 #endif
 
 namespace audio {

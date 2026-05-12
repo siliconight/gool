@@ -50,12 +50,16 @@ class [[nodiscard]] Result {
                   "Result<T> requires T to be default-constructible");
 public:
     // Implicit construction from value or error code is convenient at call
-    // sites; both directions are tagged with the boolean state.
+    // sites; both directions are tagged with the boolean state. The implicit
+    // conversion is the entire ergonomic point of this expected-shaped type,
+    // so cppcheck's noExplicitConstructor warnings are suppressed inline.
+    // cppcheck-suppress noExplicitConstructor
     Result(T value) noexcept(std::is_nothrow_move_constructible_v<T>)
         : value_(std::move(value)),
           error_(AudioResult::Success),
           has_value_(true) {}
 
+    // cppcheck-suppress noExplicitConstructor
     Result(AudioResult error) noexcept
         : value_(),
           error_(error),

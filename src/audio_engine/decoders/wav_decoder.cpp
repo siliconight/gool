@@ -21,6 +21,16 @@
 #  pragma GCC diagnostic ignored "-Wconversion"
 #  pragma GCC diagnostic ignored "-Wunused-function"
 #endif
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244)
+#  pragma warning(disable : 4245)
+#  pragma warning(disable : 4267)
+#  pragma warning(disable : 4456)
+#  pragma warning(disable : 4701)
+#  pragma warning(disable : 4703)
+#  pragma warning(disable : 4996)
+#endif
 
 #define DR_WAV_IMPLEMENTATION
 // IMPORTANT: do NOT define DR_WAV_NO_STDIO here. dr_wav.h checks
@@ -32,6 +42,9 @@
 
 #if defined(__GNUC__)
 #  pragma GCC diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#  pragma warning(pop)
 #endif
 
 namespace audio {

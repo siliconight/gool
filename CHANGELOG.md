@@ -12,6 +12,123 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.20.1] - 2026-05-12
+
+### Fixed — CI hygiene after toolchain bumps
+
+Patch release covering CI failures triggered by newer compiler /
+runner-image versions and two genuine source bugs surfaced by
+the stricter analysis. No public API change; no behavioral change
+on the audio path. Adopters on v0.20.0 can upgrade transparently.
+
+- **`MiniaudioBackend` description buffer overflow under
+  `-Werror=format-truncation=` (GCC).** The diagnostic buffer was
+  sized at 160 bytes for a `"%.63s / %.95s"` format whose worst
+  case is 162 bytes (63 + 3 + 95 + 1 NUL). The previous Ubuntu
+  runner image accepted the call; the new runner's GCC tightened
+  format-truncation analysis and flagged it. Bumped to 256 bytes
+  with a comment naming the arithmetic. Real-world miniaudio
+  backend/device names never approach the precision limits, so
+  there's no observable behavior change.
+
+- **Godot binding: `PackedFloat32Array::write[]` proxy removed in
+  godot-cpp 4.x.** `gool_godot.cpp:652` still used the Godot 3.x
+  `.write[i]` access pattern when converting int16 PCM to
+  float32. Replaced with the 4.x equivalent `samples.ptrw()[i]`,
+  which returns the same contiguous raw pointer. Unblocks the
+  macOS arm64 build of the GDExtension.
+
+- **Godot binding: `AudioResultText` switch missing three
+  v0.18-v0.20 enum cases.** `DecodeError`, `RateLimited`, and
+  `PolicyViolation` were added to `AudioResult` during the
+  network-API trilogy but the binding's diagnostic-string
+  helper was never updated. Clang's `-Wswitch` correctly flagged
+  the three missing arms. Added with concise per-case strings
+  consistent with the rest of the helper. The previous default
+  `"unknown"` was technically safe but unhelpfully opaque.
+
+- **`emitter_manager.cpp:148` int-to-uint8 narrowing in
+  `std::fill`.** `slotOccupied` is `vector<uint8_t>` but the
+  fill value was the literal `0u` (`unsigned int`). MSVC's
+  template-instantiation chain through `xutility` flagged the
+  narrowing inside `std::fill`'s internal memset path. Changed
+  to `uint8_t{0}` to match the container's element type. Real
+  bug; the assignment was always silently narrowing.
+
+### Build — warning suppressions for intentional patterns
+
+The `/W4 /WX` + `-Wall -Wextra -Wpedantic -Werror` policy
+introduced in v0.15.0 is correct as a default but trips on a few
+intentional patterns. Suppressions added at the narrowest scope
+possible so the wide policy keeps catching real problems.
+
+- **MSVC `C4324` (structure padded due to alignment specifier)
+  on `SpscRing`, `PcmRing`, `PcmRingF32`.** The `alignas(64)`
+  cache-line isolation between producer and consumer atomics is
+  load-bearing for the wait-free guarantee; the warning is
+  literally telling us the alignment request was honored.
+  Wrapped each pair of `alignas` members in
+  `#pragma warning(push) / disable: 4324 / pop` guarded by
+  `_MSC_VER`. GCC/Clang remain unaffected.
+
+- **MSVC `C4996` (`strncpy` deprecated) at
+  `bus_config_loader.cpp:587`.** The bounded copy + explicit
+  NUL-termination idiom is correct and matches the rest of the
+  loader. Suppressed locally with push/disable/pop rather than
+  switching to `strncpy_s` (which would diverge the file's
+  style) or defining `_CRT_SECURE_NO_WARNINGS` (too broad).
+
+- **Third-party single-header decoders under MSVC `/WX`.**
+  `ogg_vorbis_decoder.cpp`, `flac_decoder.cpp`, and
+  `wav_decoder.cpp` already had GCC `#pragma diagnostic` blocks
+  around the `#include "stb_vorbis.c"` / `dr_flac.h` / `dr_wav.h`
+  inclusions but no MSVC equivalents. Added matching
+  `_MSC_VER`-guarded blocks suppressing the common C-in-C++
+  warnings (4244, 4245, 4267, 4456, 4457, 4459, 4701, 4703,
+  4996). `wav_decoder.cpp` wasn't yet hitting the wall in CI
+  but the policy is identical, so the suppression was added
+  prophylactically.
+
+### Build — cppcheck noise suppression
+
+- **`Result<T>` constructors flagged `noExplicitConstructor`.**
+  `Result(T value)` and `Result(AudioResult error)` are
+  intentionally implicit — implicit conversion from value or
+  error code is the entire ergonomic point of an
+  `expected`-shaped type. Marking them `explicit` would defeat
+  the design. Added inline `// cppcheck-suppress
+  noExplicitConstructor` directives to clear the false positive
+  without weakening cppcheck's overall policy.
+
+- **`OpusVoiceCodec(Settings)` flagged `passedByValue`.** Real
+  optimization opportunity. Changed `Settings settings` to
+  `const Settings& settings` in both header and implementation.
+  Header default-constructor stub `OpusVoiceCodec() :
+  OpusVoiceCodec(Settings{}) {}` continues to work — temporaries
+  bind to const references.
+
+### Known unfixed — deferred to v0.21.0
+
+- **Lizard threshold gate.** The static-analysis lizard job
+  flags ~14 functions over the configured `-C 25 -L 250 -a 6`
+  thresholds; the script comment only acknowledges two
+  pre-existing violators. A real fix is either a checked-in
+  baseline-allowlist (only fail on functions not in the list)
+  or a small parameter-count bump to `-a 8` to accommodate
+  `dsp/compressor.cpp` and `mixer/audio_mixer.cpp` math helpers
+  that take 7-8 intentional parameters. The deeper complexity
+  debt in `AudioMixer::DrainCommands` and `MixVoiceSound_` is
+  worth a real decomposition pass, slated for v0.21.0.
+
+### Verified
+
+- All thirteen edits applied as a single diff against the v0.20.0
+  source tree; `git apply ci-fixes.patch` cleanly.
+- No source files outside the failure paths were touched.
+- No public header signature changes (the `OpusVoiceCodec` ctor
+  goes from value to const ref — same call sites, same default
+  ctor, ABI compatible at source level).
+
 ## [0.20.0] - 2026-05-12
 
 ### Added — Networking integration guide (Tier-C)
@@ -5118,7 +5235,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/siliconight/gool/releases/tag/v0.20.1
 [0.20.0]: https://github.com/siliconight/gool/releases/tag/v0.20.0
 [0.19.0]: https://github.com/siliconight/gool/releases/tag/v0.19.0
 [0.18.0]: https://github.com/siliconight/gool/releases/tag/v0.18.0

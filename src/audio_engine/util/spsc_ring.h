@@ -82,8 +82,18 @@ private:
     size_t         slots_;
 
     // Cache-line padding to avoid false sharing between producer and consumer.
+    // MSVC C4324 warns "structure was padded due to alignment specifier" —
+    // which is exactly what alignas(64) is for. Suppressed here so /WX builds
+    // don't trip on intentional padding.
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4324)
+#endif
     alignas(64) std::atomic<size_t> head_{0};   // producer-owned
     alignas(64) std::atomic<size_t> tail_{0};   // consumer-owned
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 };
 
 } // namespace audio::util

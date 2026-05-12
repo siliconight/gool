@@ -49,7 +49,12 @@ struct MiniaudioBackend::Impl {
     uint32_t              sampleRate   = 48000;
     uint32_t              bufferSize   = 512;
     uint32_t              channels     = 2;
-    char                  description[160] = {0};
+    // Buffer must fit the worst-case output of the "%.63s / %.95s" format
+    // used in Start(): 63 + 3 (" / ") + 95 + 1 (NUL) = 162 bytes. Rounded
+    // up to 256 for headroom; GCC's -Werror=format-truncation= flagged the
+    // previous 160 even though real-world miniaudio backend/device names
+    // never approach the precision limits.
+    char                  description[256] = {0};
 
     // v0.15.0: monotonic count of exceptions caught at the render-thread
     // boundary. The DataCallback is marked noexcept (a violation would

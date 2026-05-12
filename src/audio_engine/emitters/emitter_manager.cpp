@@ -145,7 +145,7 @@ void EmitterManager::BuildSnapshot(std::vector<SpatialEmitterView>& emitterViews
     if (slotOccupied.size() != static_cast<size_t>(cap) + 1) {
         slotOccupied.assign(static_cast<size_t>(cap) + 1, 0u);
     }
-    std::fill(slotOccupied.begin(), slotOccupied.end(), 0u);
+    std::fill(slotOccupied.begin(), slotOccupied.end(), uint8_t{0});
 
     slots_.ForEach([&](EmitterHandle h, EmitterRecord& rec) {
         const uint32_t idx = h.index;

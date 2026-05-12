@@ -79,7 +79,7 @@ struct OpusVoiceCodec::State {
 
 OpusVoiceCodec::OpusVoiceCodec() : OpusVoiceCodec(Settings{}) {}
 
-OpusVoiceCodec::OpusVoiceCodec(Settings settings)
+OpusVoiceCodec::OpusVoiceCodec(const Settings& settings)
     : state_(std::make_unique<State>()) {
     state_->settings = settings;
 

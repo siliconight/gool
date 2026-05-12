@@ -87,8 +87,15 @@ private:
     size_t   slots_;
     std::vector<float> storage_;
 
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4324)  // structure padded due to alignas — intentional
+#endif
     alignas(64) std::atomic<size_t> head_{0};
     alignas(64) std::atomic<size_t> tail_{0};
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 };
 
 } // namespace audio::util

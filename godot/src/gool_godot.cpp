@@ -460,6 +460,10 @@ public:
             case audio::AudioResult::InternalError:     return "internal error";
             case audio::AudioResult::InvalidHandle:     return "invalid handle";
             case audio::AudioResult::BackendUnavailable:return "backend unavailable";
+            // v0.18.0 / v0.20.0 network-API additions:
+            case audio::AudioResult::DecodeError:       return "codec rejected the data";
+            case audio::AudioResult::RateLimited:       return "replicated event rate-limited (token bucket empty)";
+            case audio::AudioResult::PolicyViolation:   return "replicated event rejected by validator / replication policy";
         }
         return "unknown";
     }
@@ -649,7 +653,10 @@ public:
             reinterpret_cast<const int16_t*>(bytes.ptr());
         constexpr float kInv32768 = 1.0f / 32768.0f;
         for (int i = 0; i < sample_count; ++i) {
-            samples.write[i] = static_cast<float>(src[i]) * kInv32768;
+            // godot-cpp 4.x removed the `.write[i]` proxy; use ptrw() for
+            // raw mutable access. PackedFloat32Array guarantees contiguous
+            // storage so this is equivalent to the old idiom.
+            samples.ptrw()[i] = static_cast<float>(src[i]) * kInv32768;
         }
 
         const audio::AudioSoundId id = HashName(name);
