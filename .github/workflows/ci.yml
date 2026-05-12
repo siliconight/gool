@@ -664,18 +664,39 @@ jobs:
             2>&1 | tee smoke.log
           echo ""
           echo "===== smoke.log scan ====="
-          # Godot prints parse errors with "Parse Error:" / "SCRIPT
-          # ERROR:" / "ERROR:" prefixes. main.gd's failure path
-          # additionally pushes "SMOKE FAIL:" lines. Any of these
-          # signals a smoke-level failure.
-          if grep -E "^(.*Parse Error:|SCRIPT ERROR:|SMOKE FAIL:)" smoke.log; then
+          # v0.21.5: trust main.gd's verdict.
+          #
+          # We previously grepped for any "Parse Error:" / "SCRIPT
+          # ERROR:" line as a failure signal. That over-fired in this
+          # smoke project: Godot emits Parse Error lines for any
+          # class_name cross-reference it can't resolve, and since the
+          # smoke deliberately doesn't enable the gool plugin (we're
+          # testing parse correctness without loading the GDExtension
+          # binary), Godot's global class table is empty. References
+          # like `AudioRelevancyFilter` inside networked_audio_event.gd
+          # or `GoolSoundBank` inside gool_sound_bank_loader.gd then
+          # fail type resolution and produce "Parse Error:" lines —
+          # but the scripts still parse syntactically, load() returns
+          # a non-null Resource, and they work in real Godot projects
+          # where the plugin populates the class table normally.
+          #
+          # The semantically precise signal is main.gd's sentinel:
+          #   - "[smoke] SMOKE OK"  → all 13 load() calls returned
+          #     non-null (the scripts are at least syntactically
+          #     parseable, which is what this smoke is for)
+          #   - "[smoke] SMOKE FAIL" → at least one load() returned
+          #     null (real parse-level failure, the v0.13.0/v0.21.3
+          #     class of bug we want to catch)
+          #   - neither → main.gd itself failed to run (e.g., a
+          #     parse error in main.gd, the v0.21.4-era bug)
+          if grep -q "SMOKE FAIL" smoke.log; then
             echo ""
-            echo "::error::Godot headless smoke detected GDScript issues; see log above."
+            echo "::error::Godot headless smoke reported SMOKE FAIL — at least one addon script failed to load. Check the log above for the specific file and the Parse Error: line immediately preceding it."
             exit 1
           fi
-          if ! grep -qE "^.*SMOKE OK" smoke.log; then
+          if ! grep -q "SMOKE OK" smoke.log; then
             echo ""
-            echo "::error::Godot headless smoke did not produce 'SMOKE OK' — main.gd may not have run to completion."
+            echo "::error::Godot headless smoke did not produce SMOKE OK or SMOKE FAIL — main.gd may not have run at all. This usually means main.gd itself has a parse error; look for SCRIPT ERROR lines mentioning main.gd."
             exit 1
           fi
-          echo "smoke passed."
+          echo "smoke passed (main.gd reported SMOKE OK)."
