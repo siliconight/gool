@@ -12,6 +12,98 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.21.1] - 2026-05-12
+
+### Added — Godot test surface: gdscript-lint + headless-smoke CI jobs
+
+Two new CI jobs that close the gap responsible for the
+eight-cycle silent breakage discovered in v0.21.0. Both target
+the Godot/GDScript layer specifically — the existing CI matrix
+covers the C++ engine, the GDExtension build, static analysis,
+fuzzing, and coverage, but nothing actually ran the addon's
+GDScript through a parser.
+
+- **New job: `godot / gdscript-lint`.** Pure-Python parse check
+  via gdtoolkit's `gdparse`. Runs in seconds, no Godot install
+  needed. Iterates every `.gd` file under `godot/addons/` and
+  fails on the first parse error. Catches the class of bug that
+  shipped from v0.13.0 through v0.20.2 (unescaped quotes in
+  prefab warnings) at the cheapest possible point in the
+  pipeline. Cheap enough to run on every PR.
+
+- **New job: `godot / headless-smoke`.** Authoritative parse +
+  load check. Downloads Godot 4.2.2-stable headless for Linux,
+  copies the addon into a minimal smoke project under
+  `tests/godot/smoke/`, opens the project, and runs `main.gd`
+  which programmatically `load()`s every `.gd` file under
+  `res://addons/gool/`. Any `null` return from `load()` or any
+  `Parse Error:` / `SCRIPT ERROR:` line in Godot's output fails
+  the job. More authoritative than gdscript-lint because
+  Godot's own parser can catch grammar/semantic edge cases that
+  gdtoolkit doesn't always model perfectly; the two jobs are
+  complementary.
+
+- **New test asset: `tests/godot/smoke/`.** Minimal Godot 4.2
+  project consisting of `project.godot`, `main.tscn`, and
+  `main.gd`. The addon is not committed into the smoke project
+  itself; the CI step copies it in at runtime. Locally,
+  developers can run the same smoke with `godot --headless
+  --path tests/godot/smoke --quit-after 60` after manually
+  copying `godot/addons/gool/` into `tests/godot/smoke/addons/`.
+
+### Scope and follow-ups
+
+What this release does NOT cover:
+
+- **GDExtension binding behavior.** The compiled `.so/.dll/.dylib`
+  is not loaded in the smoke; that's the existing
+  `build-gdextension` job's domain. A binding-integrated smoke
+  that pulls the build artifact, places it under
+  `addons/gool/bin/`, and exercises the autoload's actual
+  `init_with_config` path is the natural next-tier check.
+  Deferred — the parse-level gate is the immediate win and is
+  what the v0.21.0 retrospective specifically called for.
+
+- **Runtime assertions on prefab behavior.** Each prefab's
+  `_ready` hits the "Gool autoload not found" path in this
+  smoke since we don't enable the plugin formally. A future
+  smoke could enable the plugin, instantiate each prefab as a
+  scene-tree child, and assert their signals fire — but that
+  needs the binding loaded, which is the deferred item above.
+
+### Build
+
+- `.github/workflows/ci.yml`: two new top-level jobs
+  (`gdscript-lint`, `godot-headless-smoke`) appended at the
+  end. Both run on `ubuntu-latest`. No changes to existing
+  jobs.
+- `tests/godot/smoke/`: new directory with `project.godot`,
+  `main.tscn`, `main.gd`. ~150 lines total.
+
+### Verified
+
+- YAML validity of the modified `ci.yml` confirmed by
+  `python -c "import yaml; yaml.safe_load(open('...'))"`.
+- C++ library + version_test compile and pass at the bumped
+  version triple (no production code touched).
+- `main.gd` reviewed by hand for Godot 4.2 API correctness:
+  uses `DirAccess.dir_exists_absolute`, parameterless
+  `list_dir_begin()`, `OS.set_exit_code`, `String.path_join`,
+  typed `Array[String]` — all valid in 4.2.
+- gdparse not available in the local sandbox; the lint job's
+  behavior is validated by the YAML structure and the
+  documented `gdparse` CLI contract (exit code 1 on parse
+  error, stderr diagnostic). First CI run on the next push
+  will exercise both jobs end-to-end.
+
+### Lockstep note
+
+The smoke job pins Godot to **4.2.2-stable** to match
+`GODOT_CPP_REF: 4.2`. When that env bumps (e.g., to 4.3 for a
+future godot-cpp upgrade), the Godot version in
+`godot-headless-smoke` must bump in lockstep. The job's
+inline comments call this out.
+
 ## [0.21.0] - 2026-05-12
 
 ### Added — Designer-friendly Godot integration: listener + sound-bank prefabs
@@ -5475,7 +5567,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/siliconight/gool/releases/tag/v0.21.1
 [0.21.0]: https://github.com/siliconight/gool/releases/tag/v0.21.0
 [0.20.2]: https://github.com/siliconight/gool/releases/tag/v0.20.2
 [0.20.1]: https://github.com/siliconight/gool/releases/tag/v0.20.1

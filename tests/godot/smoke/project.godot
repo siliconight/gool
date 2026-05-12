@@ -1,0 +1,28 @@
+; tests/godot/smoke/project.godot
+;
+; Minimal Godot project used by the CI `godot-headless-smoke` job.
+; The job copies godot/addons/gool/ into this project's addons/
+; directory at runtime, opens the project headlessly, and runs
+; main.tscn which programmatically load()s every .gd file under
+; res://addons/gool/. Any parse error in any prefab or autoload
+; script surfaces as a null return from load() — the smoke script
+; then sets a nonzero exit code and CI fails the job.
+;
+; The project intentionally does NOT enable the gool plugin via
+; [editor_plugins] or wire up the autoload via [autoload]. We're
+; testing parse correctness, not full plugin behavior — and the
+; GDExtension binary is not present in this smoke (it would need
+; to be built first, which is the job of build-gdextension; the
+; smoke covers the GDScript layer specifically).
+
+config_version=5
+
+[application]
+
+config/name="gool-smoke"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.2")
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"

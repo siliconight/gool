@@ -501,3 +501,140 @@ jobs:
           path: coverage.xml
           retention-days: 30
 
+
+  # ----------------------------------------------------------------
+  # Job: GDScript lint (v0.21.1).
+  #
+  # Pure-Python parse check via gdtoolkit's `gdparse`. Catches
+  # GDScript syntax errors without needing a Godot install — runs
+  # in seconds and gates every PR.
+  #
+  # This job exists because the v0.21.0 release surfaced a
+  # GDScript syntax error (unescaped quotes around "gool" in a
+  # double-quoted string) that had shipped in all seven prefabs
+  # since v0.13.0 — eight release cycles without any automated
+  # detection. The bug was functionally invisible (the plugin
+  # never actually loaded its prefabs in Godot) so no integration
+  # test caught it. gdparse catches this class of bug at the
+  # cheapest possible point in the pipeline.
+  #
+  # gdtoolkit pins to the 4.x major series matching our Godot
+  # target (GODOT_CPP_REF: 4.2). The tool tracks Godot's grammar
+  # changes within a major; minor mismatches inside 4.x are
+  # accepted.
+  # ----------------------------------------------------------------
+  gdscript-lint:
+    name: godot / gdscript-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install gdtoolkit
+        run: |
+          python -m pip install --upgrade pip
+          pip install "gdtoolkit==4.*"
+          gdparse --version || true
+
+      - name: Parse every addon GDScript file
+        run: |
+          set -euo pipefail
+          # `find -print0 | xargs -0` is the safe form against any
+          # path with spaces; addon paths don't currently have them
+          # but this stays portable if that changes. gdparse exits
+          # 1 on the first parse error and prints the location +
+          # reason; xargs propagates that exit code.
+          find godot/addons -name "*.gd" -print0 \
+            | xargs -0 -n 1 gdparse
+
+      - name: Parse the smoke test's main.gd
+        run: gdparse tests/godot/smoke/main.gd
+
+
+  # ----------------------------------------------------------------
+  # Job: Godot headless smoke (v0.21.1).
+  #
+  # Authoritative parse + load check. Downloads Godot 4.2.2 stable
+  # for Linux, copies the addon into a minimal smoke project under
+  # tests/godot/smoke/, runs that project headlessly, and lets
+  # main.gd programmatically load() every .gd file under
+  # res://addons/gool/. Any null return or any "Parse Error" /
+  # "SCRIPT ERROR" line in the output fails the job.
+  #
+  # More authoritative than gdscript-lint because Godot's own
+  # parser can catch grammar/semantic edge cases that gdtoolkit
+  # doesn't always model perfectly. The two jobs are
+  # complementary: gdscript-lint is fast and runs first; this one
+  # is the authoritative gate.
+  #
+  # Scope: this smoke does NOT load the GDExtension binary. The
+  # compiled .so/.dll/.dylib is the build-gdextension job's
+  # domain. A binding-integrated smoke (downloads the artifact,
+  # places it under addons/gool/bin/, runs prefab _ready paths)
+  # is a follow-up — useful but heavier; the parse-level gate is
+  # the immediate win.
+  #
+  # Godot version: pinned to 4.2.2-stable to match the project's
+  # GODOT_CPP_REF (4.2). When that ref bumps, this version bumps
+  # too — keep them in lockstep.
+  # ----------------------------------------------------------------
+  godot-headless-smoke:
+    name: godot / headless-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Godot 4.2.2 headless
+        run: |
+          set -euo pipefail
+          GODOT_VERSION="4.2.2-stable"
+          GODOT_ZIP="Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          wget -q --show-progress \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${GODOT_ZIP}"
+          unzip -q "${GODOT_ZIP}"
+          # The unzipped binary is named after the version; rename
+          # to a stable `godot` for the rest of the workflow.
+          mv "Godot_v${GODOT_VERSION}_linux.x86_64" godot
+          chmod +x godot
+          ./godot --version
+
+      - name: Copy addon into the smoke project
+        run: |
+          mkdir -p tests/godot/smoke/addons
+          cp -r godot/addons/gool tests/godot/smoke/addons/gool
+          ls -la tests/godot/smoke/addons/gool/
+
+      - name: Run smoke (headless, parse every addon script)
+        run: |
+          set -euo pipefail
+          # --headless: no display server (we're on a GH runner)
+          # --quit-after 60: bail after 60 frames if main.gd's
+          #     explicit get_tree().quit() didn't fire (defense-in-
+          #     depth against an infinite-loop regression in main.gd
+          #     itself).
+          # We tee the output so the grep step below has a stable
+          # file to scan even if Godot's exit code is masked by an
+          # interleaved process-management layer.
+          ./godot --headless --path tests/godot/smoke --quit-after 60 \
+            2>&1 | tee smoke.log
+          echo ""
+          echo "===== smoke.log scan ====="
+          # Godot prints parse errors with "Parse Error:" / "SCRIPT
+          # ERROR:" / "ERROR:" prefixes. main.gd's failure path
+          # additionally pushes "SMOKE FAIL:" lines. Any of these
+          # signals a smoke-level failure.
+          if grep -E "^(.*Parse Error:|SCRIPT ERROR:|SMOKE FAIL:)" smoke.log; then
+            echo ""
+            echo "::error::Godot headless smoke detected GDScript issues; see log above."
+            exit 1
+          fi
+          if ! grep -qE "^.*SMOKE OK" smoke.log; then
+            echo ""
+            echo "::error::Godot headless smoke did not produce 'SMOKE OK' — main.gd may not have run to completion."
+            exit 1
+          fi
+          echo "smoke passed."
