@@ -47,8 +47,12 @@ func _ready() -> void:
             + "smoke project layout has drifted from what main.gd "
             + "expects."
         )
-        OS.set_exit_code(1)
-        get_tree().quit()
+        # Note: pre-v0.21.4 versions used OS.set_exit_code(N) + quit(),
+        # which fails to parse on Godot 4.2 with "Static function
+        # set_exit_code() not found in base GDScriptNativeClass" — the
+        # method exists in Godot 3.x but not 4.x. get_tree().quit(N)
+        # is the 4.x idiom and accepts the exit code directly.
+        get_tree().quit(1)
         return
 
     var paths: Array[String] = []
@@ -60,8 +64,7 @@ func _ready() -> void:
             + "exists but contains no scripts — the copy step likely "
             + "only copied SVG/cfg files and missed the scripts."
         )
-        OS.set_exit_code(1)
-        get_tree().quit()
+        get_tree().quit(1)
         return
 
     print("[smoke] found %d GDScript files under %s" % [paths.size(), addon_root])
@@ -82,14 +85,13 @@ func _ready() -> void:
 
     if failures.is_empty():
         print("[smoke] SMOKE OK: all %d scripts parsed and loaded." % paths.size())
-        OS.set_exit_code(0)
+        get_tree().quit(0)
     else:
         push_error(
             "SMOKE FAIL: %d of %d scripts failed to load: %s"
             % [failures.size(), paths.size(), str(failures)]
         )
-        OS.set_exit_code(1)
-    get_tree().quit()
+        get_tree().quit(1)
 
 
 # Recursive directory walk. Appends every *.gd path found under
