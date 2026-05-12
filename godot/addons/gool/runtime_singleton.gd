@@ -36,8 +36,20 @@ signal ready_to_play
 func _ready() -> void:
     _runtime = ClassDB.instantiate("GoolAudioRuntime")
     if _runtime == null:
-        push_error("[gool] GoolAudioRuntime class not registered. "
-                   + "Build and install the GDExtension first.")
+        push_error(
+            "[gool] GoolAudioRuntime class not registered. This almost "
+            + "always means the GDExtension binary is missing from "
+            + "addons/gool/bin/. Fixes:\n"
+            + "  (1) Download the addon zip from "
+            + "https://github.com/siliconight/gool/releases that matches "
+            + "your OS, and unzip its addons/gool/ over yours.\n"
+            + "  (2) Or build from source: see SETUP.md.\n"
+            + "Check addons/gool/bin/ for one of: libgool_godot.so "
+            + "(Linux), gool_godot.dll (Windows), libgool_godot.dylib "
+            + "(macOS). If the file is there but Godot still can't "
+            + "load it, the binary likely targets a different Godot "
+            + "minor version than yours — match versions or rebuild."
+        )
         return
     add_child(_runtime)
 
@@ -67,9 +79,28 @@ func _ready() -> void:
         ok = _runtime.init(sr, bs)
 
     if not ok:
-        push_error("[gool] runtime init failed "
-                   + ("(bus config rejected — see prior error)" if has_bus_graph
-                      else "(no audio device?)"))
+        if has_bus_graph:
+            push_error(
+                "[gool] runtime init failed: bus config rejected. "
+                + "Check the prior error from the JSON parser above for "
+                + "the specific line. Common causes: duplicate bus ids, "
+                + "a bus that references a parent which doesn't exist, "
+                + "an effect kind that isn't recognized. Fix res://gool/"
+                + "config.json or delete it to regenerate defaults."
+            )
+        else:
+            push_error(
+                "[gool] runtime init failed: no audio device available. "
+                + "Possible causes:\n"
+                + "  (1) Sample rate or buffer size in res://gool/config.json "
+                + "isn't supported by your audio device. Try sample_rate=44100 "
+                + "or buffer_size=1024.\n"
+                + "  (2) Another app has exclusive access to the device "
+                + "(some DAWs do this on Windows).\n"
+                + "  (3) Running headless without an audio device — set the "
+                + "AUDIO_ENGINE_BACKEND env var to 'null' to use the silent "
+                + "backend for CI / server use."
+            )
         return
     _ready_emitted = true
     ready_to_play.emit()

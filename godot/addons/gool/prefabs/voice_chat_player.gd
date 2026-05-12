@@ -71,7 +71,7 @@ func _ready() -> void:
         return
     _runtime = get_node_or_null("/root/Gool")
     if _runtime == null:
-        push_warning("VoiceChatPlayer: /root/Gool autoload not found")
+        push_warning("VoiceChatPlayer: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find "gool" in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
         return
     if not _runtime.is_initialized():
         await _runtime.ready_to_play
@@ -82,8 +82,24 @@ func _ready() -> void:
     if player_id != 0:
         _registered = _runtime.register_voice_source(player_id)
         if not _registered:
-            push_warning("VoiceChatPlayer: register_voice_source(%d) failed"
-                          % player_id)
+            push_warning(
+                "VoiceChatPlayer: register_voice_source(%d) failed. "
+                % player_id
+                + "Three things to check:\n"
+                + "  (1) The voice source budget is full. "
+                + "AudioConfig.budget.maxVoiceSources defaults to 16 — "
+                + "if you have more remote players, raise it in "
+                + "res://gool/config.json.\n"
+                + "  (2) This player_id is already registered. "
+                + "RegisterVoiceSource is idempotent (returns the same "
+                + "handle), so this is rare — but if your code re-creates "
+                + "VoiceChatPlayer nodes for the same peer, the "
+                + "old node may not have unregistered cleanly.\n"
+                + "  (3) The runtime isn't initialized yet. The prefab "
+                + "awaits Gool.ready_to_play before registering, but if "
+                + "init failed earlier (see prior errors), registration "
+                + "won't succeed."
+            )
         else:
             # Apply any property values set before _ready (e.g. via
             # editor inspector or pre-instantiation assignment).

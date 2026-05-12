@@ -44,7 +44,7 @@ func _ready() -> void:
         return
     _runtime = get_node_or_null("/root/Gool")
     if _runtime == null:
-        push_warning("MusicStateController: /root/Gool autoload not found")
+        push_warning("MusicStateController: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find "gool" in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
         return
     if not _runtime.is_initialized():
         await _runtime.ready_to_play
@@ -61,7 +61,23 @@ func add_state(state_name: String, sound_name: String,
 
 func set_state(state_name: String) -> void:
     if not states.has(state_name):
-        push_warning("MusicStateController: unknown state '%s'" % state_name)
+        var known: Array = states.keys()
+        if known.is_empty():
+            push_warning(
+                "MusicStateController: set_state('%s') called but no "
+                % state_name
+                + "states have been added yet. Call add_state(name, "
+                + "sound_name, fade_ms) for each state before calling "
+                + "set_state."
+            )
+        else:
+            push_warning(
+                "MusicStateController: unknown state '%s'. "
+                % state_name
+                + "Known states: %s. Did you mean to add_state() this "
+                % str(known)
+                + "first, or did the name get a typo?"
+            )
         return
     if state_name == current_state:
         return

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NetworkedAudioEvent — replicated event. Arrow across a network "link"
+     with a sound-pulse at the destination. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#e0e0e0">
+    <!-- Source node (top-left small circle) -->
+    <circle cx="3" cy="3.5" r="1.6"/>
+    <!-- Arrow from source to destination -->
+    <path d="M4.5 4.5 L11 11" fill="none" stroke="#e0e0e0" stroke-width="1.2" stroke-linecap="round"/>
+    <!-- Arrowhead -->
+    <path d="M11 11 L9.5 10 L10 11.5 Z"/>
+    <!-- Destination: sound pulse (concentric arcs) -->
+    <circle cx="12" cy="11.5" r="1.2"/>
+    <path d="M14 9.5 Q15 11.5 14 13.5" fill="none" stroke="#e0e0e0" stroke-width="1" stroke-linecap="round"/>
+  </g>
+</svg>

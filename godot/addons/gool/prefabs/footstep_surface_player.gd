@@ -39,7 +39,7 @@ func _ready() -> void:
         return
     _runtime = get_node_or_null("/root/Gool")
     if _runtime == null:
-        push_warning("FootstepSurfacePlayer: /root/Gool autoload not found")
+        push_warning("FootstepSurfacePlayer: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find "gool" in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
 
 # Call this from your locomotion code at each footfall.
 func step() -> void:

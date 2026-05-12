@@ -12,6 +12,75 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.13.1] - 2026-05-12
+
+### Added — Godot newcomer usability
+
+Polish targeted at people who've never installed a Godot addon
+before. The C++ engine is mature; the on-ramp wasn't.
+
+- **Custom editor icons** for all seven prefabs (`AudioEmitter3D`,
+  `VoiceChatPlayer`, `MusicStateController`, `ReverbZone`,
+  `FootstepSurfacePlayer`, `NetworkedAudioEvent`,
+  `NetworkedAudioEmitter3D`). Previously every gool prefab showed
+  Godot's generic Node3D/Area3D/Node fallback icon in the
+  Add Node menu; now each has a distinct glyph (speaker,
+  microphone, music note, reverb arcs, footprint, network arrow,
+  networked speaker). Plumbed through `plugin.gd`'s
+  `add_custom_type` call — the icon path field in the `PREFABS`
+  array was always declared but never consumed; now it is.
+
+- **Actionable error messages** across the plugin and prefabs.
+  Every warning that a newcomer is likely to hit now tells them
+  what to check or fix:
+  - "GoolAudioRuntime class not registered" now lists the
+    per-OS binary filename to look for and points at the
+    Releases page.
+  - "runtime init failed" splits into the bus-config-rejected
+    branch (point at the JSON error) and the no-audio-device
+    branch (numbered checklist: sample rate, buffer size,
+    exclusive access, headless backend).
+  - "register_voice_source(N) failed" lists the three real
+    causes (budget full, already registered, init order).
+  - All seven prefabs' "/root/Gool autoload not found" warnings
+    now say "the gool plugin is installed but not enabled —
+    Project Settings → Plugins, tick Enable."
+  - `MusicStateController.set_state("typo")` lists the known
+    states or explains "no states added yet, call add_state
+    first."
+
+- **`docs/godot_quickstart.md`** — a focused start-here guide for
+  someone who's never installed a Godot addon. Four numbered
+  steps (get the addon, enable the plugin, drag in a node, write
+  ~8 lines of GDScript) plus a troubleshooting section that
+  matches the new error-message text. Separate from the main
+  README, which is comprehensive reference.
+
+- **`docs/cookbook.md`** — ten one-screen recipes for what users
+  will actually want to do: play a sound at a position,
+  persistent looping emitter, mute a remote player (v0.13.0),
+  per-player volume (v0.13.0), bandwidth budget for mobile
+  (v0.13.0), adaptive music crossfade, footsteps with surface
+  detection, reverb on zone entry, SFX ducking during dialogue,
+  cancel a predicted sound. Each recipe is under 10 lines of
+  GDScript.
+
+- **`examples/quickstart/README.md`** rewritten. Leads with
+  "Download from Releases" with explicit per-OS archive names;
+  build-from-source demoted to Path 2 (for contributors and
+  custom platforms). New Troubleshooting section walks through
+  the three errors a newcomer will hit, in the language of the
+  new error messages.
+
+### Fixed
+
+- `plugin.gd::_register_prefabs` previously passed `null` to
+  `add_custom_type` for every prefab's icon, so the icon path
+  field in the `PREFABS` array was dead code. Fixed to load the
+  SVG via `ResourceLoader` and pass it through. Missing icon
+  files are tolerated (fall back to base-class default) so a
+  user-deleted SVG doesn't break registration.
+
 ## [0.13.0] - 2026-05-12
 
 ### Added — 2.4 Mute / volume per voice source
@@ -4107,7 +4176,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/siliconight/gool/releases/tag/v0.13.1
 [0.13.0]: https://github.com/siliconight/gool/releases/tag/v0.13.0
 [0.12.3]: https://github.com/siliconight/gool/releases/tag/v0.12.3
 [0.12.2]: https://github.com/siliconight/gool/releases/tag/v0.12.2

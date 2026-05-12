@@ -23,14 +23,17 @@ const AUTOLOAD_PATH := "res://addons/gool/runtime_singleton.gd"
 const PREFAB_DIR := "res://addons/gool/prefabs/"
 
 # (class_name, base_node, script_path, icon_path)
+# Icon paths are relative to PREFAB_DIR; concrete filename matches the
+# script so each prefab in the Add Node menu picks up its own glyph
+# instead of the generic Node3D / Area3D fallback.
 const PREFABS := [
-    ["AudioEmitter3D",            "Node3D", "audio_emitter_3d.gd",            ""],
-    ["VoiceChatPlayer",           "Node3D", "voice_chat_player.gd",           ""],
-    ["MusicStateController",      "Node",   "music_state_controller.gd",      ""],
-    ["ReverbZone",                "Area3D", "reverb_zone.gd",                 ""],
-    ["FootstepSurfacePlayer",     "Node3D", "footstep_surface_player.gd",     ""],
-    ["NetworkedAudioEvent",       "Node",   "networked_audio_event.gd",       ""],
-    ["NetworkedAudioEmitter3D",   "Node3D", "networked_audio_emitter_3d.gd",  ""],
+    ["AudioEmitter3D",            "Node3D", "audio_emitter_3d.gd",            "audio_emitter_3d.svg"],
+    ["VoiceChatPlayer",           "Node3D", "voice_chat_player.gd",           "voice_chat_player.svg"],
+    ["MusicStateController",      "Node",   "music_state_controller.gd",      "music_state_controller.svg"],
+    ["ReverbZone",                "Area3D", "reverb_zone.gd",                 "reverb_zone.svg"],
+    ["FootstepSurfacePlayer",     "Node3D", "footstep_surface_player.gd",     "footstep_surface_player.svg"],
+    ["NetworkedAudioEvent",       "Node",   "networked_audio_event.gd",       "networked_audio_event.svg"],
+    ["NetworkedAudioEmitter3D",   "Node3D", "networked_audio_emitter_3d.gd",  "networked_audio_emitter_3d.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"
@@ -127,11 +130,21 @@ func _register_prefabs() -> void:
         var class_id   : String = entry[0]
         var base_class : String = entry[1]
         var script_path: String = PREFAB_DIR + entry[2]
+        var icon_name  : String = entry[3]
         var script := load(script_path)
         if script == null:
             push_warning("[gool] missing prefab script: %s" % script_path)
             continue
-        add_custom_type(class_id, base_class, script, null)
+        # Icon loading is best-effort: a missing or invalid SVG falls
+        # back to the base class's default icon rather than failing
+        # registration. This keeps the Add Node menu working even if
+        # someone deletes an icon file by mistake.
+        var icon: Texture2D = null
+        if icon_name != "":
+            var icon_path := PREFAB_DIR + icon_name
+            if ResourceLoader.exists(icon_path):
+                icon = load(icon_path)
+        add_custom_type(class_id, base_class, script, icon)
 
 func _unregister_prefabs() -> void:
     for entry in PREFABS:
