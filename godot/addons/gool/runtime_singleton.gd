@@ -202,6 +202,31 @@ func register_sound_from_bytes(name: String, bytes: PackedByteArray,
         return 0
     return _runtime.register_sound_from_bytes(name, bytes, format_hint)
 
+## Register a Godot AudioStream resource as a gool sound. Convenience
+## wrapper over the C++ binding's `register_sound_from_stream` (added
+## in v0.14.0). Two paths internally:
+##
+##   * If `stream.resource_path` is set (the 95% case — the stream
+##     was loaded from a .wav/.ogg/.flac/.opus file), the binding
+##     reads those original bytes and registers them. No re-decoding
+##     through Godot's runtime; gool's own decoder owns the asset.
+##   * If `stream` is an AudioStreamWAV with no resource path
+##     (procedurally constructed), the raw PCM in its `data`
+##     property is registered directly.
+##
+## Procedural stream subtypes that can't be reduced to a single PCM
+## asset (AudioStreamRandomizer, AudioStreamPolyphonic,
+## AudioStreamGenerator) are rejected with a diagnostic; for those
+## paths, use `register_pcm_sound()` from script with the samples
+## you already have.
+##
+## Returns the AudioSoundId on success, 0 on failure.
+func register_sound_from_stream(name: String, stream: AudioStream) -> int:
+    if not is_initialized():
+        push_error("[gool] register_sound_from_stream called before init")
+        return 0
+    return _runtime.register_sound_from_stream(name, stream)
+
 ## AudioCategory enum mirrored for GDScript callers. Matches the
 ## C++ enum order (audio::AudioCategory in types.h). Hosts pass one
 ## of these to register_sound_definition() to control routing

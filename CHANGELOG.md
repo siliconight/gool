@@ -12,6 +12,142 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.21.0] - 2026-05-12
+
+### Added — Designer-friendly Godot integration: listener + sound-bank prefabs
+
+Three pieces of drag-and-drop friction reduction. Each is additive
+to the existing seven-prefab set introduced in v0.13.x; nothing
+changed in the C++ API; ABI is identical. The work was scoped from
+the "drag-and-drop integration" brainstorm — items 1, 3, and 4
+from the three-category audit (listener prefab, sound-bank
+resource + loader, inline AudioStream on AudioEmitter3D).
+
+- **New: `GoolListener3D` prefab.** Drop under your Camera3D (or
+  any Node3D whose transform represents the listener's pose) and
+  the engine's listener tracks that transform every `_process`,
+  including derived velocity for Doppler. Replaces the
+  hand-rolled `Gool.set_listener_transform(...)` loop every gool
+  project otherwise has to write. `enabled` and `track_velocity`
+  exports cover the two common reasons to take scripted control.
+  Multi-listener-detection emits an actionable warning on
+  `_ready` (gool supports a single active listener; last writer
+  per frame wins). Name has the `Gool` prefix because Godot 4
+  already ships its own built-in `AudioListener3D`.
+
+- **New: `GoolSoundBank` Resource type.** Authored in the
+  inspector, saved as a `.tres`, diffable in version control.
+  Holds a `Dictionary<String, AudioStream>` plus defaults for
+  spatialization and category routing. Designers populate it by
+  dragging audio assets into the inspector — no script required.
+
+- **New: `GoolSoundBankLoader` prefab.** Drop into your main
+  scene with a `GoolSoundBank` resource assigned and every entry
+  is registered with the runtime on `_ready`. Replaces the
+  `func _ready(): Gool.register_sound_from_file(...)`
+  boilerplate. Emits a `registration_complete` signal after all
+  entries are processed (handle dictionary for inspection).
+  Multiple loaders per scene are additive — useful for layering
+  a level-specific bank over a global bank. Delegates to the
+  C++ binding's `register_sound_from_stream` (added in v0.14.0
+  but never exposed on the GDScript autoload until this release —
+  see the autoload addition below).
+
+- **AudioEmitter3D: inline `AudioStream` property.** When
+  `sound_name` is empty and `stream` is set, the emitter
+  registers the stream automatically on `_ready` using a derived
+  name (`auto:<resource_path>` for file-backed streams,
+  `auto:wav:<instance_id>` for procedurally-built
+  AudioStreamWAVs). This is the "drop an emitter, drag a .wav
+  onto its stream field, done" path — no script, no separate
+  bank. `sound_name` still wins when both are set, preserving
+  backward compatibility for projects that wire sounds through a
+  bank or a host-side registration script.
+
+- **New autoload wrapper: `Gool.register_sound_from_stream(name,
+  stream)`.** Forwards to the C++ binding's
+  `register_sound_from_stream` (v0.14.0). The binding existed
+  but was unreachable from GDScript via the autoload — every
+  caller had to know about the underlying GoolAudioRuntime node
+  and call into it directly. Closing that gap means the new
+  prefabs don't need to break encapsulation.
+
+### Fixed — Shipped GDScript syntax error in all seven existing prefabs
+
+All seven prefabs introduced in the v0.13.x series had the same
+copy-pasted `push_warning(...)` line with unescaped double quotes
+around `"gool"` inside a double-quoted GDScript string. This is
+a parse-level error — Godot's GDScript parser rejects the script
+at load time, which means every shipped prefab since v0.13.0 has
+been silently unusable in a real Godot project.
+
+The error was caught during this release's prefab work, when the
+identical pattern was being copied into the new prefabs. The fix
+is one character per file: replace `"gool"` with `'gool'`
+(single quotes), which GDScript accepts inside a double-quoted
+string. The user-facing message is otherwise unchanged.
+
+Affected files (all under `godot/addons/gool/prefabs/`):
+
+- `audio_emitter_3d.gd:67`
+- `footstep_surface_player.gd:42`
+- `music_state_controller.gd:47`
+- `networked_audio_emitter_3d.gd:83`
+- `networked_audio_event.gd:71`
+- `reverb_zone.gd:46`
+- `voice_chat_player.gd:74`
+
+That this bug went undetected for ~8 release cycles indicates the
+plugin path was not exercised end-to-end in any of the previous
+"verified" releases — which fixed and the new release's prefab
+work make addressable. Treating it as a 0.21.0 fix rather than a
+0.20.x patch because the bug is functionally invisible (the
+plugin never actually loaded a prefab) and the appropriate
+remediation is in the same release as the prefab additions that
+exercised the path enough to surface it.
+
+### Build
+
+- `addons/gool/plugin.gd`: PREFABS array extended with two new
+  entries (`GoolListener3D`, `GoolSoundBankLoader`). Header
+  comment updated to list the full nine-prefab set.
+- `addons/gool/resources/gool_sound_bank.gd`: new Resource
+  class. Lives under `resources/` (new subdirectory) rather
+  than `prefabs/` because it's not a scene-tree Node — it's a
+  data asset. Discoverable via `class_name` annotation.
+- `addons/gool/runtime_singleton.gd`: new
+  `register_sound_from_stream(name: String, stream: AudioStream)
+  -> int` wrapper. Mirrors the existing
+  `register_sound_from_bytes` wrapper's shape.
+
+### Verified
+
+- Library + version_test compile clean against the bumped
+  version triple. No production code touched in the audio
+  engine.
+- GDScript syntax of all five new/modified files reviewed by
+  hand for valid string-literal delimiting, valid type
+  annotations, and matching Godot 4.2 API (the minimum supported
+  Godot version per `GODOT_CPP_REF: 4.2`).
+- The existing seven prefabs' parse-level error is fixed and
+  was a regression from at least v0.13.0 — none of those
+  releases would have actually loaded the prefab scripts. The
+  surface fix is mechanical (one character per file) but the
+  significance is that the plugin path now works at all.
+
+### Known unfixed — deferred to v0.22.0
+
+- **No `AudioEmitter2D` / `GoolListener2D`.** Deferred per the
+  earlier brainstorm — 2D opens a different audience segment
+  and warrants its own scoped release.
+- **Lizard threshold gate** still failing (carried from v0.20.2).
+  The mixer-bench baseline shipped in v0.20.2 informs the
+  decomposition strategy for `MixVoiceSound_` and
+  `DrainCommands`. v0.22 is the natural target.
+- **Sound bank browser dock / custom inspector / live mixer
+  panel.** Phase 3 of the "designer-first" roadmap. Real
+  editor-plugin work, scoped for a future minor release.
+
 ## [0.20.2] - 2026-05-12
 
 ### Added — AudioMixer hot-path bench + v0.20.1 perf baseline
@@ -5339,7 +5475,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.20.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/siliconight/gool/releases/tag/v0.21.0
 [0.20.2]: https://github.com/siliconight/gool/releases/tag/v0.20.2
 [0.20.1]: https://github.com/siliconight/gool/releases/tag/v0.20.1
 [0.20.0]: https://github.com/siliconight/gool/releases/tag/v0.20.0

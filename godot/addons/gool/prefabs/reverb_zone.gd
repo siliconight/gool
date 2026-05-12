@@ -43,7 +43,7 @@ func _ready() -> void:
         return
     _runtime = get_node_or_null("/root/Gool")
     if _runtime == null:
-        push_warning("ReverbZone: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find "gool" in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
+        push_warning("ReverbZone: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
         return
     body_entered.connect(_on_body_entered)
     body_exited.connect(_on_body_exited)

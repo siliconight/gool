@@ -19,7 +19,33 @@ extends Node3D
 ## Sound to play. Must be registered with the runtime via
 ## register_pcm_sound() or load_sound_bank_from_json() before this
 ## node enters the scene tree.
+##
+## If left empty AND `stream` is set, the prefab derives a name
+## from the stream's resource path and registers it automatically
+## on _ready. This is the convenience path — drop an emitter, drag
+## a .wav onto the `stream` field, ignore everything else, done.
 @export var sound_name: String = ""
+
+## Optional inline AudioStream. When set, the emitter registers
+## this stream with the runtime on _ready (lazy registration)
+## using a name derived from the stream's resource path. The
+## intent is the drag-and-drop case where you don't want to author
+## a separate GoolSoundBank for a one-off sound.
+##
+## Precedence: if `sound_name` is non-empty, it wins and `stream`
+## is ignored (the emitter assumes the host already registered
+## that name). If `sound_name` is empty and `stream` is set, the
+## stream is registered and used. If both are empty, the emitter
+## warns on _ready and doesn't play.
+##
+## Restrictions match GoolSoundBankLoader: the stream needs a
+## valid resource_path (i.e. was loaded from a .wav/.ogg/.flac/
+## .opus file) or be an AudioStreamWAV with raw PCM data.
+## Procedural stream types (Randomizer, Polyphonic, Generator)
+## are rejected with a diagnostic — for those, register the
+## samples via Gool.register_pcm_sound() from a script and set
+## `sound_name` explicitly.
+@export var stream: AudioStream = null
 
 ## Whether the sound loops. Looping sounds also benefit from
 ## loop_crossfade_ms to eliminate boundary clicks.
@@ -64,16 +90,70 @@ func _ready() -> void:
         return
     _runtime = get_node_or_null("/root/Gool")
     if _runtime == null:
-        push_warning("AudioEmitter3D: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find "gool" in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
+        push_warning("AudioEmitter3D: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
         return
     if not _runtime.is_initialized():
         await _runtime.ready_to_play
+    # Resolve sound_name. Three cases:
+    #   1. sound_name set explicitly — host registered the sound, use as-is.
+    #   2. sound_name empty, stream set — lazy-register the stream and
+    #      use a name derived from its resource_path.
+    #   3. neither set — warn and bail; nothing to play.
+    if sound_name == "" and stream != null:
+        var derived := _derive_name_from_stream(stream)
+        if derived == "":
+            push_warning(
+                "AudioEmitter3D: inline `stream` has no resource_path "
+                + "and isn't an AudioStreamWAV — can't be registered "
+                + "automatically. Either save the stream as a .tres/"
+                + ".wav/.ogg/.mp3 file, or register the samples via "
+                + "Gool.register_pcm_sound() from a script and set "
+                + "sound_name explicitly."
+            )
+            return
+        var handle: int = _runtime.register_sound_from_stream(derived, stream)
+        if handle == 0:
+            push_warning(
+                "AudioEmitter3D: register_sound_from_stream failed "
+                + "for inline stream (derived name '%s'). Check that "
+                % derived
+                + "the underlying decoder is compiled in "
+                + "(AUDIO_ENGINE_DECODERS_* in CMake)."
+            )
+            return
+        sound_name = derived
+    elif sound_name == "":
+        push_warning(
+            "AudioEmitter3D: neither `sound_name` nor `stream` is set. "
+            + "Set one of them in the inspector: `sound_name` (string) "
+            + "references a sound the host pre-registered via "
+            + "Gool.register_pcm_sound() or a GoolSoundBankLoader; "
+            + "`stream` (AudioStream) is auto-registered for one-off "
+            + "use."
+        )
+        return
     # Register with sane defaults if the host hasn't already.
     _runtime.register_sound_definition(sound_name, true, looping,
                                           min_distance, max_distance,
                                           loop_crossfade_ms)
     if autoplay:
         play()
+
+# Derives a stable sound_name from an AudioStream. Uses the resource
+# path when available (the 95% case — Godot import-pipeline assets),
+# else falls back to a uniqueness-via-instance-id name for in-memory
+# AudioStreamWAVs. Returns "" if no derivation strategy applies.
+func _derive_name_from_stream(s: AudioStream) -> String:
+    var path: String = s.resource_path
+    if path != "":
+        # res://sfx/coin.wav → "auto:res://sfx/coin.wav"
+        # Prefix avoids accidental collisions with host-chosen names.
+        return "auto:" + path
+    if s is AudioStreamWAV:
+        # Programmatically-built WAV — make the name stable per
+        # instance so repeated _ready calls hit the cached registration.
+        return "auto:wav:%d" % s.get_instance_id()
+    return ""
 
 func play() -> void:
     if _runtime == null or sound_name == "":

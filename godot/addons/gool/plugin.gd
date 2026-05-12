@@ -7,7 +7,9 @@
 #      script. This is what every prefab calls into.
 #   2. Registers the custom prefab Nodes (AudioEmitter3D,
 #      VoiceChatPlayer, MusicStateController, ReverbZone,
-#      FootstepSurfacePlayer) so they appear in the Add Node menu.
+#      FootstepSurfacePlayer, NetworkedAudioEvent,
+#      NetworkedAudioEmitter3D, GoolListener3D, GoolSoundBankLoader)
+#      so they appear in the Add Node menu.
 #   3. Writes a default config file at res://gool/config.json with
 #      reasonable bus/attenuation/compression defaults if one
 #      doesn't already exist. The runtime reads this on init.
@@ -34,6 +36,13 @@ const PREFABS := [
     ["FootstepSurfacePlayer",     "Node3D", "footstep_surface_player.gd",     "footstep_surface_player.svg"],
     ["NetworkedAudioEvent",       "Node",   "networked_audio_event.gd",       "networked_audio_event.svg"],
     ["NetworkedAudioEmitter3D",   "Node3D", "networked_audio_emitter_3d.gd",  "networked_audio_emitter_3d.svg"],
+    # v0.21.0: designer-friendly integration nodes. GoolListener3D
+    # eliminates the per-project hand-rolled set_listener_transform
+    # loop; GoolSoundBankLoader pairs with the GoolSoundBank resource
+    # so sound registration becomes a drag-and-drop inspector step
+    # instead of a script-only chore.
+    ["GoolListener3D",            "Node3D", "gool_listener_3d.gd",            "gool_listener_3d.svg"],
+    ["GoolSoundBankLoader",       "Node",   "gool_sound_bank_loader.gd",      "gool_sound_bank_loader.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"

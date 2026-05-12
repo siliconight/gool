@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GoolListener3D — ear-shaped curve receiving incoming sound waves from the
+     left. 16x16 viewBox, follows Godot's monochromatic editor-icon convention.
+     The icon picks up the editor theme color via fill="currentColor" upstream;
+     here we use #e0e0e0 to match the existing gool prefab icons. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#e0e0e0" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Incoming sound wave arcs from the left -->
+    <path d="M 1.5 6 Q 3 8 1.5 10" stroke-width="1" opacity="0.45"/>
+    <path d="M 3 5.5 Q 4.5 8 3 10.5" stroke-width="1" opacity="0.7"/>
+    <!-- Stylized ear: outer cup + inner canal -->
+    <path d="M 7 3 Q 12 3 12 8 Q 12 13 8 13 Q 7.5 13 7.2 12.5"
+          stroke-width="1.3"/>
+    <path d="M 9 7 Q 10 8 9 10" stroke-width="1"/>
+    <!-- Pickup dot at the ear canal -->
+    <circle cx="9.2" cy="8.6" r="0.7" fill="#e0e0e0" stroke="none"/>
+  </g>
+</svg>
