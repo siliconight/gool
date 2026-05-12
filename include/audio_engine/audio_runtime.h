@@ -103,7 +103,14 @@ public:
     // spatial state, publishes the next mixer snapshot for the render thread.
     // Called on the audio control thread (often the game thread for simple
     // single-threaded host integrations).
-    void Update(float deltaSeconds) AUDIO_REQUIRES(ControlThread);
+    //
+    // noexcept (v0.15.0): the control-thread hot path is contractually
+    // guaranteed not to propagate exceptions. The implementation wraps its
+    // body in a catch-all barrier that converts any escaped exception into
+    // a telemetry counter and a single error log line — preserving host
+    // process liveness even when third-party callbacks (telemetry sinks,
+    // backend drivers, log targets) misbehave.
+    void Update(float deltaSeconds) noexcept AUDIO_REQUIRES(ControlThread);
 
     // ---- Sound registry (game thread) ------------------------------------
 
@@ -647,6 +654,18 @@ public:
         // budget is too tight or the encoder rate is too high; consider
         // raising the budget or accepting lower quality.
         uint64_t voiceFramesBudgetDropped = 0;
+
+        // ---- v0.15.0: noexcept hot-path observability ---------------------
+        // Exceptions caught at the control-thread Update() barrier.
+        // Update() is marked `noexcept` so the compiler will std::terminate
+        // on any propagating exception; the catch(...) inside translates
+        // exceptions from third-party host callbacks (telemetry sinks,
+        // log sinks, backend drivers, decoders) into this counter +
+        // a single log line, then continues ticking. Non-zero in steady
+        // state means a host integration is misbehaving and dropping
+        // work on the floor — investigate the most recent error log
+        // for the surface that threw.
+        uint64_t controlThreadExceptionsCaught = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
 

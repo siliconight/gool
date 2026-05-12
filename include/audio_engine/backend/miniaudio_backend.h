@@ -50,6 +50,14 @@ public:
     // "WASAPI / Speakers (Realtek)" once Start has succeeded. Empty before.
     const char* DeviceDescription() const noexcept;
 
+    // v0.15.0: monotonic count of exceptions caught at the render-thread
+    // callback boundary. Non-zero in steady state means the engine's
+    // render path is throwing (which it shouldn't — but third-party DSP
+    // plugins in the mixer's effect chain could) and audio frames are
+    // being dropped to silence. Read on the control thread; the counter
+    // is atomic. Safe to poll every Update() tick.
+    uint64_t RenderCallbackExceptions() const noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

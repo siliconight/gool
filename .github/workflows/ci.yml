@@ -274,3 +274,74 @@ jobs:
               find build-godot -type f -name "libgool_godot*" 2>/dev/null   >&2
               exit 1
           fi
+
+
+  # ----------------------------------------------------------------
+  # Job: clang-tidy static analysis (v0.15.0 Tier-1 hardening).
+  #
+  # Runs the .clang-tidy configuration at repo root over all gool
+  # sources. Linux-only (the checks themselves are platform-
+  # independent; running on three platforms would triple cost without
+  # adding signal). Treats the configured checks as errors at the CI
+  # gate via --warnings-as-errors='*' so a PR that introduces a new
+  # bugprone-*/performance-*/cert-* finding fails the build.
+  #
+  # Excludes:
+  #   - third-party headers (miniaudio.h, opus, godot-cpp): covered
+  #     by HeaderFilterRegex in .clang-tidy; the run-clang-tidy.py
+  #     wrapper respects it.
+  #   - tests/: useful to surface bugs in tests too, but the noisier
+  #     test idioms (literal magic numbers in assertions, etc.)
+  #     would create a long allowlist to maintain. v0.15.0 ships
+  #     with library coverage only; tests can be added in a
+  #     follow-up if/when the signal-to-noise ratio is high enough.
+  #
+  # Cost: ~3-5 min on a standard GH runner for a clean build.
+  # ----------------------------------------------------------------
+  clang-tidy:
+    name: static-analysis / clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy-15
+          # Symlink to a stable name so run-clang-tidy finds it.
+          sudo ln -sf "$(which clang-tidy-15)" /usr/local/bin/clang-tidy
+
+      - name: Configure (export compile_commands.json)
+        run: cmake -S . -B build-tidy
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+              -DCMAKE_BUILD_TYPE=Release
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
+              -DAUDIO_ENGINE_DECODERS_WAV=ON
+              -DAUDIO_ENGINE_DECODERS_OGG=ON
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      # Build first so generated headers (version.h commit hash,
+      # nlohmann_json single-header, etc.) exist before clang-tidy
+      # tries to parse the TUs that include them.
+      - name: Build (populates generated headers)
+        run: cmake --build build-tidy --config Release --parallel 2
+
+      - name: Run clang-tidy on library sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build the file list from compile_commands.json so we only
+          # check TUs that are actually part of the build. The jq filter
+          # restricts to src/audio_engine/**.cpp; HeaderFilterRegex in
+          # .clang-tidy handles transitive headers.
+          jq -r '.[].file' build-tidy/compile_commands.json \
+              | grep -E '/src/audio_engine/.*\.cpp$' \
+              | sort -u > /tmp/tidy_files.txt
+          echo "clang-tidy targets ($(wc -l < /tmp/tidy_files.txt) files):"
+          cat /tmp/tidy_files.txt
+          # Parallel run; --warnings-as-errors='*' makes any enabled
+          # check a CI failure (matches the "broken windows" guidance
+          # in the PVS-Studio terrible-tips article — a warning the
+          # team learns to ignore is worse than none).
+          xargs -a /tmp/tidy_files.txt -P 2 -I{} \
+              clang-tidy -p build-tidy --warnings-as-errors='*' {}

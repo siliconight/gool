@@ -12,6 +12,124 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.15.0] - 2026-05-12
+
+### Added — Tier-1 hardening from the resilience / security / performance survey
+
+A focused pass on the four issue classes the survey identified in
+gool's current codebase: the unprotected control-thread entry point,
+the soft warning policy, the missing static-analysis gate, and the
+unbarriered render-thread callback. Each is closed at the
+compile-time or build-system level so the property is enforced
+rather than aspirational.
+
+- **`AudioRuntime::Update(float)` is now `noexcept`.** The control
+  thread's per-frame entry point can no longer propagate an
+  exception into the host's game loop. The 386-line body was
+  preserved verbatim as a private `UpdateBody_` helper; the new
+  public `Update()` is a 25-line `noexcept` wrapper with two catch
+  arms (`std::exception&` and `...`) that translate any escaped
+  exception into:
+    - a new `Stats::controlThreadExceptionsCaught` counter, and
+    - a single Error-level log line via the existing `Log_`
+      helper (which itself catches sink misbehavior, so the catch
+      chain terminates cleanly).
+  Non-zero counter in steady state means a host-supplied callback
+  (telemetry sink, log sink, backend driver, decoder) is throwing
+  and ticks are dropping work on the floor — the value identifies
+  the host as the source rather than guesswork.
+
+- **Two `static_assert(noexcept(...))` pins** at the bottom of
+  `audio_runtime.cpp` make the noexcept contract a compile-time
+  error to violate. A future refactor that accidentally drops
+  the qualifier breaks the build with a clear message instead of
+  surfacing the regression as a runtime `std::terminate` in some
+  player's machine.
+
+- **Render-thread try/catch barrier.** The miniaudio
+  `Impl::DataCallback` (which miniaudio invokes on its own audio
+  thread, where allocating or locking would glitch the device)
+  now wraps the engine's `OnRender` call in a catch-all that
+  zeroes the output buffer on exception and bumps a new atomic
+  `renderCallbackExceptions` counter. Silence is the safe fallback;
+  a glitch is always better than terminating the host process.
+  The counter is exposed via the new public method
+  `MiniaudioBackend::RenderCallbackExceptions()`, returning a
+  monotonic `uint64_t`. Atomic with `memory_order_relaxed` (the
+  counter is a hint, not a synchronization signal).
+
+- **Unconditional `-Werror` / `/WX`** on gool's own private
+  compilation. The previous `AUDIO_ENGINE_WARNINGS_AS_ERRORS` CMake
+  option gated the strictness; v0.15.0 removes the gate. Because
+  the flag is `PRIVATE`, downstream consumers compiling gool as a
+  subdirectory keep their own warning policy — only gool's own
+  TUs are forced to compile clean. Existing CI scripts that
+  toggled the option continue to work (the option is now a no-op).
+  The rationale is the broken-windows-theory point from the
+  PVS-Studio antipattern catalog: a warning the team learns to
+  tolerate is worse than no warnings at all.
+
+- **`.clang-tidy` configuration** at repo root, plus a new
+  `clang-tidy` job in `.github/workflows/ci.yml` (Linux-only,
+  clang-tidy-15) that runs the configuration over all library
+  TUs with `--warnings-as-errors='*'`. The check sets enabled
+  are: `bugprone-*` (minus two noisy checks that fire constantly
+  on audio-sized-buffer arithmetic), `cert-*` (minus
+  `err58-cpp`), a selected subset of `cppcoreguidelines-*`
+  (cast-discipline, member-init, slicing), all `performance-*`
+  (minus the stream-stylistic `avoid-endl`), safety-relevant
+  `modernize-*` (`use-nullptr`, `use-override`, `use-equals-default
+  / -delete`, `deprecated-headers`), bug-catching `readability-*`,
+  and `hicpp-exception-baseclass`. `HeaderFilterRegex` confines
+  the check to gool's own headers (miniaudio, godot-cpp, opus,
+  nlohmann_json are out of scope). The `.clang-tidy` file itself
+  is heavily commented to document why each group is in and
+  what's excluded.
+
+### Why this set, not more
+
+The recommendations the survey identified as "Tier 2" (function-
+length decomposition, cyclomatic-complexity gate, second analyzer,
+coverage measurement) and "Tier 3" (libFuzzer harnesses, PVS-Studio
+OSS license, exhaustive noexcept-contract documentation) are
+deferred to later releases. Tier 1 closes the only real safety
+gap the audit surfaced (the `Update()` noexcept hole) and installs
+the static-analysis baseline that prevents regression on
+everything else. Each subsequent tier compounds on top of it.
+
+### Internal
+
+- `audio_runtime.h`: `Update(float)` now declared
+  `noexcept AUDIO_REQUIRES(ControlThread)`. New
+  `Stats::controlThreadExceptionsCaught` field.
+- `audio_runtime_impl.h`: matching `Update(float) noexcept`
+  on the impl class; new private `UpdateBody_(float)` carrying
+  the original logic.
+- `audio_runtime.cpp`: public forwarder updated; new wrapper;
+  body rename; `<utility>` included for `std::declval` in the
+  static_assert pins.
+- `miniaudio_backend.h`: new `RenderCallbackExceptions()` method.
+- `miniaudio_backend.cpp`: `Impl::renderCallbackExceptions` atomic;
+  try/catch barrier inside `DataCallback`; impl of the new getter.
+- `CMakeLists.txt`: warning-as-errors made unconditional.
+- `.clang-tidy`: new file.
+- `.github/workflows/ci.yml`: new `clang-tidy` job.
+
+### Verified
+
+- C++ engine-side regression: 40/40 unit tests pass at `-O2`.
+- ASAN+UBSAN: sampled three runtime/mixer/voice tests, 3/3 pass.
+- TSAN: focused on the ten tests that exercise the modified
+  Update-on-control-thread path
+  (`integration_kitchen_sink_test`, `voice_mute_budget_test`,
+  `replicated_events_test`, `bus_graph_test`,
+  `priority_eviction_test`, `multiplayer_readiness_test`,
+  `production_readiness_test`, `loop_crossfade_test`,
+  `telemetry_test`, `voice_telemetry_test`), 10/10 pass.
+- Full sanitizer suite runs in the existing `ci.yml` workflow
+  on tag push; this release does not change the workflow's
+  pre-existing nightly ASAN/UBSAN/TSAN matrix.
+
 ## [0.14.0] - 2026-05-12
 
 ### Added — Native-Godot integration touchpoints
@@ -4273,7 +4391,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/siliconight/gool/releases/tag/v0.15.0
 [0.14.0]: https://github.com/siliconight/gool/releases/tag/v0.14.0
 [0.13.1]: https://github.com/siliconight/gool/releases/tag/v0.13.1
 [0.13.0]: https://github.com/siliconight/gool/releases/tag/v0.13.0

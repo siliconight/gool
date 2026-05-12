@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.14.0
+    VERSION 0.15.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -524,14 +524,15 @@ endif()
 
 if(MSVC)
     target_compile_options(audio_engine PRIVATE /W4)
-    if(AUDIO_ENGINE_WARNINGS_AS_ERRORS)
-        target_compile_options(audio_engine PRIVATE /WX)
-    endif()
+    # v0.15.0: warnings-as-errors is unconditional for gool's own private
+    # compilation. PRIVATE means the flag does not propagate to downstream
+    # consumers (who keep their own warning policies). The old option
+    # AUDIO_ENGINE_WARNINGS_AS_ERRORS is preserved as a no-op for backward
+    # compatibility — any existing CI scripts that toggle it keep working.
+    target_compile_options(audio_engine PRIVATE /WX)
 else()
     target_compile_options(audio_engine PRIVATE -Wall -Wextra -Wpedantic)
-    if(AUDIO_ENGINE_WARNINGS_AS_ERRORS)
-        target_compile_options(audio_engine PRIVATE -Werror)
-    endif()
+    target_compile_options(audio_engine PRIVATE -Werror)
 endif()
 
 set_target_properties(audio_engine PROPERTIES

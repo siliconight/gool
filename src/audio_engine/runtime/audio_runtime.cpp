@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>  // std::declval — used by v0.15.0 noexcept contract pins
 
 namespace audio {
 
@@ -33,7 +34,7 @@ AudioResult AudioRuntime::Initialize(const AudioConfig& config,
 }
 void AudioRuntime::Shutdown()                  { impl_->Shutdown(); }
 bool AudioRuntime::IsInitialized() const noexcept { return impl_->IsInitialized(); }
-void AudioRuntime::Update(float dt)            { impl_->Update(dt); }
+void AudioRuntime::Update(float dt) noexcept     { impl_->Update(dt); }
 
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
     return impl_->RegisterSoundDefinition(d);
@@ -1421,7 +1422,41 @@ void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
 
 // ---- The 11-step Update flow ----------------------------------------------
 
-void AudioRuntimeImpl::Update(float deltaSeconds) {
+// Public Update entry point. noexcept wrapper around UpdateBody_ that
+// converts any escaped exception into a telemetry counter + log line so
+// the control thread can never propagate an exception into the host's
+// game loop, even if a third-party callback (telemetry sink, log sink,
+// backend driver, decoder) misbehaves. v0.15.0 hardening.
+//
+// The two catch arms exist because the standard exception hierarchy
+// is the common case but third-party C++ code is permitted to throw
+// arbitrary objects (POD ints, custom types not deriving from
+// std::exception). The catch(...) covers that long tail without
+// allowing termination.
+void AudioRuntimeImpl::Update(float deltaSeconds) noexcept {
+    try {
+        UpdateBody_(deltaSeconds);
+    } catch (const std::exception& e) {
+        ++statsLatest_.controlThreadExceptionsCaught;
+        // Reuse the existing logging path. e.what() is a borrowed
+        // pointer into the caught exception; the Log_ call copies on
+        // the sink side so the lifetime extends correctly.
+        Log_(static_cast<uint8_t>(LogLevel::Error),
+              std::string_view("runtime"),
+              std::string_view(e.what()),
+              std::span<const LogField>{});
+    } catch (...) {
+        ++statsLatest_.controlThreadExceptionsCaught;
+        Log_(static_cast<uint8_t>(LogLevel::Error),
+              std::string_view("runtime"),
+              std::string_view("AudioRuntime::Update: caught non-std "
+                               "exception (third-party callback threw an "
+                               "object not derived from std::exception)"),
+              std::span<const LogField>{});
+    }
+}
+
+void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
     if (!initialized_) return;
 
     statsLatest_.eventsDrainedLastTick     = 0;
@@ -1963,5 +1998,28 @@ bool AudioRuntimeImpl::GetPerPlayerReplicationStats(
     out.eventsRejected    = internal.eventsRejected;
     return true;
 }
+
+// ---- v0.15.0: noexcept contract pins -----------------------------------
+//
+// These static_asserts make the noexcept guarantee a compile-time error
+// to violate rather than a comment-only convention. If someone refactors
+// Update() and accidentally drops the noexcept qualifier, the build
+// breaks here with a clear message instead of the regression surfacing
+// at runtime as an std::terminate in some host's game loop.
+//
+// Placed in the .cpp (not the header) so the assertion fires when this
+// translation unit compiles — after the class is fully declared and
+// the member function signature is known with its qualifiers.
+
+static_assert(noexcept(std::declval<AudioRuntime&>().Update(0.0f)),
+              "AudioRuntime::Update must be noexcept — the control-thread "
+              "hot path is contractually exception-free. The body wraps a "
+              "catch-all barrier; the qualifier makes it a compile-time "
+              "guarantee. See v0.15.0 hardening notes in CHANGELOG.md.");
+
+static_assert(noexcept(std::declval<AudioRuntimeImpl&>().Update(0.0f)),
+              "AudioRuntimeImpl::Update must be noexcept (the impl forwarder "
+              "matches the public signature; this pin catches drift between "
+              "the two layers).");
 
 } // namespace audio

@@ -51,26 +51,61 @@ struct MiniaudioBackend::Impl {
     uint32_t              channels     = 2;
     char                  description[160] = {0};
 
+    // v0.15.0: monotonic count of exceptions caught at the render-thread
+    // boundary. The DataCallback is marked noexcept (a violation would
+    // terminate the host process), and miniaudio is a C API that cannot
+    // propagate C++ exceptions in any case — so we wrap the inner
+    // OnRender() call in a catch-all that swaps in silence and increments
+    // this counter. Surfaced via RenderCallbackExceptions() for
+    // observability; non-zero in steady state means the host's
+    // IAudioRenderCallback implementation is throwing and audio frames
+    // are being dropped to silence. Atomic because the counter is
+    // produced on the render thread and read on the control thread.
+    std::atomic<uint64_t> renderCallbackExceptions{0};
+
     // miniaudio's data callback. Runs on miniaudio's audio thread.
     // Forwards into the engine's render callback. Output is interleaved
     // float32, range [-1, 1], `frameCount` frames across `channels`
     // channels. We zero the buffer if the callback has been cleared (the
     // caller is mid-Stop) so the device doesn't latch garbage.
+    //
+    // v0.15.0 noexcept boundary: any exception from the engine's
+    // OnRender() is caught here, the buffer is zeroed (silence rather
+    // than latched garbage), and the exception counter increments. This
+    // protects the host process from a std::terminate if the engine's
+    // render path ever throws — which the engine itself doesn't, but
+    // hostile third-party DSP plugins running inside the mixer's effect
+    // chain might. The cost when no exception fires is one untaken
+    // branch (the try setup is free at the ABI level on Itanium-style
+    // unwinding tables).
     static void DataCallback(ma_device* dev,
                              void*       output,
                              const void* /*input*/,
                              ma_uint32   frameCount) noexcept {
         auto* self = static_cast<Impl*>(dev->pUserData);
+        const size_t buf_bytes =
+            static_cast<size_t>(frameCount) *
+            static_cast<size_t>(dev->playback.channels) *
+            sizeof(float);
         if (!self || !self->callback) {
-            std::memset(output, 0,
-                        static_cast<size_t>(frameCount) *
-                        static_cast<size_t>(dev->playback.channels) *
-                        sizeof(float));
+            std::memset(output, 0, buf_bytes);
             return;
         }
-        self->callback->OnRender(static_cast<float*>(output),
-                                  static_cast<uint32_t>(frameCount),
-                                  static_cast<uint32_t>(dev->playback.channels));
+        try {
+            self->callback->OnRender(
+                static_cast<float*>(output),
+                static_cast<uint32_t>(frameCount),
+                static_cast<uint32_t>(dev->playback.channels));
+        } catch (...) {
+            // Render thread cannot allocate, lock, or log. Silence is
+            // the safe fallback — a glitch is better than terminating
+            // the host. Counter is atomic; control thread reads it
+            // via RenderCallbackExceptions() and can decide whether
+            // to emit a log on the next Update() tick.
+            std::memset(output, 0, buf_bytes);
+            self->renderCallbackExceptions.fetch_add(
+                1, std::memory_order_relaxed);
+        }
     }
 };
 
@@ -160,6 +195,10 @@ uint32_t MiniaudioBackend::Channels()   const noexcept { return impl_->channels;
 
 const char* MiniaudioBackend::DeviceDescription() const noexcept {
     return impl_->description;
+}
+
+uint64_t MiniaudioBackend::RenderCallbackExceptions() const noexcept {
+    return impl_->renderCallbackExceptions.load(std::memory_order_relaxed);
 }
 
 } // namespace audio

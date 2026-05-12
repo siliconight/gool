@@ -1,0 +1,128 @@
+# clang-tidy configuration for the gool audio engine.
+#
+# v0.15.0 — Tier-1 hardening from the PVS-Studio / NASA Power-of-Ten /
+# Microsoft / Lefticus survey.
+#
+# The intent is to ship a configuration that catches the high-value bug
+# classes (exception escapes, narrowing conversions, accidental copies,
+# UB-adjacent constructs) without drowning contributors in pedantic
+# stylistic noise. Checks are enabled in three groups and a small list
+# of named exclusions; see comments per group for the rationale of
+# what's in and what's out.
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+  cert-*,
+  -cert-err58-cpp,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor,
+  performance-*,
+  -performance-avoid-endl,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-deprecated-headers,
+  readability-misleading-indentation,
+  readability-redundant-control-flow,
+  readability-redundant-smartptr-get,
+  readability-string-compare,
+  misc-misplaced-const,
+  misc-non-copyable-objects,
+  misc-throw-by-value-catch-by-reference,
+  misc-unused-using-decls,
+  hicpp-exception-baseclass
+
+# Why each group:
+#
+# bugprone-*  — the highest-signal group. Catches:
+#   - bugprone-exception-escape (the v0.15.0 noexcept-hot-path issue)
+#   - bugprone-narrowing-conversions (int / size_t mixing — terrible-tips N8)
+#   - bugprone-use-after-move
+#   - bugprone-suspicious-memset-usage / -memory-comparison
+#   - bugprone-undefined-memory-manipulation
+#   - bugprone-signed-char-misuse (terrible-tips N16-ish)
+#   Two excluded:
+#     - bugprone-easily-swappable-parameters: too aggressive for an audio
+#       engine whose APIs naturally take multiple float / uint32_t
+#       parameters (sample rate, frame count, channels, etc.).
+#     - bugprone-implicit-widening-of-multiplication-result: fires
+#       constantly on `frame * channels * sizeof(float)`-style buffer
+#       sizing, where the widening is intentional and obvious.
+#
+# cert-* — security / standards-compliance. Catches:
+#   - cert-err33-c (unchecked return values — terrible-tips N17 and the
+#     "check what the malloc returned" rule)
+#   - cert-flp30-c (no float loop counters)
+#   - cert-oop54-cpp (self-assignment safety)
+#   One excluded:
+#     - cert-err58-cpp: warns on any static-storage object whose
+#       constructor can throw, which our test telemetry sinks would
+#       trip on without value. The narrower check we want is
+#       bugprone-exception-escape, already enabled.
+#
+# cppcoreguidelines-* — selective. The full set is too pedantic for an
+#   engine that intentionally uses raw pointers and C-style buffers on
+#   hot paths. We keep the structural ones:
+#     - pro-type-cstyle-cast / static-cast-downcast / reinterpret-cast
+#       (gool is already clean; this is the regression gate)
+#     - pro-type-member-init (uninitialized members — terrible-tips N43)
+#     - init-variables (uninitialized locals)
+#     - slicing (object slicing across base/derived)
+#     - virtual-class-destructor
+#
+# performance-* — Lefticus's chapter. All of them. One excluded:
+#     - performance-avoid-endl: stylistic only; we don't print to streams
+#       in performance-critical paths.
+#
+# modernize-* — only the safety-relevant ones (nullptr, override, =default /
+#   =delete). The reformatting churn from full modernize-* (e.g.,
+#   use-auto, use-trailing-return-type) would create huge diffs without
+#   commensurate benefit.
+#
+# readability-* — only the four that catch actual bugs (misleading
+#   indentation, redundant control flow, redundant get(), broken string
+#   comparison). Full readability would conflict with our deliberate
+#   table-style formatting in some bus_config paths.
+#
+# misc-* — four selected checks that catch real bugs without policy churn.
+#
+# hicpp-exception-baseclass — catches throw-of-non-std::exception, which
+#   is the corollary to the catch(...) barriers we added in v0.15.0.
+
+# Treat enabled checks as warnings; the CI workflow upgrades to errors.
+# Local invocation should not block builds on style; CI gates strictness.
+WarningsAsErrors: ''
+
+# Apply only to gool's own headers — third-party miniaudio.h, godot-cpp,
+# and opus headers are out of scope.
+HeaderFilterRegex: '^(include|src|tests|godot/src)/audio_engine.*'
+
+FormatStyle: file
+
+# We use snake_case for free functions, PascalCase for class methods,
+# member-suffix underscore for private members. The check `readability-
+# identifier-naming` is intentionally NOT enabled — gool's mixed
+# conventions (Init/Update/Shutdown PascalCase methods, kFoo constants,
+# underscored privates) are deliberate and would generate hundreds of
+# false positives.
+
+CheckOptions:
+  - key: bugprone-exception-escape.IgnoredExceptions
+    value: ''
+  - key: cppcoreguidelines-init-variables.IncludeStyle
+    value: 'google'
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: 'false'
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: ''
+  - key: misc-throw-by-value-catch-by-reference.MaxSize
+    value: '0'

@@ -82,7 +82,15 @@ public:
     void        Shutdown();
     bool        IsInitialized() const noexcept { return initialized_; }
 
-    void Update(float deltaSeconds);
+    void Update(float deltaSeconds) noexcept;
+
+    // v0.15.0: the actual Update body, kept separate from the public
+    // noexcept entry so the catch-all wrapper in Update() can convert
+    // any escaped exception into a telemetry counter + log line
+    // without rewriting 400 lines of business logic in a try block.
+    // Internal; do not call directly — the noexcept guarantee is on
+    // Update().
+    void UpdateBody_(float deltaSeconds);
 
     // Game thread API
     AudioResult           RegisterSoundDefinition(const SoundDefinition& def);
