@@ -95,11 +95,28 @@ fi
 # ----------------------------------------------------------------------
 # Build the tar.
 #
-# We use --transform to rewrite the archive's top-level entry from
-# "." (or whatever the on-disk directory is named) to "gool-X.Y.Z/".
-# This decouples the archive's labeling from any sandbox / clone
-# directory naming conventions — the user always extracts to a
-# version-stamped, project-branded folder.
+# Two bugs lived in the previous "tar . --transform" approach (fixed in
+# v0.20.2):
+#
+#   1. GNU tar's `--transform` is documented to skip the root-directory
+#      entry, so when packing `.` from the repo root the bare `./` entry
+#      at the head of the archive was emitted unrewritten. Every other
+#      member (`./src/...`) was correctly rewritten to `gool-X.Y.Z/...`,
+#      but the lone `./` slipped through. Windows extractors that show
+#      the top-level entries of a .tar.gz then displayed something like
+#      "./" alongside "gool-X.Y.Z/", which looked like the archive was
+#      missing its version prefix.
+#
+#   2. `tar -z` invokes gzip in a way that embeds the absolute output
+#      path in the gzip header's "original name" field. When the .gz is
+#      opened on Windows, tools that read that field saw a Linux-shaped
+#      absolute path (/mnt/.../gool-X.Y.Z.tar) and rendered it weirdly.
+#
+# Both problems disappear when we (a) stage the source into a named
+# directory and tar that as an explicit member — same approach the
+# Windows .ps1 script uses; and (b) drive gzip via
+# --use-compress-program with the -n flag, which tells gzip to omit the
+# original-name and timestamp fields from its header.
 #
 # Excludes are listed explicitly rather than relying on .gitignore
 # because (a) this script needs to work in non-git checkouts and
@@ -140,22 +157,35 @@ EXCLUDES=(
     --exclude='*.swo'
 )
 
-# --transform's expression rewrites the leading "./" (which tar emits
-# when packing the current directory) to the archive prefix.
-TRANSFORM="s,^\./,${ARCHIVE_PREFIX}/,"
+# Stage into ${STAGING_ROOT}/gool-X.Y.Z/ via a tar | tar pipe so the
+# EXCLUDES list applies during copy. Pure cp/rsync would either ignore
+# excludes (cp -a) or require a separate dependency (rsync); the
+# tar | tar idiom is portable and doesn't pull anything new in.
+STAGING_ROOT="$( mktemp -d -t gool-stage-XXXXXXXX )"
+STAGING_DIR="${STAGING_ROOT}/${ARCHIVE_PREFIX}"
+mkdir -p "${STAGING_DIR}"
 
+# Always clean up the staging dir on exit (success or failure).
+trap 'rm -rf "${STAGING_ROOT}"' EXIT
+
+cd "${REPO_ROOT}"
+tar "${EXCLUDES[@]}" --owner=0 --group=0 -cf - . \
+    | tar -xf - -C "${STAGING_DIR}"
+
+# Pack the staged directory by its explicit name. No `--transform`
+# needed — the on-disk layout is already the layout we want inside
+# the archive. `--use-compress-program='gzip -n'` strips the embedded
+# original-name and mtime from the gzip header.
 if [ "${OUTPUT_PATH}" = "-" ]; then
-    cd "${REPO_ROOT}"
-    tar "${EXCLUDES[@]}" \
-        --transform "${TRANSFORM}" \
+    cd "${STAGING_ROOT}"
+    tar --use-compress-program='gzip -n' \
         --owner=0 --group=0 \
-        -czf - .
+        -cf - "${ARCHIVE_PREFIX}"
 else
-    cd "${REPO_ROOT}"
-    tar "${EXCLUDES[@]}" \
-        --transform "${TRANSFORM}" \
+    cd "${STAGING_ROOT}"
+    tar --use-compress-program='gzip -n' \
         --owner=0 --group=0 \
-        -czf "${OUTPUT_PATH}" .
+        -cf "${OUTPUT_PATH}" "${ARCHIVE_PREFIX}"
 
     # Report what we wrote.
     SIZE_BYTES="$( stat -c '%s' "${OUTPUT_PATH}" 2>/dev/null \

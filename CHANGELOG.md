@@ -12,6 +12,110 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.20.2] - 2026-05-12
+
+### Added — AudioMixer hot-path bench + v0.20.1 perf baseline
+
+Patch release covering perf-tooling hygiene. The existing
+`tests/bench/` covered `ParameterSmoother` (microbench) and the
+RTPC eval path (full-runtime bench), but the actual render-thread
+hot path — the mixer — wasn't measured. Adding it now establishes
+a "before" baseline for the v0.21 decomposition of
+`AudioMixer::DrainCommands` and `MixVoiceSound_`, which are the
+two functions on the lizard threshold list.
+
+- **New: `tests/bench/audio_mixer_bench.cpp`.** Drives the public
+  `OnRender` + `PostCommand` surfaces (the functions of interest
+  are private). Four scenarios: Sound mode mono+pan baseline (A),
+  +per-voice LPF (B), binaural per-ear (C), and command-drain
+  throughput (D). All scenarios at 256-frame stereo, 48 kHz.
+  Voice counts swept from 1 to 256 in the per-voice scenarios,
+  command pressure 0–256/render in scenario D. Runs in ~30 s on
+  a laptop. Not registered with CTest — benchmarks are
+  observation tools, not pass/fail gates.
+
+- **New `docs/perf.md` section: "AudioMixer hot path (v0.20.1
+  baseline)."** Tabulated numbers from a Linux x86_64 cloud
+  sandbox build. Establishes per-voice cost ratios:
+  ~1.0 µs/voice in mono+pan, ~2.1 µs/voice with LPF, ~5.1 µs/voice
+  in binaural. `DrainCommands` measured at ~25 ns/command — the
+  lizard threshold violation on that function is structural
+  complexity, not perf, so any v0.21 decomposition there is for
+  readability only.
+
+- **New roadmap entries** `M1` (Sound-mode mix path) and `M2`
+  (command drain) added to the "Roadmap items measured" section
+  of `docs/perf.md`, alongside the existing v0.7.2 `B1` and `B3`
+  entries.
+
+### Fixed — Source-archive script emitted a bare `./` entry
+
+`scripts/make_source_archive.sh` packed the repo root as `.` and
+relied on `tar --transform 's,^\./,gool-X.Y.Z/,'` to rewrite member
+names. GNU tar's `--transform` is documented to skip the
+root-directory entry, so every member rewrote correctly (`./src/...`
+→ `gool-X.Y.Z/src/...`) but the bare leading `./` slipped through
+unrewritten. Linux/macOS extractors silently no-op'd it; on Windows,
+some GUI extractors displayed it as a phantom entry alongside the
+versioned folder, which looked like the archive was missing its
+version prefix.
+
+The Windows companion script `make_source_archive.ps1` had already
+adopted the staging-directory approach to avoid exactly this — the
+.sh script now mirrors it. The script stages the repo into a temp
+directory under `gool-X.Y.Z/` (via a `tar | tar` pipe so the
+existing exclude list still applies during copy) and packs that as
+an explicit named member. No more `--transform`, no more
+root-entry edge case.
+
+Also added `--use-compress-program='gzip -n'` to suppress the
+optional FNAME and MTIME fields from the gzip header. The script
+was not actually emitting an FNAME (gzip's `-lv` listing shows a
+derived-from-filename string when FNAME is absent, which led to a
+brief mis-diagnosis), but pinning this explicitly prevents a
+future tar / distro switch from quietly reintroducing it.
+
+### Build
+
+- `tests/CMakeLists.txt`: new `audio_engine_audio_mixer_bench`
+  executable target wired into the existing bench include-dir
+  foreach. No CTest registration; the comment above the target
+  explains why (benchmarks are not pass/fail).
+
+### Notes on the numbers
+
+The baseline numbers in `docs/perf.md` are from a cloud sandbox,
+not a laptop. Absolute values shift by hardware (laptops with
+boost clocks tend to run ~1.5–2× faster), but the **scaling shape
+and ratios between scenarios are stable**. The shape is what the
+v0.21 decomposition should preserve to within 5% at N=256 voices
+in each scenario; if a refactor regresses outside that envelope,
+it gets reverted.
+
+### v0.21 work this baseline informs
+
+1. `MixVoiceSound_` decomposition into `MixVoiceSoundPanned_` and
+   `MixVoiceSoundBinaural_` sub-bodies plus a thin dispatcher.
+   The pan/binaural fork already lives inside the function; lifting
+   it removes a per-frame predictable branch and brings each
+   sub-body well below the lizard CCN threshold.
+2. `DrainCommands` decomposition into per-command-kind handlers.
+   Pure readability win.
+3. Binaural-path SIMD pass. Scenario C is the only candidate
+   data justifies optimizing. Dual-ear delay-line reads from the
+   same source samples could plausibly cut binaural cost 30–40%
+   with a SIMD rewrite; profile before guessing at the
+   implementation.
+
+### Verified
+
+- New bench compiles clean against the core library (no decoders,
+  no backend, no Opus needed — the mixer surface is self-contained).
+- All four scenarios run end-to-end and produce the documented
+  output.
+- No production code touched in this release — additive bench +
+  docs only.
+
 ## [0.20.1] - 2026-05-12
 
 ### Fixed — CI hygiene after toolchain bumps
@@ -5235,7 +5339,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.20.2...HEAD
+[0.20.2]: https://github.com/siliconight/gool/releases/tag/v0.20.2
 [0.20.1]: https://github.com/siliconight/gool/releases/tag/v0.20.1
 [0.20.0]: https://github.com/siliconight/gool/releases/tag/v0.20.0
 [0.19.0]: https://github.com/siliconight/gool/releases/tag/v0.19.0

@@ -142,6 +142,7 @@ add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kit
 #
 #   ./build/tests/audio_engine_parameter_smoother_bench
 #   ./build/tests/audio_engine_rtpc_eval_bench
+#   ./build/tests/audio_engine_audio_mixer_bench
 #
 # Captured baseline numbers live in docs/perf.md. Future
 # optimization passes should compare against those.
@@ -151,13 +152,20 @@ target_link_libraries(audio_engine_parameter_smoother_bench PRIVATE audio_engine
 add_executable(audio_engine_rtpc_eval_bench bench/rtpc_eval_bench.cpp)
 target_link_libraries(audio_engine_rtpc_eval_bench PRIVATE audio_engine::audio_engine)
 
+# v0.20.1: mixer hot-path bench. Drives the public OnRender + PostCommand
+# surface to measure DrainCommands and MixVoiceSound_ (both private)
+# under realistic per-voice load. Establishes the v0.21 "before" baseline
+# for the planned decomposition of those two functions.
+add_executable(audio_engine_audio_mixer_bench bench/audio_mixer_bench.cpp)
+target_link_libraries(audio_engine_audio_mixer_bench PRIVATE audio_engine::audio_engine)
+
 # Benches reach into the same private headers as their unit-test
 # counterparts (parameter_smoother is in src/audio_engine/orchestrator/,
 # the RTPC eval bench drives the runtime's internal RTPC graph). This
 # foreach must come AFTER the add_executable lines above — earlier in
 # v0.11.15 it was placed near the test foreach and the if(TARGET ...)
 # guard silently no-op'd because CMake hadn't seen the target yet.
-foreach(_b parameter_smoother_bench rtpc_eval_bench)
+foreach(_b parameter_smoother_bench rtpc_eval_bench audio_mixer_bench)
     target_include_directories(audio_engine_${_b} PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)
