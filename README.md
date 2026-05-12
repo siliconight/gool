@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.19.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.20.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -384,6 +384,9 @@ listener position from your camera each frame.
 
 - **API surface:** the `/root/Gool` autoload + the seven prefab Nodes
   (see `godot/addons/gool/`)
+- **Networking integration:** [`docs/networking_integration.md`](docs/networking_integration.md)
+  — the four classes of game-network data and which gool entry
+  point implements each
 - **Replication patterns:** [`docs/replication_patterns.md`](docs/replication_patterns.md)
   — server-authoritative vs. client-predicted vs. client-authoritative
 - **Multiplayer integration:** [`docs/multiplayer.md`](docs/multiplayer.md)

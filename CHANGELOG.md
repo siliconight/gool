@@ -12,6 +12,109 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.20.0] - 2026-05-12
+
+### Added — Networking integration guide (Tier-C)
+
+The documentation pass that closes out the network-API trilogy. The
+new doc, `docs/networking_integration.md`, presents the four-class
+taxonomy of game-network data (drop-if-late, guaranteed-in-order,
+most-recent-state, quickest-possible) from first principles and
+maps each class to the gool entry point that implements it.
+
+The taxonomy was the implicit framing behind v0.18.0 (Tier-A:
+`EventDelivery` + `TransformStateMask` + bandwidth budget) and
+v0.19.0 (Tier-B: `replicationPriority` + `SubmitImmediateEvent`).
+v0.20.0 makes the framing discoverable: a host integrator can now
+read the doc once and know which entry point to call for each
+kind of audio data, instead of inferring it from method signatures
+one at a time.
+
+#### Doc structure
+
+The doc opens with the four-class taxonomy as a 2×2 derived from
+two cost questions ("what's the cost of dropping this byte?" and
+"what's the cost of staleness?"). The cell where both axes are
+cheap is empty for audio by construction — if both costs are
+zero, the data doesn't need to be sent at all. The other three
+cells map to the four classes (the lower-right "expensive
+staleness" cell splits into discrete events and continuous state).
+
+Each class then gets:
+  - **A clear definition** with the cost model that motivates it.
+  - **Concrete examples** of audio data that falls in the class.
+  - **The matching gool entry point** with the API signature.
+  - **A worked code example** showing the call pattern from the
+    host's network thread, including the failure-handling path.
+
+The doc covers all four entry points:
+
+  - `SubmitReplicatedEvent(event, source, EventDelivery::Drop)`
+    for class 1
+  - `SubmitReplicatedEvent(event, source, EventDelivery::Guaranteed)`
+    for class 2
+  - `UpdateReplicatedTransform(handle, mask, ...)` for class 3
+    (with worked examples of both full-update and mask-based
+    partial-update patterns)
+  - `SubmitImmediateEvent(event, source)` and `OnVoicePacket(...)`
+    for class 4 (the doc explains why class 4 has two entry
+    points — voice and SFX have different cost shapes and would
+    fight each other through a single channel)
+
+#### Telemetry mapping
+
+A dedicated section walks through each new Stats counter and
+identifies which is the actionable signal:
+
+  - `eventsAcceptedGuaranteedLate` is the high-signal indicator
+    for misclassification or slow reliable transport.
+  - `eventsImmediateRejected` indicates exceeding the 8-entry
+    natural rate limit.
+  - `transformsDroppedByPriority` indicates the host is producing
+    transforms faster than gool can drain them.
+  - `eventRingCapacityRemaining` / `transformRingCapacityRemaining` /
+    `nextTickProductionBudgetBytes` are the forward-visibility
+    counters for backpressure-aware production.
+
+#### Common-mistakes section
+
+Four anti-patterns hosts hit in practice:
+  - Marking ephemeral SFX as Guaranteed (worse than the loss it
+    "prevents")
+  - Using `SubmitImmediateEvent` for music transitions (latency
+    isn't the bottleneck; in-order delivery is)
+  - Sending position updates as events (defeats the
+    most-recent-state interpolator)
+  - Treating `QueueFull` as a fatal error (it's backpressure,
+    not failure)
+
+A worked example shows the priority-band pattern for an FPS
+with peer audio (255 for local UI, 224 for narrative-critical,
+192 for nearby peers, 128 default, 64 for distant ambient,
+32 for off-screen clutter) so the lower bands act as the elastic
+buffer absorbing network-side bursts.
+
+### Internal
+
+- `docs/networking_integration.md`: new file, 467 lines.
+- `README.md`: link to the new doc in the netcode cluster of the
+  developer docs section, alongside `multiplayer.md` and
+  `replication_patterns.md`.
+
+### Verified
+
+- C++ engine-side regression: 40/40 unit tests pass at `-O2`. No
+  code touched in this release; the regression run confirms the
+  docs touch doesn't disturb the build.
+
+### What's left
+
+The four-tier program (Tier-A through Tier-C of the network API,
+v0.18.0 → v0.19.0 → v0.20.0) is complete. The remaining items on
+the broader roadmap are unrelated to network API shape: more
+decoders, Asset Library submission, deeper Godot integration,
+performance tooling. None depends on further work in this area.
+
 ## [0.19.0] - 2026-05-12
 
 ### Added — Tribes-influenced network API: Tier-B (structural)
@@ -5015,7 +5118,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/siliconight/gool/releases/tag/v0.20.0
 [0.19.0]: https://github.com/siliconight/gool/releases/tag/v0.19.0
 [0.18.0]: https://github.com/siliconight/gool/releases/tag/v0.18.0
 [0.17.0]: https://github.com/siliconight/gool/releases/tag/v0.17.0
