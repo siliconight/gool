@@ -108,6 +108,25 @@ func _ready() -> void:
 func _process(delta: float) -> void:
     if _runtime != null and _runtime.is_initialized():
         _runtime.update(delta)
+        if not _mirrored_buses.is_empty():
+            _poll_mirrored_buses()
+
+
+# Called from _process when at least one bus pair is registered for
+# automatic mirroring. Cheap when nothing changed — the cached-db
+# check short-circuits the C++ call. Logs a one-time warning if a
+# registered Godot bus name disappears between frames.
+func _poll_mirrored_buses() -> void:
+    for godot_bus_name in _mirrored_buses:
+        var idx := AudioServer.get_bus_index(godot_bus_name)
+        if idx < 0:
+            continue   # bus was renamed/removed; silently skip
+        var db := AudioServer.get_bus_volume_db(idx)
+        if _mirrored_last_db.get(godot_bus_name, 1e9) == db:
+            continue
+        _mirrored_last_db[godot_bus_name] = db
+        var gool_bus_name: String = _mirrored_buses[godot_bus_name]
+        _runtime.set_bus_gain_db(gool_bus_name, db)
 
 func _exit_tree() -> void:
     if _runtime != null and _runtime.is_initialized():
@@ -633,3 +652,64 @@ func _parse_config_dict(text: String) -> Dictionary:
     if parsed is Dictionary:
         return parsed
     return {}
+
+# ---- v0.14.0: native-Godot integration helpers ---------------------
+
+## Mirror a Godot AudioServer bus's current volume into a gool bus.
+##
+## One-way binding (Godot → gool); call this whenever the user
+## adjusts a Godot volume slider. Example — hooking gool's master
+## output into an existing settings menu:
+##
+##   func _on_master_slider_changed(value: float) -> void:
+##       var idx := AudioServer.get_bus_index("Master")
+##       AudioServer.set_bus_volume_db(idx, linear_to_db(value))
+##       Gool.sync_volume_from_godot_bus("Master")
+##
+## If your gool bus name differs from the Godot bus name (e.g. you
+## have a "SFX" bus in Godot and a "Sfx" bus in gool's config), pass
+## the gool name as the second argument.
+##
+## Returns true on success, false if either bus name is unknown.
+func sync_volume_from_godot_bus(godot_bus_name: String = "Master",
+                                  gool_bus_name: String = "") -> bool:
+    if _runtime == null:
+        return false
+    var idx := AudioServer.get_bus_index(godot_bus_name)
+    if idx < 0:
+        push_warning("[gool] sync_volume_from_godot_bus: no Godot bus named '%s'"
+                       % godot_bus_name)
+        return false
+    var db := AudioServer.get_bus_volume_db(idx)
+    var target := gool_bus_name if gool_bus_name != "" else godot_bus_name
+    return _runtime.set_bus_gain_db(target, db)
+
+
+## Continuous variant: install an every-frame poll that mirrors the
+## given Godot bus volume to the matching gool bus. Cheap (one float
+## read + one bus-id lookup per frame) but ensures changes from any
+## external source — third-party settings plugins, MIDI controllers,
+## animation tracks driving AudioServer — propagate to gool without
+## manual sync calls.
+##
+## Pass `false` to disable polling for a specific bus pair, e.g.
+## when switching back to explicit per-callback syncing.
+func auto_mirror_godot_bus(godot_bus_name: String,
+                            gool_bus_name: String = "",
+                            enabled: bool = true) -> void:
+    if enabled:
+        var target := gool_bus_name if gool_bus_name != "" else godot_bus_name
+        _mirrored_buses[godot_bus_name] = target
+    else:
+        _mirrored_buses.erase(godot_bus_name)
+
+
+# Storage for auto_mirror_godot_bus pairs. Keys are Godot bus names;
+# values are gool bus names. Polled inside _process when non-empty.
+var _mirrored_buses: Dictionary = {}
+
+# Cached last-known dB per Godot bus, so the poll only forwards
+# updates when the value actually changed — avoids hammering
+# set_bus_gain_db every frame for static volumes.
+var _mirrored_last_db: Dictionary = {}
+

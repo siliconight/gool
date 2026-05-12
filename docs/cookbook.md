@@ -8,42 +8,82 @@ gool addon installed and enabled (see
 Every snippet expects `var Gool := get_node("/root/Gool")` somewhere
 above it — the autoload the plugin set up for you.
 
-## 1 — Play a sound at a position (fire and forget)
+## Honest framing — when you actually need gool
+
+Godot's built-in audio system is more capable than you might
+realize. Some of the recipes below describe things vanilla Godot
+already does well; the gool version is more convenient for
+multiplayer-shaped workflows but not strictly necessary. Each
+recipe is tagged:
+
+- **🎮 Needs gool** — voice chat, server-authoritative events,
+  bandwidth budget, priority-driven eviction at scale. These are
+  the multiplayer features gool was built for.
+- **✨ Convenience** — gool's version is shorter or better-
+  organized for game audio, but native Godot can do the same
+  thing with `AudioStreamPlayer3D`, `Area3D`, or bus effects.
+  Use whichever fits your project's style.
+
+If you don't have multiplayer voice chat or need server-
+authoritative audio, you may not actually need gool — vanilla
+Godot will serve you well. The integration helpers in v0.14.0
+(`register_sound_from_stream`, `set_bus_gain_db`,
+`sync_volume_from_godot_bus`) let gool coexist with Godot's audio
+system rather than replace it.
+
+## 1 — Play a sound at a position (fire and forget) ✨ Convenience
 
 For one-shot SFX like a coin pickup or a UI ping.
 
+**Vanilla Godot:**
 ```gdscript
-# Register the bytes once (e.g. in _ready).
-Gool.register_sound_from_file("pickup", "res://sfx/pickup.wav")
+@onready var _player := $AudioStreamPlayer3D    # in the scene
+
+func play_pickup_at(pos: Vector3) -> void:
+    _player.stream = preload("res://sfx/pickup.wav")
+    _player.global_position = pos
+    _player.play()
+```
+
+**gool:** (saves a few lines, handles polyphony / eviction
+automatically when many sounds fire at once)
+```gdscript
+# Register the bytes once (e.g. in _ready). v0.14.0+ accepts
+# Godot AudioStream resources directly:
+Gool.register_sound_from_stream("pickup", preload("res://sfx/pickup.wav"))
 
 # Fire it at a world position from anywhere, any time.
 Gool.play_sound_at("pickup", global_position)
 ```
 
-The emitter is owned by the engine, plays to the end, and is
-cleaned up automatically. No handle to track.
+The gool emitter is owned by the engine, plays to the end, and is
+cleaned up automatically. No handle to track, no scene-tree node.
 
-## 2 — Looping emitter that follows an object
+## 2 — Looping emitter that follows an object ✨ Convenience
 
 For a vehicle engine, a campfire, anything that lives in the
 world and needs continuous audio.
 
+**Vanilla Godot** — `AudioStreamPlayer3D` as a child of your
+object. Set `stream`, `autoplay`, set the stream's `loop` property
+in the import settings, and you're done. Zero code.
+
+**gool:**
 ```gdscript
-@onready var _emitter := $AudioEmitter3D    # drag the prefab into the scene
+@onready var _emitter := $AudioEmitter3D    # drag the prefab in
 
 func _ready() -> void:
     _emitter.sound_name = "engine_loop"
     _emitter.looping = true
     _emitter.autoplay = true
-    # The prefab keeps the engine emitter's transform synced with
-    # this node's global_transform automatically each frame.
+    # The prefab keeps the engine emitter's transform synced.
 ```
 
-When the parent moves, the audio follows. When the parent is
-queue_freed, the emitter is unregistered cleanly with a 20 ms
-fade-out.
+gool's emitter cleans up with a 20 ms fade-out when the parent is
+queue_freed. Native AudioStreamPlayer3D cuts off abruptly — see
+Godot's "cutting audio issue" docs.
 
-## 3 — Mute a remote player's voice (v0.13.0)
+## 3 — Mute a remote player's voice 🎮 Needs gool
 
 The local user's "mute this teammate" button. Persistence (saving
 the mute across sessions) is your job — the engine just exposes
@@ -63,7 +103,7 @@ have to know) but the engine skips Opus decode entirely. CPU
 savings are real and measurable; the muted player's audio stops
 within one tick.
 
-## 4 — Per-player volume slider (v0.13.0)
+## 4 — Per-player volume slider 🎮 Needs gool
 
 A UI slider that quiets a too-loud teammate without fully muting.
 Range `[0.0, 4.0]`; values above 1 boost above unity.
@@ -76,7 +116,7 @@ func on_volume_slider_changed(peer_id: int, value: float) -> void:
 That's the whole hookup. The engine scales the decoded int16 PCM
 on the control thread before pushing to the mixer.
 
-## 5 — Bandwidth budget for mobile players (v0.13.0)
+## 5 — Bandwidth budget for mobile players 🎮 Needs gool
 
 When a teammate is on a phone or hotspot, cap their upstream
 voice rate so they don't burn data. The engine maintains the
@@ -100,12 +140,32 @@ Gool.report_voice_bytes_sent(my_peer_id, bytes.size(), br)
 Bitrate downgrades on its own as bandwidth tightens — 32 kbps →
 24 kbps → 16 kbps → drop.
 
-## 6 — Adaptive music with crossfade
+## 6 — Adaptive music with crossfade ✨ Convenience
 
 Two music tracks, switch between them with an equal-power
 crossfade. No clicks, total energy held within ±0.3% through the
 transition.
 
+**Vanilla Godot** (~20 lines, no plugin needed):
+```gdscript
+@onready var _explore := $ExplorePlayer    # AudioStreamPlayer
+@onready var _combat  := $CombatPlayer     # AudioStreamPlayer
+
+func _ready() -> void:
+    _explore.volume_db = 0
+    _combat.volume_db  = -80
+    _explore.play()
+    _combat.play()
+
+func crossfade_to(target: AudioStreamPlayer, ms: float) -> void:
+    var other = _combat if target == _explore else _explore
+    create_tween().tween_property(target, "volume_db", 0,    ms / 1000.0)
+    create_tween().tween_property(other,  "volume_db", -80,  ms / 1000.0)
+```
+
+**gool:** (one config call, equal-power curve is exact rather
+than approximate, the engine handles re-loading streams when
+states are pushed/popped)
 ```gdscript
 @onready var _music := $MusicStateController
 
@@ -124,11 +184,15 @@ func on_combat_ended() -> void:
 Slower fade into ambient calm, faster fade into combat — typical
 shooter pattern.
 
-## 7 — Footstep sounds with surface detection
+## 7 — Footstep sounds with surface detection ✨ Convenience
 
-The `FootstepSurfacePlayer` prefab raycasts down from each step,
-checks the hit node's groups, and picks a sound bank entry. You
-configure the mapping in the inspector.
+You can do this entirely in vanilla Godot with a `RayCast3D`,
+`get_collider()`, group checking, and a few `AudioStreamPlayer3D`
+nodes (one per surface type) plus `pitch_scale` randomization to
+avoid that mechanical sameness. ~30 lines. gool's version
+collapses the same logic into a single prefab plus sound-bank
+group selection (e.g. `footstep.grass` picks randomly from
+`grass.01` / `.02` / `.03`).
 
 ```gdscript
 @onready var _footsteps := $FootstepSurfacePlayer
@@ -148,10 +212,19 @@ The "footstep.grass" sound name refers to a group in your sound
 bank — gool randomly picks one of `grass.01 / .02 / .03` so steps
 don't sound mechanical.
 
-## 8 — Reverb when entering a room (signal-driven)
+## 8 — Reverb when entering a room ✨ Convenience
 
-`ReverbZone` is an Area3D that fires signals when the listener
-enters or leaves. Use those to swap the reverb send level.
+Godot does this natively without any plugin. Set up a reverb bus
+in your default bus layout, then route an `Area3D` to it via the
+`area_mask` property on your `AudioStreamPlayer3D` nodes — Godot's
+docs cover this under "Reverb buses". The `area_mask` is a
+bitfield; sounds with overlapping bits with the area route through
+its reverb. Zero code.
+
+If you've already organized your audio around gool's bus graph
+(maybe for sidechain compressors that route to a Voice bus), the
+`ReverbZone` prefab triggers signals you can use to swap the
+reverb send level on gool's internal Reverb bus:
 
 ```gdscript
 @onready var _zone := $ReverbZone
@@ -162,23 +235,40 @@ func _ready() -> void:
 
 func _on_listener_entered() -> void:
     # Heavier reverb wet level when inside the cave.
-    Gool.set_bus_gain("Reverb", 0.0)    # 0 dB = full wet
+    Gool.set_bus_gain_db("Reverb", 0.0)    # 0 dB = full wet
 
 func _on_listener_exited() -> void:
-    Gool.set_bus_gain("Reverb", -20.0)  # damp the tail back down
+    Gool.set_bus_gain_db("Reverb", -20.0)  # damp the tail back down
 ```
 
 The zone monitors any node in the `gool_listener` group, so add
 `add_to_group("gool_listener")` to your camera or player.
 
-## 9 — Duck SFX while dialogue plays
+## 9 — Duck SFX while dialogue plays ✨ Convenience
 
-Configure two compressors in your bus graph: one on Music, one on
-SFX, both sidechained to the Dialogue bus. When dialogue plays,
-both other buses duck automatically — no per-event code needed.
+This is the canonical case where Godot's built-in audio is the
+right tool. `AudioEffectCompressor` has a `sidechain` parameter
+that names a bus whose level drives the threshold detection — set
+it to `"Dialogue"` on a compressor in your `SFX` and `Music`
+buses and you're done. No plugin needed. The Godot audio-effects
+docs walk through the exact technique under "Compressor —
+sidechain", and the L4D2 ducking pattern is one
+`add_bus_effect` call per ducked bus.
+
+gool's version is the same compressor model with the same
+sidechain semantics, plus the bus graph is loaded from JSON
+instead of authored in the editor — useful if you're sharing bus
+configs across projects, generating them from a tool, or want
+them under version control as plain text rather than the binary
+`.tres` resource format. Pick whichever fits your workflow:
 
 ```gdscript
-# In your bus config (res://gool/config.json):
+# Option A: vanilla Godot. In the editor, on your SFX bus, add an
+# AudioEffectCompressor. Set its sidechain property to "Dialogue".
+# Repeat on Music. The bus layout is saved to default_bus_layout.tres
+# automatically.
+
+# Option B: gool, via res://gool/config.json:
 # {
 #   "buses": [
 #     { "name": "Master" },
@@ -193,19 +283,12 @@ both other buses duck automatically — no per-event code needed.
 #     ]}
 #   ]
 # }
-
-# Then route sounds to the right bus when registering them:
-var def := SoundDefinition.new()
-def.target_bus = "Dialogue"
-# ... etc
 ```
 
 When someone in the game starts talking, music and SFX dip in
-volume automatically and recover when speech ends. This is the
-L4D2 ducking pattern; the engine documentation walks through the
-math.
+volume automatically and recover when speech ends.
 
-## 10 — Cancel a predicted sound
+## 10 — Cancel a predicted sound 🎮 Needs gool
 
 For client-side prediction: you fire a gunshot locally on input,
 the server later rejects it (the player was lagging, the shot

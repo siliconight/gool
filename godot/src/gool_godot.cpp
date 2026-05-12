@@ -14,6 +14,7 @@
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/audio_file_format.h"
+#include "audio_engine/bus.h"
 #include "audio_engine/bus_config_loader.h"
 #include "audio_engine/config.h"
 #include "audio_engine/emitter.h"
@@ -28,6 +29,9 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/classes/audio_stream.hpp>
+#include <godot_cpp/classes/audio_stream_wav.hpp>
+#include <godot_cpp/classes/audio_server.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -129,6 +133,34 @@ public:
                                        "name", "bytes", "format_hint"),
                               &GoolAudioRuntime::register_sound_from_bytes,
                               DEFVAL(0));
+
+        // ---- v0.14.0: native-Godot integration --------------------
+        //
+        // register_sound_from_stream accepts any Godot AudioStream
+        // resource (AudioStreamWAV, AudioStreamOggVorbis,
+        // AudioStreamMP3, etc.) imported via Godot's standard asset
+        // pipeline. This lets users keep their existing
+        // .import-based workflow instead of routing files through a
+        // separate gool path. Internally delegates to
+        // register_sound_from_file when the stream has a resource
+        // path, or extracts raw PCM from in-memory AudioStreamWAV
+        // when used programmatically.
+        ClassDB::bind_method(D_METHOD("register_sound_from_stream",
+                                       "name", "stream"),
+                              &GoolAudioRuntime::register_sound_from_stream);
+
+        // set_bus_gain_db / set_master_volume_db expose the engine's
+        // internal bus graph to GDScript. The previous comment in
+        // this file promised these bindings but they were never
+        // wired up; v0.14.0 fixes that. The intended usage is to
+        // mirror Godot's AudioServer bus volumes from your settings
+        // menu — see the autoload's sync_volume_from_godot_bus()
+        // helper for the one-line integration.
+        ClassDB::bind_method(D_METHOD("set_bus_gain_db",
+                                       "bus_name", "gain_db"),
+                              &GoolAudioRuntime::set_bus_gain_db);
+        ClassDB::bind_method(D_METHOD("set_master_volume_db", "db"),
+                              &GoolAudioRuntime::set_master_volume_db);
         ClassDB::bind_method(D_METHOD("register_sound_definition",
                                        "name", "spatialized", "looping",
                                        "min_distance", "max_distance",
@@ -496,6 +528,169 @@ public:
             return 0;
         }
         return static_cast<int64_t>(id);
+    }
+
+    // ---- v0.14.0: native-Godot integration ----------------------------
+
+    // Register a Godot AudioStream resource as a gool sound.
+    //
+    // Strategy: if the stream has a resource path (i.e. it was loaded
+    // from disk via Godot's import pipeline), delegate to
+    // register_sound_from_file with that path — gool's existing
+    // decoder reads the original WAV/Ogg/FLAC/Opus bytes directly.
+    // This is the 95% case: a user does
+    //   var s = load("res://sfx/blip.ogg")
+    //   Gool.register_sound_from_stream("blip", s)
+    // and it Just Works without re-decoding through Godot's runtime.
+    //
+    // For procedural streams (no resource path), AudioStreamWAV's
+    // raw PCM data is read directly out of its `data` property.
+    // Other procedural subtypes (AudioStreamRandomizer, Polyphonic,
+    // Generator) can't be reduced to a single PCM asset and the
+    // binding refuses with a diagnostic.
+    //
+    // Returns the AudioSoundId on success, 0 on failure.
+    int64_t register_sound_from_stream(const String&        name,
+                                         const Ref<AudioStream>& stream) {
+        if (!runtime_) {
+            UtilityFunctions::push_error(
+                "GoolAudioRuntime: register_sound_from_stream called before init");
+            return 0;
+        }
+        if (stream.is_null()) {
+            UtilityFunctions::push_error(
+                String("GoolAudioRuntime: register_sound_from_stream '")
+                + name + String("' received a null AudioStream"));
+            return 0;
+        }
+
+        // Fast path: stream came from a file Godot's pipeline imported.
+        // We delegate to register_sound_from_file, which reads the
+        // ORIGINAL file via FileAccess (works in PCK-packaged builds)
+        // and routes it through gool's decoder.
+        const String path = stream->get_path();
+        if (!path.is_empty()) {
+            return register_sound_from_file(name, path);
+        }
+
+        // Procedural path: stream was constructed in code, no file
+        // backing. Only AudioStreamWAV is supported here — it carries
+        // its raw PCM bytes in the `data` property, which we can
+        // re-marshal as WAV bytes and hand to the decoder.
+        Ref<AudioStreamWAV> wav = stream;
+        if (wav.is_valid()) {
+            return register_wav_resource_as_pcm(name, wav);
+        }
+
+        // Unsupported procedural subtype.
+        UtilityFunctions::push_warning(
+            String("GoolAudioRuntime: register_sound_from_stream '")
+            + name + String("' got an in-memory AudioStream of an unsupported ")
+            + String("subtype. Only AudioStreamWAV is supported for procedural ")
+            + String("streams; for AudioStreamRandomizer/Polyphonic, register ")
+            + String("the constituent sounds individually. For procedural ")
+            + String("Ogg/MP3 data without a resource path, use ")
+            + String("register_sound_from_bytes() directly."));
+        return 0;
+    }
+
+    // Helper for the procedural AudioStreamWAV case. AudioStreamWAV
+    // exposes 16-bit signed integer PCM via its `data` PackedByteArray,
+    // with `mix_rate`, `stereo`, and `format` describing the layout.
+    // We convert to float32 in [-1, 1] and feed register_pcm_sound.
+    //
+    // Limitations:
+    //   - Only FORMAT_16_BITS is supported. IMA-ADPCM and QOA would
+    //     need decoders gool doesn't currently include in the
+    //     procedural path. FORMAT_8_BITS is rare enough to leave for
+    //     a future release.
+    //   - Stream-loop metadata (loop_mode, loop_begin, loop_end) is
+    //     not propagated to gool — gool's looping is configured per
+    //     SoundDefinition. This matches the file-load path's
+    //     behavior.
+    int64_t register_wav_resource_as_pcm(const String& name,
+                                           const Ref<AudioStreamWAV>& wav) {
+        if (wav.is_null()) return 0;
+        const PackedByteArray bytes = wav->get_data();
+        if (bytes.size() == 0) {
+            UtilityFunctions::push_error(
+                String("GoolAudioRuntime: AudioStreamWAV '")
+                + name + String("' has empty data"));
+            return 0;
+        }
+        const int mix_rate = wav->get_mix_rate();
+        const bool stereo  = wav->is_stereo();
+        const int format   = static_cast<int>(wav->get_format());
+
+        // AudioStreamWAV::Format::FORMAT_16_BITS == 1. Other values
+        // (0=8_BITS, 2=IMA_ADPCM, 3=QOA) need decoders we don't carry.
+        constexpr int FORMAT_16_BITS = 1;
+        if (format != FORMAT_16_BITS) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: AudioStreamWAV '") + name
+                + String("' uses format ") + String::num_int64(format)
+                + String(", which the procedural path doesn't decode. ")
+                + String("Re-import the source WAV with Compression=PCM ")
+                + String("(16-bit), or save it to res:// and use ")
+                + String("register_sound_from_stream / _from_file with a ")
+                + String("file-backed stream."));
+            return 0;
+        }
+
+        // Convert int16 → float32 in [-1, 1]. Stereo data is
+        // interleaved L,R,L,R,... in the byte array, which matches
+        // RegisterPcmSound's expected layout.
+        const int channels = stereo ? 2 : 1;
+        const int sample_count =
+            static_cast<int>(bytes.size() / sizeof(int16_t));
+        PackedFloat32Array samples;
+        samples.resize(sample_count);
+        const int16_t* src =
+            reinterpret_cast<const int16_t*>(bytes.ptr());
+        constexpr float kInv32768 = 1.0f / 32768.0f;
+        for (int i = 0; i < sample_count; ++i) {
+            samples.write[i] = static_cast<float>(src[i]) * kInv32768;
+        }
+
+        const audio::AudioSoundId id = HashName(name);
+        runtime_->RegisterPcmSound(
+            id,
+            std::span<const float>(samples.ptr(),
+                                     static_cast<size_t>(samples.size())),
+            static_cast<uint32_t>(mix_rate),
+            static_cast<uint32_t>(channels));
+        return static_cast<int64_t>(id);
+    }
+
+    // Set the gain of a gool bus by name. The name is hashed and
+    // resolved via FindBusIdByName, which is O(N) over kMaxBuses —
+    // fine for the once-per-volume-change call frequency this is
+    // meant for. Returns true on success, false if the bus name
+    // doesn't exist in the engine's bus graph.
+    bool set_bus_gain_db(const String& bus_name, double gain_db) {
+        if (!runtime_) return false;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(),
+                              static_cast<size_t>(utf8.length())));
+        if (id == audio::kInvalidBusId) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: set_bus_gain_db unknown bus '")
+                + bus_name + String("'. Check bus name spelling, or ")
+                + String("inspect the bus graph via res://gool/config.json. ")
+                + String("Default bus names are 'Master', 'SFX', 'Music', ")
+                + String("'Voice', 'Ambient' depending on your config."));
+            return false;
+        }
+        const auto rc = runtime_->SetBusGainDb(
+            id, static_cast<float>(gain_db));
+        return rc == audio::AudioResult::Success;
+    }
+
+    // Convenience wrapper for the most common case — adjusting the
+    // master output level. Equivalent to set_bus_gain_db("Master", db).
+    bool set_master_volume_db(double db) {
+        return set_bus_gain_db(String("Master"), db);
     }
 
     void register_sound_definition(const String& name,

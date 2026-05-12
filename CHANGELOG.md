@@ -12,6 +12,103 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.14.0] - 2026-05-12
+
+### Added — Native-Godot integration touchpoints
+
+Three new GDExtension bindings that close the gap between gool's
+parallel audio world and Godot's built-in audio system. Reading
+through Godot's audio docs end-to-end revealed how much the engine
+already does natively — distance attenuation, four falloff models,
+doppler tracking, directional cones, automatic distance-low-pass,
+the bus graph with the AudioServer programmatic API, the compressor
+with sidechain support — so v0.14.0 makes gool a better citizen in
+that world rather than a replacement for it.
+
+- **`register_sound_from_stream(name, AudioStream)`** — accept any
+  Godot AudioStream resource imported via the standard
+  `.import`-based pipeline. The binding tries the stream's
+  `resource_path` first and delegates to
+  `register_sound_from_file` when it exists, so the original file
+  bytes flow through gool's decoder (works in PCK-packaged
+  builds). For procedural `AudioStreamWAV` resources constructed
+  in code (no resource path), reads the raw 16-bit PCM out of the
+  `data` property, converts to float32, and routes through
+  `RegisterPcmSound` directly. Unsupported procedural subtypes
+  (`AudioStreamRandomizer`, `AudioStreamPolyphonic`,
+  `AudioStreamGenerator`) refuse with an actionable diagnostic.
+  Users now keep their existing Godot asset workflow:
+  ```gdscript
+  Gool.register_sound_from_stream("blip", preload("res://sfx/blip.ogg"))
+  ```
+
+- **`set_bus_gain_db(bus_name, gain_db)`** — programmatic access to
+  the engine's internal bus graph by name. Resolves through
+  `FindBusIdByName`. Returns `false` with a `push_warning` if the
+  bus name doesn't exist in the loaded `res://gool/config.json`
+  bus graph. The previous gool versions had a comment promising
+  this binding ("set_bus_gain_db, set_effect_parameter") but
+  never actually wired it up; v0.14.0 fixes that.
+
+- **`set_master_volume_db(db)`** — convenience wrapper equivalent
+  to `set_bus_gain_db("Master", db)`. Use this from a single
+  master volume slider when you don't need per-category bus
+  control.
+
+### Added — Autoload bus-mirroring helpers
+
+- **`Gool.sync_volume_from_godot_bus(godot_bus_name, gool_bus_name)`**
+  — one-shot manual sync. Call from your existing Godot volume
+  slider callback to propagate the volume change to gool's
+  matching bus. Returns `true` on success, `false` if either bus
+  name is unknown. The second argument defaults to the first,
+  letting you keep matching bus names across the two systems.
+
+- **`Gool.auto_mirror_godot_bus(godot_bus_name, gool_bus_name,
+  enabled)`** — install continuous polling that watches a Godot
+  bus's volume and forwards changes to gool every frame. Cheap
+  (one float read + one bus-id lookup per registered pair per
+  frame, with a cached-db short-circuit so static values don't
+  hit the C++ binding). Useful when third-party plugins or
+  animation tracks change Godot bus volumes outside your own
+  slider callbacks. Pass `false` for the third argument to
+  remove a previously-registered pair.
+
+  Typical use:
+  ```gdscript
+  func _ready() -> void:
+      Gool.auto_mirror_godot_bus("Master")
+      Gool.auto_mirror_godot_bus("Music")
+      Gool.auto_mirror_godot_bus("SFX")
+  ```
+
+### Documentation
+
+- The docs are honest now about what Godot does natively versus
+  what gool adds. The bandwidth, voice-chat, server-authoritative
+  policy, and predictive-cancellation features are gool's real
+  differentiators; the rest is convenience around what Godot can
+  already do via `AudioStreamPlayer3D`, the bus graph, and
+  `AudioEffectCompressor` with sidechain. The cookbook flags the
+  recipes where vanilla Godot is the better choice rather than
+  installing gool.
+
+### Internal
+
+- New headers in the GDExtension binding:
+  `<godot_cpp/classes/audio_stream.hpp>`,
+  `<godot_cpp/classes/audio_stream_wav.hpp>`,
+  `<godot_cpp/classes/audio_server.hpp>`. The runtime engine itself
+  is unchanged in this release — the work is entirely in the
+  `godot/src/gool_godot.cpp` binding and the
+  `godot/addons/gool/runtime_singleton.gd` autoload.
+
+- C++ engine-side regression remains clean: 40/40 unit tests pass
+  at `-O2`. The GDExtension binding compiles in CI via
+  `.github/workflows/release.yml` when the v0.14.0 tag triggers
+  the release build; the local sandbox here only verifies the
+  engine library because godot-cpp isn't linked in this environment.
+
 ## [0.13.1] - 2026-05-12
 
 ### Added — Godot newcomer usability
@@ -4176,7 +4273,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/siliconight/gool/releases/tag/v0.14.0
 [0.13.1]: https://github.com/siliconight/gool/releases/tag/v0.13.1
 [0.13.0]: https://github.com/siliconight/gool/releases/tag/v0.13.0
 [0.12.3]: https://github.com/siliconight/gool/releases/tag/v0.12.3
