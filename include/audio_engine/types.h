@@ -126,6 +126,26 @@ enum class EventDelivery : uint8_t {
     // the host's reliable transport is slow, or events are being
     // misclassified (something marked Guaranteed that should be Drop).
     Guaranteed = 1,
+
+    // v0.19.0 Tier-B: sub-tick latency. Events in this class go
+    // through `SubmitImmediateEvent`, land in a small (8-entry)
+    // ring, and drain at the top of `Update()` before Phase 1 —
+    // bypassing the per-player/per-category rate limiter and the
+    // late-event discard policy. Use for time-critical SFX where
+    // the player's perception of the gameplay breaks if the sound
+    // arrives a tick late: hit confirmations, melee-impact frames,
+    // weapon-readiness chirps.
+    //
+    // The 8-entry ring is the natural rate limit — Tribes' "8
+    // moves per packet" applied to the audio analog. Hosts that
+    // try to push more than 8 immediate events between two
+    // Update() ticks get `AudioResult::QueueFull` for the
+    // overflow; well-behaved hosts catch this and fall back to
+    // the regular Drop-class path. Telemetry:
+    // `Stats::eventsImmediateProcessed` and
+    // `Stats::eventsImmediateRejected` for the bucket and the
+    // overflow respectively.
+    LowLatency = 2,
 };
 
 // v0.18.0 — Subfield-level state mask for UpdateReplicatedTransform.

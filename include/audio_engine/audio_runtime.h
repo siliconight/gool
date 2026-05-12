@@ -516,6 +516,29 @@ public:
                                        EventDelivery     delivery)
         AUDIO_REQUIRES(NetworkThread);
 
+    // v0.19.0 Tier-B: sub-tick latency path for time-critical SFX.
+    // Lands the event in a small (8-entry) ring drained at the very
+    // top of the next `Update()` tick — before Phase 1's network-
+    // state snapshot, before Phase 2's regular event drain. Bypasses
+    // the per-player/per-category rate limiter and the late-event
+    // discard policy.
+    //
+    // Use for events where the player's perception of gameplay
+    // breaks if the sound arrives a tick late: hit confirmations,
+    // melee impact frames, weapon-readiness chirps. The 8-entry
+    // ring is the natural rate ceiling (analogous to Tribes' "8
+    // moves per packet"); pushing above it returns
+    // `AudioResult::QueueFull` and the well-behaved host falls
+    // back to the regular `SubmitReplicatedEvent` path. The
+    // overflow is counted in `Stats::eventsImmediateRejected`.
+    //
+    // The event's `delivery` field is overwritten to
+    // `EventDelivery::LowLatency` inside the call; hosts don't
+    // need to set it explicitly.
+    AudioResult SubmitImmediateEvent(const AudioEvent& event,
+                                      ReplicationSource source)
+        AUDIO_REQUIRES(NetworkThread);
+
     AudioResult UpdateReplicatedTransform(EmitterHandle  handle,
                                            const Vec3&    position,
                                            const Vec3&    forward,
@@ -871,6 +894,41 @@ public:
         uint32_t eventRingCapacityRemaining     = 0;
         uint32_t transformRingCapacityRemaining = 0;
         uint32_t nextTickProductionBudgetBytes  = 0;
+
+        // ---- v0.19.0 Tier-B: priority-based ring shedding ---------------
+        // Transforms dropped at the SubmitReplicatedTransform boundary
+        // because the netTransforms_ ring was above 75% capacity AND
+        // the emitter's `replicationPriority` (set on CreateEmitter)
+        // was below the median threshold of 128. The Tribes Ghost
+        // Manager applies the same principle — under bandwidth
+        // pressure, the highest-priority dirty state ships first.
+        //
+        // Non-zero in steady state is the signal that the host's
+        // production rate exceeds gool's ingestion ceiling, AND that
+        // the host has a priority distribution that lets gool make
+        // a non-trivial choice. If the counter rises but
+        // `transformRingCapacityRemaining` stays high, the host has
+        // probably set every emitter to the same priority — the
+        // shedding has nothing to filter against.
+        uint64_t transformsDroppedByPriority = 0;
+
+        // ---- v0.19.0 Tier-B: immediate-event ring telemetry -------------
+        // SubmitImmediateEvent processed: count of events drained at
+        // the top of Update() (Phase 0). Pre-rate-limiter, pre-
+        // late-discard. The natural ceiling per tick is the ring's
+        // capacity (8 entries); above that, the network thread sees
+        // QueueFull and bumps `eventsImmediateRejected`.
+        uint64_t eventsImmediateProcessed = 0;
+
+        // SubmitImmediateEvent rejected: count of events that hit
+        // QueueFull on the 8-entry ring. The host should fall back
+        // to the regular `SubmitReplicatedEvent` path for these;
+        // letting them disappear silently would degrade gameplay
+        // feel under bursts. Non-zero indicates the host is
+        // submitting more than 8 immediate events between two
+        // Update() ticks — usually either burst spam or a tick
+        // rate mismatch (host @ 60 Hz, gool's Update() @ 30 Hz).
+        uint64_t eventsImmediateRejected = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
 

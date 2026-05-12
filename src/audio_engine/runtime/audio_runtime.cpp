@@ -142,6 +142,10 @@ AudioResult AudioRuntime::SubmitReplicatedEvent(const AudioEvent& e,
                                                   EventDelivery     d) {
     return impl_->SubmitReplicatedEvent(e, s, d);
 }
+AudioResult AudioRuntime::SubmitImmediateEvent(const AudioEvent& e,
+                                                 ReplicationSource s) {
+    return impl_->SubmitImmediateEvent(e, s);
+}
 AudioResult AudioRuntime::UpdateReplicatedTransform(EmitterHandle h,
                                                       const Vec3& p,
                                                       const Vec3& f,
@@ -323,6 +327,25 @@ AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,
     voicePackets_  = std::make_unique<util::SpscRing<VoicePacketCopy>>(
         config.voicePacketRingDepth * config.budget.maxVoiceSources);
 
+    // v0.19.0 Tier-B: immediate-event ring + per-emitter priority
+    // shadow array. The ring is intentionally tiny (8 entries) to
+    // act as a natural rate limit on time-critical events.
+    immediateEvents_ = std::make_unique<util::SpscRing<AudioEvent>>(8);
+
+    // Shadow array sized to maxActiveEmitters + 1. Slot 0 is
+    // reserved as the null-handle index and is never written to.
+    // Atomic<uint8_t> isn't default-constructible into a vector
+    // through resize() on all toolchains, so we use the
+    // initializer-list-friendly ctor pattern: construct
+    // empty, then reserve + emplace_back default-initialized
+    // atomics.
+    const size_t prioritySize = static_cast<size_t>(config.budget.maxActiveEmitters) + 1;
+    // std::atomic<uint8_t> is value-initialized to 0 by vector's
+    // default construction since C++17. The "0" default also gives
+    // us a useful invariant: stale or destroyed slots always read
+    // as the lowest priority and are always dropped under pressure.
+    emitterPriorities_ = std::vector<std::atomic<uint8_t>>(prioritySize);
+
     // SoA snapshot scratch
     emitterViews_.assign(static_cast<size_t>(config.budget.maxActiveEmitters) + 1,
                           SpatialEmitterView{});
@@ -381,6 +404,13 @@ void AudioRuntimeImpl::Shutdown() {
     netTransforms_.reset();
     netEvents_.reset();
     gameEvents_.reset();
+    immediateEvents_.reset();
+    // emitterPriorities_ is a vector, not unique_ptr; clear()
+    // doesn't release storage but the destruction path will
+    // when the AudioRuntimeImpl itself goes out of scope. We
+    // intentionally do NOT shrink_to_fit() here to keep
+    // Shutdown work bounded.
+    emitterPriorities_.clear();
 
     spatializer_.reset();
     geometry_.reset();
@@ -454,6 +484,20 @@ Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& d
     auto h = emitters_->Create(desc, /*oneShot=*/false);
     if (!h) return h.error();
 
+    // v0.19.0 Tier-B: publish the per-emitter replication priority
+    // into the atomic shadow array. The network thread reads this
+    // value on every UpdateReplicatedTransform call to decide
+    // whether to drop the update under ring pressure. Index is
+    // EmitterHandle::index (the slot index); bounds-checked in
+    // case the slot map allocates beyond our shadow size (it
+    // shouldn't, since both are sized to maxActiveEmitters + 1,
+    // but the bounds check is cheap and the alternative is UB).
+    const uint32_t slot = h.value().index;
+    if (slot < emitterPriorities_.size()) {
+        emitterPriorities_[slot].store(desc.replicationPriority,
+                                         std::memory_order_relaxed);
+    }
+
     // For looping emitters with a sound, kick off mixer immediately if asset
     // is preloaded. One-shots are routed through the event path.
     if (auto* rec = emitters_->Get(h.value())) {
@@ -466,6 +510,13 @@ Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& d
                     // Tear down the just-created emitter and surface the
                     // failure so the host knows the request was rejected.
                     emitters_->Destroy(h.value());
+                    // Also clear the shadow priority for the just-undone
+                    // slot, so a future allocator that returns the same
+                    // index doesn't inherit a stale priority.
+                    if (slot < emitterPriorities_.size()) {
+                        emitterPriorities_[slot].store(0,
+                            std::memory_order_relaxed);
+                    }
                     return AudioResult::BudgetExceeded;
                 }
                 stream->looping = rec->descriptor.isLooping;
@@ -484,6 +535,15 @@ AudioResult AudioRuntimeImpl::DestroyEmitter(EmitterHandle handle, float fadeOut
         StopMixerAndResetStreamingFor(*rec, std::max(0.0f, fadeOutMs));
     }
     orchestrator_->Smoother().Forget(handle);
+    // v0.19.0 Tier-B: clear the shadow priority for the destroyed
+    // slot. Any racing UpdateReplicatedTransform on this handle
+    // from the network thread will read 0 (always-drop under
+    // pressure) and get rejected — which is the correct behavior
+    // for a destroyed emitter regardless of pressure.
+    if (handle.index < emitterPriorities_.size()) {
+        emitterPriorities_[handle.index].store(0,
+            std::memory_order_relaxed);
+    }
     return emitters_->Destroy(handle);
 }
 
@@ -1023,6 +1083,67 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     return netEvents_->Push(stamped) ? AudioResult::Success : AudioResult::QueueFull;
 }
 
+AudioResult AudioRuntimeImpl::SubmitImmediateEvent(const AudioEvent& event,
+                                                     ReplicationSource source) {
+    if (!initialized_) return AudioResult::NotInitialized;
+
+    // v0.19.0 Tier-B: stamp delivery class to LowLatency so the
+    // event carries its own contract through the system (the
+    // immediate ring isn't the only path that could touch the
+    // event in flight — HandleEvent runs the same way for events
+    // arriving via any ring). We mutate a local copy rather than
+    // the caller's event so the API doesn't silently overwrite.
+    AudioEvent stamped = event;
+    stamped.delivery = EventDelivery::LowLatency;
+
+    // Step 1: replication-policy enforcement. Same Phase-2.5 rule
+    // as the regular path — Client-sourced events declaring
+    // ServerAuthoritative policy are spoof attempts and rejected
+    // before they reach the ring. The immediate path doesn't get
+    // a free pass on policy enforcement just because it skips the
+    // rate limiter and late-discard.
+    if (source == ReplicationSource::Client &&
+        stamped.replicationPolicy == AudioReplicationPolicy::ServerAuthoritative) {
+        replicationRateLimiter_.RecordPolicyViolation(stamped.playerId);
+        if (ShouldLog_(LogLevel::Warn)) {
+            const LogField fields[] = {
+                LogField::UInt("player_id", static_cast<uint64_t>(stamped.playerId)),
+                LogField::UInt("sound_id",  static_cast<uint64_t>(stamped.soundId)),
+                LogField::Str ("reason",    "client_sourced_server_authoritative"),
+                LogField::Str ("path",      "immediate"),
+            };
+            Log_(static_cast<uint8_t>(LogLevel::Warn),
+                  LogCategory::kReplication,
+                  "replication policy violation rejected (immediate)",
+                  fields);
+        }
+        return AudioResult::PolicyViolation;
+    }
+
+    // Step 2: validator hook still applies. Hosts that want their
+    // validator to allow looser checks on immediate events can
+    // gate inside the validator on `event.delivery == LowLatency`.
+    if (replicationValidator_ != nullptr &&
+        !replicationValidator_->ShouldAccept(stamped, stamped.playerId)) {
+        replicationRateLimiter_.RecordValidatorRejection(stamped.playerId);
+        return AudioResult::PolicyViolation;
+    }
+
+    // NB: we deliberately skip Phase-3 (rate limiter) for this
+    // path. The 8-entry ring's QueueFull behavior is the rate
+    // limit — a tighter ceiling than the per-player/per-category
+    // token bucket and one that doesn't accumulate burst credit.
+
+    // Step 3: enqueue on the immediate ring. On overflow, the host
+    // is expected to fall back to the regular SubmitReplicatedEvent
+    // path. The counter is the operational signal.
+    if (!immediateEvents_->Push(stamped)) {
+        ++statsLatest_.eventsImmediateRejected;
+        return AudioResult::QueueFull;
+    }
+    return AudioResult::Success;
+}
+
 AudioResult AudioRuntimeImpl::UpdateReplicatedTransform(EmitterHandle  h,
                                                           const Vec3&    pos,
                                                           const Vec3&    fwd,
@@ -1050,6 +1171,44 @@ AudioResult AudioRuntimeImpl::UpdateReplicatedTransform(EmitterHandle      h,
     if (mask == TransformStateMask::None) {
         return AudioResult::Success;
     }
+
+    // v0.19.0 Tier-B: priority-based ring-pressure shedding. When
+    // the netTransforms_ ring is above 75% capacity, we drop
+    // transforms for low-priority emitters before enqueue. This
+    // is gool's analog to Tribes' Ghost-Manager priority ordering
+    // — under bandwidth pressure, the highest-priority dirty
+    // state ships first. The threshold (75%) is the inflection
+    // where the ring's bounded-blocking behavior starts to hurt;
+    // the priority threshold (128, the descriptor default) is the
+    // median so default-priority emitters always pass.
+    //
+    // The shadow array read uses relaxed ordering — the priority
+    // is a hint, not a synchronization signal, and a stale value
+    // by one tick is fine. Slots beyond the array bound (which
+    // shouldn't happen, but the slot map is allowed to grow) read
+    // as priority 0 and are always dropped under pressure.
+    {
+        const size_t cap   = netTransforms_->Capacity();
+        const size_t used  = netTransforms_->SizeApprox();
+        // Use integer math: used * 4 > cap * 3  ==  used/cap > 0.75
+        if (cap > 0 && used * 4u > cap * 3u) {
+            const uint8_t prio =
+                (h.index < emitterPriorities_.size())
+                    ? emitterPriorities_[h.index].load(std::memory_order_relaxed)
+                    : 0u;
+            if (prio < 128u) {
+                ++statsLatest_.transformsDroppedByPriority;
+                // Return Success — the host's expectation is that
+                // the transform was published; returning an error
+                // here would force every per-frame call site to
+                // check + handle, which mismatches the "fire and
+                // forget" model the API is designed for. The
+                // counter is the operational signal.
+                return AudioResult::Success;
+            }
+        }
+    }
+
     ReplicatedTransformUpdate u;
     u.handle   = h;
     u.position = pos;
@@ -1536,6 +1695,14 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
     // timestamps) that flows into phases 2, 3, 5; other phases read
     // only class members. Trivial single-call phases (5.5 RTPC,
     // 10b streaming, 12 telemetry) inline existing helpers directly.
+    //
+    // v0.19.0 — Tier-B adds Phase 0 at the top, draining the
+    // immediate-event ring before any other state work so
+    // SubmitImmediateEvent users get sub-tick latency. Bypasses
+    // the rate limiter and late-discard policy that Phase 2
+    // applies. Bounded by the ring's capacity (8 entries), so
+    // worst-case Phase-0 work per tick is small and predictable.
+    Update_Phase0_DrainImmediateEvents_();
     const UpdateTickContext ctx =
         Update_Phase1_SnapshotNetworkState_(deltaSeconds);
     Update_Phase2_DrainNetworkEvents_(ctx.nowMs);
@@ -1553,6 +1720,41 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
     PumpStreamingAssets();                                    // 10b
     Update_Phase11_TickOneShotsAndPublishStats_(deltaSeconds);
     EmitTelemetry_(deltaSeconds);                              // 12
+}
+
+// v0.19.0 Tier-B: Phase 0 — drain the immediate-event ring.
+//
+// Sub-tick latency path for time-critical SFX submitted via
+// SubmitImmediateEvent. Runs at the very top of UpdateBody_,
+// before Phase 1's network-state snapshot, so events here are
+// processed before any state work begins for this tick.
+//
+// What this phase deliberately skips:
+//   - The per-player/per-category rate limiter (Phase 3-equivalent
+//     for replicated events) — the 8-entry ring's bounded
+//     capacity is the rate limit, and any host pushing above it
+//     already got QueueFull at SubmitImmediateEvent time.
+//   - Late-event discard against staleness budget — these are
+//     "needs to play NOW even if it's a bit late" events.
+//
+// What it still applies:
+//   - HandleEvent runs the same way as Phase 2/3 events, so the
+//     downstream event handlers don't need a separate code path
+//     for immediate events. The behavior difference is purely
+//     about which gates the event passed through to get here.
+void AudioRuntimeImpl::Update_Phase0_DrainImmediateEvents_() noexcept {
+    AudioEvent e;
+    // Bound the drain at the ring's capacity. The capacity is
+    // already 8; pulling more than that in one tick would mean
+    // a SubmitImmediateEvent racing with the drain, which is
+    // fine — the next tick picks up whatever raced in late.
+    // The fixed cap is mostly defensive in case the ring is
+    // ever resized in a future release.
+    uint32_t budget = 16;
+    while (budget-- > 0 && immediateEvents_->Pop(e)) {
+        ++statsLatest_.eventsImmediateProcessed;
+        HandleEvent(e, /*replicated=*/true);
+    }
 }
 
 // Phase 1: snapshot network-thread published state (atomic loads of

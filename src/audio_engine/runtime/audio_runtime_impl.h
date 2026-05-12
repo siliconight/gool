@@ -136,6 +136,14 @@ public:
     void Update_Phase10_DrainVoicePackets_() noexcept;
     void Update_Phase11_TickOneShotsAndPublishStats_(float deltaSeconds) noexcept;
 
+    // v0.19.0 Tier-B: immediate-event drain. Runs at the very top of
+    // UpdateBody_ (before Phase 1) so events submitted via
+    // SubmitImmediateEvent are processed with sub-tick latency.
+    // Bypasses the per-player/per-category rate limiter and the
+    // late-event discard policy that Phase 2 applies. The "Phase 0"
+    // name is positional, not a renumber of the existing phases.
+    void Update_Phase0_DrainImmediateEvents_() noexcept;
+
     // Game thread API
     AudioResult           RegisterSoundDefinition(const SoundDefinition& def);
     AudioResult           RegisterPcmSound(AudioSoundId id,
@@ -218,6 +226,9 @@ public:
     AudioResult SubmitReplicatedEvent(const AudioEvent& event,
                                        ReplicationSource source,
                                        EventDelivery     delivery);
+    // v0.19.0 Tier-B: sub-tick latency path.
+    AudioResult SubmitImmediateEvent(const AudioEvent& event,
+                                      ReplicationSource source);
     AudioResult UpdateReplicatedTransform(EmitterHandle  h,
                                            const Vec3&    pos,
                                            const Vec3&    fwd,
@@ -316,6 +327,25 @@ private:
     std::unique_ptr<util::SpscRing<AudioEvent>>                netEvents_;
     std::unique_ptr<util::SpscRing<ReplicatedTransformUpdate>> netTransforms_;
     std::unique_ptr<util::SpscRing<VoicePacketCopy>>           voicePackets_;
+
+    // v0.19.0 Tier-B: immediate-event ring. Small (8 entries), drained
+    // at the top of UpdateBody_ before Phase 1. Used by
+    // SubmitImmediateEvent for time-critical SFX that must process
+    // with sub-tick latency. The capacity is the natural rate limit
+    // — Tribes' "8 moves per packet" applied to the audio analog.
+    std::unique_ptr<util::SpscRing<AudioEvent>>                immediateEvents_;
+
+    // v0.19.0 Tier-B: atomic shadow array of per-emitter replication
+    // priorities. Written by CreateEmitter (control thread) from
+    // `EmitterDescriptor::replicationPriority`; read by
+    // UpdateReplicatedTransform on the network thread to decide
+    // whether to drop the update under ring pressure. Indexed by
+    // `EmitterHandle::index` (slot 0 is reserved as the null
+    // handle and always reads 0). Sized to maxActiveEmitters + 1
+    // at Initialize. Atomic for safe cross-thread reads; relaxed
+    // ordering because the value is a hint, not a synchronization
+    // signal — using a slightly stale priority is fine.
+    std::vector<std::atomic<uint8_t>>                          emitterPriorities_;
 
     // Network-thread published state
     std::atomic<SimulationTick> latestNetworkTick_{0};

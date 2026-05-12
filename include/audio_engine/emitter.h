@@ -42,6 +42,30 @@ struct EmitterDescriptor {
     // applied by DestroyEmitter / StopMixer so a crossfade between
     // two emitters has constant total power. Default 0 = no fade-in.
     float                  fadeInMs                   = 0.0f;
+
+    // v0.19.0 Tier-B: replication priority for the host's network
+    // thread. When `UpdateReplicatedTransform` is called against
+    // this emitter, the runtime reads this value from an atomic
+    // shadow array (written by CreateEmitter, indexed by slot)
+    // and consults it under ring pressure: if the netTransforms_
+    // ring is above 75% capacity, updates for emitters with
+    // priority below 128 are dropped before enqueue and counted
+    // in `Stats::transformsDroppedByPriority`. The Tribes paper's
+    // Ghost Manager applies the same idea — when bandwidth is
+    // tight, the highest-priority dirty state goes first.
+    //
+    // Range: 0..255. The middle band (128) is the default — under
+    // pressure, defaults survive. Use higher (192–255) for
+    // emitters whose position is critical to gameplay feel
+    // (player gunshots, footsteps near the listener); use lower
+    // (0–127) for ambient, far-distance, or peripheral effects
+    // that can lose a few frames of tracking without complaint.
+    //
+    // The priority is per-emitter, not per-update. Hosts that want
+    // per-update granularity can sidestep this by destroying and
+    // recreating the emitter, or by waiting for v0.20.0's tier-C
+    // work which exposes a per-update override.
+    uint8_t                replicationPriority        = 128;
 };
 
 // Static, per-sound metadata. Registered once via

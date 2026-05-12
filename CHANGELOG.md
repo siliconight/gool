@@ -12,6 +12,154 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.19.0] - 2026-05-12
+
+### Added — Tribes-influenced network API: Tier-B (structural)
+
+The structural follow-up to v0.18.0's additive Tier-A. Tier-B adds
+two new mechanisms — per-emitter replication priority for graceful
+degradation under saturation, and a separate ring with sub-tick
+latency for time-critical events — and activates the third value
+of the `EventDelivery` enum (`LowLatency`) that was reserved in
+v0.18.0. Tier-B is structural rather than additive in that it
+introduces behavior that runs even when hosts don't opt in (the
+priority threshold applies to all transforms once the ring is
+saturated). However, the defaults are chosen so existing hosts
+observe no behavior change in steady state.
+
+#### Per-emitter `replicationPriority`
+
+`EmitterDescriptor` gains a `uint8_t replicationPriority` field
+(default 128, the midpoint of the 0..255 range; higher = more
+important). The runtime maintains an atomic shadow array
+(`emitterPriorities_`) indexed by slot, written on `CreateEmitter`
+(game thread) and read on `UpdateReplicatedTransform` (network
+thread) with relaxed memory ordering — priority is a hint, not a
+synchronization signal, and a one-tick stale value is fine.
+
+When `netTransforms_` exceeds 75% capacity, transforms for
+emitters with priority < 128 are dropped at submission time
+before reaching the ring. The host gets `AudioResult::Success`
+and a bump in `Stats::transformsDroppedByPriority`; we don't
+return an error code because the API contract is fire-and-forget,
+and forcing every per-frame call site to check would mismatch
+how hosts integrate. The counter is the operational signal —
+non-zero in steady state means the host is producing transforms
+faster than gool can drain them, and lowering the priority of
+distant or off-screen emitters at the host's end would reduce
+unnecessary work.
+
+The 75% / 128 threshold pair is conservative: a host that uses
+the default 128 for all emitters sees the drop only when the
+ring is truly saturating, and a host that wants finer-grained
+control can split emitters into priority bands (e.g., 64 for
+ambient ground-clutter, 128 for normal SFX, 192 for boss
+mechanics, 255 for narrative-critical audio).
+
+On `DestroyEmitter` the slot's priority shadow is zeroed —
+slot 0 always reads as 0 (the null-handle index), and stale
+slots from destroyed-then-recreated emitter handles read as 0
+until the next `CreateEmitter` writes a new value. The "0 = always
+drop under pressure" invariant is the safety net for any handle
+that somehow escapes its emitter's lifetime.
+
+#### `SubmitImmediateEvent` + `EventDelivery::LowLatency`
+
+New network-thread entry point for time-critical SFX. The flow:
+
+  - `SubmitImmediateEvent(event, source)` stamps `event.delivery =
+    EventDelivery::LowLatency`, runs the same replication-policy
+    enforcement / validator hook / rate limiter chain as the regular
+    `SubmitReplicatedEvent` path, and enqueues into a dedicated
+    8-entry SPSC ring (`immediateEvents_`).
+  - A new `Update_Phase0_DrainImmediateEvents_()` runs at the top
+    of `UpdateBody_`, before Phase 1's network-state snapshot,
+    pulling up to 16 events per tick (the cap is defensive — the
+    ring's capacity is only 8) and processing each via the same
+    `HandleEvent` path used by regular replicated events.
+  - The 8-entry capacity is the natural rate limit, analogous to
+    Tribes' "8 moves per packet" cap on the move stream. A host
+    that tries to push more than 8 immediate events between two
+    `Update()` ticks gets `AudioResult::QueueFull` for the overflow;
+    well-behaved hosts catch this and fall back to the regular
+    `SubmitReplicatedEvent(Drop)` path.
+
+The latency saving is one phase of `UpdateBody_` (~5-10 µs in
+typical hosts; the dominant factor is the network-thread →
+control-thread queue wait, not gool's processing). For SFX where
+the player's perception of gameplay depends on sub-tick timing
+— hit confirmations, melee impact frames, weapon-readiness chirps
+— that saving is the difference between "feels responsive" and
+"feels off." For everything else, the regular `Drop` path stays
+the right tool.
+
+The third `EventDelivery::LowLatency` value is activated by this
+release; pre-v0.19.0 code that switched on the enum exhaustively
+will warn about the new case (the v0.18.0 documentation predicted
+this).
+
+#### New `Stats` counters
+
+  - `transformsDroppedByPriority` — count of transforms rejected
+    at submission because the ring was over 75% full and the
+    emitter's priority was below 128. The actionable signal for
+    priority tuning.
+  - `eventsImmediateProcessed` — count of immediate events drained
+    by Phase 0 across the lifetime of the runtime.
+  - `eventsImmediateRejected` — count of `SubmitImmediateEvent`
+    calls that hit `QueueFull` on the 8-entry ring. Non-zero
+    means the host is exceeding the natural rate limit; either
+    raise the host's threshold for what qualifies as immediate
+    or accept that some events fall back to the regular ring.
+
+### Tier-C scope (deferred to v0.20.0)
+
+Tier-C is documentation: a new `docs/networking_integration.md`
+that maps each gool entry point onto the four-class Tribes
+taxonomy with worked host-side examples for each. Worked example
+intended: how an FPS with 32 players should classify gunshot SFX
+(`SubmitReplicatedEvent` + `Drop` + low `replicationPriority`
+based on distance), music transitions (`SubmitReplicatedEvent`
++ `Guaranteed`), hit confirms (`SubmitImmediateEvent`), and
+periodic transform updates (`UpdateReplicatedTransform` with
+priority-tiered emitters and mask-based partial updates). The
+docs ride alongside whatever release schedule fits.
+
+### Internal
+
+- `include/audio_engine/types.h`: `EventDelivery::LowLatency`
+  activated (reserved enumerator added in v0.18.0).
+- `include/audio_engine/emitter.h`: `EmitterDescriptor::replicationPriority`
+  (uint8_t, default 128).
+- `include/audio_engine/audio_runtime.h`: `SubmitImmediateEvent`
+  declaration; three new `Stats` counters.
+- `src/audio_engine/runtime/audio_runtime_impl.h`: matching
+  declarations; `immediateEvents_` ring; `emitterPriorities_`
+  shadow array; `Update_Phase0_DrainImmediateEvents_` declaration.
+- `src/audio_engine/runtime/audio_runtime.cpp`:
+  `SubmitImmediateEvent` impl (chain through the same replication
+  hooks as `SubmitReplicatedEvent`); `Update_Phase0_DrainImmediateEvents_`
+  definition; `UpdateBody_` orchestrator calls Phase 0 first;
+  `UpdateReplicatedTransform` consults the priority shadow under
+  saturation; `Initialize` allocates the ring and shadow;
+  `CreateEmitter` writes the priority on the game thread;
+  `Shutdown` and `DestroyEmitter` clean up the shadow.
+
+### Verified
+
+- C++ engine-side regression: 40/40 unit tests pass at `-O2`.
+- TSAN on the eight network-thread tests (`replicated_events`,
+  `multiplayer_readiness`, `integration_kitchen_sink`,
+  `priority_eviction`, `production_readiness`, `telemetry`,
+  `bus_graph`, `voice_mute_budget`): 8/8 pass. The
+  emitter-priority shadow array uses
+  `std::memory_order_relaxed` on both the game-thread write and
+  the network-thread read — the priority value is monotonically
+  set at `CreateEmitter` and never mutated again until
+  `DestroyEmitter` zeros it. There is no synchronization
+  requirement; a one-tick stale read is acceptable and TSAN
+  agrees.
+
 ## [0.18.0] - 2026-05-12
 
 ### Added — Tribes-influenced network API: Tier-A
@@ -4867,7 +5015,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/siliconight/gool/releases/tag/v0.19.0
 [0.18.0]: https://github.com/siliconight/gool/releases/tag/v0.18.0
 [0.17.0]: https://github.com/siliconight/gool/releases/tag/v0.17.0
 [0.16.0]: https://github.com/siliconight/gool/releases/tag/v0.16.0
