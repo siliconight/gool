@@ -137,12 +137,25 @@ AudioResult AudioRuntime::SubmitReplicatedEvent(const AudioEvent& e,
                                                   ReplicationSource s) {
     return impl_->SubmitReplicatedEvent(e, s);
 }
+AudioResult AudioRuntime::SubmitReplicatedEvent(const AudioEvent& e,
+                                                  ReplicationSource s,
+                                                  EventDelivery     d) {
+    return impl_->SubmitReplicatedEvent(e, s, d);
+}
 AudioResult AudioRuntime::UpdateReplicatedTransform(EmitterHandle h,
                                                       const Vec3& p,
                                                       const Vec3& f,
                                                       const Vec3& v,
                                                       SimulationTick t) {
     return impl_->UpdateReplicatedTransform(h, p, f, v, t);
+}
+AudioResult AudioRuntime::UpdateReplicatedTransform(EmitterHandle      h,
+                                                      TransformStateMask m,
+                                                      const Vec3& p,
+                                                      const Vec3& f,
+                                                      const Vec3& v,
+                                                      SimulationTick t) {
+    return impl_->UpdateReplicatedTransform(h, m, p, f, v, t);
 }
 AudioResult AudioRuntime::OnVoicePacket(AudioPlayerId pid,
                                           const uint8_t* b,
@@ -898,12 +911,31 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event) {
     // runtime treats the event permissively — no Phase 2.5
     // server-authoritative enforcement, but the validator hook and
     // rate limiter still apply.
-    return SubmitReplicatedEvent(event, ReplicationSource::Unknown);
+    return SubmitReplicatedEvent(event, ReplicationSource::Unknown,
+                                  EventDelivery::Drop);
 }
 
 AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
                                                      ReplicationSource source) {
+    // Backward-compatible 2-arg form. Defaults to Drop, which matches
+    // the pre-v0.18.0 behavior (late events past the staleness
+    // threshold are discarded).
+    return SubmitReplicatedEvent(event, source, EventDelivery::Drop);
+}
+
+AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
+                                                     ReplicationSource source,
+                                                     EventDelivery     delivery) {
     if (!initialized_) return AudioResult::NotInitialized;
+
+    // Step 0: stamp the delivery class onto the event for the
+    // control-thread Phase-2 drain to consult. The 1-arg and 2-arg
+    // overloads pass Drop here; explicit-classification callers can
+    // override. We mutate a local copy rather than the caller's
+    // event so the API doesn't silently overwrite a field the host
+    // had set differently.
+    AudioEvent stamped = event;
+    stamped.delivery = delivery;
 
     // Step 1: replication-policy enforcement (Phase 2.5).
     //
@@ -915,13 +947,13 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     // counter) so dashboards can distinguish "runtime caught a
     // protocol-level spoof" from "host's custom validator denied."
     if (source == ReplicationSource::Client &&
-        event.replicationPolicy == AudioReplicationPolicy::ServerAuthoritative) {
-        replicationRateLimiter_.RecordPolicyViolation(event.playerId);
+        stamped.replicationPolicy == AudioReplicationPolicy::ServerAuthoritative) {
+        replicationRateLimiter_.RecordPolicyViolation(stamped.playerId);
         if (ShouldLog_(LogLevel::Warn)) {
             const LogField fields[] = {
-                LogField::UInt("player_id",  static_cast<uint64_t>(event.playerId)),
-                LogField::UInt("sound_id",   static_cast<uint64_t>(event.soundId)),
-                LogField::UInt("category",   static_cast<uint64_t>(event.category)),
+                LogField::UInt("player_id",  static_cast<uint64_t>(stamped.playerId)),
+                LogField::UInt("sound_id",   static_cast<uint64_t>(stamped.soundId)),
+                LogField::UInt("category",   static_cast<uint64_t>(stamped.category)),
                 LogField::Str ("reason",     "client_sourced_server_authoritative"),
             };
             Log_(static_cast<uint8_t>(LogLevel::Warn),
@@ -935,13 +967,13 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     // Step 2: host policy hook. If the host has installed a validator
     // and it rejects, drop silently and bump the rejection counter.
     if (replicationValidator_ != nullptr &&
-        !replicationValidator_->ShouldAccept(event, event.playerId)) {
-        replicationRateLimiter_.RecordValidatorRejection(event.playerId);
+        !replicationValidator_->ShouldAccept(stamped, stamped.playerId)) {
+        replicationRateLimiter_.RecordValidatorRejection(stamped.playerId);
         if (ShouldLog_(LogLevel::Debug)) {
             const LogField fields[] = {
-                LogField::UInt("player_id",  static_cast<uint64_t>(event.playerId)),
-                LogField::UInt("sound_id",   static_cast<uint64_t>(event.soundId)),
-                LogField::UInt("category",   static_cast<uint64_t>(event.category)),
+                LogField::UInt("player_id",  static_cast<uint64_t>(stamped.playerId)),
+                LogField::UInt("sound_id",   static_cast<uint64_t>(stamped.soundId)),
+                LogField::UInt("category",   static_cast<uint64_t>(stamped.category)),
             };
             Log_(static_cast<uint8_t>(LogLevel::Debug),
                   LogCategory::kReplication,
@@ -957,13 +989,13 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
     // pre-filled to capacity so the host's first burst is accepted.
     const TimestampMs nowMs =
         latestServerTimeMs_.load(std::memory_order_acquire);
-    if (!replicationRateLimiter_.TryAccept(event.playerId,
-                                            event.category,
+    if (!replicationRateLimiter_.TryAccept(stamped.playerId,
+                                            stamped.category,
                                             nowMs)) {
         if (ShouldLog_(LogLevel::Debug)) {
             const LogField fields[] = {
-                LogField::UInt("player_id",  static_cast<uint64_t>(event.playerId)),
-                LogField::UInt("category",   static_cast<uint64_t>(event.category)),
+                LogField::UInt("player_id",  static_cast<uint64_t>(stamped.playerId)),
+                LogField::UInt("category",   static_cast<uint64_t>(stamped.category)),
                 LogField::UInt("now_ms",     static_cast<uint64_t>(nowMs)),
             };
             Log_(static_cast<uint8_t>(LogLevel::Debug),
@@ -974,8 +1006,21 @@ AudioResult AudioRuntimeImpl::SubmitReplicatedEvent(const AudioEvent& event,
         return AudioResult::RateLimited;
     }
 
-    // Step 4: enqueue for the control thread.
-    return netEvents_->Push(event) ? AudioResult::Success : AudioResult::QueueFull;
+    // Step 4: classification telemetry. Counted at submission, not
+    // at drain — host operators want "events you tried to send"
+    // bucketed by class, not "events that passed the rate limiter."
+    // Bumped under the network thread; reads from the control
+    // thread are racy by construction (counters are uint64_t, not
+    // atomic — accepting torn reads is fine for monotonic counters
+    // displayed in dashboards).
+    if (delivery == EventDelivery::Guaranteed) {
+        ++statsLatest_.eventsSubmittedGuaranteed;
+    } else {
+        ++statsLatest_.eventsSubmittedDrop;
+    }
+
+    // Step 5: enqueue for the control thread.
+    return netEvents_->Push(stamped) ? AudioResult::Success : AudioResult::QueueFull;
 }
 
 AudioResult AudioRuntimeImpl::UpdateReplicatedTransform(EmitterHandle  h,
@@ -983,13 +1028,35 @@ AudioResult AudioRuntimeImpl::UpdateReplicatedTransform(EmitterHandle  h,
                                                           const Vec3&    fwd,
                                                           const Vec3&    vel,
                                                           SimulationTick tick) {
+    // Backward-compatible 5-arg form. Routes through the mask
+    // overload with mask=All; pre-v0.18.0 callers see no behavior
+    // change.
+    return UpdateReplicatedTransform(h, TransformStateMask::All,
+                                       pos, fwd, vel, tick);
+}
+
+AudioResult AudioRuntimeImpl::UpdateReplicatedTransform(EmitterHandle      h,
+                                                          TransformStateMask mask,
+                                                          const Vec3&        pos,
+                                                          const Vec3&        fwd,
+                                                          const Vec3&        vel,
+                                                          SimulationTick     tick) {
     if (!initialized_) return AudioResult::NotInitialized;
+    // No-op fast path: a mask with no bits set is a host bug, but
+    // returning Success without enqueuing is the cheapest correct
+    // response (we don't want to fill the ring with empty updates,
+    // and InvalidArgument would force every caller to check —
+    // failures should be returned for things the host can fix).
+    if (mask == TransformStateMask::None) {
+        return AudioResult::Success;
+    }
     ReplicatedTransformUpdate u;
     u.handle   = h;
     u.position = pos;
     u.forward  = fwd;
     u.velocity = vel;
     u.tick     = tick;
+    u.mask     = mask;
     return netTransforms_->Push(u) ? AudioResult::Success : AudioResult::QueueFull;
 }
 
@@ -1519,28 +1586,52 @@ void AudioRuntimeImpl::Update_Phase2_DrainNetworkEvents_(TimestampMs nowMs) noex
     // -------------------------------------------------------------------
     // 2. Drain network event ring (replicated events).
     //    Apply late-event discard against latestServerTimeMs.
+    //
+    //    v0.18.0 Tier-A: the late-discard policy now consults the
+    //    event's delivery class. EventDelivery::Drop is discarded
+    //    when late (the current behavior); EventDelivery::Guaranteed
+    //    is processed regardless of staleness, and a counter is
+    //    bumped so host operators can see the gap between "the host
+    //    sent it on time" and "the host's reliable channel got it
+    //    through late." That gap is the operational signal — high
+    //    `eventsAcceptedGuaranteedLate` in steady state means the
+    //    reliable transport is slow or the classification is wrong.
     // -------------------------------------------------------------------
     {
         AudioEvent e;
         uint32_t budget = config_.budget.maxNetworkEventsPerFrame;
         while (budget-- > 0 && netEvents_->Pop(e)) {
             ++statsLatest_.eventsDrainedLastTick;
-            if (IsEventTooLateWithOverride(e.timestampMs, nowMs, e.maxStalenessMs)) {
-                ++statsLatest_.lateEventsDiscardedLastTick;
-                if (ShouldLog_(LogLevel::Debug)) {
-                    const LogField fields[] = {
-                        LogField::UInt("event_ts_ms", e.timestampMs),
-                        LogField::UInt("now_ms",      nowMs),
-                        LogField::UInt("max_staleness_ms",
-                                        static_cast<uint64_t>(e.maxStalenessMs)),
-                        LogField::Bool("replicated",  true),
-                    };
-                    Log_(static_cast<uint8_t>(LogLevel::Debug),
-                          LogCategory::kEvents,
-                          "late event discarded",
-                          fields);
+            const bool isLate =
+                IsEventTooLateWithOverride(e.timestampMs, nowMs, e.maxStalenessMs);
+            if (isLate) {
+                if (e.delivery == EventDelivery::Guaranteed) {
+                    // Accept-late path. Bumped so dashboards can show
+                    // "Guaranteed-class events that arrived late but
+                    // were processed anyway."
+                    ++statsLatest_.eventsAcceptedGuaranteedLate;
+                    // Fall through to HandleEvent — no continue.
+                } else {
+                    // Drop path. Bump the per-class counter so the
+                    // operator can compare submitted-vs-dropped per
+                    // class without subtracting other categories.
+                    ++statsLatest_.lateEventsDiscardedLastTick;
+                    ++statsLatest_.eventsLateDropped;
+                    if (ShouldLog_(LogLevel::Debug)) {
+                        const LogField fields[] = {
+                            LogField::UInt("event_ts_ms", e.timestampMs),
+                            LogField::UInt("now_ms",      nowMs),
+                            LogField::UInt("max_staleness_ms",
+                                            static_cast<uint64_t>(e.maxStalenessMs)),
+                            LogField::Bool("replicated",  true),
+                        };
+                        Log_(static_cast<uint8_t>(LogLevel::Debug),
+                              LogCategory::kEvents,
+                              "late event discarded",
+                              fields);
+                    }
+                    continue;
                 }
-                continue;
             }
             HandleEvent(e, /*replicated=*/true);
         }
@@ -1590,13 +1681,18 @@ void AudioRuntimeImpl::Update_Phase4_ApplyReplicatedTransforms_() noexcept {
     // -------------------------------------------------------------------
     // 4. Apply network-thread state writes (replicated transforms).
     //    Drained into the EmitterManager's two-tick history.
+    //
+    //    v0.18.0 Tier-A: the per-subfield mask flows through to
+    //    RecordReplicatedTransform so untouched components don't
+    //    shift their history. Pre-v0.18.0 callers (5-arg form)
+    //    enqueue with mask=All and get the previous behavior.
     // -------------------------------------------------------------------
     {
         ReplicatedTransformUpdate u;
         uint32_t budget = config_.budget.maxActiveEmitters;
         while (budget-- > 0 && netTransforms_->Pop(u)) {
             emitters_->RecordReplicatedTransform(
-                u.handle, u.position, u.forward, u.velocity, u.tick);
+                u.handle, u.mask, u.position, u.forward, u.velocity, u.tick);
         }
     }
 
@@ -1896,6 +1992,34 @@ void AudioRuntimeImpl::Update_Phase11_TickOneShotsAndPublishStats_(float deltaSe
     statsLatest_.mixerVoicesActive    = mixer_->ActiveVoicesApprox();
     statsLatest_.totalRenderCallbacks = mixer_->TotalCallbacks();
     statsLatest_.renderUnderruns      = mixer_->Underruns();
+
+    // v0.18.0 Tier-A: bandwidth budget snapshot for the host network
+    // thread. Published once per Update() tick; the host reads these
+    // from the Stats accessor before deciding what to push. The
+    // values are end-of-tick (after the rings have been drained by
+    // Phases 2 and 4, before the next tick's submissions begin), so
+    // they represent the maximum capacity the host can use without
+    // hitting QueueFull on the next batch.
+    //
+    // The byte-budget heuristic: free slots × an average per-entry
+    // size that approximates the wire cost of a typical event /
+    // transform. We use 64 bytes per event (sizeof(AudioEvent) is
+    // larger but most fields default-zero and would compress) and
+    // 48 bytes per transform. Hosts that want the exact ring counts
+    // should use the two `Remaining` fields directly; the byte
+    // figure is for hosts wanting a single throttle signal.
+    const size_t evtCap     = netEvents_->Capacity();
+    const size_t evtUsed    = netEvents_->SizeApprox();
+    const size_t evtFree    = (evtUsed < evtCap) ? (evtCap - evtUsed) : 0;
+    const size_t xfCap      = netTransforms_->Capacity();
+    const size_t xfUsed     = netTransforms_->SizeApprox();
+    const size_t xfFree     = (xfUsed < xfCap) ? (xfCap - xfUsed) : 0;
+    statsLatest_.eventRingCapacityRemaining =
+        static_cast<uint32_t>(evtFree);
+    statsLatest_.transformRingCapacityRemaining =
+        static_cast<uint32_t>(xfFree);
+    statsLatest_.nextTickProductionBudgetBytes =
+        static_cast<uint32_t>(evtFree * 64u + xfFree * 48u);
 
     // Mixer-underrun delta detection. Underruns are incremented on the
     // render thread; we surface them as log events on the game thread

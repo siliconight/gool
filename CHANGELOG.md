@@ -12,6 +12,175 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.18.0] - 2026-05-12
+
+### Added — Tribes-influenced network API: Tier-A
+
+The first of three planned slices that adopt the Tribes networking
+model's four-class data taxonomy at gool's network-thread API
+surface. Tier-A is fully additive — every pre-v0.18.0 call site
+continues to compile and behave identically. The new overloads
+let hosts who follow modern multiplayer-networking patterns
+(reliable + unreliable channel splits, ghost-style state masks,
+bandwidth-aware production) express that intent without forcing
+gool to learn the host's transport.
+
+The Tribes paper (Frohnmayer & Gift, 1999) classifies network
+data into four delivery requirements: non-guaranteed (drop on
+loss), guaranteed in-order (retransmit until delivered),
+most-recent-state (only the latest version matters), and
+guaranteed-quickest (low latency, use redundancy not
+retransmission). gool's pre-v0.18.0 API already separated voice
+(class 4), replicated transforms (class 3), and replicated
+events (a single bucket regardless of class). v0.18.0 splits
+events into classes 1 and 2 at the API surface, lets transforms
+update only the dirty subfields (the Tribes "state mask"
+algorithm), and surfaces gool's ring-capacity headroom back to
+the host's network thread.
+
+#### `EventDelivery` enum + 3-arg `SubmitReplicatedEvent`
+
+New `EventDelivery` enum in `types.h` with two values: `Drop`
+(default; matches pre-v0.18.0 behavior) and `Guaranteed`. New
+3-arg overload of `SubmitReplicatedEvent(event, source, delivery)`
+threads the class through to Phase 2's late-event discard policy:
+
+  - `Drop`-class events are discarded when late (the existing
+    behavior; appropriate for time-sensitive SFX where a stale
+    trigger is worse than silence).
+  - `Guaranteed`-class events are processed even when late (the
+    runtime trusts the host's reliability layer; appropriate
+    for music transitions, bus-graph hot-swaps, voice-chat join
+    coordination, mute-state changes).
+
+A third class (`LowLatency`, for an immediate-event ring) is
+reserved for v0.19.0 Tier-B. Adding an enumerator is non-breaking.
+
+The `AudioEvent` struct gains a `delivery` field that the 1-arg
+and 2-arg overloads default to `Drop`. Hosts who set the field
+directly on an event and then use the 1-arg form get the same
+behavior as the 3-arg overload — the field is the contract; the
+overload is the convenience.
+
+#### `TransformStateMask` + mask overload of `UpdateReplicatedTransform`
+
+New `TransformStateMask` bitmask in `types.h` (`Position |
+Forward | Velocity`, plus `None` and `All`). New 6-arg overload
+of `UpdateReplicatedTransform(handle, mask, pos, fwd, vel, tick)`
+that updates only the subfields whose mask bits are set.
+`EmitterManager::RecordReplicatedTransform` gains a matching
+overload that shifts only the masked subfields into its two-tick
+history; unmasked components retain their previous samples.
+
+The interpolator (Phase 5) is unchanged — it always interpolates
+between the two-sample history per subfield, which now naturally
+holds-and-interpolates the last-known value for components that
+haven't been updated recently. This is the same most-recent-state
+guarantee Tribes' Ghost Manager provides, applied per-subfield
+rather than per-object.
+
+The 5-arg form chains through with `mask = All`, so existing call
+sites are unchanged.
+
+#### Bandwidth-budget feedback in `Stats`
+
+Three new fields in `AudioRuntime::Stats`:
+
+  - `eventRingCapacityRemaining` — free slots in the network-thread
+    event ring at the end of the last `Update()` tick.
+  - `transformRingCapacityRemaining` — same, for the transform
+    ring.
+  - `nextTickProductionBudgetBytes` — a single soft-target figure
+    for the total event + transform bytes the host should send
+    before the next `Update()` tick. Computed conservatively
+    under load.
+
+Hosts read these on their network thread before deciding what to
+push. Below ~25% capacity remaining, a well-behaved host should
+drop low-priority work at its end; below ~10% it's a hard
+backpressure signal (next submission likely returns `QueueFull`).
+Pre-v0.18.0 hosts had to observe `QueueFull` return codes to
+discover that pressure after the fact; the new fields give them
+forward visibility.
+
+#### Per-class telemetry counters
+
+Four new monotonic counters in `Stats`:
+
+  - `eventsSubmittedDrop` — total Drop-class submissions.
+  - `eventsSubmittedGuaranteed` — total Guaranteed-class submissions.
+  - `eventsLateDropped` — Drop-class events that were late and
+    discarded by Phase 2.
+  - `eventsAcceptedGuaranteedLate` — Guaranteed-class events that
+    arrived late but were processed anyway.
+
+The actionable signal is `eventsAcceptedGuaranteedLate` rising
+in steady state — either the host's reliable transport is slow,
+or events are being misclassified (something marked Guaranteed
+that should be Drop).
+
+### Tier-B and Tier-C scope (deferred to v0.19.0 and beyond)
+
+Tier-B (structural; one-version warning then default):
+  - Per-emitter `replicationPriority` on `CreateEmitter` so the
+    runtime can drop low-priority transforms when the ring
+    approaches saturation.
+  - New `SubmitImmediateEvent(event, source)` entry point with a
+    separate small ring drained at the top of `Update()`, for
+    time-critical SFX (hit confirmations) that need sub-tick
+    latency. Activates the `EventDelivery::LowLatency` value.
+
+Tier-C (observability + docs):
+  - Counters for class-class transitions and ring-overflow events.
+  - New `docs/networking_integration.md` mapping each gool entry
+    point onto the Tribes data classes with worked host-side
+    examples.
+
+Tier-B requires a behavior change (drop policy under saturation)
+and a new ring; it deserves a deprecation window and its own
+release. Tier-C is mostly documentation and can ride alongside
+either Tier-B or a later minor release.
+
+### Internal
+
+- `include/audio_engine/types.h`: `EventDelivery`,
+  `TransformStateMask`, plus bitwise operators for the latter.
+- `include/audio_engine/events.h`: `AudioEvent::delivery` field
+  (default `Drop`).
+- `include/audio_engine/audio_runtime.h`: 3-arg
+  `SubmitReplicatedEvent`, 6-arg `UpdateReplicatedTransform`,
+  four new `Stats` event-class counters, three new `Stats`
+  bandwidth-budget fields.
+- `src/audio_engine/runtime/audio_runtime_impl.h`: mirrored
+  declarations + `ReplicatedTransformUpdate::mask` field.
+- `src/audio_engine/runtime/audio_runtime.cpp`: refactored
+  `SubmitReplicatedEvent` to chain 1-arg → 2-arg → 3-arg;
+  refactored `UpdateReplicatedTransform` to chain 5-arg → 6-arg;
+  Phase 2 consults `event.delivery` for late-discard exemption;
+  Phase 4 passes the mask through to the emitter manager;
+  Phase 11 publishes the bandwidth-budget snapshot.
+- `src/audio_engine/emitters/emitter_manager.{h,cpp}`: mask
+  overload of `RecordReplicatedTransform` that shifts only the
+  masked subfields into history.
+
+### Verified
+
+- C++ engine-side regression: 40/40 unit tests pass at `-O2`.
+  Every existing call site continues to compile and exhibits
+  identical behavior; the additive overloads don't change any
+  default path.
+- TSAN on the eight network-thread tests
+  (`replicated_events`, `multiplayer_readiness`,
+  `integration_kitchen_sink`, `bus_graph`,
+  `production_readiness`, `telemetry`, `voice_mute_budget`,
+  `priority_eviction`): 8/8 pass. The new write paths
+  (`eventsSubmittedDrop`/`Guaranteed` counter bumps on the
+  network thread, capacity-snapshot reads on the control
+  thread) compose cleanly with the existing memory-order
+  discipline; the counters are deliberately non-atomic uint64
+  because torn reads on monotonic counters displayed in
+  dashboards are not a meaningful failure.
+
 ## [0.17.0] - 2026-05-12
 
 ### Added — Tier-3 hardening: fuzz, commercial static analysis, contract docs
@@ -4698,7 +4867,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/siliconight/gool/releases/tag/v0.18.0
 [0.17.0]: https://github.com/siliconight/gool/releases/tag/v0.17.0
 [0.16.0]: https://github.com/siliconight/gool/releases/tag/v0.16.0
 [0.15.0]: https://github.com/siliconight/gool/releases/tag/v0.15.0

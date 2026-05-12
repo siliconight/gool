@@ -52,18 +52,48 @@ AudioResult EmitterManager::RecordReplicatedTransform(EmitterHandle h,
                                                         const Vec3&    fwd,
                                                         const Vec3&    vel,
                                                         SimulationTick tick) {
+    // Backward-compatible 5-arg form: chains through the mask
+    // overload with All so pre-v0.18.0 behavior (every subfield
+    // shifted on every call) is preserved.
+    return RecordReplicatedTransform(h, TransformStateMask::All,
+                                       pos, fwd, vel, tick);
+}
+
+AudioResult EmitterManager::RecordReplicatedTransform(EmitterHandle      h,
+                                                        TransformStateMask mask,
+                                                        const Vec3&        pos,
+                                                        const Vec3&        fwd,
+                                                        const Vec3&        vel,
+                                                        SimulationTick     tick) {
     auto* rec = slots_.Get(h);
     if (!rec) return AudioResult::InvalidHandle;
 
-    // Shift history: [previous, latest] <- [latest, new].
-    rec->repPos[0]  = rec->repPos[1];
-    rec->repFwd[0]  = rec->repFwd[1];
-    rec->repVel[0]  = rec->repVel[1];
-    rec->repTick[0] = rec->repTick[1];
+    // Per-subfield shift-and-write. Unmasked subfields keep their
+    // existing history; both samples in [0] and [1] are left
+    // untouched. This is exactly the Tribes "state mask" semantics
+    // applied to the subfields of a single object — components that
+    // haven't changed don't waste a history slot or interpolation
+    // cycle.
+    if ((mask & TransformStateMask::Position) != 0) {
+        rec->repPos[0] = rec->repPos[1];
+        rec->repPos[1] = pos;
+    }
+    if ((mask & TransformStateMask::Forward) != 0) {
+        rec->repFwd[0] = rec->repFwd[1];
+        rec->repFwd[1] = fwd;
+    }
+    if ((mask & TransformStateMask::Velocity) != 0) {
+        rec->repVel[0] = rec->repVel[1];
+        rec->repVel[1] = vel;
+    }
 
-    rec->repPos[1]  = pos;
-    rec->repFwd[1]  = fwd;
-    rec->repVel[1]  = vel;
+    // Tick advances unconditionally when at least one subfield is
+    // fresh. The tick is the "I touched this emitter on this tick"
+    // marker that the interpolator uses to know whether to apply
+    // history at all; an update with zero subfields fresh wouldn't
+    // reach here (the runtime's mask overload returns Success
+    // without enqueuing when mask is None).
+    rec->repTick[0] = rec->repTick[1];
     rec->repTick[1] = tick;
     return AudioResult::Success;
 }

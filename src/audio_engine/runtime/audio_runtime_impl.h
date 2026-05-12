@@ -59,6 +59,12 @@ struct ReplicatedTransformUpdate {
     Vec3           forward{};
     Vec3           velocity{};
     SimulationTick tick = 0;
+    // v0.18.0: which subfields in this update are fresh. Phase 4
+    // applies only the bits that are set; unmasked components are
+    // left at their previous values in the emitter manager's
+    // history. Default `All` preserves pre-v0.18.0 behavior where
+    // every update wrote every component.
+    TransformStateMask mask = TransformStateMask::All;
 };
 
 struct VoicePacketCopy {
@@ -208,11 +214,22 @@ public:
     AudioResult SubmitReplicatedEvent(const AudioEvent& event);
     AudioResult SubmitReplicatedEvent(const AudioEvent& event,
                                        ReplicationSource source);
+    // v0.18.0 Tier-A: explicit delivery class.
+    AudioResult SubmitReplicatedEvent(const AudioEvent& event,
+                                       ReplicationSource source,
+                                       EventDelivery     delivery);
     AudioResult UpdateReplicatedTransform(EmitterHandle  h,
                                            const Vec3&    pos,
                                            const Vec3&    fwd,
                                            const Vec3&    vel,
                                            SimulationTick tick);
+    // v0.18.0 Tier-A: partial transform update via TransformStateMask.
+    AudioResult UpdateReplicatedTransform(EmitterHandle      h,
+                                           TransformStateMask mask,
+                                           const Vec3&        pos,
+                                           const Vec3&        fwd,
+                                           const Vec3&        vel,
+                                           SimulationTick     tick);
     AudioResult OnVoicePacket(AudioPlayerId  playerId,
                                const uint8_t* bytes,
                                size_t         size,

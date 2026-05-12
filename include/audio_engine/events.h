@@ -78,6 +78,21 @@ struct AudioEvent {
     // naturally. 0 = not predicted; cancel is a no-op for such events.
     uint64_t               predictionId      = 0;
 
+    // v0.18.0 — Delivery class. See EventDelivery in types.h for the
+    // semantics. Defaults to Drop, which matches pre-v0.18.0 behavior
+    // (late events past the staleness threshold are discarded). Set
+    // to Guaranteed on events that the host's transport has already
+    // made reliable, where the runtime should process the event even
+    // when it arrives late (music transitions, bus-graph hot-swaps,
+    // voice-chat coordination).
+    //
+    // Read by Phase 2's late-event-discard policy on the control
+    // thread. Telemetry: Stats::eventsLateDropped (this class is
+    // dropped when late) and Stats::eventsAcceptedGuaranteedLate
+    // (this class is accepted even when late) let host operators
+    // confirm their classification choices are landing.
+    EventDelivery          delivery          = EventDelivery::Drop;
+
     // Convenience constructors. Defined out-of-line in events.cpp.
     static AudioEvent MakePlaySoundAtLocation(
         AudioSoundId sound,

@@ -89,6 +89,80 @@ enum class ReplicationSource : uint8_t {
     Unknown = 2,
 };
 
+// v0.18.0 — Delivery class for replicated audio events. Mirrors the
+// four-class taxonomy from the Tribes networking paper at gool's
+// API surface, so hosts that use any modern reliable / unreliable
+// channel split (ENet, GameNetworkingSockets, KCP, Steam Datagram
+// Relay, custom UDP) can pass through the delivery semantics their
+// transport already establishes. The runtime consults this enum
+// when applying its own late-event discard policy on the control
+// thread.
+//
+// Two values in v0.18.0; a third (`LowLatency`, for the SFX immediate
+// path) is reserved for v0.19.0 Tier-B once the immediate-event
+// ring lands. Adding an enumerator is non-breaking; existing callers
+// that switch on the enum will keep compiling unless they explicitly
+// require exhaustive coverage.
+enum class EventDelivery : uint8_t {
+    // Drop if late. The runtime applies its standard late-event
+    // discard (per-event `maxStalenessMs` falling back to
+    // `AudioConfig::lateEventDiscardMs`) to events in this class.
+    // Appropriate for time-sensitive SFX where a stale trigger is
+    // worse than silence: gunshots, footsteps, ambient effects.
+    // This is the default for backward compatibility with
+    // pre-v0.18.0 SubmitReplicatedEvent calls — every call site
+    // that doesn't explicitly pass a delivery class gets Drop, which
+    // matches the runtime's behavior before the enum existed.
+    Drop       = 0,
+
+    // Process even if late. The runtime bypasses late-event discard
+    // for events in this class; the host has presumably already done
+    // the reliability work at the transport layer (retransmit until
+    // delivered) and we trust the resulting ordering. Appropriate
+    // for music transitions, bus-graph hot-swaps, "player joined
+    // voice chat" coordination, mute-state changes — anything that
+    // must stick even if it arrives a few ticks late. A high counter
+    // of `eventsAcceptedGuaranteedLate` in Stats indicates either
+    // the host's reliable transport is slow, or events are being
+    // misclassified (something marked Guaranteed that should be Drop).
+    Guaranteed = 1,
+};
+
+// v0.18.0 — Subfield-level state mask for UpdateReplicatedTransform.
+// Tribes' Ghost Manager tracks one bit per chunk of independent state;
+// gool applies the same idea at sub-field granularity for the three
+// transform components. Hosts that update only one component (a
+// rotating turret whose position doesn't change, a sliding crate
+// whose forward stays constant) can pass a mask covering only the
+// dirty fields and save the bandwidth + interpolator work of the
+// untouched ones. Combinable via bitwise OR.
+enum class TransformStateMask : uint8_t {
+    None     = 0,
+    Position = 1 << 0,
+    Forward  = 1 << 1,
+    Velocity = 1 << 2,
+
+    // Convenience: all three. The pre-v0.18.0 four-component
+    // UpdateReplicatedTransform overload internally passes this.
+    All      = Position | Forward | Velocity,
+};
+
+// Bitwise operators so callers can `Mask::Position | Mask::Forward`
+// naturally. `constexpr` so the enum is usable in non-type template
+// contexts (the runtime keeps a few constexpr lookup tables that
+// want the operations available at compile time).
+constexpr TransformStateMask operator|(TransformStateMask a, TransformStateMask b) noexcept {
+    return static_cast<TransformStateMask>(
+        static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+constexpr TransformStateMask operator&(TransformStateMask a, TransformStateMask b) noexcept {
+    return static_cast<TransformStateMask>(
+        static_cast<uint8_t>(a) & static_cast<uint8_t>(b));
+}
+constexpr bool operator!=(TransformStateMask a, int b) noexcept {
+    return static_cast<uint8_t>(a) != b;
+}
+
 enum class FalloffModel : uint8_t {
     Linear,
     Logarithmic,

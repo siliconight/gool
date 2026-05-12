@@ -496,11 +496,56 @@ public:
                                        ReplicationSource source)
         AUDIO_REQUIRES(NetworkThread);
 
+    // 3-arg form (v0.18.0): explicit delivery class. Mirrors the
+    // Tribes data-class taxonomy at the API surface so hosts can
+    // pass through the guarantee their transport already chose. The
+    // value flows into `event.delivery` and is consulted by Phase 2's
+    // late-event discard policy on the control thread:
+    //
+    //   - EventDelivery::Drop       — late events discarded (default;
+    //                                  matches pre-v0.18.0 behavior).
+    //   - EventDelivery::Guaranteed — late events accepted; the
+    //                                  runtime trusts the host's
+    //                                  reliability layer.
+    //
+    // Telemetry counters in Stats let host operators verify the
+    // classification is landing correctly. See EventDelivery in
+    // types.h for the full discussion.
+    AudioResult SubmitReplicatedEvent(const AudioEvent& event,
+                                       ReplicationSource source,
+                                       EventDelivery     delivery)
+        AUDIO_REQUIRES(NetworkThread);
+
     AudioResult UpdateReplicatedTransform(EmitterHandle  handle,
                                            const Vec3&    position,
                                            const Vec3&    forward,
                                            const Vec3&    velocity,
                                            SimulationTick tick)
+        AUDIO_REQUIRES(NetworkThread);
+
+    // Mask overload (v0.18.0): partial transform update. Only the
+    // components whose bits are set in `mask` are written; the
+    // others retain their last-known values, exactly the way Tribes'
+    // Ghost Manager state mask handles per-state-bit independence.
+    // Use when a host wants to save bandwidth on subfields that
+    // haven't changed (a turret rotating without translating, a
+    // crate sliding without rotating).
+    //
+    // The interpolator (Phase 5) consults a per-field "last updated
+    // tick" so untouched components don't drift toward stale zero —
+    // they hold the prior value and are interpolated only when a
+    // fresh sample for that subfield arrives.
+    //
+    // Passing TransformStateMask::All is equivalent to the 5-arg
+    // form above; the All-mask overload exists primarily so hosts
+    // can switch to the bit-mask API site-wide without introducing
+    // a behavior difference at call sites that update all three.
+    AudioResult UpdateReplicatedTransform(EmitterHandle      handle,
+                                           TransformStateMask mask,
+                                           const Vec3&        position,
+                                           const Vec3&        forward,
+                                           const Vec3&        velocity,
+                                           SimulationTick     tick)
         AUDIO_REQUIRES(NetworkThread);
 
     AudioResult OnVoicePacket(AudioPlayerId  playerId,
@@ -770,6 +815,62 @@ public:
         // work on the floor — investigate the most recent error log
         // for the surface that threw.
         uint64_t controlThreadExceptionsCaught = 0;
+
+        // ---- v0.18.0 Tier-A: delivery-class telemetry ---------------------
+        // Per-class counters for replicated events. The four-class
+        // Tribes taxonomy is collapsed to two in v0.18.0 (Drop and
+        // Guaranteed); a third class (LowLatency) is reserved for
+        // Tier-B and not yet counted separately. See EventDelivery
+        // in types.h for the semantics.
+        //
+        // Submitted counts the total volume of events that arrived
+        // via SubmitReplicatedEvent for the class. Late counts how
+        // many of those arrived past their staleness budget. For
+        // Drop, "late" means "discarded"; for Guaranteed, "late"
+        // means "accepted late" (we trust the host's reliability
+        // layer). A high `eventsAcceptedGuaranteedLate` in steady
+        // state is the actionable signal — either the host's
+        // reliable transport is slow, or events are being
+        // misclassified (something marked Guaranteed that should
+        // be Drop, which would put it through the late-discard
+        // path naturally).
+        uint64_t eventsSubmittedDrop          = 0;
+        uint64_t eventsSubmittedGuaranteed    = 0;
+        uint64_t eventsLateDropped            = 0;  // Drop class, late
+        uint64_t eventsAcceptedGuaranteedLate = 0;  // Guaranteed class, late
+
+        // ---- v0.18.0 Tier-A: network bandwidth budget ---------------------
+        // Hostward feedback so a host's network thread can scale its
+        // production rate to gool's ingestion ceiling. All three
+        // values are snapshots from the most recent Update() tick;
+        // the network thread reads them from the Stats accessor and
+        // can throttle its outgoing rate accordingly. Without this
+        // feedback, a host that drowns gool's bounded rings would
+        // see QueueFull return codes but no signal to throttle.
+        //
+        //   - eventRingCapacityRemaining: free slots in netEvents_
+        //     at the time of the last Update(). Below 25% the host
+        //     should drop low-priority events at its end before
+        //     submitting them; below 10% it's a hard backpressure
+        //     signal (next submission likely returns QueueFull).
+        //
+        //   - transformRingCapacityRemaining: same, for the
+        //     netTransforms_ ring. Transforms are usually rate-
+        //     limited at the host's tick frequency (10–30 Hz);
+        //     this counter would only show pressure if the host
+        //     is replicating many emitters or has bursty updates.
+        //
+        //   - nextTickProductionBudgetBytes: a soft target for total
+        //     event + transform bytes the host should send before
+        //     the next Update() tick. Computed from the current
+        //     ring headroom × average per-entry size; conservative
+        //     under load, generous when idle. Hosts can ignore
+        //     this and just look at the capacity counters above;
+        //     it's exposed as a single number for hosts that want
+        //     a coarser signal.
+        uint32_t eventRingCapacityRemaining     = 0;
+        uint32_t transformRingCapacityRemaining = 0;
+        uint32_t nextTickProductionBudgetBytes  = 0;
     };
     Stats GetStats() const AUDIO_REQUIRES(GameThread);
 

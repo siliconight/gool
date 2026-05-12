@@ -116,6 +116,20 @@ public:
                                             const Vec3&    vel,
                                             SimulationTick tick);
 
+    // v0.18.0 Tier-A: mask-aware variant. Only the subfields whose
+    // mask bits are set are shifted into history; the others retain
+    // their previous values. The tick is always updated when any
+    // subfield is fresh (the tick is the "this record was touched"
+    // marker for the interpolator). Used by Phase 4 to honor the
+    // host's TransformStateMask choice from
+    // AudioRuntime::UpdateReplicatedTransform.
+    AudioResult RecordReplicatedTransform(EmitterHandle      h,
+                                            TransformStateMask mask,
+                                            const Vec3&        pos,
+                                            const Vec3&        fwd,
+                                            const Vec3&        vel,
+                                            SimulationTick     tick);
+
     // Apply tick interpolation to all replicated-following emitters.
     // serverTimeMs is the latest tick advancement timestamp; alpha is the
     // 0..1 progress between the last two ticks based on host clock.
