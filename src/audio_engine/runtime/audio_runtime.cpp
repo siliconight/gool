@@ -1459,9 +1459,42 @@ void AudioRuntimeImpl::Update(float deltaSeconds) noexcept {
 void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
     if (!initialized_) return;
 
-    statsLatest_.eventsDrainedLastTick     = 0;
+    statsLatest_.eventsDrainedLastTick       = 0;
     statsLatest_.lateEventsDiscardedLastTick = 0;
 
+    // v0.16.0 — Tier-2 hardening. UpdateBody_ orchestrates a sequence
+    // of phase helpers. The original 386-line monolith decomposed
+    // naturally along the 12 numbered comment boundaries it already
+    // had. Phase 1 produces a tick context (network snapshot
+    // timestamps) that flows into phases 2, 3, 5; other phases read
+    // only class members. Trivial single-call phases (5.5 RTPC,
+    // 10b streaming, 12 telemetry) inline existing helpers directly.
+    const UpdateTickContext ctx =
+        Update_Phase1_SnapshotNetworkState_(deltaSeconds);
+    Update_Phase2_DrainNetworkEvents_(ctx.nowMs);
+    Update_Phase3_DrainGameEvents_(ctx.nowMs);
+    Update_Phase4_ApplyReplicatedTransforms_();
+    Update_Phase5_InterpolateTransforms_(deltaSeconds,
+                                          ctx.latestSrv,
+                                          ctx.prevSrv);
+    EvaluateRtpcBindings_();                                  // 5.5
+    Update_Phase6_TickOrchestrator_(deltaSeconds);
+    Update_Phase7_BuildEmitterSnapshot_();
+    Update_Phase8_RunOcclusion_(deltaSeconds);
+    Update_Phase9_SpatializeEmitters_();
+    Update_Phase10_DrainVoicePackets_();
+    PumpStreamingAssets();                                    // 10b
+    Update_Phase11_TickOneShotsAndPublishStats_(deltaSeconds);
+    EmitTelemetry_(deltaSeconds);                              // 12
+}
+
+// Phase 1: snapshot network-thread published state (atomic loads of
+// tick / server-timestamp / previous-server-timestamp), advance the
+// control-thread wall clock, and resolve nowMs (server time when
+// available, control clock otherwise). Returns the snapshot for
+// downstream phases.
+AudioRuntimeImpl::UpdateTickContext
+AudioRuntimeImpl::Update_Phase1_SnapshotNetworkState_(float deltaSeconds) noexcept {
     // -------------------------------------------------------------------
     // 1. Snapshot network-thread published state.
     //    The network thread owns latestNetworkTick_/latestServerTimeMs_.
@@ -1475,6 +1508,14 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
     controlClockMs_ += static_cast<TimestampMs>(deltaSeconds * 1000.0f);
     const TimestampMs nowMs = (latestSrv != 0) ? latestSrv : controlClockMs_;
 
+    return UpdateTickContext{latestSrv, prevSrv, nowMs};
+}
+
+// Phase 2: drain the network-thread event ring. Bounded by
+// maxNetworkEventsPerFrame. Late events (older than maxStalenessMs
+// vs nowMs) are counted and discarded; on-time events flow through
+// HandleEvent(replicated=true).
+void AudioRuntimeImpl::Update_Phase2_DrainNetworkEvents_(TimestampMs nowMs) noexcept {
     // -------------------------------------------------------------------
     // 2. Drain network event ring (replicated events).
     //    Apply late-event discard against latestServerTimeMs.
@@ -1505,6 +1546,12 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         }
     }
 
+}
+
+// Phase 3: drain the game-thread event ring. Same late-event policy
+// as phase 2 but for locally-submitted events; HandleEvent is called
+// with replicated=false so the runtime does not re-publish.
+void AudioRuntimeImpl::Update_Phase3_DrainGameEvents_(TimestampMs nowMs) noexcept {
     // -------------------------------------------------------------------
     // 3. Drain game event ring (local events).
     //    Same late-event policy.
@@ -1535,6 +1582,11 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         }
     }
 
+}
+
+// Phase 4: apply replicated-transform writes from the network thread
+// into EmitterManager's two-tick history. Bounded by maxActiveEmitters.
+void AudioRuntimeImpl::Update_Phase4_ApplyReplicatedTransforms_() noexcept {
     // -------------------------------------------------------------------
     // 4. Apply network-thread state writes (replicated transforms).
     //    Drained into the EmitterManager's two-tick history.
@@ -1548,6 +1600,13 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         }
     }
 
+}
+
+// Phase 5: compute interpolation alpha (host-time progress through
+// the current server-tick interval) and interpolate every replicated
+// emitter's transform between its previous and current tick samples.
+void AudioRuntimeImpl::Update_Phase5_InterpolateTransforms_(
+    float deltaSeconds, TimestampMs latestSrv, TimestampMs prevSrv) noexcept {
     // -------------------------------------------------------------------
     // 5. Compute interpolation alpha and interpolate replicated transforms.
     //    alpha tracks how far through the current tick interval we are,
@@ -1563,17 +1622,12 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
     }
     emitters_->InterpolateReplicatedTransforms(interpAlpha_);
 
-    // -------------------------------------------------------------------
-    // 5.5 Evaluate RTPC volume bindings.
-    //     Walks the active-emitter set; for each emitter whose soundId
-    //     has a registered binding and whose bound parameter has been
-    //     set at least once, recomputes the target gain via linear
-    //     remap and pushes it into the smoother. Cheap O(active) per
-    //     tick; early-out when no bindings are registered. Inserted
-    //     here so the smoother targets are picked up by step 6.
-    // -------------------------------------------------------------------
-    EvaluateRtpcBindings_();
+}
 
+// Phase 6: tick the orchestrator (parameter smoothing + sequence
+// player). Sequence steps fire synthesized PlaySound events through
+// StartOneShotForSound directly (no extra event-ring hop).
+void AudioRuntimeImpl::Update_Phase6_TickOrchestrator_(float deltaSeconds) noexcept {
     // -------------------------------------------------------------------
     // 6. Tick orchestrator (parameter smoothing + sequence player).
     //    Sequence steps fire synthesized PlaySound events through
@@ -1583,11 +1637,24 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         StartOneShotForSound(sid, Vec3{}, AudioPriority::Normal);
     });
 
+}
+
+// Phase 7: build the SoA emitter snapshot consumed by the spatializer
+// and the occlusion system. Single buffered walk; output arrays are
+// pre-reserved at init.
+void AudioRuntimeImpl::Update_Phase7_BuildEmitterSnapshot_() noexcept {
     // -------------------------------------------------------------------
     // 7. Build SoA snapshot of emitters (used by spatializer + occlusion).
     // -------------------------------------------------------------------
     emitters_->BuildSnapshot(emitterViews_, slotPositions_, slotOccupied_);
 
+}
+
+// Phase 8: run the occlusion system (budgeted raycasts + smoothing).
+// Writes per-slot occlusionAmount + damping, mirrors them back into
+// the spatial views so phase 9 reads them. Skipped when occlusion is
+// disabled or no listener exists.
+void AudioRuntimeImpl::Update_Phase8_RunOcclusion_(float deltaSeconds) noexcept {
     // -------------------------------------------------------------------
     // 8. Run occlusion system (budgeted raycasts + smoothing).
     //    Writes to occlusionAmounts_[slot]; we then mirror into the views.
@@ -1609,6 +1676,18 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         statsLatest_.occlusionChecksLastTick = 0;
     }
 
+}
+
+// Phase 9: per-emitter spatial computation. For each active
+// mixerStarted emitter, compute spatial parameters via the
+// spatializer and push UpdateParams to the mixer. Interest-managed:
+// when more active emitters exist than the per-tick budget, the
+// closest N to the listener are processed and the rest skipped
+// (transforms still updated; only spatial-param recomputation is
+// budgeted). Longest phase by a wide margin; will receive its own
+// sub-decomposition in a later release if profiling shows extractable
+// sub-phases.
+void AudioRuntimeImpl::Update_Phase9_SpatializeEmitters_() noexcept {
     // -------------------------------------------------------------------
     // 9. For each emitter: compute spatial params, push UpdateParams to
     //    mixer. mixerStarted slots only; others haven't been started yet.
@@ -1766,6 +1845,12 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         }
     }
 
+}
+
+// Phase 10: drain the cross-thread voice packet ring into per-source
+// jitter buffers, then have the codec decode and push PCM samples
+// into each source's PCM ring. Skipped when voice is disabled.
+void AudioRuntimeImpl::Update_Phase10_DrainVoicePackets_() noexcept {
     // -------------------------------------------------------------------
     // 10. Voice: drain the cross-thread voice packet ring into per-source
     //     jitter buffers, then have the codec decode and push PCM to each
@@ -1785,17 +1870,14 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         }
         voices_->DecodeAndPush(*voiceCodec_);
     }
+}
 
-    // -------------------------------------------------------------------
-    // 10b. Streaming pump: top up the per-asset float ring for every
-    //      streaming asset currently in Pumping state. Bounded work per
-    //      tick (chunk size × asset count). Looping seeks back to 0 on
-    //      decoder EOF; non-looping transitions to Draining and the
-    //      one-shot tick (step 11) handles emitter teardown when the
-    //      ring drains.
-    // -------------------------------------------------------------------
-    PumpStreamingAssets();
-
+// Phase 11: tick one-shot lifetime (free expired emitters + stop
+// their mixer voices), publish the per-tick stats snapshot, then
+// detect/log render-thread underrun deltas. Underrun log is
+// delta-collapsed (one line per tick regardless of how many
+// underruns happened) to avoid spamming on a flapping audio device.
+void AudioRuntimeImpl::Update_Phase11_TickOneShotsAndPublishStats_(float deltaSeconds) noexcept {
     // -------------------------------------------------------------------
     // 11. Tick one-shot lifetime; free expired emitters and Stop their
     //     mixer voices.
@@ -1835,13 +1917,8 @@ void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {
         lastUnderruns_ = statsLatest_.renderUnderruns;
     }
 
-    // -------------------------------------------------------------------
-    // 12. Telemetry. If a sink is configured and the configured
-    //     interval has elapsed, publish a stats snapshot. Cheap
-    //     fast-path when telemetry is disabled (the typical case).
-    // -------------------------------------------------------------------
-    EmitTelemetry_(deltaSeconds);
 }
+
 
 AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
     AudioRuntime::Stats s = statsLatest_;

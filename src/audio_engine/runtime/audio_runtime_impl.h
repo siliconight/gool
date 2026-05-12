@@ -92,6 +92,44 @@ public:
     // Update().
     void UpdateBody_(float deltaSeconds);
 
+    // ---- v0.16.0: Update phase decomposition --------------------------
+    // UpdateBody_ is now a thin orchestrator that calls a sequence of
+    // private phase helpers. The phases follow the 12 numbered comment
+    // boundaries the original 386-line function already had; each is
+    // marked noexcept since the audio control thread should never
+    // propagate exceptions (the Update() wrapper provides the
+    // catch-all safety net). Cross-phase state flows through the
+    // UpdateTickContext value below — phases 2, 3, 5 consume the
+    // network-snapshot timestamps that phase 1 produces; the other
+    // phases read only class members.
+    //
+    // Decomposition rationale: function-length and complexity are not
+    // gameplay-correctness concerns directly, but they erode CPU
+    // i-cache locality on hot paths and they make code reviews harder
+    // (a 386-line function fits no one's working memory). NASA's
+    // Power-of-Ten safety-critical rules call for ≤60-line functions
+    // for exactly these reasons. Phase 9 (per-emitter spatialization)
+    // remains the longest at ~155 lines; it stays as a single helper
+    // in v0.16.0 and is a candidate for further sub-decomposition.
+    struct UpdateTickContext {
+        TimestampMs latestSrv;
+        TimestampMs prevSrv;
+        TimestampMs nowMs;
+    };
+
+    UpdateTickContext Update_Phase1_SnapshotNetworkState_(float deltaSeconds) noexcept;
+    void Update_Phase2_DrainNetworkEvents_(TimestampMs nowMs) noexcept;
+    void Update_Phase3_DrainGameEvents_(TimestampMs nowMs) noexcept;
+    void Update_Phase4_ApplyReplicatedTransforms_() noexcept;
+    void Update_Phase5_InterpolateTransforms_(
+        float deltaSeconds, TimestampMs latestSrv, TimestampMs prevSrv) noexcept;
+    void Update_Phase6_TickOrchestrator_(float deltaSeconds) noexcept;
+    void Update_Phase7_BuildEmitterSnapshot_() noexcept;
+    void Update_Phase8_RunOcclusion_(float deltaSeconds) noexcept;
+    void Update_Phase9_SpatializeEmitters_() noexcept;
+    void Update_Phase10_DrainVoicePackets_() noexcept;
+    void Update_Phase11_TickOneShotsAndPublishStats_(float deltaSeconds) noexcept;
+
     // Game thread API
     AudioResult           RegisterSoundDefinition(const SoundDefinition& def);
     AudioResult           RegisterPcmSound(AudioSoundId id,

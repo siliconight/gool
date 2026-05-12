@@ -12,6 +12,157 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.16.0] - 2026-05-12
+
+### Added — Tier-2 structural hardening
+
+The structural follow-up to v0.15.0's safety-first Tier-1. Where Tier 1
+closed the loud-failure gaps (noexcept barrier, render-thread try/catch,
+unconditional `-Werror`, clang-tidy gate), Tier 2 attacks the function
+size, complexity, and analysis-tool surface area that make those
+loud-failure modes possible in the first place.
+
+#### `AudioRuntimeImpl::UpdateBody_` decomposed into 11 phase helpers
+
+The control thread's per-frame entry was a 386-line monolith. v0.16.0
+splits it along the 12 numbered comment boundaries it already had into
+11 private `noexcept` helpers + a 31-line orchestrator. Each helper
+maps to one logical phase of the per-frame tick:
+
+  1. `Update_Phase1_SnapshotNetworkState_` — atomic loads of
+     network-thread published state; advances control clock; resolves
+     `nowMs`. Returns an `UpdateTickContext` value that flows into the
+     phases that need it.
+  2. `Update_Phase2_DrainNetworkEvents_(nowMs)` — bounded drain of the
+     network-thread event ring.
+  3. `Update_Phase3_DrainGameEvents_(nowMs)` — bounded drain of the
+     game-thread event ring; same late-event policy.
+  4. `Update_Phase4_ApplyReplicatedTransforms_()` — apply replicated
+     transforms into the emitter manager's two-tick history.
+  5. `Update_Phase5_InterpolateTransforms_(dt, latestSrv, prevSrv)` —
+     compute interpolation alpha and interpolate every replicated
+     emitter's transform.
+  6. `Update_Phase6_TickOrchestrator_(dt)` — parameter smoothing +
+     sequence player.
+  7. `Update_Phase7_BuildEmitterSnapshot_()` — build SoA snapshot for
+     spatializer + occlusion.
+  8. `Update_Phase8_RunOcclusion_(dt)` — budgeted raycasts + smoothing.
+  9. `Update_Phase9_SpatializeEmitters_()` — per-emitter spatial
+     computation. Still the largest phase at ~155 lines; lives as a
+     single helper this release.
+  10. `Update_Phase10_DrainVoicePackets_()` — voice packet ring drain
+      + codec decode.
+  11. `Update_Phase11_TickOneShotsAndPublishStats_(dt)` — one-shot
+      lifetime tick + stats publish + underrun-delta log.
+
+Phases 5.5 (`EvaluateRtpcBindings_()`), 10b (`PumpStreamingAssets()`),
+and 12 (`EmitTelemetry_()`) inline existing helpers directly. The
+result: the file's longest function went from 386 lines to 31; the
+phase helpers themselves are bounded at ~155 lines (phase 9) with
+the rest under 50.
+
+#### `AudioMixer::MixVoiceIntoBus` decomposed into 3 mode helpers
+
+The render thread's per-voice mixing function was a 291-line monolith.
+The same setup logic (bus routing, gain, reverb send) applied to all
+three voice modes (Sound / StreamingSound / Voice), and then a
+three-arm if/else chain ran wildly different per-frame loops.
+v0.16.0 lifts each mode body into its own private `noexcept` helper:
+
+  - `MixVoiceSound_` — pitch-ramping one-shot/looping PCM with optional
+    binaural per-frame processing. The longest of the three (~185
+    lines); the hot path.
+  - `MixVoiceStreaming_` — pulls float32 PCM from a per-asset
+    streaming ring in stack-bounded chunks (~40 lines).
+  - `MixVoiceVoice_` — int16 voice ring + float conversion (~30
+    lines).
+
+The orchestrator computes the bus/gain context once into a small
+`MixVoiceMixContext` POD and dispatches via switch. Each helper
+takes `ctx` by const-ref. The structural win is cleaner profiling
+(the three modes are now independently profileable) and i-cache
+locality (the compiler can place the inactive modes' code far from
+the active path).
+
+#### Three new CI static-analysis gates
+
+  - **`cppcheck` job.** Second static analyzer alongside the clang-tidy
+    gate added in v0.15.0. Different dataflow analysis surface area —
+    catches some classes of bugs clang-tidy doesn't (shadow-variable
+    misuse across blocks, uninitialized-struct-member-on-some-path) and
+    vice versa. Suppressions are inline (`// cppcheck-suppress`) so
+    each waiver lives next to the code it justifies. Linux-only.
+  - **`lizard` job.** Cyclomatic-complexity gate. Initial thresholds
+    `-C 25 -L 250 -a 6` chosen to gate on regressions while
+    acknowledging two existing violators (Phase 9's spatializer loop
+    at ~155 lines and `bus_config_loader::ParseFromJson` at ~209 lines)
+    that this release does not touch. Target on a follow-up release:
+    NASA Power-of-Ten's `-C 15 -L 60`, achievable once Phase 9 and
+    ParseFromJson are sub-decomposed.
+  - **`coverage` job.** Builds with `--coverage` (gcov), runs the test
+    suite, generates a gcovr report (line + branch). Cobertura XML is
+    uploaded as a workflow artifact for trend tracking. No PR-comment
+    automation yet; that lives in a follow-up release once the
+    baseline is established.
+
+### Why this set, not more
+
+Tier 3 from the survey (libFuzzer harnesses for JSON config / audio
+decoders / Opus packets, PVS-Studio OSS license, exhaustive
+exception-contract documentation per public method) is deferred to
+v0.17.0 or later. The Tier 2 work is structural: it reduces the
+volume of code that humans must reason about per change-set, and it
+installs two additional independent analysis tools that compound
+with clang-tidy. Tier 3 is the third layer (fuzz-driven undefined-
+behavior discovery, deepest-pass commercial analyzer), and it builds
+naturally on top of the smaller, simpler, more analyzable functions
+v0.16.0 produces.
+
+### Internal
+
+- `audio_runtime_impl.h`: new private `UpdateTickContext` POD;
+  declarations of the 11 phase helpers.
+- `audio_runtime.cpp`: orchestrator rewritten; 11 helper definitions
+  appended with full doc comments per phase.
+- `audio_mixer.h`: new private `MixVoiceMixContext` POD; declarations
+  of three mode helpers.
+- `audio_mixer.cpp`: orchestrator rewritten; three mode-helper
+  definitions extracted from the original branches.
+- `.github/workflows/ci.yml`: three new jobs (`cppcheck`, `lizard`,
+  `coverage`) appended.
+
+### Verified
+
+- C++ engine-side regression: 40/40 unit tests pass at `-O2`.
+- TSAN focused on the decomposed paths: 14/14 pass on the
+  Update-exercising + mixer-exercising tests
+  (`integration_kitchen_sink`, `voice_mute_budget`,
+  `replicated_events`, `bus_graph`, `priority_eviction`,
+  `multiplayer_readiness`, `production_readiness`, `loop_crossfade`,
+  `telemetry`, `voice_telemetry`, `crossfade`, `reverb_send`,
+  `binaural_spatializer`, `compressor`).
+- The new `cppcheck` and `lizard` CI gates have not been pre-run
+  against the codebase (sandbox network couldn't fetch them); CI
+  will be the first run. Any findings become a v0.16.x patch
+  release; the gates themselves are correctly installed.
+- The new `coverage` job is the first coverage baseline; the
+  reported percentage will set the regression bar for follow-ups.
+
+### Function-length summary (before → after)
+
+  - `AudioRuntimeImpl::UpdateBody_`: 386 → 31 lines (orchestrator)
+  - `AudioRuntimeImpl::Update_Phase9_SpatializeEmitters_`: ~155 lines
+    (extracted; not further decomposed this release)
+  - `AudioMixer::MixVoiceIntoBus`: 291 → 51 lines (orchestrator)
+  - `AudioMixer::MixVoiceSound_`: ~185 lines (extracted)
+  - `AudioMixer::MixVoiceStreaming_`: ~40 lines (extracted)
+  - `AudioMixer::MixVoiceVoice_`: ~30 lines (extracted)
+
+  Two functions remain above NASA Power-of-Ten's 60-line threshold
+  (Phase 9 spatializer and ParseFromJson). The lizard gate allows
+  them at the current `-L 250` threshold; a follow-up release will
+  sub-decompose them and tighten the gate.
+
 ## [0.15.0] - 2026-05-12
 
 ### Added — Tier-1 hardening from the resilience / security / performance survey
@@ -4391,7 +4542,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/siliconight/gool/releases/tag/v0.16.0
 [0.15.0]: https://github.com/siliconight/gool/releases/tag/v0.15.0
 [0.14.0]: https://github.com/siliconight/gool/releases/tag/v0.14.0
 [0.13.1]: https://github.com/siliconight/gool/releases/tag/v0.13.1

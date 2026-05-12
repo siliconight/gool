@@ -326,6 +326,16 @@ void AudioMixer::DrainCommands() noexcept {
     }
 }
 
+// v0.16.0 — Tier-2 hardening. MixVoiceIntoBus was a 291-line monolith;
+// it now resolves bus routing + gain + reverb-send (the parts that are
+// identical across all three voice modes) and then dispatches into a
+// mode-specific helper. The mode helpers stay noexcept (audio thread)
+// and take a small const MixVoiceMixContext& carrying the
+// pre-resolved bus buffer pointers and gains. The decomposition is a
+// structural win for code-review and i-cache locality; the three mode
+// paths are completely independent so the compiler can place them
+// optimally and not pollute the i-cache with code from the inactive
+// modes.
 void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels) noexcept {
     if (!busGraph_) return;
 
@@ -357,7 +367,44 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
     const float sendL = gL * v.reverbSend;
     const float sendR = gR * v.reverbSend;
 
-    if (v.mode == VoiceMode::Sound) {
+    const MixVoiceMixContext ctx{dst, reverbDst, gL, gR, sendL, sendR};
+    switch (v.mode) {
+        case VoiceMode::Sound:
+            MixVoiceSound_(v, frames, channels, ctx);
+            break;
+        case VoiceMode::StreamingSound:
+            MixVoiceStreaming_(v, frames, channels, ctx);
+            break;
+        case VoiceMode::Voice:
+            MixVoiceVoice_(v, frames, channels, ctx);
+            break;
+        case VoiceMode::Inactive:
+        default:
+            // No-op for unknown / inactive voices. The voice slot is
+            // either pending startup or already torn down; either way
+            // there is nothing to mix and the bus buffer keeps its
+            // existing (silent or accumulated) contents.
+            break;
+    }
+}
+
+// Sound mode: a one-shot or looping PCM sample mixed in with pitch ramping,
+// optional loop crossfade, optional LPF, optional fade, and either pan or
+// binaural processing per frame. The hottest mixing path; benefits from
+// staying as a single tight per-frame loop. The previous monolithic
+// implementation kept this code inline inside MixVoiceIntoBus; v0.16.0
+// extracts it as its own helper so the function fits in a screen and the
+// three modes are independently profileable.
+void AudioMixer::MixVoiceSound_(MixVoice& v, uint32_t frames, uint32_t channels,
+                                  const MixVoiceMixContext& ctx) noexcept {
+    float*      dst       = ctx.dst;
+    float*      reverbDst = ctx.reverbDst;
+    const float gL        = ctx.gL;
+    const float gR        = ctx.gR;
+    const float sendL     = ctx.sendL;
+    const float sendR     = ctx.sendR;
+    (void)gL; (void)gR; (void)sendL; (void)sendR; (void)reverbDst;
+
         const float* src = v.pcmData;
         if (!src || v.pcmFrames == 0) {
             v.mode = VoiceMode::Inactive;
@@ -543,7 +590,25 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
         // when the loop completed normally. If the loop early-broke (voice
         // went Inactive), pitchCurrent doesn't matter.
         v.pitchCurrent = static_cast<float>(tgtStep);
-    } else if (v.mode == VoiceMode::StreamingSound) {
+}
+
+// StreamingSound mode: pulls float32 PCM from a per-asset ring filled by
+// the control thread's streaming pump, mixed into the bus buffer in
+// small stack-bounded chunks. Ring underruns are counted into
+// underruns_; the rest of the buffer is left as silence so the device
+// never latches stale data. LPF/fade apply per-sample like Sound mode
+// but the binaural path is not exercised on streaming sounds in this
+// release.
+void AudioMixer::MixVoiceStreaming_(MixVoice& v, uint32_t frames, uint32_t channels,
+                                  const MixVoiceMixContext& ctx) noexcept {
+    float*      dst       = ctx.dst;
+    float*      reverbDst = ctx.reverbDst;
+    const float gL        = ctx.gL;
+    const float gR        = ctx.gR;
+    const float sendL     = ctx.sendL;
+    const float sendR     = ctx.sendR;
+    (void)gL; (void)gR; (void)sendL; (void)sendR; (void)reverbDst;
+
         util::PcmRingF32* ring = v.streamRing;
         if (!ring) {
             v.mode = VoiceMode::Inactive;
@@ -584,7 +649,24 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
                 break;
             }
         }
-    } else if (v.mode == VoiceMode::Voice) {
+}
+
+// Voice mode: pulls int16 PCM from a per-source voice ring (filled by the
+// codec's DecodeAndPush), converts to float, applies LPF and fade,
+// and accumulates into the bus + reverb. Frames beyond what the ring
+// produced are left silent (the bus buffer was already cleared before
+// the mix). Underruns are counted into underruns_ when the ring
+// cannot supply the full requested frame count.
+void AudioMixer::MixVoiceVoice_(MixVoice& v, uint32_t frames, uint32_t channels,
+                                  const MixVoiceMixContext& ctx) noexcept {
+    float*      dst       = ctx.dst;
+    float*      reverbDst = ctx.reverbDst;
+    const float gL        = ctx.gL;
+    const float gR        = ctx.gR;
+    const float sendL     = ctx.sendL;
+    const float sendR     = ctx.sendR;
+    (void)gL; (void)gR; (void)sendL; (void)sendR; (void)reverbDst;
+
         util::PcmRing* ring = v.voiceRing;
         if (!ring) {
             v.mode = VoiceMode::Inactive;
@@ -615,8 +697,8 @@ void AudioMixer::MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels
             }
         }
         // Frames beyond `got` produce silence (input already cleared).
-    }
 }
+
 
 void AudioMixer::RunBusGraph(uint32_t frames, uint32_t channels) noexcept {
     if (!busGraph_) return;

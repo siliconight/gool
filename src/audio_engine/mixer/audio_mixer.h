@@ -201,6 +201,39 @@ private:
     void DrainCommands() noexcept;
     void MixVoiceIntoBus(MixVoice& v, uint32_t frames, uint32_t channels) noexcept;
 
+    // ---- v0.16.0: MixVoiceIntoBus mode decomposition --------------------
+    // The bus-routing + gain + reverb-send setup is identical across all
+    // three voice modes; the orchestrator computes it once and passes
+    // the resolved pointers and gains to a mode-specific helper via this
+    // small POD struct. Pass by const-ref; the struct is 6 fields and
+    // ABI-trivial so the cost is comparable to passing six parameters.
+    struct MixVoiceMixContext {
+        float* dst;           // bus input buffer (write target)
+        float* reverbDst;     // optional reverb-bus input buffer; null when
+                              // reverb send is below threshold or no reverb
+                              // bus exists
+        float  gL, gR;        // final L/R gains after pan
+        float  sendL, sendR;  // reverb-send gains (gL/gR scaled by reverbSend)
+    };
+
+    // Sound-mode mixer body. Hottest path; one-shot or looping PCM with
+    // pitch ramping, loop crossfade, optional LPF, optional fade, and
+    // either equal-power pan or full binaural processing per frame.
+    void MixVoiceSound_(MixVoice& v, uint32_t frames, uint32_t channels,
+                         const MixVoiceMixContext& ctx) noexcept;
+
+    // StreamingSound-mode mixer body. Pulls float32 PCM from a per-asset
+    // ring filled by the control thread's streaming pump; mixes in
+    // stack-bounded chunks. Underruns counted into underruns_.
+    void MixVoiceStreaming_(MixVoice& v, uint32_t frames, uint32_t channels,
+                             const MixVoiceMixContext& ctx) noexcept;
+
+    // Voice-mode mixer body. Pulls int16 PCM from a per-source voice
+    // ring (filled by the codec's DecodeAndPush), converts to float,
+    // applies LPF and fade, and accumulates into the bus + reverb.
+    void MixVoiceVoice_(MixVoice& v, uint32_t frames, uint32_t channels,
+                         const MixVoiceMixContext& ctx) noexcept;
+
     // Copy binaural fields from a MixerCommand into a MixVoice and
     // recompute per-ear LPF coefficients when amounts changed. On Start
     // commands `resetCurrent` is true (delay-current jumps to target;
