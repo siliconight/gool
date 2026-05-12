@@ -234,10 +234,22 @@ jobs:
         shell: bash
         run: |
           # All three platforms verify the Opus-enabled build compiles.
-          # Windows uses vcpkg's toolchain file for find_package(OpusFile).
+          # Per-platform toolchain hints (must stay in sync with the
+          # paralleling block in release.yml):
+          #   - Windows: vcpkg toolchain file + static-md triplet.
+          #   - macOS:   brew prefix on CMAKE_PREFIX_PATH so the linker
+          #     finds Apple-Silicon Homebrew's /opt/homebrew/lib for
+          #     the transitive `-lopus` from opusfile.pc. Without this,
+          #     gdextension/macos-arm64 fails at link with
+          #     `ld: library 'opus' not found` — diagnosed and fixed
+          #     in v0.21.2 after release.yml's permission unblock
+          #     finally surfaced the macOS link path as the next
+          #     failure mode.
           TOOLCHAIN_FLAG=""
           if [ "${{ runner.os }}" = "Windows" ]; then
             TOOLCHAIN_FLAG="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            TOOLCHAIN_FLAG="-DCMAKE_PREFIX_PATH=$(brew --prefix)"
           fi
           cmake -S godot -B build-godot \
               -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \

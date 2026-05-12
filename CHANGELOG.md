@@ -12,6 +12,86 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.21.2] - 2026-05-12
+
+### Fixed — macOS GDExtension link failure (Apple Silicon Homebrew lib path)
+
+The macOS arm64 `Build GDExtension` step in both `release.yml` and
+`ci.yml` was failing at the final link step with:
+
+```
+[100%] Linking CXX shared library libgool_godot.dylib
+ld: library 'opus' not found
+clang++: error: linker command failed with exit code 1
+```
+
+This had been latent through the entire v0.13–v0.21.1 span — every
+prior macOS run failed at the upstream `Upload to release` step
+(the read-only `GITHUB_TOKEN` issue fixed in v0.21.1's permission
+flip), which masked the link failure. v0.21.1's release.yml run was
+the first time macOS actually got to the link step; this release is
+the followup fix.
+
+Root cause: Apple Silicon Homebrew installs to `/opt/homebrew/`,
+not the Intel-era `/usr/local/`. CMake's default `find_library`
+search paths don't include `/opt/homebrew/lib`. The CMakeLists.txt
+had a v0.11.18 fix for the *include* path (`opus/opusfile.h` lives
+under `/opt/homebrew/include/opus/`) but no matching fix for the
+*library* path. `opusfile.pc` declares `Requires: opus`, and
+pkg-config resolves the transitive `-lopus` flag — but the `-L`
+search-path-for-the-transitive-dep doesn't propagate cleanly
+through the static-lib → shared-lib link chain, so the linker
+receives `-lopus` without `/opt/homebrew/lib` on its search path.
+
+Fix: pass `-DCMAKE_PREFIX_PATH=$(brew --prefix)` to the CMake
+configure step on macOS in both workflow files. This puts the
+Homebrew prefix on CMake's search paths for both headers and
+libraries, and `find_library` then resolves correctly.
+`$(brew --prefix)` returns whichever prefix Homebrew is actually
+installed at, so this works on both Apple Silicon
+(`/opt/homebrew`) and Intel (`/usr/local`) macOS runners.
+
+Two files touched, both adding a parallel `elif macOS` branch
+to the existing Windows-only `TOOLCHAIN_FLAG` block:
+
+- `.github/workflows/release.yml` line 234 — the `Configure
+  GDExtension` step.
+- `.github/workflows/ci.yml` line 233 — same step in the
+  `build-gdextension` job.
+
+### Verified
+
+- Library + version_test compile clean at the bumped version triple.
+  No production source touched in this release.
+- YAML validity of both workflow files confirmed by
+  `python -c "import yaml; yaml.safe_load(...)"`.
+- Cannot reproduce the macOS link issue locally (no macOS runner
+  in the sandbox); the fix is validated by the contract of
+  `CMAKE_PREFIX_PATH` (standard CMake variable, well-documented
+  behavior) and by the existing v0.11.18 pattern that handled the
+  include side of the same Homebrew-prefix issue. First CI run on
+  the v0.21.2 tag push will exercise the fix end-to-end.
+
+### Reflection
+
+This is the second time in two releases that a "fix one layer,
+the next layer's hidden failure surfaces" pattern has bitten:
+
+- v0.21.0: fixed the upload permission issue → revealed the macOS
+  link bug.
+- v0.21.1: fixed the GDScript syntax error → revealed it had been
+  silently failing in every prior prefab release.
+- v0.21.2: fixes the macOS link path → may reveal yet another
+  layer (binding-integrated Godot smoke is the most likely next
+  diagnostic; if the binary now ships, "does it actually run"
+  becomes the next testable question).
+
+The pattern is unsurprising for any pipeline that's been broken
+end-to-end — fixing one stage exposes the next. v0.21.2 should
+get all three platforms green on release.yml; after that the
+pipeline's behaviour is fully observable for the first time and
+any remaining bugs can be diagnosed against real runs.
+
 ## [0.21.1] - 2026-05-12
 
 ### Added — Godot test surface: gdscript-lint + headless-smoke CI jobs
@@ -5567,7 +5647,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.2...HEAD
+[0.21.2]: https://github.com/siliconight/gool/releases/tag/v0.21.2
 [0.21.1]: https://github.com/siliconight/gool/releases/tag/v0.21.1
 [0.21.0]: https://github.com/siliconight/gool/releases/tag/v0.21.0
 [0.20.2]: https://github.com/siliconight/gool/releases/tag/v0.20.2

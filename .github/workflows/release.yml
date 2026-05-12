@@ -235,12 +235,30 @@ jobs:
         shell: bash
         run: |
           # All three platforms now ship the addon binary with Opus
-          # support enabled. Windows additionally needs the vcpkg
-          # toolchain file so find_package(OpusFile) picks up the
-          # static-md-triplet packages.
+          # support enabled. Per-platform toolchain hints:
+          #
+          #   - Windows: vcpkg toolchain file + the static-md triplet
+          #     so find_package(OpusFile) resolves to vcpkg's
+          #     statically-linked /MD-CRT opus/opusfile packages.
+          #
+          #   - macOS:   brew prefix on CMAKE_PREFIX_PATH. Apple-Silicon
+          #     Homebrew installs to /opt/homebrew, not the Intel-era
+          #     /usr/local. CMake's default search paths don't include
+          #     /opt/homebrew, so the transitive `-lopus` (declared
+          #     by opusfile.pc's Requires: opus) fails at link time
+          #     with `ld: library 'opus' not found` — even though the
+          #     opusfile package itself resolves via pkg-config. Setting
+          #     CMAKE_PREFIX_PATH lets find_library + the linker locate
+          #     /opt/homebrew/lib/libopus.dylib.
+          #
+          #     `$(brew --prefix)` returns whichever prefix Homebrew is
+          #     actually installed at (Apple Silicon: /opt/homebrew;
+          #     Intel: /usr/local), so this works on both runner archs.
           TOOLCHAIN_FLAG=""
           if [ "${{ runner.os }}" = "Windows" ]; then
             TOOLCHAIN_FLAG="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            TOOLCHAIN_FLAG="-DCMAKE_PREFIX_PATH=$(brew --prefix)"
           fi
           cmake -S godot -B build-godot \
               -DGODOT_CPP_PATH="$PWD/third_party/godot-cpp" \

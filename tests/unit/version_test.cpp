@@ -27,14 +27,14 @@ int main() {
     std::cout << "  version: " << v.major << "." << v.minor << "." << v.patch
               << " (full=" << v.full << ", commit=" << v.commit << ")\n";
 
-    // Pinned values for v0.21.1. When bumping, update both this test
+    // Pinned values for v0.21.2. When bumping, update both this test
     // and the constants in include/audio_engine/version.h plus the
     // project() VERSION in CMakeLists.txt. The triple-edit is
     // documented in RELEASING.md.
     assert(v.major == 0);
     assert(v.minor == 21);
-    assert(v.patch == 1);
-    assert(std::strcmp(v.full, "0.21.1") == 0);
+    assert(v.patch == 2);
+    assert(std::strcmp(v.full, "0.21.2") == 0);
 
     // Commit SHA: under CMake builds it should be a 7-char hex
     // string; under raw-g++ builds it falls back to "unknown".
