@@ -13,6 +13,9 @@
 #   3. Writes a default config file at res://gool/config.json with
 #      reasonable bus/attenuation/compression defaults if one
 #      doesn't already exist. The runtime reads this on init.
+#   4. Registers an EditorInspectorPlugin (v0.22.0) that provides
+#      a dropdown of registered sound names for any prefab's
+#      `sound_name` property — replaces the bare String editor.
 #
 # On disable, all of the above are reversed cleanly.
 
@@ -117,16 +120,52 @@ const DEFAULT_CONFIG := {
     }
 }
 
+const INSPECTOR_PLUGIN_PATH := "res://addons/gool/editor/sound_name_inspector.gd"
+
+# Held instance of the inspector plugin. Stored so _exit_tree can
+# unregister the same instance we registered (Godot's
+# remove_inspector_plugin requires the original reference, not just
+# a script path).
+var _sound_name_inspector: EditorInspectorPlugin = null
+
 func _enter_tree() -> void:
     _add_autoload()
     _register_prefabs()
     _write_default_config_if_missing()
-    print("[gool] plugin enabled — autoload, prefabs, default config installed.")
+    _register_inspector_plugin()
+    print("[gool] plugin enabled — autoload, prefabs, default config, inspector installed.")
 
 func _exit_tree() -> void:
+    _unregister_inspector_plugin()
     _unregister_prefabs()
     _remove_autoload()
     print("[gool] plugin disabled.")
+
+# v0.22.0: sound_name autocomplete dropdown for prefabs that
+# reference registered sounds (AudioEmitter3D, NetworkedAudioEvent,
+# NetworkedAudioEmitter3D, MusicStateController, etc). Scans the
+# project for GoolSoundBank and GoolFolderSoundBank resources,
+# aggregates their sound names, and replaces the default String
+# editor with a dropdown showing those names. The user can still
+# type a custom name via the "(custom)" option.
+func _register_inspector_plugin() -> void:
+    var script := load(INSPECTOR_PLUGIN_PATH)
+    if script == null:
+        push_warning(
+            "[gool] could not load %s; sound_name autocomplete "
+            % INSPECTOR_PLUGIN_PATH
+            + "dropdown is unavailable. The plain text editor still "
+            + "works as a fallback."
+        )
+        return
+    _sound_name_inspector = script.new()
+    add_inspector_plugin(_sound_name_inspector)
+
+func _unregister_inspector_plugin() -> void:
+    if _sound_name_inspector == null:
+        return
+    remove_inspector_plugin(_sound_name_inspector)
+    _sound_name_inspector = null
 
 func _add_autoload() -> void:
     add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)

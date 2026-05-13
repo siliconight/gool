@@ -122,18 +122,27 @@ func _register_all() -> void:
             )
             results[name] = 0
             continue
-        # Apply default spatialization + category from the bank.
-        # Other registration parameters (looping, distances,
-        # crossfade) use the runtime's defaults and can be
-        # overridden per-emitter via AudioEmitter3D properties.
+        # Apply category + looping per-entry. GoolFolderSoundBank
+        # populates `sounds_category` and `sounds_looping` dictionaries
+        # based on the source subfolder (sfx/music/voice/etc); the plain
+        # GoolSoundBank has neither and falls back to the bank-wide
+        # defaults. Loader uses whatever is available.
+        var entry_category: int = bank.default_category
+        var entry_looping: bool = false
+        if bank.get("sounds_category") != null \
+                and bank.sounds_category.has(name):
+            entry_category = bank.sounds_category[name]
+        if bank.get("sounds_looping") != null \
+                and bank.sounds_looping.has(name):
+            entry_looping = bank.sounds_looping[name]
         _runtime.register_sound_definition(
             name,
             bank.default_spatialized,
-            false,            # looping
+            entry_looping,    # looping (per-entry from folder bank, else false)
             1.0,              # min_distance
             50.0,             # max_distance
             0.0,              # loop_crossfade_ms
-            bank.default_category,
+            entry_category,
             "")               # target_bus_name (use category routing)
         results[name] = handle
     registration_complete.emit(results)

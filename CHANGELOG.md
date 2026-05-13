@@ -12,6 +12,219 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.0] - 2026-05-12
+
+### Added — Designer-first features, slice 1 of 2 (no engine changes)
+
+This release lands the first three items from the v0.22 "designer-
+first" tranche — focused on the audio-author workflow:
+authoring sound banks with minimum friction, firing one-shot
+networked SFX without a node, and discovering registered sound
+names from the inspector dropdown instead of typing them from
+memory.
+
+All three are pure GDScript / editor-plugin additions. **Zero C++
+engine changes.** No existing API touched. Adopters of v0.21.5
+upgrade with no migration step — every existing scene file,
+prefab, GoolSoundBank resource, and runtime call works
+identically.
+
+The second slice (`GoolLayeredMusic` synchronized stems, 2D
+variants, MP3 decoder) is deferred to v0.22.1 to keep this
+release narrowly scoped — easier to bisect, easier to test.
+
+**Feature 1 — `GoolFolderSoundBank` resource.** A subclass of
+`GoolSoundBank` that auto-populates its `sounds` dictionary by
+scanning a folder of audio files. Designed for the "drop a file
+in, it works" workflow:
+
+```
+res://sounds/
+├── music/        ← Music category, looping
+│   ├── explore_loop.ogg
+│   └── combat_loop.ogg
+├── sfx/          ← SFX category, one-shot
+│   ├── gunshot.wav
+│   └── footstep_grass_01.wav
+├── voice/        ← Voice category
+└── ambience/     ← Ambience category, looping
+```
+
+Create the resource via FileSystem dock → Right-click → New
+Resource → GoolFolderSoundBank, set `folder_path` to `res://sounds`
+(or wherever), save. Drop a `GoolSoundBankLoader` into your main
+scene pointing at the resource. Every audio file under the
+folder is now registered with the runtime at scene load —
+including category-conventional defaults (Music + Ambience loop;
+SFX/UI/Voice/Dialogue are one-shot).
+
+New configuration options on the resource:
+- `folder_path` — root scan directory
+- `recursive` — whether to descend into subdirectories (default
+  true)
+- `naming_style` — controls how filenames map to registered
+  names: `"filename"`, `"subfolder/filename"` (default), or
+  `"snake_case_path"`
+- `category_from_subfolder` — when true, the first subfolder
+  encodes the AudioCategory (music/sfx/voice/ambience/ui/
+  dialogue); when false, the bank's `default_category` applies
+  to all entries
+
+The `GoolSoundBankLoader` was updated to read per-entry category
+and looping settings from `GoolFolderSoundBank` (via the new
+`sounds_category` / `sounds_looping` parallel dictionaries) so
+files under `music/` automatically register as looping Music
+entries without manual per-file configuration. Plain
+`GoolSoundBank` is unaffected — falls back to the bank-wide
+defaults exactly as before.
+
+Files in unrecognized subfolders fall back to SFX with one-shot
+playback, so the system fails gracefully when a designer drops
+a file outside the conventional layout. Recursion into
+subdirectories of category folders is also supported (e.g.
+`sfx/weapons/pistol.wav` registers as `sfx/weapons/pistol` with
+category=SFX).
+
+**Feature 2 — `Gool.play_networked()` autoload helper.** A
+one-line API for firing fire-and-forget one-shot SFX across the
+network. From any peer:
+
+```gdscript
+Gool.play_networked("sfx/gunshot", muzzle.global_position)
+```
+
+The sound plays locally on the caller immediately, and is
+replicated to every connected peer via an unreliable RPC. Late
+events (>250ms old by receiver-clock comparison) drop gracefully
+— matches the SFX category's default staleness semantics from
+the event taxonomy.
+
+This is the simplest possible networked-SFX path: no node
+required, no scene-tree wiring, no client prediction state
+machine, no team filtering. For the richer use cases (server-
+authoritative validation, prediction with rollback, audible-
+radius/team filtering), the existing `NetworkedAudioEvent`
+prefab is unchanged and remains the right tool.
+
+When called without an active multiplayer peer, plays locally
+and skips the RPC silently — useful for testing in single-
+player without a separate code path.
+
+Under the hood:
+- `submit_event_local()` for the local play (instant)
+- `_rpc_play_networked()` for the broadcast (unreliable, any-peer
+  authority, late-event filter on receiver)
+- ~30 lines including comments. Wraps existing engine machinery
+  rather than introducing new C++ paths.
+
+**Feature 3 — `sound_name` autocomplete dropdown
+(EditorInspectorPlugin).** Any prefab with a `sound_name: String`
+@export property — `AudioEmitter3D`, `NetworkedAudioEvent`,
+`NetworkedAudioEmitter3D`, `MusicStateController` — now gets a
+dropdown in the inspector populated with all sound names
+discovered from `GoolSoundBank` and `GoolFolderSoundBank`
+resources in the project.
+
+Eliminates the "type the name from memory, discover at runtime
+that you spelled it wrong" failure mode. Drag a prefab, click
+its `sound_name` field, pick from the list.
+
+Behavior:
+- Scans `res://` recursively for `.tres` files of GoolSoundBank-
+  flavored types using a cheap header-peek pre-filter (no full
+  load for unrelated resources)
+- Aggregates `sounds.keys()` from each discovered bank
+- Sorts alphabetically, displays as `OptionButton`
+- Includes a `(none)` first option (clears the field) and a
+  `(custom: type below)` last option (reveals a LineEdit for
+  free-form names — for programmatically-registered sounds the
+  designer needs to reference)
+- If zero banks exist in the project, falls back to the default
+  String editor (free-form text), so the plugin doesn't break
+  empty projects
+
+Cache is static across the plugin's lifetime; cleared on plugin
+re-enable. Newly-added sound banks become visible on the next
+inspector open.
+
+### Workflow this enables
+
+The music-producer workflow this release is built for:
+
+1. **Compose & bounce** in your DAW. Export tracks as `.ogg`,
+   SFX as `.wav`, voice lines as `.ogg`.
+2. **Drop the files** into `res://sounds/{music,sfx,voice}/`.
+3. **Create one `.tres`** — a `GoolFolderSoundBank` pointing at
+   `res://sounds`. Save it once. Never touch it again.
+4. **Drop a `GoolSoundBankLoader`** into your main scene,
+   assign the bank.
+5. **Drop emitters and networked events** wherever you need
+   them; pick sound names from the inspector dropdown.
+6. **Add a new sound later?** Drop the file in the right
+   subfolder. Hit F5. It's registered, available in dropdowns,
+   ready to use. Zero code changes.
+
+For multiplayer: gameplay code that fires SFX uses
+`Gool.play_networked(name, position)` for one-shots and
+`NetworkedAudioEmitter3D` prefab for positioned continuous
+sources. The four-class delivery taxonomy from v0.18-v0.20
+routes everything correctly under the hood.
+
+### Build
+
+Files touched:
+
+- `godot/addons/gool/resources/gool_folder_sound_bank.gd`
+  (new) — the auto-populating resource. ~180 lines including
+  comments.
+- `godot/addons/gool/prefabs/gool_sound_bank_loader.gd` —
+  reads per-entry `sounds_category` / `sounds_looping` from the
+  bank when present, falls back to bank-wide defaults otherwise.
+- `godot/addons/gool/runtime_singleton.gd` — added
+  `play_networked()` autoload method and the `_rpc_play_networked`
+  RPC handler. ~65 lines.
+- `godot/addons/gool/editor/sound_name_inspector.gd` (new) —
+  EditorInspectorPlugin + custom EditorProperty widget. ~210
+  lines including comments.
+- `godot/addons/gool/plugin.gd` — registers /
+  unregisters the inspector plugin in `_enter_tree` /
+  `_exit_tree`. Updated header docs.
+
+### Verified
+
+- Library + version_test compile clean at the bumped triple. No
+  production C++ changed.
+- YAML validity of both workflow files preserved (no workflow
+  changes in this release).
+- GDScript syntax of all new and modified files reviewed against
+  Godot 4.2 API patterns. The `GoolFolderSoundBank` resource
+  scan logic uses the same `DirAccess.list_dir_begin()` /
+  `get_next()` / `current_is_dir()` idioms as the v0.21.1 smoke
+  test, which has been exercised in CI for several releases.
+- Inspector-plugin patterns (`_can_handle`, `_parse_property`,
+  `add_property_editor`, custom `EditorProperty` with
+  `emit_changed` / `_update_property`) match Godot 4.2's
+  documented EditorInspectorPlugin contract.
+
+### Known caveats
+
+- **`GoolFolderSoundBank` runs its scan in `_init()`.** For very
+  large folders (10,000+ audio files), this could noticeably
+  increase project load time. Real measurements pending; expected
+  to be well under a second for typical projects (~hundreds of
+  files).
+- **The inspector autocomplete refreshes on each inspector-open,
+  not on filesystem changes.** If you add a new sound bank
+  resource while the inspector is showing a node, you need to
+  close and reopen the inspector to see the new options. Plugin
+  re-enable also forces a refresh. Live filesystem-watch is
+  future work.
+- **Inspector plugin scans ALL `.tres` files in res://**, even
+  those not in addons/. Performance scales with project size.
+  Large projects may want to keep sound banks under a known
+  directory and we'd add a project setting to narrow the scan
+  scope in a future release.
+
 ## [0.21.5] - 2026-05-12
 
 ### Fixed — smoke CI bash trusts main.gd sentinel instead of grepping raw Godot stderr
@@ -6090,7 +6303,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.21.5...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/siliconight/gool/releases/tag/v0.22.0
 [0.21.5]: https://github.com/siliconight/gool/releases/tag/v0.21.5
 [0.21.4]: https://github.com/siliconight/gool/releases/tag/v0.21.4
 [0.21.3]: https://github.com/siliconight/gool/releases/tag/v0.21.3

@@ -346,6 +346,84 @@ func update_replicated_transform(handle: int, position: Vector3,
 func make_prediction_id() -> int:
     return _runtime.make_prediction_id()
 
+# ---- v0.22.0: simplified one-shot networked SFX ------------------------
+
+## Fire-and-forget one-shot SFX across the network. The sound plays
+## locally immediately on the caller, and is replicated to every
+## connected peer via an unreliable RPC.
+##
+## Use this when you have a discrete sound event (gunshot, impact,
+## button click, ability cast) that should be heard everywhere with
+## drop-if-late semantics — if a packet arrives stale, the audio is
+## already irrelevant, so just drop it gracefully rather than
+## playing late.
+##
+## What this DOESN'T do:
+##   * Client prediction → use NetworkedAudioEvent.predict() instead.
+##   * Server authority / validation → use NetworkedAudioEvent with
+##     Mode.SERVER_AUTHORITATIVE.
+##   * Team filtering / audible-radius gating → use NetworkedAudioEvent
+##     with default_audible_radius and team parameters.
+##   * Persistent positioned sources (loops, vehicles, ambient
+##     emitters) → use NetworkedAudioEmitter3D for those.
+##
+## This is the simplest possible networked-SFX path: one call, all
+## peers hear it, no scene-tree nodes required. About 30 lines of
+## code under the hood, including the RPC marshalling.
+##
+## When called without an active multiplayer peer, plays locally and
+## skips the RPC silently — useful for testing networked events in
+## single-player without a separate code path.
+func play_networked(sound_name: String,
+                       position: Vector3 = Vector3.ZERO,
+                       volume_db: float = 0.0,
+                       pitch: float = 1.0) -> void:
+    if not is_initialized():
+        push_error(
+            "[gool] play_networked('%s') called before runtime init. "
+            % sound_name
+            + "Either wait for the ready_to_play signal or call from "
+            + "_ready() after the autoload has finished initializing."
+        )
+        return
+    var t_ms: int = Time.get_ticks_msec()
+    # Local immediate play.
+    _runtime.submit_event_local(sound_name, position, 0, 128, t_ms)
+    # If no multiplayer peer is connected, the local play is all that's
+    # needed. Otherwise broadcast to other peers. We use the default
+    # priority of 128 (medium) which the engine routes to the
+    # drop-if-late event ring.
+    if multiplayer != null and multiplayer.has_multiplayer_peer() \
+            and multiplayer.get_multiplayer_peer().get_connection_status() \
+                == MultiplayerPeer.CONNECTION_CONNECTED:
+        _rpc_play_networked.rpc(sound_name, position, volume_db, pitch, t_ms)
+
+# RPC handler invoked on every receiving peer. Plays the sound locally
+# on the receiver with the same parameters the sender used. The Vector3
+# position is passed as-is (Godot's RPC machinery serializes Vector3
+# natively, no per-component packing needed).
+#
+# `volume_db` and `pitch` are accepted for forward compatibility — the
+# current submit_event_local path doesn't use them, but the C++ engine
+# already supports both via the event payload and a future autoload
+# expansion can wire them through without a binding compatibility break.
+@rpc("any_peer", "call_remote", "unreliable")
+func _rpc_play_networked(sound_name: String, position: Vector3,
+                            volume_db: float, pitch: float,
+                            sender_t_ms: int) -> void:
+    if not is_initialized():
+        return
+    # Optional staleness check: if the event is more than 250ms old
+    # by our clock, drop it. Matches the default category-staleness
+    # for SFX (see DefaultStalenessMsForCategory in events.h). This
+    # is the "drop-if-late" behaviour we promised in the doc above.
+    var local_t_ms: int = Time.get_ticks_msec()
+    if local_t_ms - sender_t_ms > 250:
+        # Telemetry could go here if needed.
+        return
+    _runtime.submit_event_local(sound_name, position, 0, 128, sender_t_ms)
+
+
 # =============================================================================
 # Tiny API facade
 # =============================================================================
