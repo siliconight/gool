@@ -39,6 +39,76 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+
+# Test whether a file is currently locked by another process (typically
+# Windows file-system semantics — a DLL that's mapped into a running
+# .exe can't be deleted or overwritten). Used to detect the most common
+# install-time failure: trying to upgrade gool while Godot is open
+# with the target project, which keeps gool_godot.dll loaded.
+#
+# Returns $true if the file exists AND is currently locked.
+# Returns $false if the file doesn't exist or can be opened RW.
+function Test-FileLocked {
+    param([string]$Path)
+    if (-not (Test-Path -PathType Leaf $Path)) {
+        return $false
+    }
+    try {
+        # Open in ReadWrite mode with FileShare.None — this fails fast
+        # if any other process has the file mapped or open. We close
+        # immediately if it succeeds; no actual write happens.
+        $stream = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+        $stream.Close()
+        return $false
+    } catch [System.IO.IOException] {
+        return $true
+    } catch {
+        # Some other error (e.g. permissions on the path itself, not
+        # process-level locking). Don't treat as "locked"; let the
+        # real install attempt surface a more specific error.
+        return $false
+    }
+}
+
+# Print the "close Godot first" guidance with consistent formatting.
+# Used by both the pre-flight check and the install-time catch.
+function Write-GodotLockedError {
+    param([string]$LockedPath, [string]$OriginalError = "")
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Red
+    Write-Host "  Godot appears to be running with this project open" -ForegroundColor Red
+    Write-Host "============================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "The gool GDExtension binary at:"
+    Write-Host "  $LockedPath" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "is currently locked, which on Windows means a running"
+    Write-Host "Godot editor has it loaded. Windows won't let the installer"
+    Write-Host "replace a DLL that's mapped into a running process."
+    Write-Host ""
+    Write-Host "How to fix:" -ForegroundColor Cyan
+    Write-Host "  1. Save your work in Godot if there are unsaved changes"
+    Write-Host "  2. Close Godot completely (fully quit the editor, not"
+    Write-Host "     just the project window)"
+    Write-Host "  3. Wait a few seconds for the process to exit cleanly"
+    Write-Host "  4. Re-run gool-install.cmd"
+    Write-Host ""
+    Write-Host "If you're sure Godot isn't open:" -ForegroundColor Cyan
+    Write-Host "  - Check Task Manager for any leftover godot.exe or"
+    Write-Host "    Godot_v*.exe processes and end them"
+    Write-Host "  - Antivirus software occasionally locks recently-extracted"
+    Write-Host "    DLLs while scanning; wait 30 seconds and retry"
+    if ($OriginalError -ne "") {
+        Write-Host ""
+        Write-Host "Original Windows error message:" -ForegroundColor DarkGray
+        Write-Host "  $OriginalError" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+}
+
+# ----------------------------------------------------------------------
 # Banner
 # ----------------------------------------------------------------------
 
@@ -73,6 +143,27 @@ if (-not (Test-Path (Join-Path $ProjectPath "project.godot"))) {
 }
 
 Write-Host "Target Godot project: $ProjectPath" -ForegroundColor Green
+
+# ----------------------------------------------------------------------
+# Pre-flight: is the existing gool DLL locked?
+# ----------------------------------------------------------------------
+#
+# If the target project already has a gool install, and Godot is open
+# with that project, the gool_godot.dll is mapped into Godot's process
+# and Windows will refuse to overwrite it. We can detect this BEFORE
+# downloading anything by trying to open the existing DLL for write
+# access. If that fails with IOException, Godot is holding it; bail
+# with a clear message instead of doing the download + extract dance
+# and failing late.
+#
+# Skipped silently when there's no existing install (first-time
+# install on a fresh project — nothing to be locked).
+
+$ExistingBinary = Join-Path $ProjectPath "addons\gool\bin\gool_godot.dll"
+if (Test-FileLocked $ExistingBinary) {
+    Write-GodotLockedError -LockedPath $ExistingBinary
+    exit 1
+}
 
 # ----------------------------------------------------------------------
 # Resolve version
@@ -179,11 +270,50 @@ if (-not (Test-Path -PathType Container $AddonSource)) {
 $AddonDest = Join-Path $ProjectPath "addons\gool"
 if (Test-Path $AddonDest) {
     Write-Host "Replacing existing addons\gool\ ..." -ForegroundColor Yellow
-    Remove-Item $AddonDest -Recurse -Force
+    try {
+        Remove-Item $AddonDest -Recurse -Force -ErrorAction Stop
+    } catch {
+        # Most common failure: Godot was launched between the pre-flight
+        # check and now, locking the gool DLL. We catch any failure with
+        # "denied" / "in use" / "being used" in the message — Windows
+        # phrases this several ways depending on locale and the exact
+        # caller. Other unexpected errors fall through to rethrow with
+        # the original message preserved.
+        $msg = $_.Exception.Message
+        if ($msg -match "denied|in use|being used|cannot access|locked") {
+            Write-GodotLockedError -LockedPath $ExistingBinary -OriginalError $msg
+            Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+        # Not the Godot-locked pattern — surface the original error.
+        Write-Host ""
+        Write-Host "ERROR: failed to remove existing addons\gool\ directory." -ForegroundColor Red
+        Write-Host "  $msg"
+        Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path $AddonDest -Parent) | Out-Null
-Copy-Item $AddonSource $AddonDest -Recurse -Force
+try {
+    Copy-Item $AddonSource $AddonDest -Recurse -Force -ErrorAction Stop
+} catch {
+    # Same Godot-locked diagnosis at the copy step — possible if a race
+    # between Remove-Item and Copy-Item let Godot grab the DLL again
+    # (rare, but worth handling cleanly).
+    $msg = $_.Exception.Message
+    if ($msg -match "denied|in use|being used|cannot access|locked") {
+        Write-GodotLockedError -LockedPath $ExistingBinary -OriginalError $msg
+        Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+    Write-Host ""
+    Write-Host "ERROR: failed to copy gool addon files into the project." -ForegroundColor Red
+    Write-Host "  Destination: $AddonDest"
+    Write-Host "  $msg"
+    Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+    exit 1
+}
 
 # Cleanup
 Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue

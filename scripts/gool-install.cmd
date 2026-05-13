@@ -87,13 +87,23 @@ if errorlevel 1 (
     echo    Installation failed.
     echo  ==============================================================
     echo.
-    echo  See the messages above for what went wrong. Common causes:
-    echo    * No internet connection
-    echo    * GitHub temporarily unavailable
-    echo    * Antivirus blocking the download
+    echo  Check the messages above this banner — they describe the
+    echo  specific cause. Most common failure modes:
+    echo.
+    echo    * Godot is currently running with this project open. Windows
+    echo      can't replace the gool DLL while it's loaded into a running
+    echo      editor. Close Godot completely and re-run this installer.
+    echo.
+    echo    * No internet connection, GitHub temporarily unavailable, or
+    echo      antivirus blocking the download. Check the URL in the error
+    echo      message above and try again in a minute.
+    echo.
+    echo    * The release for this gool version doesn't have a Windows
+    echo      addon archive yet. Check the GitHub Releases page for the
+    echo      version named in the error message above.
     echo.
     echo  Press any key to close...
-    pause >nul
+    pause ^>nul
     exit /b 1
 )
 

@@ -284,24 +284,119 @@ jobs:
           ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
         run: |
+          # v0.22.1: recursive copy of the whole addons/gool tree.
+          #
+          # Pre-v0.22.1 versions of this step enumerated files
+          # explicitly (runtime_singleton.gd, audio_relevancy_filter.gd,
+          # plugin.gd, plugin.cfg, prefabs/). That worked when those
+          # were the only addon files, but silently dropped every new
+          # file added under godot/addons/gool/ that wasn't manually
+          # added to this list. The result: v0.21.0 through v0.22.0
+          # all shipped addon archives missing
+          # `resources/gool_sound_bank.gd` (v0.21.0 addition),
+          # `resources/gool_folder_sound_bank.gd` (v0.22.0),
+          # and `editor/sound_name_inspector.gd` (v0.22.0). Users who
+          # installed via gool-install.cmd never got those files.
+          #
+          # The recursive copy is forward-compatible: any future
+          # addition under godot/addons/gool/ ships automatically
+          # without a YAML change. The post-stage verification step
+          # below also catches drift in case this assumption breaks.
           dest="stage/${ADDON_ARCHIVE_NAME}/addons/gool"
-          mkdir -p "${dest}/bin" "${dest}/prefabs"
-          # Addon GDScript files
-          cp godot/addons/gool/runtime_singleton.gd      "${dest}/"
-          cp godot/addons/gool/audio_relevancy_filter.gd "${dest}/"
-          cp godot/addons/gool/plugin.gd                 "${dest}/"
-          cp godot/addons/gool/plugin.cfg                "${dest}/"
-          cp -r godot/addons/gool/prefabs/.              "${dest}/prefabs/"
-          # gdextension manifest (lives one level up from addons/gool/ in source)
-          cp godot/gool.gdextension                      "${dest}/"
-          # Built binary
-          cp "${BINARY_PATH}"                            "${dest}/bin/"
-          # Top-level docs + license
+          mkdir -p "${dest}/bin"
+          # Recursive copy of the entire addon source tree. The `.`
+          # at the end of source is a cp-ism meaning "the contents
+          # of this directory, not the directory itself" — without
+          # it we'd get nested addons/gool/gool/.
+          cp -r godot/addons/gool/. "${dest}/"
+          # gdextension manifest (lives one level up from addons/gool/
+          # in source). Always copied since it's not under
+          # addons/gool/.
+          cp godot/gool.gdextension "${dest}/"
+          # Built binary into bin/. bin/ is intentionally not part
+          # of the source tree (build output, not source), so it
+          # was created above and is populated only here.
+          cp "${BINARY_PATH}" "${dest}/bin/"
+          # Top-level docs + license.
           cp LICENSE      "stage/${ADDON_ARCHIVE_NAME}/"
           cp README.md    "stage/${ADDON_ARCHIVE_NAME}/"
           cp CHANGELOG.md "stage/${ADDON_ARCHIVE_NAME}/"
           cp SETUP.md     "stage/${ADDON_ARCHIVE_NAME}/"
           cd stage && tar -czf "../${ADDON_ARCHIVE_NAME}.tar.gz" "${ADDON_ARCHIVE_NAME}"
+
+      - name: Verify staged archive contents match source (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
+        run: |
+          # v0.22.1 regression guard. The pre-v0.22.1 staging step
+          # explicitly enumerated files, which silently dropped any
+          # new source addition that wasn't manually added to the
+          # YAML — a class of bug that went undetected for 6 releases
+          # (v0.21.0 through v0.22.0). This step compares the source
+          # tree under godot/addons/gool/ against the staged archive
+          # and fails the build if anything in source isn't in the
+          # archive (modulo bin/, which is build output, not source).
+          dest="stage/${ADDON_ARCHIVE_NAME}/addons/gool"
+          echo "=== Source tree (godot/addons/gool/) ==="
+          src_files=$(cd godot/addons/gool && find . -type f \
+                      ! -path './bin/*' ! -name '.gdignore' \
+                      | sed 's|^\./||' | sort)
+          echo "$src_files" | sed 's/^/  /'
+          echo ""
+          echo "=== Staged archive contents (excluding bin/) ==="
+          dst_files=$(cd "${dest}" && find . -type f \
+                      ! -path './bin/*' \
+                      | sed 's|^\./||' | sort)
+          echo "$dst_files" | sed 's/^/  /'
+          echo ""
+          missing=$(comm -23 <(echo "$src_files") <(echo "$dst_files"))
+          if [ -n "$missing" ]; then
+            echo "::error::Source files missing from staged addon archive:"
+            echo "$missing" | sed 's/^/  /'
+            echo ""
+            echo "This usually means a new file was added under"
+            echo "godot/addons/gool/ but the release.yml staging step"
+            echo "didn't pick it up. With the v0.22.1 recursive-copy"
+            echo "fix this should not happen unless cp -r failed or"
+            echo "an exclusion (like .gdignore) was added to source."
+            exit 1
+          fi
+          echo "OK: all source addon files present in the staged archive."
+
+      - name: Verify staged archive contents match source (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
+        run: |
+          # Windows variant of the v0.22.1 regression guard. Same
+          # logic as the Unix step: compares src/dst tree, fails on
+          # any source file missing from the staged archive.
+          $dest = "stage\$env:ADDON_ARCHIVE_NAME\addons\gool"
+          $srcRoot = "godot\addons\gool"
+          $srcFiles = Get-ChildItem -Path $srcRoot -File -Recurse `
+                      | Where-Object { $_.FullName -notmatch '\\bin\\' -and $_.Name -ne '.gdignore' } `
+                      | ForEach-Object { $_.FullName.Substring((Resolve-Path $srcRoot).Path.Length + 1) -replace '\\','/' } `
+                      | Sort-Object
+          $dstFiles = Get-ChildItem -Path $dest -File -Recurse `
+                      | Where-Object { $_.FullName -notmatch '\\bin\\' } `
+                      | ForEach-Object { $_.FullName.Substring((Resolve-Path $dest).Path.Length + 1) -replace '\\','/' } `
+                      | Sort-Object
+          Write-Host "=== Source tree (godot\addons\gool\) ==="
+          $srcFiles | ForEach-Object { Write-Host "  $_" }
+          Write-Host ""
+          Write-Host "=== Staged archive contents (excluding bin\) ==="
+          $dstFiles | ForEach-Object { Write-Host "  $_" }
+          Write-Host ""
+          $missing = Compare-Object -ReferenceObject $srcFiles -DifferenceObject $dstFiles `
+                                   -PassThru | Where-Object { $srcFiles -contains $_ }
+          if ($missing) {
+            Write-Host "::error::Source files missing from staged addon archive:"
+            $missing | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "OK: all source addon files present in the staged archive."
 
       - name: Stage addon archive (Windows)
         if: runner.os == 'Windows'
@@ -310,16 +405,20 @@ jobs:
           ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
         run: |
+          # v0.22.1: see the Unix variant above for the bug-history
+          # and rationale comment. Same fix: recursive copy of the
+          # whole addons/gool source tree instead of an explicit
+          # per-file list that silently dropped any new files added
+          # without a YAML update.
           $dest = "stage\$env:ADDON_ARCHIVE_NAME\addons\gool"
-          New-Item -ItemType Directory -Force -Path "$dest\bin"     | Out-Null
-          New-Item -ItemType Directory -Force -Path "$dest\prefabs" | Out-Null
-          Copy-Item godot\addons\gool\runtime_singleton.gd      $dest -Force
-          Copy-Item godot\addons\gool\audio_relevancy_filter.gd $dest -Force
-          Copy-Item godot\addons\gool\plugin.gd                 $dest -Force
-          Copy-Item godot\addons\gool\plugin.cfg                $dest -Force
-          Copy-Item godot\addons\gool\prefabs\* "$dest\prefabs"  -Recurse -Force
-          Copy-Item godot\gool.gdextension                      $dest -Force
-          Copy-Item $env:BINARY_PATH                            "$dest\bin\" -Force
+          New-Item -ItemType Directory -Force -Path "$dest\bin" | Out-Null
+          # Recursive copy of all addon source contents. The Copy-Item
+          # source glob `addons\gool\*` plus -Recurse copies the
+          # contents (not the gool/ directory itself) into $dest,
+          # matching the Unix `cp -r ./.` semantics.
+          Copy-Item godot\addons\gool\* $dest -Recurse -Force
+          Copy-Item godot\gool.gdextension $dest -Force
+          Copy-Item $env:BINARY_PATH "$dest\bin\" -Force
           Copy-Item LICENSE      "stage\$env:ADDON_ARCHIVE_NAME\" -Force
           Copy-Item README.md    "stage\$env:ADDON_ARCHIVE_NAME\" -Force
           Copy-Item CHANGELOG.md "stage\$env:ADDON_ARCHIVE_NAME\" -Force

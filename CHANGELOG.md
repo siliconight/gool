@@ -12,6 +12,196 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.1] - 2026-05-13
+
+### Fixed — Release addon archive was silently dropping new files
+(critical, retroactively affects v0.21.0 through v0.22.0)
+
+**Background.** Every Godot addon archive published by this project
+between v0.21.0 and v0.22.0 was missing one or more files that
+landed under `godot/addons/gool/` after v0.13.x. Specifically:
+
+- `addons/gool/resources/gool_sound_bank.gd` — added in v0.21.0,
+  missing from v0.21.0 through v0.22.0 release archives
+- `addons/gool/resources/gool_folder_sound_bank.gd` — added in
+  v0.22.0, missing from v0.22.0
+- `addons/gool/editor/sound_name_inspector.gd` — added in v0.22.0,
+  missing from v0.22.0
+
+End-users who installed gool via `gool-install.cmd` against any of
+those six releases received an addon directory that didn't contain
+these files. Because the missing classes are `class_name`-
+registered Resources (`GoolSoundBank`, `GoolFolderSoundBank`) and
+an EditorInspectorPlugin (`sound_name_inspector.gd`), the symptom
+was: the new Resource types didn't appear in the Create New
+Resource dropdown, and the `sound_name` autocomplete inspector
+plugin didn't load. The plugin enable / autoload / prefab nodes
+worked normally, masking the issue at first glance.
+
+**Root cause.** `.github/workflows/release.yml`'s staging step
+enumerated specific files explicitly:
+
+```yaml
+mkdir -p "${dest}/bin" "${dest}/prefabs"
+cp godot/addons/gool/runtime_singleton.gd      "${dest}/"
+cp godot/addons/gool/audio_relevancy_filter.gd "${dest}/"
+cp godot/addons/gool/plugin.gd                 "${dest}/"
+cp godot/addons/gool/plugin.cfg                "${dest}/"
+cp -r godot/addons/gool/prefabs/.              "${dest}/prefabs/"
+```
+
+This worked when those five files plus the `prefabs/` subdirectory
+were the entire addon, but **any new file or subdirectory added
+under `godot/addons/gool/` was silently dropped from the archive**
+unless this list was also updated. The `resources/` directory
+added in v0.21.0 and the `editor/` directory added in v0.22.0 both
+missed that YAML update.
+
+The source-archive path (`scripts/make_source_archive.sh`) uses
+a recursive `tar` and was unaffected — anyone building from
+source had all the files. The bug was specific to the binary
+addon archive that `gool-install.cmd` downloads, which is the
+overwhelmingly common adopter path.
+
+The bug went undetected for six releases because:
+
+- Source-tree CI (the smoke job, gdscript-lint, etc.) all run
+  against the in-tree source, not against the staged archive
+- No release-archive smoke test existed
+- The runtime would skip missing resource scripts without
+  crashing — Godot's plugin loader doesn't fail loudly on an
+  incomplete addon directory
+- The class_name registry simply didn't have entries for
+  unfound classes, so the "Create New Resource" dropdown showed
+  no entry rather than an error
+
+**Fix.** Two changes to `release.yml`:
+
+1. **Replace explicit per-file copy with recursive copy.** Unix:
+   `cp -r godot/addons/gool/. "${dest}/"`. Windows:
+   `Copy-Item godot\addons\gool\* $dest -Recurse -Force`. Forward-
+   compatible — any future file added under the addon tree ships
+   automatically with no YAML changes.
+
+2. **Add a post-stage verification step** that compares the
+   source tree under `godot/addons/gool/` against the staged
+   archive and fails the build if any source file is missing.
+   Catches drift if the recursive copy ever silently fails or if
+   a future build-side exclusion gets introduced. Runs on both
+   Unix and Windows.
+
+The verification step makes this class of bug observable
+permanently: any future release that drops a source file would
+turn the build red instead of shipping a quiet incomplete archive.
+
+### Fixed — Installer error messaging for the "Godot is open" case
+(`scripts/quickinstall.ps1`, `scripts/gool-install.cmd`)
+
+The Windows installer now detects the most common upgrade-failure
+mode — Godot currently running with the target project open,
+locking `gool_godot.dll` — and produces an actionable error
+instead of the previous generic `Access denied` + misleading
+"common causes: antivirus / no internet" guidance.
+
+Three layered fixes:
+
+1. **Pre-flight check.** Before downloading the addon archive
+   (~0.68 MB), the installer tests whether
+   `addons/gool/bin/gool_godot.dll` is currently lockable. A
+   locked file on Windows is the unambiguous signature of "Godot
+   is running with this project open." If detected, bails
+   immediately — no wasted download.
+
+2. **Install-time catch.** `Remove-Item` and `Copy-Item`
+   operations are wrapped in try/catch that pattern-matches
+   Windows' various lock-related error phrases
+   (`denied | in use | being used | cannot access | locked`). If
+   a race opens Godot between the pre-flight check and the
+   write phase, the friendly error message still fires.
+
+3. **`gool-install.cmd` fallback footer reordered.** Previous
+   "Common causes" listed "no internet / antivirus / GitHub
+   down" first, which was actively misleading for the most
+   common case. Reordered: Godot-running case first, network /
+   antivirus / 404 second-priority.
+
+Sample of the new error users will see when this case is
+detected:
+
+```
+============================================================
+  Godot appears to be running with this project open
+============================================================
+
+The gool GDExtension binary at:
+  C:\Users\<...>\addons\gool\bin\gool_godot.dll
+
+is currently locked, which on Windows means a running
+Godot editor has it loaded. Windows won't let the installer
+replace a DLL that's mapped into a running process.
+
+How to fix:
+  1. Save your work in Godot if there are unsaved changes
+  2. Close Godot completely (fully quit the editor, not
+     just the project window)
+  3. Wait a few seconds for the process to exit cleanly
+  4. Re-run gool-install.cmd
+```
+
+### Build
+
+Files touched:
+
+- `.github/workflows/release.yml` — replaced explicit file
+  enumeration with recursive copy on both Unix and Windows
+  staging steps; added post-stage verification step on both
+  platforms.
+- `scripts/quickinstall.ps1` — added `Test-FileLocked` helper,
+  `Write-GodotLockedError` helper, pre-flight lock check, try/
+  catch around Remove-Item and Copy-Item with pattern-matched
+  Godot-lock detection.
+- `scripts/gool-install.cmd` — reordered "Common causes" footer
+  to put Godot-running case first.
+- `include/audio_engine/version.h`, `CMakeLists.txt`,
+  `tests/unit/version_test.cpp`, `README.md` — version bumped to
+  0.22.1.
+
+### Verified
+
+- Library + version_test compile clean at the bumped triple.
+  No production C++ source changes (only build infra and
+  installer tooling).
+- YAML validity of `ci.yml` and `release.yml` confirmed.
+- The recursive-copy fix is equivalent to the old explicit list
+  for files that the old list named, and additionally captures
+  the `resources/` and `editor/` subdirectories. Verified by
+  manually staging locally and confirming the resulting tree
+  matches `find godot/addons/gool/` output.
+- The post-stage verification step uses standard `find` + `comm`
+  on Unix and `Compare-Object` on Windows — both are robust to
+  filename ordering, file count growth, and new subdirectories.
+
+### Acceptance test once v0.22.1 ships
+
+After this release lands:
+
+1. Re-run `gool-install.cmd` against your existing project (Godot
+   closed first — and now the installer will tell you clearly if
+   it isn't).
+2. After install, check `addons/gool/` in the FileSystem dock:
+   the new `resources/` and `editor/` directories should appear
+   alongside the existing `bin/` and `prefabs/` directories.
+3. Restart Godot, search "gool" in Create New Resource: both
+   `GoolSoundBank` and `GoolFolderSoundBank` should appear.
+4. Drop an `AudioEmitter3D` into a scene, click its `sound_name`
+   field: the autocomplete dropdown should populate from
+   discovered sound banks (it'll show "(none)" or "(custom)" if
+   no banks are present yet, which is the intended fallback).
+
+If any of those four steps misbehaves, that's a real bug in the
+v0.22.0 feature code rather than a packaging bug — different
+diagnostic path.
+
 ## [0.22.0] - 2026-05-12
 
 ### Added — Designer-first features, slice 1 of 2 (no engine changes)
@@ -6303,7 +6493,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/siliconight/gool/releases/tag/v0.22.1
 [0.22.0]: https://github.com/siliconight/gool/releases/tag/v0.22.0
 [0.21.5]: https://github.com/siliconight/gool/releases/tag/v0.21.5
 [0.21.4]: https://github.com/siliconight/gool/releases/tag/v0.21.4
