@@ -364,40 +364,6 @@ jobs:
           fi
           echo "OK: all source addon files present in the staged archive."
 
-      - name: Verify staged archive contents match source (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
-        run: |
-          # Windows variant of the v0.22.1 regression guard. Same
-          # logic as the Unix step: compares src/dst tree, fails on
-          # any source file missing from the staged archive.
-          $dest = "stage\$env:ADDON_ARCHIVE_NAME\addons\gool"
-          $srcRoot = "godot\addons\gool"
-          $srcFiles = Get-ChildItem -Path $srcRoot -File -Recurse `
-                      | Where-Object { $_.FullName -notmatch '\\bin\\' -and $_.Name -ne '.gdignore' } `
-                      | ForEach-Object { $_.FullName.Substring((Resolve-Path $srcRoot).Path.Length + 1) -replace '\\','/' } `
-                      | Sort-Object
-          $dstFiles = Get-ChildItem -Path $dest -File -Recurse `
-                      | Where-Object { $_.FullName -notmatch '\\bin\\' } `
-                      | ForEach-Object { $_.FullName.Substring((Resolve-Path $dest).Path.Length + 1) -replace '\\','/' } `
-                      | Sort-Object
-          Write-Host "=== Source tree (godot\addons\gool\) ==="
-          $srcFiles | ForEach-Object { Write-Host "  $_" }
-          Write-Host ""
-          Write-Host "=== Staged archive contents (excluding bin\) ==="
-          $dstFiles | ForEach-Object { Write-Host "  $_" }
-          Write-Host ""
-          $missing = Compare-Object -ReferenceObject $srcFiles -DifferenceObject $dstFiles `
-                                   -PassThru | Where-Object { $srcFiles -contains $_ }
-          if ($missing) {
-            Write-Host "::error::Source files missing from staged addon archive:"
-            $missing | ForEach-Object { Write-Host "  $_" }
-            exit 1
-          }
-          Write-Host "OK: all source addon files present in the staged archive."
-
       - name: Stage addon archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -424,6 +390,64 @@ jobs:
           Copy-Item CHANGELOG.md "stage\$env:ADDON_ARCHIVE_NAME\" -Force
           Copy-Item SETUP.md     "stage\$env:ADDON_ARCHIVE_NAME\" -Force
           Compress-Archive -Path "stage\$env:ADDON_ARCHIVE_NAME" -DestinationPath "$env:ADDON_ARCHIVE_NAME.zip"
+
+      - name: Verify staged archive contents match source (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ADDON_ARCHIVE_NAME: ${{ steps.version.outputs.addon_archive_name }}
+        run: |
+          # Windows variant of the v0.22.1 regression guard.
+          #
+          # v0.22.2: this step must run AFTER the Stage Windows step
+          # (which produces $dest). In v0.22.1 the YAML had this
+          # block placed BEFORE the Stage step, so on Windows the
+          # verify ran first against a non-existent $dest, failed
+          # with "Cannot find path", and the Stage + Upload steps
+          # never got to run. Result: v0.22.1 release had Linux +
+          # macOS addon archives but no Windows archive.
+          #
+          # v0.22.2 also replaces the v0.22.1 Compare-Object -PassThru
+          # filter with a simpler `Where-Object -notin` form. The
+          # original Compare-Object logic was correct but harder to
+          # reason about than the direct subtraction; the simpler
+          # form is more obviously right and matches the Unix comm
+          # -23 semantics one-for-one.
+          $dest = "stage\$env:ADDON_ARCHIVE_NAME\addons\gool"
+          $srcRoot = "godot\addons\gool"
+          # Pre-resolve absolute paths so they're not re-evaluated
+          # inside the ForEach-Object loop (cheap, but also a
+          # defensive measure: if either path becomes unresolvable
+          # mid-pipeline due to a race, fail with a clearer error
+          # at this resolve call rather than deep inside the loop).
+          $srcAbs = (Resolve-Path $srcRoot).Path
+          $dstAbs = (Resolve-Path $dest).Path
+          $srcFiles = Get-ChildItem -Path $srcRoot -File -Recurse `
+                      | Where-Object { $_.FullName -notmatch '\\bin\\' -and $_.Name -ne '.gdignore' } `
+                      | ForEach-Object { $_.FullName.Substring($srcAbs.Length + 1) -replace '\\','/' } `
+                      | Sort-Object
+          $dstFiles = Get-ChildItem -Path $dest -File -Recurse `
+                      | Where-Object { $_.FullName -notmatch '\\bin\\' } `
+                      | ForEach-Object { $_.FullName.Substring($dstAbs.Length + 1) -replace '\\','/' } `
+                      | Sort-Object
+          Write-Host "=== Source tree (godot\addons\gool\) ==="
+          $srcFiles | ForEach-Object { Write-Host "  $_" }
+          Write-Host ""
+          Write-Host "=== Staged archive contents (excluding bin\) ==="
+          $dstFiles | ForEach-Object { Write-Host "  $_" }
+          Write-Host ""
+          # Plain "source files missing from dest" computation. No
+          # Compare-Object semantics quirks; just direct
+          # subtraction: keep items from $srcFiles that aren't in
+          # $dstFiles. @() forces array semantics so a single-item
+          # result doesn't accidentally degenerate to a string.
+          $missing = @($srcFiles | Where-Object { $_ -notin $dstFiles })
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::Source files missing from staged addon archive:"
+            $missing | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "OK: all source addon files present in the staged archive."
 
       # ============================================================
       # Upload both artifacts to the release

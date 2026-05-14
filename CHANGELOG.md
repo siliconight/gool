@@ -12,6 +12,133 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.2] - 2026-05-13
+
+### Fixed — Windows verify step ordering (regression introduced by v0.22.1)
+
+v0.22.1 added a "Verify staged archive contents match source"
+step to release.yml on both Unix and Windows, intended to catch
+the class of bug that had silently shipped incomplete archives
+for six releases. The Unix verify worked correctly. The **Windows
+verify step was inserted in the wrong place in the YAML** —
+before the Windows Stage step rather than after it.
+
+The actual step order in v0.22.1's release.yml was:
+
+```
+1. Stage addon archive (Unix)        ← skipped on Windows
+2. Verify staged archive (Unix)      ← skipped on Windows
+3. Verify staged archive (Windows)   ← ran first on Windows
+4. Stage addon archive (Windows)     ← would have run AFTER verify
+5. Upload to release
+```
+
+On the Windows runner, step 3 (Verify Windows) ran before step 4
+(Stage Windows). It tried to read the staged tree before it had
+been created and failed with:
+
+```
+Get-ChildItem: Cannot find path
+'D:\a\gool\gool\stage\gool-0.22.1-godot-addon-windows-x86_64\addons\'
+because it does not exist.
+```
+
+The Windows job then exited 1, the Stage step never ran, and the
+Upload step never uploaded a Windows asset. The v0.22.1 release
+page ended up with Linux and macOS addon archives but no Windows
+archive — the exact failure mode that the v0.22.1 packaging fix
+was supposed to prevent on a deeper level, recreated by a YAML
+ordering mistake.
+
+**Fix.** Swapped the order of the Windows Stage and Windows
+Verify steps in release.yml. New order:
+
+```
+1. Stage addon archive (Unix)        ← skipped on Windows
+2. Verify staged archive (Unix)      ← skipped on Windows
+3. Stage addon archive (Windows)     ← now runs first
+4. Verify staged archive (Windows)   ← runs after stage
+5. Upload to release
+```
+
+Linux/macOS step ordering was already correct in v0.22.1 (Stage
+Unix → Verify Unix → ...) and is unchanged.
+
+### Changed — Simplified the Windows verification logic
+
+While moving the step, also simplified its file-comparison logic:
+
+- **Replaced `Compare-Object -PassThru` with a plain
+  `Where-Object -notin`.** The original Compare-Object form was
+  correct but harder to reason about and had subtle semantics
+  with `-PassThru` that don't match the Unix `comm -23`
+  semantics one-for-one. The direct subtraction is simpler and
+  obviously right. No behavior change on a healthy run; just
+  cleaner failure modes if the comparison ever needs to debug.
+- **Pre-resolved `Resolve-Path` calls outside the pipeline.**
+  Previously `Resolve-Path` was called inside `ForEach-Object`,
+  meaning it ran once per file. Cheap, but a race condition
+  could (theoretically) cause path resolution to fail mid-loop
+  with a less-clear error. Now resolved once at the top, with a
+  more localized failure point if either source or dest
+  directory is unexpectedly missing.
+
+### Why this slipped past v0.22.1's own review
+
+The Unix verify step worked on the very same run that the
+Windows verify step failed on, so the regression was specifically
+Windows-side. The local pre-push validation I ran for v0.22.1
+only tested the Unix staging logic (`cp -r` semantics), not the
+YAML step ordering — which is the kind of error you can only
+catch by actually running the workflow against the target
+runner. The new v0.22.2 verification step (now in the right
+order) will catch any future drift of the same class.
+
+The two-layer defense holds: v0.22.1's structural-completeness
+check (now running correctly in v0.22.2) catches missing-file
+regressions; manual YAML review would have caught this ordering
+bug had I read the resulting file order rather than trusting
+my str_replace insertion point. Worth being explicit about
+that as a process note: post-edit `grep -nE "name:"` to
+confirm step ordering after any release.yml restructure.
+
+### Build
+
+Files touched:
+
+- `.github/workflows/release.yml` — swapped order of Stage
+  Windows and Verify Windows steps; simplified the verify
+  step's PowerShell file-comparison logic; pre-resolved path
+  expressions outside the pipeline.
+- Version triple, CHANGELOG, README — bumped to 0.22.2.
+
+### Verified
+
+- Library + version_test compile clean at the bumped triple.
+- YAML validity of `ci.yml` and `release.yml` confirmed.
+- Step ordering: confirmed via
+  `grep -nE "name: Stage|name: Verify|name: Upload"` showing
+  Stage Unix → Verify Unix → Stage Windows → Verify Windows →
+  Upload. Both Stage steps now precede their corresponding
+  Verify step.
+- Cannot fully exercise Windows path locally (no Windows in
+  sandbox), but the ordering fix is mechanical and the v0.22.1
+  Linux+macOS evidence confirms the Stage/Verify pair works
+  correctly when ordered right.
+
+### What v0.22.2 should produce on push
+
+- All three platforms green at the run level
+- The release page for v0.22.2 has 6 platform-specific addon
+  archives (Linux, macOS, Windows × source-archive + addon-zip)
+  plus 2 GitHub auto-generated source archives
+- The new Windows verification step prints `OK: all source
+  addon files present in the staged archive.` before the upload
+- `gool-install.cmd` resolves `latest → v0.22.2` and downloads
+  a Windows zip containing the long-missing `resources/` and
+  `editor/` directories with `GoolSoundBank`,
+  `GoolFolderSoundBank`, and `sound_name_inspector.gd`
+
 ## [0.22.1] - 2026-05-13
 
 ### Fixed — Release addon archive was silently dropping new files
@@ -6493,7 +6620,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.2...HEAD
+[0.22.2]: https://github.com/siliconight/gool/releases/tag/v0.22.2
 [0.22.1]: https://github.com/siliconight/gool/releases/tag/v0.22.1
 [0.22.0]: https://github.com/siliconight/gool/releases/tag/v0.22.0
 [0.21.5]: https://github.com/siliconight/gool/releases/tag/v0.21.5
