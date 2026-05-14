@@ -12,6 +12,146 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.10] - 2026-05-14 — **THE silent-audio fix**
+
+### Fixed — `CreateEmitter` now mixes non-looping emitters
+
+This is the one-line patch that ends the silent-audio saga across
+v0.22.0 → v0.22.9. The diagnostic chain we built (v0.22.4 → v0.22.7
+→ v0.22.9) led us here:
+
+1. v0.22.4 logging showed every GDScript-visible step succeeding
+2. v0.22.7 instrumentation proved the audio thread WAS running and
+   miniaudio was writing frames — but every sample was zero
+3. v0.22.9 mixer instrumentation pinpointed the cause:
+   **`voices=0`** — the mixer's voice pool was empty despite
+   `create_emitter` returning a valid handle.
+
+`AudioRuntimeImpl::CreateEmitter` allocates an emitter record and
+returns a handle to GDScript, but it only calls
+`PostMixerStartForEmitter` (which enqueues the `MixerCommand` that
+actually promotes a voice slot from `Inactive` to `Sound`) under
+this condition:
+
+```cpp
+if (rec->descriptor.isLooping && rec->descriptor.soundId != kInvalidSoundId) {
+    // ... PostMixerStartForEmitter / PostMixerStartStreamingForEmitter ...
+}
+```
+
+The comment above it explained: *"For looping emitters with a
+sound, kick off mixer immediately if asset is preloaded. One-shots
+are routed through the event path."*
+
+But the `AudioEmitter3D` GDScript prefab — the standard way to play
+positional audio in a Godot scene — uses `create_emitter` for ALL
+sounds, looping or not, because it needs a handle to call
+`destroy_emitter` / `set_emitter_transform` later. So non-looping
+sounds played via `AudioEmitter3D` would:
+
+- ✅ Get an emitter slot allocated
+- ✅ Return a valid handle to GDScript (`*** EMITTER LIVE ***`)
+- ❌ **Never start mixing** — the gate blocks `PostMixerStartForEmitter`
+- ❌ Voice pool stays at zero active
+- ❌ Master bus output is silence
+- ❌ Device buffer is all zeros
+- ❌ User hears nothing
+
+The two code paths (`CreateEmitter` and event-submission) never
+met for non-looping spatial audio. This affected every Godot user
+of gool with autoplay=true on a non-looping AudioEmitter3D.
+
+### The fix
+
+Remove the `&& rec->descriptor.isLooping` guard so non-looping
+emitters also call `PostMixerStartForEmitter`. The infrastructure
+was already there:
+
+- `MixerCommand` already takes `cmd.looping = rec.descriptor.isLooping`
+  — the mixer's voice processing already does the right thing for
+  one-shots (plays once, sets voice mode back to `Inactive` when
+  the sample buffer runs out).
+- `EmitterRecord::oneShotFramesRemaining` already tracks
+  remaining playback time for non-looping emitters, set to
+  `asset.frames` for non-looping vs `0.0` for looping.
+
+Both were unreachable code paths under the old gate. Now they
+work as designed.
+
+### What this means for you
+
+After installing v0.22.10:
+
+```
+[gool] ready: version=0.22.10 ...
+[gool] audio device: WASAPI / Speakers (Realtek(R) Audio)
+[AudioEmitter3D 'AudioEmitter3D'] play: sound='auto:...' pos=(0, 0, 0) looping=false
+[GoolSoundBankLoader] registered 1/1 sounds ...
+[gool] render: cb=188 (Δ188) frames=96256 (Δ96256) peak=0.4521 mixer_peak=0.4521 voices=1 gain=1.00 exc=0
+                                                                ^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^   ^^^^^^^^
+                                                                non-zero peak       non-zero mixer peak  voice active!
+```
+
+**You hear your music.** The diagnostic warning chain produces zero
+DEAD AIR messages. The validation loop that's been running across
+seven releases finally closes.
+
+### Files touched
+
+- `src/audio_engine/runtime/audio_runtime.cpp` — removed
+  `&& rec->descriptor.isLooping` from the gate in
+  `AudioRuntimeImpl::CreateEmitter`. Replaced the misleading
+  comment with the historical context above.
+- Version triple, README, CHANGELOG — bumped to 0.22.10.
+
+One real C++ line of behavior change. The rest of the diff is
+comments documenting the discovery, version bumps, and a CHANGELOG
+entry preserving the post-mortem.
+
+### What v0.22.0 → v0.22.9 were worth, despite none of them being THE fix
+
+Looking back across this session, every release shipped today did
+real, valuable work even though none of them was the actual fix:
+
+- v0.22.0: designer-first features (folder bank, networked play,
+  sound_name inspector) — all shipped, all working, all useful for
+  any future gool user
+- v0.22.1: packaging fix (release.yml was silently dropping new
+  files since v0.13.x) — would have broken EVERY new gool user
+  until found
+- v0.22.2: Windows step ordering (CI bug introduced by v0.22.1)
+- v0.22.3: live filesystem watching (designer QoL)
+- v0.22.4: audible init logging + onboarding helpers (eliminates
+  the silent-success failure mode for every future user)
+- v0.22.5: failed godot-cpp 4.6 attempt (the 4.6 branch doesn't
+  exist) — taught us that godot-cpp's stable branches stop at 4.4
+- v0.22.6: godot-cpp 4.4 correction (correct baseline for modern
+  Godot, even though it wasn't the silent-audio fix)
+- v0.22.7: render-thread instrumentation (`callback_invocations`,
+  `frames_rendered`, `peak_amplitude`) — pinpointed that gool
+  was writing zeros
+- v0.22.8: failed build (internal header leaked to binding)
+- v0.22.9: build-fix corrigendum (mixer accessors through public
+  API forwarders) + mixer-level discrimination (`active_voices`,
+  `mixer_peak`, `master_gain`) — pinpointed exact cause
+- **v0.22.10: THE fix**
+
+The diagnostic infrastructure built across v0.22.4/v0.22.7/v0.22.9
+will pay dividends for every future user who hits silence in some
+NEW way: their `[gool] render:` log will tell them exactly which
+stage is producing it.
+
+### Verified
+
+- Engine library + version_test compile clean at 0.22.10
+- The change is genuinely a single-condition removal — the
+  surrounding streaming-asset / one-instance-per-stream logic
+  is preserved
+- `cmd.looping = rec.descriptor.isLooping` still correctly
+  propagates the looping flag to the mixer (line 1349 of
+  PostMixerStartForEmitter), so non-looping emitters will play
+  once and self-terminate via `oneShotFramesRemaining`
+
 ## [0.22.9] - 2026-05-14
 
 ### Fixed — gdextension build: don't leak internal `audio_mixer.h` to binding
@@ -7322,7 +7462,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.9...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.10...HEAD
+[0.22.10]: https://github.com/siliconight/gool/releases/tag/v0.22.10
 [0.22.9]: https://github.com/siliconight/gool/releases/tag/v0.22.9
 [0.22.8]: https://github.com/siliconight/gool/releases/tag/v0.22.8
 [0.22.7]: https://github.com/siliconight/gool/releases/tag/v0.22.7

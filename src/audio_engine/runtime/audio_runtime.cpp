@@ -546,10 +546,26 @@ Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& d
                                          std::memory_order_relaxed);
     }
 
-    // For looping emitters with a sound, kick off mixer immediately if asset
-    // is preloaded. One-shots are routed through the event path.
+    // v0.22.10: kick off mixing for ALL emitters with a sound,
+    // looping or not. Previously this branch gated on
+    // `rec->descriptor.isLooping` with the rationale "one-shots are
+    // routed through the event path" — but the AudioEmitter3D
+    // GDScript prefab uses CreateEmitter for one-shot sounds too
+    // (because it needs an EmitterHandle to call DestroyEmitter,
+    // SetEmitterTransform, etc. later). With the old gate,
+    // non-looping emitters got a handle but were never mixed —
+    // the silent-audio symptom that ate eight hours of v0.22.x
+    // debugging.
+    //
+    // The mixer already handles natural end-of-sample correctly:
+    // `cmd.looping = false` (line 1349 below) tells it not to
+    // wrap around, and `oneShotFramesRemaining` on the emitter
+    // record (line 1366-1368) tracks remaining playback time so
+    // the runtime can DestroyEmitter when the sound ends. So
+    // removing this gate gives non-looping emitters working
+    // playback with correct termination behavior.
     if (auto* rec = emitters_->Get(h.value())) {
-        if (rec->descriptor.isLooping && rec->descriptor.soundId != kInvalidSoundId) {
+        if (rec->descriptor.soundId != kInvalidSoundId) {
             // Streaming asset takes priority; registered streaming sounds
             // never cohabitate with a pinned PcmAsset under the same id.
             if (auto* stream = assets_->GetStreamingAsset(rec->descriptor.soundId)) {
