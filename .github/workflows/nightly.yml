@@ -24,7 +24,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  GODOT_CPP_REF: '4.2'
+  GODOT_CPP_REF: '4.6'
 
 jobs:
   build-addon:

@@ -11,7 +11,7 @@ env:
   # CI proves the binding compiles against the version we'll ship.
   # Bump in lockstep with .github/workflows/release.yml and
   # godot/gool.gdextension's `compatibility_minimum`.
-  GODOT_CPP_REF: '4.2'
+  GODOT_CPP_REF: '4.6'
 
 jobs:
   # ----------------------------------------------------------------
@@ -555,7 +555,7 @@ jobs:
   # cheapest possible point in the pipeline.
   #
   # gdtoolkit pins to the 4.x major series matching our Godot
-  # target (GODOT_CPP_REF: 4.2). The tool tracks Godot's grammar
+  # target (GODOT_CPP_REF: 4.6). The tool tracks Godot's grammar
   # changes within a major; minor mismatches inside 4.x are
   # accepted.
   # ----------------------------------------------------------------
@@ -594,7 +594,7 @@ jobs:
   # ----------------------------------------------------------------
   # Job: Godot headless smoke (v0.21.1).
   #
-  # Authoritative parse + load check. Downloads Godot 4.2.2 stable
+  # Authoritative parse + load check. Downloads Godot 4.6.2 stable
   # for Linux, copies the addon into a minimal smoke project under
   # tests/godot/smoke/, runs that project headlessly, and lets
   # main.gd programmatically load() every .gd file under
@@ -614,7 +614,7 @@ jobs:
   # is a follow-up — useful but heavier; the parse-level gate is
   # the immediate win.
   #
-  # Godot version: pinned to 4.2.2-stable to match the project's
+  # Godot version: pinned to 4.6.2-stable to match the project's
   # GODOT_CPP_REF (4.2). When that ref bumps, this version bumps
   # too — keep them in lockstep.
   # ----------------------------------------------------------------
@@ -624,10 +624,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Godot 4.2.2 headless
+      - name: Download Godot 4.6.2 headless
         run: |
           set -euo pipefail
-          GODOT_VERSION="4.2.2-stable"
+          GODOT_VERSION="4.6.2-stable"
           GODOT_ZIP="Godot_v${GODOT_VERSION}_linux.x86_64.zip"
           wget -q --show-progress \
             "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${GODOT_ZIP}"
