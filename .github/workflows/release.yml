@@ -30,7 +30,7 @@ env:
   # godot-cpp branch to build against. Matches the `compatibility_minimum`
   # in godot/gool.gdextension. Bumping this to a newer Godot minor (4.3,
   # 4.4) requires also bumping the manifest's compatibility_minimum.
-  GODOT_CPP_REF: '4.6'
+  GODOT_CPP_REF: '4.4'
 
 jobs:
   release:

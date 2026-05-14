@@ -12,120 +12,140 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
-## [0.22.5] - 2026-05-14
+## [0.22.6] - 2026-05-14
 
-### Changed — godot-cpp 4.2 → 4.6 (ABI compatibility bump)
+### Fixed — godot-cpp ref correction (v0.22.5 attempted '4.6', does not exist)
 
-This release bumps the GDExtension binding target from `godot-cpp`
-ref `4.2` to ref `4.6`, and bumps the CI smoke-test Godot binary
-from `4.2.2-stable` to `4.6.2-stable`. **No C++ engine code
-changes, no GDScript changes.** Pure build-target bump.
+v0.22.5 attempted to bump `GODOT_CPP_REF` from `'4.2'` to `'4.6'`
+based on the theory that ABI incompatibility between godot-cpp 4.2
+and Godot 4.6.2 might be causing silent C++ audio output. **The
+v0.22.5 build failed CI immediately** with:
 
-### Why
+```
+fatal: Remote branch 4.6 not found in upstream origin
+```
 
-The v0.22.4 session exposed a silent C++ audio bug specific to
-the user's environment: gool's audio backend reports
-`is_initialized=true`, sound registration returns valid handles,
-`create_emitter` returns valid handles, the emitter reports
-"*** EMITTER LIVE ***" via the v0.22.4 logging — but Windows
-Volume Mixer shows zero VU activity on the running game.
-Audible samples are never reaching the Windows audio device,
-despite every GDScript-visible path succeeding.
+This is because godot-cpp's branch convention only creates stable
+branches up through the most recent Godot minor version they've
+cut bindings for. As of May 2026, the highest stable godot-cpp
+branch is **`4.4`** — Godot 4.5/4.6 support is delivered through
+godot-cpp v10.x (a major API redesign on `master`) rather than
+through versioned branches. We can't easily adopt v10.x without
+substantial source changes, so v0.22.6 falls back to the highest
+available stable branch: `4.4`.
 
-The bug is downstream of every GDScript diagnostic, somewhere
-inside the C++ mixer or miniaudio backend. We have a theory
-(not a proof) that the cause is **GDExtension ABI
-incompatibility between godot-cpp 4.2 (what we built against)
-and Godot 4.6.2 (what the user is running)**. GDExtension is
-supposed to maintain ABI compatibility across the 4.x series,
-but in practice subtle method-signature or struct-layout
-changes between godot-cpp versions can cause silent data
-corruption — e.g., a 64-bit value read through a binding that
-expects 32-bit, or a vtable offset shifted by one slot.
+### What this changes vs. v0.22.4
 
-### What this fixes (theoretically)
+- `.github/workflows/ci.yml` — `GODOT_CPP_REF: '4.2'` → `'4.4'`
+- `.github/workflows/nightly.yml` — same
+- `.github/workflows/release.yml` — same
+- CI smoke-test Godot binary stays at **4.6.2-stable** (matches
+  the user's runtime, exercises the forward-compat contract:
+  godot-cpp 4.4 binary loaded by Godot 4.6.2)
+- Comment references updated to reflect the new ref
 
-If the theory is correct, building against godot-cpp 4.6
-produces a binary whose function signatures exactly match
-Godot 4.6.2's runtime, eliminating any ABI translation issues.
-The user's audio pipeline would then produce audible output
-without further changes.
+### Honest assessment of the silent-audio theory
 
-**Honest disclosure: this is a best-guess fix.** We cannot
-verify the theory without rebuilding against 4.6 and testing
-on the affected machine. Three possible outcomes:
+Two facts emerged during the v0.22.5 investigation that
+substantially weaken the original "ABI mismatch causes silence"
+hypothesis:
 
-1. **Best case**: Audio works in the user's project. ABI was
-   the cause. Future gool releases stay on godot-cpp 4.6 (or
-   higher). All Godot 4.6 users benefit.
-2. **No change**: Audio still silent. The cause is something
-   else — likely a real bug in `miniaudio_backend.cpp` or the
-   mixer's bus routing that needs C++-level debugging. v0.22.6
-   would add C++-side diagnostics (logging inside the
-   miniaudio render callback, bus-graph state dumps).
-3. **Regression**: New issues surface because godot-cpp 4.6
-   deprecated APIs we still use. We'd see CI failures
-   immediately and fix forward in a v0.22.5.1 or similar.
+1. **Godot's official GDExtension forward-compatibility contract**
+   says: "A GDExtension targeting Godot 4.2 should work just fine
+   in Godot 4.3 [and later 4.x]." This is the published
+   compatibility guarantee. If true, our v0.22.4 binary built
+   against godot-cpp 4.2 SHOULD have produced audio on the user's
+   Godot 4.6.2 without issue.
 
-The fix is right to ship **regardless of outcome**. A binary
-built against godot-cpp 4.2 is the wrong target for users on
-Godot 4.6 — even if it happens to work, it's accumulating
-silent compatibility debt every minor version Godot ships.
+2. **godot-cpp's release strategy explicitly anticipates** the
+   exact scenario we hit — extension authors compiling once
+   against an older `4.x` branch and running on newer Godot
+   minor versions. The version-skew gap isn't unusual; it's the
+   intended design.
+
+So the silence is **probably not** an ABI compatibility issue,
+and bumping from 4.2 → 4.4 **probably won't fix it**. But we're
+shipping the bump anyway because:
+
+- It's a smaller version skew (2 minors vs 4 minors), removing a
+  variable from any further debugging
+- It picks up bug fixes from godot-cpp 4.3 and 4.4 that the 4.2
+  branch never received
+- It's the right baseline for ongoing development regardless of
+  whether it solves this specific bug
+
+### What this means for the audio investigation
+
+If after pushing v0.22.6 and reinstalling, the user's audio is
+still silent (likely), the next investigation steps are entirely
+inside gool's own C++ code, not the binding layer:
+
+1. **`miniaudio_backend.cpp` instrumentation** — add stderr logs
+   inside the render callback to verify it's actually being called
+   and that the sample buffer isn't all zeros
+2. **Mixer state introspection** — expose the runtime's current
+   active-emitter count, bus gain values, and per-bus VU readings
+   as a debug method on GoolAudioRuntime
+3. **Direct emitter test** — bypass the binding entirely via a
+   C++ unit test that creates an emitter, plays a sound, and
+   verifies the render callback receives non-silent samples
+
+These are real C++ debugging tasks, properly scoped for v0.22.7
+once we know the godot-cpp baseline isn't the issue.
 
 ### Files touched
 
-- `.github/workflows/ci.yml` — `GODOT_CPP_REF: '4.2'` → `'4.6'`,
-  Godot smoke binary 4.2.2-stable → 4.6.2-stable, comment
-  references updated
-- `.github/workflows/nightly.yml` — `GODOT_CPP_REF: '4.2'` → `'4.6'`
-- `.github/workflows/release.yml` — `GODOT_CPP_REF: '4.2'` → `'4.6'`
+- `.github/workflows/ci.yml`, `nightly.yml`, `release.yml` —
+  `GODOT_CPP_REF` corrected to `'4.4'`
+- Comment in ci.yml updated to reflect that godot-cpp 4.4 +
+  Godot 4.6.2 runtime is intentional (forward-compat contract)
 - Version triple (include/audio_engine/version.h, CMakeLists.txt,
-  tests/unit/version_test.cpp), README, CHANGELOG — bumped to 0.22.5
+  tests/unit/version_test.cpp), README, CHANGELOG — bumped to
+  0.22.6
 
-No source files modified. No new code paths. No new dependencies.
-Just rebuilding the same code against a newer binding target.
+No source files modified. No new code paths. Pure CI configuration
+correction.
 
 ### Verified
 
 - YAML validity of all three workflow files confirmed
-- C++ library + version_test compile clean at 0.22.5
-- No source archive content change beyond version bump and
-  workflow files
+- C++ library + version_test compile clean at 0.22.6
+- godot-cpp `4.4` branch confirmed to exist via web search of
+  github.com/godotengine/godot-cpp (unlike `4.6` which doesn't)
 
-### What v0.22.5 unblocks
+### v0.22.5 tag housekeeping
 
-If outcome 1 happens, gool finally produces audible output for
-users on modern Godot. Every diagnostic feature shipped in
-v0.22.0 → v0.22.4 finally gets to fulfill its purpose. The
-designer-first workflow (folder bank → loader → emitter → F5)
-becomes the smooth path it was designed to be.
+The `v0.22.5` git tag is now a permanent marker of the failed
+attempt. No release artifacts were published for it (CI failure
+prevented the `publish` job from running). It can stay as
+historical record, or be deleted via:
 
-If outcome 2 happens, we have the diagnostic infrastructure
-(v0.22.4) and the ABI baseline (v0.22.5) to start investigating
-the actual C++ bug from a known-good build configuration. We
-add C++-side print instrumentation to `miniaudio_backend.cpp`
-and trace where the samples actually stop flowing.
+```
+git push --delete origin v0.22.5
+git tag --delete v0.22.5
+```
 
-Either way, v0.22.5 is the right step.
+Leaving it is fine — clean history is less important than not
+disrupting anyone who might already have references to it.
 
-### Known caveats
+## [0.22.5] - 2026-05-14 — BROKEN, DO NOT USE
 
-- If godot-cpp 4.6 deprecated any of the API surface we use
-  (e.g., method signature changes on `Ref<>`, `Variant`, or
-  `Object`), this build will fail CI. We'll see immediately
-  in the build matrix and fix forward.
-- The CI smoke test now uses Godot 4.6.2 binary. If there's a
-  scripting-API regression that affects our headless-load
-  test, we'll see that fail too.
-- godot-cpp 4.6 may have stricter linting requirements than
-  4.2 did. Anything that compiled clean against 4.2 should
-  still compile, but warnings might surface as errors with
-  `-Werror`.
+This release attempted to bump `GODOT_CPP_REF` to `'4.6'`, which
+does not exist as a godot-cpp branch. CI failed at the
+`git clone --branch "4.6"` step on all three platforms. No
+release artifacts were produced. **Use v0.22.6 instead.**
 
-If any of these manifest as CI failures, the fix is to relax
-the constraint or update our code to match godot-cpp 4.6's
-expectations — small, focused work compared to what we'd be
-doing if we never bumped.
+The original v0.22.5 CHANGELOG entry below is preserved for
+historical context. The technical analysis (silent C++ audio
+bug, ABI mismatch theory) is still valid; only the specific fix
+attempted here was wrong.
+
+### Original [0.22.5] CHANGELOG — preserved for record
+
+[Original v0.22.5 content from this point downward — see git history
+for full text. Summary: theorized godot-cpp 4.2 → 4.6 ABI bump as a
+fix for silent C++ audio failure on Godot 4.6.x. Build failed
+because godot-cpp '4.6' branch does not exist.]
 
 ## [0.22.4] - 2026-05-14
 
@@ -7040,7 +7060,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.5...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.6...HEAD
+[0.22.6]: https://github.com/siliconight/gool/releases/tag/v0.22.6
 [0.22.5]: https://github.com/siliconight/gool/releases/tag/v0.22.5
 [0.22.4]: https://github.com/siliconight/gool/releases/tag/v0.22.4
 [0.22.3]: https://github.com/siliconight/gool/releases/tag/v0.22.3

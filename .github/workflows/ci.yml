@@ -11,7 +11,7 @@ env:
   # CI proves the binding compiles against the version we'll ship.
   # Bump in lockstep with .github/workflows/release.yml and
   # godot/gool.gdextension's `compatibility_minimum`.
-  GODOT_CPP_REF: '4.6'
+  GODOT_CPP_REF: '4.4'
 
 jobs:
   # ----------------------------------------------------------------
@@ -555,7 +555,7 @@ jobs:
   # cheapest possible point in the pipeline.
   #
   # gdtoolkit pins to the 4.x major series matching our Godot
-  # target (GODOT_CPP_REF: 4.6). The tool tracks Godot's grammar
+  # target (GODOT_CPP_REF: 4.4). The tool tracks Godot's grammar
   # changes within a major; minor mismatches inside 4.x are
   # accepted.
   # ----------------------------------------------------------------
@@ -615,8 +615,11 @@ jobs:
   # the immediate win.
   #
   # Godot version: pinned to 4.6.2-stable to match the project's
-  # GODOT_CPP_REF (4.2). When that ref bumps, this version bumps
-  # too — keep them in lockstep.
+  # GODOT_CPP_REF (4.4 — highest stable godot-cpp branch). Per the
+  # GDExtension forward-compatibility contract, a binary built
+  # against godot-cpp 4.4 loads cleanly into Godot 4.6.x. When the
+  # godot-cpp 4.5/4.6 stable branches eventually ship, bump this in
+  # lockstep.
   # ----------------------------------------------------------------
   godot-headless-smoke:
     name: godot / headless-smoke
