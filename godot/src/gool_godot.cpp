@@ -21,7 +21,6 @@
 #include "audio_engine/events.h"
 #include "audio_engine/gpak.h"
 #include "audio_engine/backend/miniaudio_backend.h"
-#include "audio_engine/mixer/audio_mixer.h"  // v0.22.8: diagnostic accessors
 #include "audio_engine/music_channel.h"
 #include "audio_engine/sound_bank.h"
 #include "audio_engine/version.h"
@@ -495,13 +494,16 @@ public:
         // playing but bus chain silenced" from "audio reaching the
         // device" failure modes — the key discrimination the v0.22.7
         // session's "peak=0" output didn't have.
-        const auto* mixer = runtime_->GetMixer();
-        if (mixer) {
-            d["active_voices"] =
-                static_cast<int64_t>(mixer->ActiveVoicesApprox());
-            d["mixer_peak"]    = mixer->MasterPreGainPeak();
-            d["master_gain"]   = mixer->MasterGainLinear();
-        }
+        //
+        // v0.22.8.1: accessed via AudioRuntime forwarders rather than
+        // directly through the mixer, so this binding TU doesn't need
+        // to include the internal audio_mixer.h header (which would
+        // break the gdextension build, where only include/ is on the
+        // include path).
+        d["active_voices"] =
+            static_cast<int64_t>(runtime_->GetActiveVoicesApprox());
+        d["mixer_peak"]    = runtime_->GetMasterPreGainPeak();
+        d["master_gain"]   = runtime_->GetMasterGainLinear();
         return d;
     }
 
@@ -528,14 +530,11 @@ public:
                 mb->ResetPeakSampleAbs();
             }
         }
-        const auto* mixer = runtime_->GetMixer();
-        if (mixer) {
-            // Same const_cast pattern as above — diagnostic state is
-            // mutable-by-design (atomic counters written by the
-            // render thread), but the const-correctness of the
-            // production interface keeps the accessor const.
-            const_cast<audio::AudioMixer*>(mixer)->ResetMasterPreGainPeak();
-        }
+        // v0.22.8.1: reset mixer peak through AudioRuntime forwarder,
+        // not through GetMixer/const_cast as in the v0.22.8 first
+        // attempt. The runtime forwarder is non-const-by-design
+        // (Reset mutates state); no const_cast needed here.
+        runtime_->ResetMasterPreGainPeak();
     }
 
     void update(double delta) {

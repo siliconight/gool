@@ -38,7 +38,6 @@ namespace audio {
 
 // Forward declaration for pimpl. Defined in src/audio_engine/runtime/.
 class AudioRuntimeImpl;
-class AudioMixer;   // v0.22.8: forward-declared so GetMixer() can return const AudioMixer*
 
 // Forward declare to avoid pulling telemetry.h into every translation
 // unit that includes audio_runtime.h. The host opts in by including
@@ -221,19 +220,27 @@ public:
     // not part of the public surface here.
     const IAudioBackend* GetBackend() const noexcept;
 
-    // v0.22.8: non-owning accessor for the AudioMixer instance built
-    // at Initialize() time. Same lifetime contract as GetBackend():
-    // nullptr before Initialize, nullptr after Shutdown. Const-
-    // qualified because the public surface here is diagnostic-only;
-    // production mixing operations go through SetGameState,
-    // RegisterSoundDefinition, SubmitEvent, etc. which mutate the
-    // mixer internally via the command queue.
+    // v0.22.8.1: mixer-level diagnostic accessors, forwarded from
+    // AudioMixer. These are exposed on AudioRuntime rather than via
+    // a GetMixer() accessor because the GDExtension binding only
+    // has the public include/ tree on its include path — leaking
+    // <audio_engine/mixer/audio_mixer.h> (an internal src/ header)
+    // would break the binding's build.
     //
-    // The class AudioMixer is forward-declared at namespace scope at
-    // the top of this file. Callers that want to actually USE the
-    // mixer's diagnostic accessors must include <audio_engine/mixer/
-    // audio_mixer.h> themselves to get the complete type.
-    const AudioMixer* GetMixer() const noexcept;
+    // All four answer the "where in the pipeline is the silence
+    // coming from?" question. Used by the GDScript runtime
+    // singleton's _log_render_stats() to discriminate between
+    // emitter-not-wired, mixer-silent, and master-gain-muted
+    // failure modes.
+    //
+    // Lifetime: same as IsInitialized() — return zero/empty before
+    // Initialize and after Shutdown. The underlying mixer's atomic
+    // counters are written from the render thread; reads are
+    // lock-free.
+    uint32_t GetActiveVoicesApprox() const noexcept;
+    float    GetMasterPreGainPeak() const noexcept;
+    float    GetMasterGainLinear() const noexcept;
+    void     ResetMasterPreGainPeak() noexcept;
 
     // Per-frame tick. Drains event queues, advances simulation, recomputes
     // spatial state, publishes the next mixer snapshot for the render thread.

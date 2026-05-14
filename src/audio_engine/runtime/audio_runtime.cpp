@@ -4,6 +4,7 @@
 
 #include "audio_engine/audio_runtime.h"
 #include "audio_engine/runtime/audio_runtime_impl.h"
+#include "audio_engine/mixer/audio_mixer.h"  // v0.22.8.1: for mixer accessor forwarders
 #include "audio_engine/memory_budget.h"
 #include "audio_engine/replication_validator.h"
 #include "audio_engine/telemetry.h"
@@ -44,11 +45,23 @@ const IAudioBackend* AudioRuntime::GetBackend() const noexcept {
     return impl_->GetBackend();
 }
 
-// v0.22.8: forward to AudioRuntimeImpl. The mixer_ unique_ptr lives
-// inside Impl; we expose its raw const pointer non-owning. Returns
-// nullptr before Initialize() or after Shutdown().
-const AudioMixer* AudioRuntime::GetMixer() const noexcept {
-    return impl_->GetMixer();
+// v0.22.8.1: mixer diagnostic accessors. AudioMixer's interface is
+// the source of truth; AudioRuntime forwards through Impl. The
+// audio_mixer.h include happens in audio_runtime.cpp (this file),
+// which is part of the engine library — NOT the godot GDExtension
+// binding. That's why we can pull from internal headers here but
+// not in gool_godot.cpp.
+uint32_t AudioRuntime::GetActiveVoicesApprox() const noexcept {
+    return impl_->GetActiveVoicesApprox();
+}
+float AudioRuntime::GetMasterPreGainPeak() const noexcept {
+    return impl_->GetMasterPreGainPeak();
+}
+float AudioRuntime::GetMasterGainLinear() const noexcept {
+    return impl_->GetMasterGainLinear();
+}
+void AudioRuntime::ResetMasterPreGainPeak() noexcept {
+    impl_->ResetMasterPreGainPeak();
 }
 
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
@@ -246,6 +259,26 @@ bool AudioRuntime::GetPerPlayerReplicationStats(
 AudioRuntimeImpl::AudioRuntimeImpl()  = default;
 AudioRuntimeImpl::~AudioRuntimeImpl() {
     if (initialized_) Shutdown();
+}
+
+// v0.22.8.1: mixer diagnostic accessor implementations. Each one
+// checks whether mixer_ has been built (nullptr before Initialize,
+// nullptr after Shutdown) and returns a safe default if not. This
+// matches the calling pattern in the GDScript runtime singleton,
+// which polls these unconditionally every _process tick and uses
+// the absence of valid data to discriminate "not running" from
+// "running but silent."
+uint32_t AudioRuntimeImpl::GetActiveVoicesApprox() const noexcept {
+    return mixer_ ? mixer_->ActiveVoicesApprox() : 0u;
+}
+float AudioRuntimeImpl::GetMasterPreGainPeak() const noexcept {
+    return mixer_ ? mixer_->MasterPreGainPeak() : 0.0f;
+}
+float AudioRuntimeImpl::GetMasterGainLinear() const noexcept {
+    return mixer_ ? mixer_->MasterGainLinear() : 0.0f;
+}
+void AudioRuntimeImpl::ResetMasterPreGainPeak() noexcept {
+    if (mixer_) mixer_->ResetMasterPreGainPeak();
 }
 
 AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,
