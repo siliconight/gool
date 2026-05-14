@@ -145,5 +145,35 @@ func _register_all() -> void:
             entry_category,
             "")               # target_bus_name (use category routing)
         results[name] = handle
-    registration_complete.emit(results)
+    # v0.22.4: registration summary. The loader silently succeeded
+    # before — registering N sounds with no output, making it
+    # impossible to tell "loader ran and worked" from "loader didn't
+    # run at all." This single log line is decisive diagnostic data
+    # for the "I added sounds to the bank but emitters don't see
+    # them" failure mode.
+    var ok_count: int = 0
+    var failed_names: PackedStringArray = PackedStringArray()
+    for entry_name in results:
+        if results[entry_name] != 0:
+            ok_count += 1
+        else:
+            failed_names.append(entry_name)
+    var bank_label: String = bank.resource_path if bank.resource_path != "" else "<unsaved bank>"
+    var name_list: PackedStringArray = PackedStringArray()
+    for entry_name in results:
+        if results[entry_name] != 0:
+            name_list.append(entry_name)
+    if ok_count > 0:
+        print(
+            "[GoolSoundBankLoader] registered %d/%d sounds from %s: [%s]"
+            % [ok_count, results.size(), bank_label,
+                ", ".join(name_list)]
+        )
+    if failed_names.size() > 0:
+        push_warning(
+            "[GoolSoundBankLoader] failed to register %d sound(s) from %s: [%s]. "
+            % [failed_names.size(), bank_label, ", ".join(failed_names)]
+            + "See earlier warnings for the specific failure cause "
+            + "of each entry."
+        )
     registration_complete.emit(results)

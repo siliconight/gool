@@ -243,16 +243,29 @@ func _scan_recursive(absolute_path: String, relative_from_root: String) -> void:
         if not _is_audio_file(entry):
             continue
         # Try to load the file as an AudioStream. Godot imports audio
-        # files (wav, ogg, mp3 — flac depends on plugin support) into
-        # AudioStreamWAV / AudioStreamOggVorbis / AudioStreamMP3
-        # automatically. If load() returns null, the file isn't yet
-        # imported — skip with a quiet warning.
+        # files (wav, ogg, mp3, flac) into AudioStreamWAV /
+        # AudioStreamOggVorbis / AudioStreamMP3 / AudioStreamFLAC
+        # automatically. If load() returns null, the file isn't a
+        # form Godot can import.
+        #
+        # v0.22.4: when this fails we now peek the file's first 64
+        # bytes and tell the user what the file actually is plus
+        # how to fix it. Previously the warning was generic ("not a
+        # loadable AudioStream — perhaps not yet imported"); the
+        # user was left to figure out whether the file was just
+        # un-reimported, or was in a format Godot doesn't support,
+        # or had a wrong extension. The codec-detection path here
+        # turns a 30-minute detective session into a one-line
+        # warning that names the actual codec and points at the
+        # fix.
         var stream: Resource = load(child_absolute)
         if stream == null or not (stream is AudioStream):
+            var classification: Dictionary = _classify_audio_file(child_absolute)
             push_warning(
-                "GoolFolderSoundBank: %s is not a loadable AudioStream "
+                "[GoolFolderSoundBank] could not register '%s'. "
                 % child_absolute
-                + "(perhaps not yet imported by Godot). Skipping."
+                + "Detected format: %s. " % classification.codec
+                + "Fix: %s" % classification.advice
             )
             continue
         var sound_name: String = _derive_name(child_relative)
@@ -278,6 +291,138 @@ func _scan_recursive(absolute_path: String, relative_from_root: String) -> void:
 func _is_audio_file(filename: String) -> bool:
     var ext: String = filename.get_extension().to_lower()
     return ext in _AUDIO_EXTENSIONS
+
+# v0.22.4: peek a file's first 64 bytes to identify what audio
+# codec/container it actually contains. Used to produce specific
+# error messages when Godot's load() rejects a file. Returns a
+# Dictionary with two keys:
+#   - codec:   human-readable description of what was found
+#   - advice:  what the user should do to make it importable
+#
+# Detection covers: Opus-in-Ogg (the Logic Pro X gotcha), Vorbis-
+# in-Ogg, RIFF/WAV, FLAC, MP3 (ID3-tagged and raw MPEG frame),
+# and a fallback for anything else. The byte sniffing is the same
+# kind of magic-number check Godot's own importers do internally,
+# just exposed here as actionable feedback.
+func _classify_audio_file(path: String) -> Dictionary:
+    var f: FileAccess = FileAccess.open(path, FileAccess.READ)
+    if f == null:
+        return {
+            "codec": "unreadable",
+            "advice": "Cannot open the file — check permissions and that the path exists."
+        }
+    var header_bytes: PackedByteArray = f.get_buffer(64)
+    f.close()
+    if header_bytes.size() < 4:
+        return {
+            "codec": "empty or truncated",
+            "advice": "File is too small to be valid audio. Re-export from your DAW."
+        }
+    # Build an ASCII-only string from the bytes for pattern
+    # matching. Non-printable bytes become '.' which is fine —
+    # we're looking for ASCII signatures like "OpusHead", "vorbis",
+    # "RIFF", "fLaC", "ID3".
+    var header: String = ""
+    for b in header_bytes:
+        if b >= 32 and b < 127:
+            header += char(b)
+        else:
+            header += "."
+    # Ogg container detection. The "OggS" magic is at byte 0;
+    # the codec identification (OpusHead or "vorbis") appears in
+    # the first page's payload, which lives within the first ~60
+    # bytes of the file.
+    if header.begins_with("OggS"):
+        if header.find("OpusHead") >= 0:
+            return {
+                "codec": "Opus (in Ogg container)",
+                "advice":
+                    "Godot 4.x has no built-in Opus importer. "
+                    + "Re-export from your DAW as WAV (always works) or "
+                    + "as Ogg Vorbis. **Logic Pro X note**: Logic's Ogg "
+                    + "export defaults to Opus — bounce as WAV instead, "
+                    + "or convert with: "
+                    + "ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg"
+            }
+        if header.find("vorbis") >= 0:
+            return {
+                "codec": "Vorbis (in Ogg container)",
+                "advice":
+                    "File contains valid Vorbis data but Godot couldn't "
+                    + "import it. Possible causes: (1) Godot hasn't "
+                    + "reimported the file yet — right-click in the "
+                    + "FileSystem dock and select Reimport. (2) The "
+                    + "Vorbis stream is corrupted or uses an unsupported "
+                    + "variant — try re-encoding from WAV: "
+                    + "ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg"
+            }
+        return {
+            "codec": "Unknown codec inside Ogg container",
+            "advice":
+                "Ogg container detected but the codec inside is neither "
+                + "Vorbis nor Opus. Re-export from your DAW as WAV."
+        }
+    # RIFF/WAV detection: "RIFF" at byte 0, "WAVE" at byte 8.
+    if header.begins_with("RIFF") and header.find("WAVE") >= 0:
+        return {
+            "codec": "RIFF/WAV",
+            "advice":
+                "WAV file detected but Godot couldn't import it. Possible "
+                + "causes: (1) Not yet imported — right-click in "
+                + "FileSystem and Reimport. (2) Unsupported WAV variant "
+                + "(e.g., 32-bit float or A-law/μ-law encoding) — "
+                + "re-export as 16-bit or 24-bit PCM."
+        }
+    # FLAC: "fLaC" magic at byte 0.
+    if header.begins_with("fLaC"):
+        return {
+            "codec": "FLAC",
+            "advice":
+                "FLAC file detected. Right-click in the FileSystem dock "
+                + "and select Reimport. If Reimport doesn't help, the "
+                + "FLAC stream may be corrupted — re-export from your DAW."
+        }
+    # MP3: ID3v2 header is "ID3" at byte 0; raw MPEG frames start
+    # with the 11-bit sync word 0xFFE0.
+    if header.begins_with("ID3"):
+        return {
+            "codec": "MP3 (with ID3 tags)",
+            "advice":
+                "MP3 file detected. Right-click in the FileSystem dock "
+                + "and select Reimport. MP3 import requires Godot's "
+                + "standard MP3 importer (enabled by default)."
+        }
+    if header_bytes.size() >= 2 \
+            and header_bytes[0] == 0xFF \
+            and (header_bytes[1] & 0xE0) == 0xE0:
+        return {
+            "codec": "MP3 (raw MPEG frame)",
+            "advice":
+                "MP3 file detected (no ID3 tags). Right-click in "
+                + "FileSystem and Reimport."
+        }
+    return {
+        "codec": "Unknown format",
+        "advice":
+            "File header doesn't match any known audio container "
+            + "(Ogg, RIFF/WAV, FLAC, MP3). The file may not actually "
+            + "contain audio data, or may use an unsupported format. "
+            + "First 16 bytes (hex): %s. " % _bytes_to_hex(header_bytes, 16)
+            + "Re-export from your DAW as WAV — it's the most reliable "
+            + "format for Godot's importer."
+    }
+
+# Helper for the diagnostic above. Returns space-separated hex of
+# the first `count` bytes, useful when the format detector can't
+# identify anything.
+func _bytes_to_hex(bytes: PackedByteArray, count: int) -> String:
+    var hex: String = ""
+    var n: int = min(count, bytes.size())
+    for i in n:
+        if i > 0:
+            hex += " "
+        hex += "%02X" % bytes[i]
+    return hex
 
 func _derive_name(relative_path: String) -> String:
     # "music/explore_loop.ogg" → derived per naming_style.

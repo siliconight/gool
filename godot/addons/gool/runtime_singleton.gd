@@ -102,6 +102,21 @@ func _ready() -> void:
                 + "backend for CI / server use."
             )
         return
+    # v0.22.4: audible "I'm alive" line. Previously a successful init
+    # was completely silent — the autoload's _ready returned cleanly
+    # with no output, making "no sound" indistinguishable from
+    # "runtime never started." This single print is the
+    # most-requested diagnostic from the v0.22.3 session.
+    var v: Dictionary = _runtime.get_version()
+    var version_str: String = v.get("full", "unknown") if v else "unknown"
+    var bus_count: int = 0
+    if has_bus_graph and cfg_dict.has("buses"):
+        bus_count = cfg_dict["buses"].size()
+    else:
+        bus_count = 1   # single Master bus when no config
+    var config_source: String = CONFIG_PATH if has_bus_graph else "defaults"
+    print("[gool] ready: version=%s rate=%dHz buffer=%d buses=%d config=%s"
+            % [version_str, sr, bs, bus_count, config_source])
     _ready_emitted = true
     ready_to_play.emit()
 

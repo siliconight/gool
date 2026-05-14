@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.22.3 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.22.4 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -259,6 +259,75 @@ a Godot dev can build a co-op shooter on top of.
 (Both example projects need a built GDExtension binary in their
 own `addons/gool/bin/` directory, same way as your project.
 SETUP.md covers this.)
+
+## Audio file format support
+
+What works in the editor (drop a file into `res://` and use it via
+`GoolFolderSoundBank` or `AudioEmitter3D.stream`):
+
+| Format | Extension | Status | Notes |
+|---|---|---|---|
+| WAV (PCM 16/24-bit) | `.wav` | ✅ Always works | Most reliable. Larger files. |
+| Ogg Vorbis | `.ogg` | ✅ Works | Compressed, good quality/size ratio |
+| MP3 | `.mp3` | ✅ Works | Compressed, broad DAW support |
+| FLAC | `.flac` | ✅ Works | Lossless compressed |
+| Opus | `.opus` or `.ogg`-Opus | ❌ Not in editor | See note below |
+
+**Opus is special.** Godot 4.x does not ship an Opus importer.
+Dropping a `.opus` file into `res://` produces no usable
+`AudioStream` resource, and `GoolFolderSoundBank` will skip it
+with a specific warning (as of v0.22.4). gool's C++ runtime *does*
+decode Opus — but only via `Gool.register_sound_from_bytes(name,
+bytes)` from a script when you load raw bytes yourself (e.g.,
+streamed from a CDN). It's separate from the editor-import path.
+
+For voice chat, gool uses Opus as its real-time codec (encoded
+on the sender, decoded on receivers, never touching Godot's
+importer) — that path is fully supported.
+
+### Logic Pro X users — important format note
+
+Logic's bounce dialog lists "**Ogg**" as a compressed format
+option, but the Ogg encoder Logic uses is **Opus**, not Vorbis.
+The resulting file has an `.ogg` extension but contains Opus
+data, which Godot's importer can't read. Two reliable paths:
+
+1. **Bounce as `Wave`** instead of Ogg. WAV files are unambiguous
+   and Godot always imports them cleanly. Larger files, but for
+   most game-audio scales this is fine.
+2. **Bounce as WAV, then convert to Vorbis with ffmpeg:**
+   ```bash
+   ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg
+   ```
+   Quality 6 is roughly 192 kbps — transparent for game music
+   and SFX. The resulting `.ogg` is real Vorbis and Godot imports
+   it without issue.
+
+gool's `GoolFolderSoundBank` (v0.22.4+) detects Opus-in-Ogg files
+specifically and emits a warning pointing at this fix, so if you
+forget you'll get an actionable message rather than a silent skip.
+
+## Linux runtime dependencies
+
+The shipped Linux addon binary links **dynamically** to libopus
+and libopusfile for the voice-chat codec and the `.opus` file
+decoder. End users typically have these via system packages —
+on most desktop distros they're pre-installed alongside the audio
+stack. If a Linux player reports `error while loading shared
+libraries: libopusfile.so.0`, they install the package:
+
+| Distro | Install command |
+|---|---|
+| Debian / Ubuntu / Mint | `sudo apt install libopus0 libopusfile0` |
+| Arch / Manjaro | `sudo pacman -S opusfile` |
+| Fedora / RHEL | `sudo dnf install opus opusfile` |
+| openSUSE | `sudo zypper install libopusfile0 libopus0` |
+
+A future option to vendor and statically link Opus into the gool
+binary (eliminating the runtime dependency for Flatpak/Snap
+deployment) is tracked for v0.23+. For now this is the dependency
+model — flagged in case it's a constraint for your distribution
+target.
 
 ## Who this is for
 

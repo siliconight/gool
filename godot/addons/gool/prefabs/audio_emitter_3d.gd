@@ -156,7 +156,26 @@ func _derive_name_from_stream(s: AudioStream) -> String:
     return ""
 
 func play() -> void:
-    if _runtime == null or sound_name == "":
+    # v0.22.4: explicit early-bailout warnings instead of silent
+    # returns. Previously this method would return silently when
+    # _runtime was null or sound_name was empty — making it
+    # impossible to tell "I called play() and nothing happened"
+    # from "I called play() and the runtime is broken."
+    if _runtime == null:
+        push_warning(
+            "AudioEmitter3D '%s': play() called but /root/Gool is not "
+            % name
+            + "available. The plugin may not be enabled, or _ready "
+            + "hasn't completed yet."
+        )
+        return
+    if sound_name == "":
+        push_warning(
+            "AudioEmitter3D '%s': play() called but sound_name is "
+            % name
+            + "empty. Set sound_name in the inspector (or set `stream` "
+            + "and let _ready auto-derive a name)."
+        )
         return
     if _handle != 0:
         # Replace existing — fade out the old one immediately.
@@ -167,7 +186,30 @@ func play() -> void:
     if playback_speed != 1.0 and _handle != 0:
         _runtime.set_emitter_playback_speed(_handle, playback_speed, 0.0)
     if _handle != 0:
+        # v0.22.4: success log. Makes "play() was called and produced
+        # an emitter" visible in the Output panel — distinguishes
+        # successful playback from silent failure modes downstream
+        # (muted bus, wrong sample format, wrong audio device, etc).
+        print("[AudioEmitter3D '%s'] play: sound='%s' pos=%s looping=%s"
+                % [name, sound_name, global_transform.origin, looping])
         sound_started.emit()
+    else:
+        # create_emitter returned 0 — the sound name isn't registered.
+        # Most common cause: emitter ran before the bank loader
+        # finished registering, or the name has a typo.
+        push_warning(
+            "AudioEmitter3D '%s': create_emitter returned 0 for "
+            % name
+            + "sound_name '%s'. The sound isn't registered with the "
+            % sound_name
+            + "runtime. Causes: (1) GoolSoundBankLoader hasn't run yet "
+            + "(it should run before emitters via scene-tree order); "
+            + "(2) the bank doesn't contain this name — verify by "
+            + "opening the bank.tres and checking its `sounds` dict; "
+            + "(3) the name has a typo — sound_name matching is "
+            + "case-sensitive and uses forward slashes (e.g., "
+            + "'sfx/explosion', not 'sfx\\\\explosion')."
+        )
 
 func stop() -> void:
     if _runtime != null and _handle != 0:

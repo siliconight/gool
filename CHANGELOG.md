@@ -12,6 +12,176 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.4] - 2026-05-14
+
+### Added — Diagnostic logging on the happy path (Tier 1)
+
+The single most painful thing about the v0.22.x designer-first
+session was that **successful initialization produced zero output**.
+A user with a working install heard their audio (or didn't), and
+either way had no visibility into what was happening. The same
+silence covered "the runtime started, found a device, registered
+your bank, played your emitter" and "the runtime crashed
+immediately at line 5." That made every silence indistinguishable
+from every other silence.
+
+v0.22.4 adds explicit logging at every major lifecycle milestone.
+A healthy F5 of a typical gool scene now produces output like:
+
+```
+[gool] ready: version=0.22.4 rate=48000Hz buffer=512 buses=8 config=res://gool/config.json
+[GoolSoundBankLoader] registered 3/3 sounds from res://sounds/bank.tres: [sfx/click, sfx/explosion, music/theme]
+[AudioEmitter3D 'Player/FootstepEmitter'] play: sound='sfx/click' pos=(2.3, 0, 1.1) looping=false
+```
+
+If any line is missing, you immediately know **where** in the
+pipeline the failure occurred.
+
+The four changes:
+
+**1. Runtime "I'm alive" log (`runtime_singleton.gd`).** After
+init succeeds, prints one line summarizing version, sample rate,
+buffer size, bus count, and config source. Previously a clean
+init returned silently — this is the line you can grep for to
+confirm gool is up at all.
+
+**2. AudioEmitter3D play() success + failure logs
+(`prefabs/audio_emitter_3d.gd`).** Replaced two silent early-
+returns with `push_warning` calls that name the specific failure:
+"play() called but /root/Gool is not available" and "play() called
+but sound_name is empty." Added a success print when
+`create_emitter` returns a valid handle, and a detailed
+push_warning when it returns 0 (lists the three most-likely
+causes: loader hasn't run, name not in bank, typo).
+
+**3. GoolSoundBankLoader registration summary
+(`prefabs/gool_sound_bank_loader.gd`).** After registering every
+entry, logs the count and the list of registered names. If any
+failed, a separate `push_warning` enumerates them. Also fixed a
+duplicate `registration_complete.emit(results)` call (cosmetic,
+no behavior change).
+
+**4. Format-aware error from GoolFolderSoundBank
+(`resources/gool_folder_sound_bank.gd`).** When `load()` returns
+null on a file, the bank now peeks the first 64 bytes, identifies
+the actual codec from its magic-number signature, and emits a
+specific warning. Detection covers Opus-in-Ogg (the Logic Pro X
+gotcha that ate hours of debugging time), Vorbis-in-Ogg, RIFF/WAV,
+FLAC, MP3 (ID3-tagged and raw MPEG frame), and a hex-dump fallback
+for unknown formats. Each detection emits actionable fix guidance
+— for Opus-in-Ogg, the warning names Logic Pro X specifically and
+includes the `ffmpeg -c:a libvorbis -q:a 6` conversion command.
+
+Example warning the user would have seen during the v0.22.3
+session debugging an Opus-in-Ogg file:
+
+```
+[GoolFolderSoundBank] could not register 'res://sounds/sfx/delco_dangerous_track6_mk2.ogg'.
+Detected format: Opus (in Ogg container).
+Fix: Godot 4.x has no built-in Opus importer. Re-export from your
+DAW as WAV (always works) or as Ogg Vorbis. **Logic Pro X note**:
+Logic's Ogg export defaults to Opus — bounce as WAV instead, or
+convert with: ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg
+```
+
+Same problem, ~30 seconds to diagnose instead of 30 minutes.
+
+### Added — Onboarding helpers (Tier 2)
+
+**5. Quickstart scene template + test beep
+(`templates/quickstart_3d.tscn`, `templates/test_beep.wav`).**
+Two new files under `addons/gool/templates/`:
+
+- `quickstart_3d.tscn` — a pre-configured scene containing
+  `GoolListener3D` + `AudioEmitter3D` with autoplay enabled and
+  stream pre-assigned. Open the scene, press F5, hear the beep.
+  If you hear it, gool is fully working in your project. If you
+  don't, the v0.22.4 diagnostic logs tell you exactly where it
+  failed.
+- `test_beep.wav` — a 22 KB test audio file: 0.5 seconds at 440
+  Hz, mono, 22050 Hz, 16-bit PCM with 20 ms fade-in/out to avoid
+  click artifacts. Used by `quickstart_3d.tscn`; also useful as
+  a generic reference tone for testing bus routing, distance
+  attenuation, etc.
+- `templates/README.md` — explains both files and points users
+  at the quickstart workflow.
+
+Eliminates the entire "build a 3-node scene from scratch and
+configure inspector fields correctly to verify gool works"
+ritual that the v0.22.3 session had to walk through manually.
+
+**6. README format-support section.** Documents what audio
+formats Godot's importer accepts (WAV, Ogg Vorbis, MP3, FLAC),
+calls out that Opus is editor-unsupported and what to do
+instead, and explicitly addresses the Logic Pro X "Ogg export
+defaults to Opus" gotcha with both the WAV workaround and the
+ffmpeg conversion command.
+
+**7. README Linux runtime dependencies note.** Documents that
+the Linux gool addon dynamically links against `libopus` and
+`libopusfile` (the Option A codec deployment from earlier
+discussion), with per-distro install commands users can paste
+into their package manager if they hit the "missing
+libopusfile.so.0" error. Future static-linking option (Option
+B) tracked for v0.23+.
+
+### Build
+
+Files touched:
+
+- `godot/addons/gool/runtime_singleton.gd` — added init success
+  log (~15 lines).
+- `godot/addons/gool/prefabs/audio_emitter_3d.gd` — replaced
+  silent returns in `play()` with named-failure push_warnings,
+  added success log on emitter creation, added failure warning
+  on create_emitter==0 (~35 lines net).
+- `godot/addons/gool/prefabs/gool_sound_bank_loader.gd` — added
+  registration summary log + failed-list push_warning at end of
+  `_register_all`, removed duplicate `registration_complete.emit`
+  (~25 lines net).
+- `godot/addons/gool/resources/gool_folder_sound_bank.gd` —
+  replaced generic "not loadable" warning with
+  `_classify_audio_file` helper + format-specific advice
+  (~130 lines including the codec detection logic and
+  `_bytes_to_hex` helper).
+- `godot/addons/gool/templates/quickstart_3d.tscn` — new
+  pre-configured scene.
+- `godot/addons/gool/templates/test_beep.wav` — new 22 KB test
+  audio.
+- `godot/addons/gool/templates/README.md` — new docs file.
+- `README.md` — added Audio file format support and Linux
+  runtime dependencies sections between Quick start and Who
+  this is for.
+- Version triple, CHANGELOG — bumped to 0.22.4.
+
+### Verified
+
+- Library + version_test compile clean at the bumped triple. No
+  C++ source changes — all v0.22.4 work is GDScript / template /
+  documentation.
+- YAML validity of `ci.yml` and `release.yml` confirmed (no
+  workflow changes; new files under `godot/addons/gool/templates/`
+  ship automatically via the v0.22.1 recursive-copy fix).
+- Format classification helper covers the codecs Godot 4.x
+  natively imports (WAV, Vorbis-in-Ogg, MP3, FLAC) plus the
+  most-common rejected case (Opus-in-Ogg from Logic Pro X), with
+  a hex-dump fallback for everything else.
+- New test_beep.wav was generated to standard RIFF/WAV PCM-16
+  format with explicit fade envelopes; importable by Godot 4.x
+  without warnings.
+
+### What v0.22.4 unblocks
+
+The diagnostic-first design philosophy in this release is the
+foundation v0.22.5's feature work (layered music stems, 2D
+variants, MP3 decoder) builds on. With every major lifecycle
+event now self-reporting, any future "the new feature doesn't
+work" diagnosis follows a clean trail: read the Output panel,
+find the missing log line, fix the gap. The v0.22.3 session
+demonstrated what *not* having this looks like — the
+quality-of-life improvement here is worth more than any single
+feature.
+
 ## [0.22.3] - 2026-05-13
 
 ### Added — Live filesystem watching for folder banks + autocomplete
@@ -6755,7 +6925,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.3...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.4...HEAD
+[0.22.4]: https://github.com/siliconight/gool/releases/tag/v0.22.4
 [0.22.3]: https://github.com/siliconight/gool/releases/tag/v0.22.3
 [0.22.2]: https://github.com/siliconight/gool/releases/tag/v0.22.2
 [0.22.1]: https://github.com/siliconight/gool/releases/tag/v0.22.1
