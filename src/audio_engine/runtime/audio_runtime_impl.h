@@ -88,6 +88,11 @@ public:
     void        Shutdown();
     bool        IsInitialized() const noexcept { return initialized_; }
 
+    // v0.22.7: non-owning accessor for the installed backend. Returns
+    // backend_.get() — nullptr before Initialize, nullptr after
+    // Shutdown (the unique_ptr is moved/reset there). Read-only.
+    const IAudioBackend* GetBackend() const noexcept { return backend_.get(); }
+
     void Update(float deltaSeconds) noexcept;
 
     // v0.15.0: the actual Update body, kept separate from the public

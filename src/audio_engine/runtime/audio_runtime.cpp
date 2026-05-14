@@ -36,6 +36,14 @@ void AudioRuntime::Shutdown()                  { impl_->Shutdown(); }
 bool AudioRuntime::IsInitialized() const noexcept { return impl_->IsInitialized(); }
 void AudioRuntime::Update(float dt) noexcept     { impl_->Update(dt); }
 
+// v0.22.7: forward to AudioRuntimeImpl. The backend_ unique_ptr lives
+// inside Impl; we expose its raw const pointer non-owning. Returns
+// nullptr before Initialize() or after Shutdown() — same lifetime
+// contract as the rest of the runtime's public methods.
+const IAudioBackend* AudioRuntime::GetBackend() const noexcept {
+    return impl_->GetBackend();
+}
+
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
     return impl_->RegisterSoundDefinition(d);
 }

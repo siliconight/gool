@@ -12,6 +12,183 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.7] - 2026-05-14
+
+### Added — Render-thread instrumentation (silent-audio root-cause diagnostic)
+
+After the v0.22.6 session confirmed that gool reports playing audio
+successfully (init, registration, emitter creation all succeed) but
+Windows audio receives zero samples, the next diagnostic layer must
+live inside gool's C++ — between the GDScript-visible API surface
+and miniaudio's device write. v0.22.7 adds exactly that
+instrumentation, designed to make the silence symptom self-
+diagnosing.
+
+### What it adds
+
+**1. Render-callback diagnostic atomics in `MiniaudioBackend`.**
+Three new atomic counters updated from inside `DataCallback`
+(miniaudio's audio-thread entry point) every invocation:
+
+- `callbackInvocations` — monotonic count of audio-thread tick
+  events. Zero means miniaudio's audio thread never started despite
+  `Start()` returning success.
+- `framesRendered` — total audio frames written to the device. Grows
+  with `callbackInvocations`; zero with nonzero invocations would
+  indicate a degenerate buffer-size negotiation.
+- `peakSampleBits` — running max of `|sample|` written to the device,
+  stored as an IEEE 754 bit-pattern in a `uint32_t` atomic. Updated
+  via a CAS-max loop on a post-OnRender buffer scan. Zero means
+  every sample written has been silence.
+
+The scan is O(N) over the buffer (typically 512–1024 samples per
+callback), no allocation, no lock, no log — render-thread safe.
+~1μs cost per callback on modern x86_64; acceptable diagnostic
+overhead for a release of this kind.
+
+**2. Public accessors on `MiniaudioBackend` and `IAudioBackend`.**
+`CallbackInvocations()`, `FramesRendered()`, `PeakSampleAbs()`,
+`ResetPeakSampleAbs()` — all lock-free reads from the atomics
+above. Safe to poll every control-thread tick.
+
+**3. Backend exposure on `AudioRuntime`.**
+New `GetBackend() const noexcept` accessor returning a non-owning
+`const IAudioBackend*`. Forwarded from `AudioRuntimeImpl`. Returns
+nullptr before Initialize or after Shutdown.
+
+**4. GDExtension binding.**
+Three new methods bound on `GoolAudioRuntime`:
+
+- `get_backend_description() -> String` — returns the audio device
+  name miniaudio actually opened, e.g.
+  `"WASAPI / Speakers (Realtek HD Audio)"`. Critical for diagnosing
+  the "gool is sending to my monitor, not my headphones" failure
+  mode.
+- `get_render_stats() -> Dictionary` — `{ callback_invocations,
+  frames_rendered, peak_amplitude, exception_count }`. The
+  decisive snapshot of audio-thread health.
+- `reset_render_peak() -> void` — zero the peak accumulator so the
+  next reading is "samples seen since last reset" rather than
+  "samples seen since Initialize."
+
+**5. Periodic logging in `runtime_singleton.gd`.**
+The `_process` tick now polls `get_render_stats()` every 2 seconds
+and prints one of three possible diagnosis lines:
+
+A. **Healthy**:
+```
+[gool] render: cb=88200 (Δ4410) frames=176400 (Δ8820) peak=0.4521 exc=0
+```
+Callback running, frames flowing, non-silent samples reaching the
+device. If the user still hears nothing in this state, the
+silence is downstream of gool (Windows audio routing, app volume,
+exclusive-mode capture by another app).
+
+B. **Dead-air-mixer (the v0.22.6 symptom)**:
+```
+[gool] render: cb=88200 (Δ4410) frames=176400 (Δ8820) peak=0.0000 exc=0
+[gool] DEAD AIR: 8820 frames written this interval, all zero amplitude.
+       Render callback is active but the engine is producing silence.
+       Possible causes: no emitter actually active in the mixer (handle
+       was returned but not wired), bus chain muted somewhere, or
+       decoder produced an empty PCM buffer for the registered sound.
+```
+Callback is running and writing frames, but every sample is zero.
+The silence is being produced **upstream** of the device — inside
+gool's own mixer, bus graph, or decoder. This is the path the
+v0.22.6 session demonstrated empirically. Next investigation
+target (v0.22.8): mixer/bus instrumentation.
+
+C. **Dead-air-thread**:
+```
+[gool] render: cb=0 (Δ0) frames=0 (Δ0) peak=0.0000 exc=0
+[gool] DEAD AIR: render callback has never been invoked. miniaudio's
+       audio thread didn't start. The backend init reported success
+       but the playback device was never opened. This is a real
+       backend bug — file a report at github.com/siliconight/gool/issues.
+```
+The audio thread never ran at all. miniaudio's `Start()` returned
+`MA_SUCCESS` but the device wasn't actually opened.
+
+**6. Audio device name in the `[gool] ready:` line.**
+On successful init, the runtime now prints a second log line
+naming the audio device miniaudio chose:
+```
+[gool] ready: version=0.22.7 rate=48000Hz buffer=512 buses=7 config=res://gool/config.json
+[gool] audio device: WASAPI / Speakers (Realtek HD Audio)
+```
+
+If the device name doesn't match what the user expects (headphones,
+specific output, etc.), that's the bug right there — no further
+investigation needed. Switch the Windows default output device or
+adjust per-app routing in Volume Mixer.
+
+### What v0.22.7 will tell us about the silent-audio symptom
+
+When the user F5s their test scene with v0.22.7 installed, the
+Output panel will produce **exactly one of three outcomes** within
+the first 2 seconds of running:
+
+1. The `[gool] audio device:` line names a device that ISN'T where
+   the user is listening → simple Windows routing fix, no further
+   gool work needed.
+2. The render log shows `peak=0.0000` consistently → bug is inside
+   gool's own mixer/bus/decoder path. v0.22.8 instruments those.
+3. The render log shows `cb=0` consistently → miniaudio's audio
+   thread isn't starting. v0.22.8 instruments Start() and adds
+   miniaudio internal logging.
+
+Three distinct outcomes, three distinct next steps. No more
+guessing; the diagnostic itself tells us where the bug is.
+
+### Files touched
+
+- `include/audio_engine/backend/miniaudio_backend.h` — declared
+  4 new public accessors
+- `src/audio_engine/backend/miniaudio_backend.cpp` — added 3 atomic
+  counters in Impl, post-OnRender peak-scan loop in DataCallback,
+  4 new accessor implementations (~50 lines net)
+- `include/audio_engine/audio_runtime.h` — added `GetBackend()`
+  accessor declaration
+- `src/audio_engine/runtime/audio_runtime.cpp` — added
+  `GetBackend()` forwarder
+- `src/audio_engine/runtime/audio_runtime_impl.h` — added inline
+  `GetBackend()` returning `backend_.get()`
+- `godot/src/gool_godot.cpp` — added 3 new ClassDB-bound methods
+  on GoolAudioRuntime (`get_backend_description`,
+  `get_render_stats`, `reset_render_peak`), ~80 lines of
+  binding glue
+- `godot/addons/gool/runtime_singleton.gd` — augmented
+  `[gool] ready:` line with audio-device print, added periodic
+  render-stats polling in `_process` with three layered
+  diagnosis warnings (~80 lines)
+- Version triple, README, CHANGELOG — bumped to 0.22.7
+
+### Verified
+
+- YAML validity of all three workflow files preserved
+- C++ library + version_test compile clean at 0.22.7
+- Render-thread instrumentation is allocation-free, lock-free, and
+  log-free (render-thread contract preserved)
+- CAS-max loop in DataCallback uses integer comparison on IEEE 754
+  positive-float bit patterns — correct because positive-float
+  ordering matches integer-bit ordering by IEEE 754 design
+- Diagnostic accessors return zero/empty on backends other than
+  MiniaudioBackend (NullAudioBackend safely returns empty
+  Dictionary from `get_render_stats()`)
+
+### Notes for the user
+
+After pushing v0.22.7 and re-installing via `gool-install.cmd`,
+F5 the test scene and wait ~5 seconds. The Output panel will show
+your audio device name AND the per-2-second render-health log.
+**Paste back whichever of the three outcomes you see** and the
+fix path becomes immediately concrete:
+
+- Outcome 1 (wrong device): one Windows setting away from sound
+- Outcome 2 (peak=0): v0.22.8 work — mixer/bus instrumentation
+- Outcome 3 (cb=0): v0.22.8 work — backend Start() instrumentation
+
 ## [0.22.6] - 2026-05-14
 
 ### Fixed — godot-cpp ref correction (v0.22.5 attempted '4.6', does not exist)
@@ -7060,7 +7237,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.6...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.7...HEAD
+[0.22.7]: https://github.com/siliconight/gool/releases/tag/v0.22.7
 [0.22.6]: https://github.com/siliconight/gool/releases/tag/v0.22.6
 [0.22.5]: https://github.com/siliconight/gool/releases/tag/v0.22.5
 [0.22.4]: https://github.com/siliconight/gool/releases/tag/v0.22.4

@@ -117,14 +117,120 @@ func _ready() -> void:
     var config_source: String = CONFIG_PATH if has_bus_graph else "defaults"
     print("[gool] ready: version=%s rate=%dHz buffer=%d buses=%d config=%s"
             % [version_str, sr, bs, bus_count, config_source])
+    # v0.22.7: log the audio device miniaudio actually opened. If the
+    # name doesn't match where the user expects sound, that's the bug
+    # (wrong default output device) — no further C++ debugging needed.
+    var device_desc: String = _runtime.get_backend_description()
+    if device_desc != "":
+        print("[gool] audio device: %s" % device_desc)
+    else:
+        print("[gool] audio device: (unknown — backend doesn't expose name)")
     _ready_emitted = true
     ready_to_play.emit()
+
+# v0.22.7: render-thread health polling. Reads the diagnostic atomics
+# the C++ data callback writes (callback invocations, frames rendered,
+# peak sample amplitude, render-callback exceptions) and prints them
+# every _RENDER_STATS_INTERVAL seconds. The output decisively answers
+# "why is gool silent" without needing C++ debugging:
+#
+#   callback_invocations == 0  →  miniaudio's audio thread never ran.
+#                                  Backend Start() returned Success
+#                                  but the device wasn't actually
+#                                  opened. Real bug in device init.
+#
+#   callback_invocations > 0
+#   AND frames_rendered > 0
+#   AND peak_amplitude == 0.0  →  audio thread IS running and IS
+#                                  writing frames, but every sample
+#                                  is zero. Silence comes from
+#                                  upstream (mixer producing
+#                                  silence: no active emitters, bus
+#                                  at -inf dB, decoder fed empty
+#                                  data). C++ mixer instrumentation
+#                                  needed.
+#
+#   peak_amplitude > 0          →  non-silent samples ARE reaching
+#                                  the device. Any inaudibility is
+#                                  on the Windows side: wrong output
+#                                  device, app volume muted, etc.
+#                                  Not a gool bug.
+#
+# After each log, peak is reset so the next reading reflects samples
+# written SINCE that log, not since process start. That way a "peak=0"
+# reading means "silent in the last 2 seconds" not "silent at any
+# point."
+const _RENDER_STATS_INTERVAL: float = 2.0   # seconds between logs
+var _render_stats_accum: float = 0.0
+var _render_stats_last_invocations: int = 0
+var _render_stats_last_frames: int = 0
 
 func _process(delta: float) -> void:
     if _runtime != null and _runtime.is_initialized():
         _runtime.update(delta)
         if not _mirrored_buses.is_empty():
             _poll_mirrored_buses()
+        _render_stats_accum += delta
+        if _render_stats_accum >= _RENDER_STATS_INTERVAL:
+            _render_stats_accum = 0.0
+            _log_render_stats()
+
+func _log_render_stats() -> void:
+    var stats: Dictionary = _runtime.get_render_stats()
+    if stats.is_empty():
+        return
+    var invocations: int = stats.get("callback_invocations", 0)
+    var frames: int = stats.get("frames_rendered", 0)
+    var peak: float = stats.get("peak_amplitude", 0.0)
+    var exceptions: int = stats.get("exception_count", 0)
+    var delta_invocations: int = invocations - _render_stats_last_invocations
+    var delta_frames: int = frames - _render_stats_last_frames
+    _render_stats_last_invocations = invocations
+    _render_stats_last_frames = frames
+    # Diagnosis line — one log every 2 seconds when running.
+    print("[gool] render: cb=%d (Δ%d) frames=%d (Δ%d) peak=%.4f exc=%d"
+            % [invocations, delta_invocations, frames, delta_frames,
+               peak, exceptions])
+    # Layer additional diagnosis when something looks broken.
+    if delta_invocations == 0 and invocations == 0:
+        push_warning(
+            "[gool] DEAD AIR: render callback has never been invoked. "
+            + "miniaudio's audio thread didn't start. The backend "
+            + "init reported success but the playback device was "
+            + "never opened. This is a real backend bug — file a "
+            + "report at github.com/siliconight/gool/issues."
+        )
+    elif delta_invocations == 0:
+        push_warning(
+            "[gool] DEAD AIR: render callback stopped being called. "
+            + "miniaudio's audio thread may have died or paused. "
+            + "Audio output frozen as of this interval."
+        )
+    elif peak == 0.0 and delta_frames > 0:
+        # Callback IS running, frames ARE being written, but every
+        # sample is zero. This is exactly the silent-audio symptom
+        # in the v0.22.6 session: gool reports playing but no audio
+        # reaches the device.
+        push_warning(
+            "[gool] DEAD AIR: %d frames written this interval, all "
+            % delta_frames
+            + "zero amplitude. Render callback is active but the "
+            + "engine is producing silence. Possible causes: no "
+            + "emitter actually active in the mixer (handle was "
+            + "returned but not wired), bus chain muted somewhere, "
+            + "or decoder produced an empty PCM buffer for the "
+            + "registered sound."
+        )
+    elif exceptions > 0:
+        push_warning(
+            "[gool] %d render-callback exception(s) caught since "
+            % exceptions
+            + "Initialize. Engine's OnRender path is throwing — "
+            + "audio frames have been dropped to silence by the "
+            + "catch-all barrier."
+        )
+    # Reset peak for the next interval window.
+    _runtime.reset_render_peak()
 
 
 # Called from _process when at least one bus pair is registered for

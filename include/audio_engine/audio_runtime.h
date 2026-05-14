@@ -203,6 +203,23 @@ public:
 
     bool IsInitialized() const noexcept;
 
+    // v0.22.7: non-owning accessor for the audio backend instance
+    // installed at Initialize() time. Returns nullptr before
+    // Initialize() and after Shutdown(). Lifetime is bounded by the
+    // runtime's own lifetime — callers must not retain the pointer
+    // across Shutdown().
+    //
+    // Intended use: diagnostic readouts (device name, render-callback
+    // health counters from MiniaudioBackend). Application code that
+    // wants production audio-routing behavior should go through the
+    // runtime's higher-level APIs, not the backend directly.
+    //
+    // const-qualified because the returned pointer exposes only
+    // const-qualified accessors on the IAudioBackend interface. The
+    // non-const operations (Start, Stop) are runtime-internal and
+    // not part of the public surface here.
+    const IAudioBackend* GetBackend() const noexcept;
+
     // Per-frame tick. Drains event queues, advances simulation, recomputes
     // spatial state, publishes the next mixer snapshot for the render thread.
     // Called on the audio control thread (often the game thread for simple

@@ -104,6 +104,17 @@ public:
         ClassDB::bind_method(D_METHOD("get_version"),
                               &GoolAudioRuntime::get_version);
 
+        // v0.22.7: diagnostic accessors exposing the audio backend's
+        // internal state. Used by the GDScript runtime singleton to
+        // log device info and detect dead-air silence (callback
+        // running but writing zeros).
+        ClassDB::bind_method(D_METHOD("get_backend_description"),
+                              &GoolAudioRuntime::get_backend_description);
+        ClassDB::bind_method(D_METHOD("get_render_stats"),
+                              &GoolAudioRuntime::get_render_stats);
+        ClassDB::bind_method(D_METHOD("reset_render_peak"),
+                              &GoolAudioRuntime::reset_render_peak);
+
         ClassDB::bind_method(D_METHOD("set_listener_transform",
                                        "position", "forward", "velocity"),
                               &GoolAudioRuntime::set_listener_transform);
@@ -411,6 +422,99 @@ public:
         d["full"]   = String(v.full);
         d["commit"] = String(v.commit);
         return d;
+    }
+
+    // v0.22.7: human-readable name of the audio device the backend
+    // opened (e.g. "WASAPI / Speakers (Realtek HD Audio)"). Empty
+    // string before Initialize, or if the runtime is using the null
+    // backend, or if the installed backend doesn't override the
+    // MiniaudioBackend-specific accessor.
+    //
+    // Useful for "wait, gool is sending audio to my MONITOR not my
+    // HEADPHONES" diagnosis — the silence symptom we hit in v0.22.6
+    // session. If the device name doesn't match where the user
+    // expects audio, that's the bug, no C++ debugging needed.
+    String get_backend_description() const {
+        if (!runtime_) return String();
+        const auto* backend = runtime_->GetBackend();
+        if (!backend) return String();
+        // We only do the downcast/diagnostic-method dance for the
+        // miniaudio backend. NullAudioBackend (used in headless/CI)
+        // returns empty here.
+        const auto* mb =
+            dynamic_cast<const audio::MiniaudioBackend*>(backend);
+        if (!mb) return String();
+        const char* desc = mb->DeviceDescription();
+        return String(desc ? desc : "");
+    }
+
+    // v0.22.7: render-thread health metrics. Returns a Dictionary:
+    //   {
+    //     "callback_invocations": int  (monotonic, audio thread
+    //                                    drives this — zero means
+    //                                    the audio thread isn't
+    //                                    actually running),
+    //     "frames_rendered":      int  (total audio frames written
+    //                                    to the device since
+    //                                    Initialize),
+    //     "peak_amplitude":       float (running max of |sample|
+    //                                     since last reset_render_peak;
+    //                                     0.0 means dead silence is
+    //                                     being written),
+    //     "exception_count":      int  (caught exceptions from the
+    //                                    engine's OnRender path —
+    //                                    nonzero means audio frames
+    //                                    have been dropped to silence
+    //                                    by the catch-all barrier)
+    //   }
+    //
+    // Empty Dictionary if the runtime isn't initialized or doesn't
+    // have a miniaudio backend.
+    //
+    // Designed for periodic polling from the control thread (e.g.
+    // GoolAudioRuntime singleton's _process tick on Godot's game
+    // thread). Lock-free reads; cheap.
+    Dictionary get_render_stats() const {
+        Dictionary d;
+        if (!runtime_) return d;
+        const auto* backend = runtime_->GetBackend();
+        if (!backend) return d;
+        const auto* mb =
+            dynamic_cast<const audio::MiniaudioBackend*>(backend);
+        if (!mb) return d;
+        d["callback_invocations"] =
+            static_cast<int64_t>(mb->CallbackInvocations());
+        d["frames_rendered"] =
+            static_cast<int64_t>(mb->FramesRendered());
+        d["peak_amplitude"] = mb->PeakSampleAbs();
+        d["exception_count"] =
+            static_cast<int64_t>(mb->RenderCallbackExceptions());
+        return d;
+    }
+
+    // v0.22.7: zero the running-peak atomic so the next read of
+    // get_render_stats()["peak_amplitude"] reflects samples written
+    // SINCE this call, not since Initialize. The intended polling
+    // pattern is "read peak, log it, reset, wait N seconds, repeat"
+    // — that way a "peak == 0" reading proves silence in the most
+    // recent window rather than the whole runtime lifetime.
+    //
+    // No-op if the runtime isn't initialized or the backend isn't
+    // a MiniaudioBackend.
+    void reset_render_peak() {
+        if (!runtime_) return;
+        const auto* backend = runtime_->GetBackend();
+        if (!backend) return;
+        // const_cast is correct here: the diagnostic state is
+        // mutable-by-design (atomic counters that the render thread
+        // writes to). GetBackend returns a const pointer because
+        // the IAudioBackend control surface (Start/Stop) is owned
+        // by the runtime; the diagnostic accessors are orthogonal.
+        const auto* cmb =
+            dynamic_cast<const audio::MiniaudioBackend*>(backend);
+        if (!cmb) return;
+        auto* mb = const_cast<audio::MiniaudioBackend*>(cmb);
+        mb->ResetPeakSampleAbs();
     }
 
     void update(double delta) {

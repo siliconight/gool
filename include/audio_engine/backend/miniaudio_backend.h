@@ -58,6 +58,39 @@ public:
     // is atomic. Safe to poll every Update() tick.
     uint64_t RenderCallbackExceptions() const noexcept;
 
+    // v0.22.7: render-thread diagnostic accessors. Each answers a
+    // specific "the audio is silent — why?" question:
+    //
+    //   CallbackInvocations() == 0  →  miniaudio never invoked our
+    //                                  data callback. Audio thread
+    //                                  didn't actually start despite
+    //                                  Start() returning Success.
+    //
+    //   FramesRendered() > 0
+    //   AND PeakSampleAbs() == 0    →  callback IS running, frames
+    //                                  ARE being written, but every
+    //                                  sample is zero. Silence is
+    //                                  upstream of the device — in
+    //                                  the engine's render callback,
+    //                                  the bus chain, or the decoder.
+    //
+    //   PeakSampleAbs() > 0         →  non-silent samples ARE reaching
+    //                                  the device. Any inaudibility
+    //                                  is downstream of gool (wrong
+    //                                  Windows output device, app
+    //                                  volume muted, exclusive-mode
+    //                                  capture by another app).
+    //
+    // All three are lock-free reads from atomics updated on the
+    // render thread. Cheap; safe to poll every Update() tick. PeakSampleAbs
+    // is a running maximum — call ResetPeakSampleAbs() periodically
+    // to get a fresh window. Typical pattern: read peak, log it,
+    // reset, wait, repeat.
+    uint64_t CallbackInvocations() const noexcept;
+    uint64_t FramesRendered()       const noexcept;
+    float    PeakSampleAbs()        const noexcept;
+    void     ResetPeakSampleAbs() noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

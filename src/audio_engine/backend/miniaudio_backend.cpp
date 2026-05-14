@@ -68,6 +68,45 @@ struct MiniaudioBackend::Impl {
     // produced on the render thread and read on the control thread.
     std::atomic<uint64_t> renderCallbackExceptions{0};
 
+    // v0.22.7: render-thread diagnostic counters. Updated from
+    // DataCallback every invocation. Read from the control thread via
+    // public accessors. All three answer different "the audio is
+    // silent — why?" questions:
+    //
+    //   callbackInvocations == 0   → miniaudio never called us. Audio
+    //                                thread didn't start or device
+    //                                init reported success but never
+    //                                actually opened the playback
+    //                                stream.
+    //
+    //   callbackInvocations > 0
+    //   AND framesRendered > 0
+    //   AND peakSampleBits == 0    → we ARE being called and ARE
+    //                                writing frames, but every sample
+    //                                is zero. Either the engine's
+    //                                render callback is producing
+    //                                silence (no active emitters,
+    //                                bus chain muted at -inf dB,
+    //                                decoder fed empty samples), or
+    //                                some early-bailout path zeroed
+    //                                the buffer.
+    //
+    //   peakSampleBits > 0         → samples ARE being produced and
+    //                                ARE non-silent. If the user
+    //                                still hears nothing, the silence
+    //                                is downstream of gool (wrong
+    //                                Windows audio device, app volume
+    //                                muted in Volume Mixer, exclusive-
+    //                                mode capture by another app).
+    //
+    // peakSampleBits stores the bit-pattern of a non-negative float.
+    // IEEE 754 positive-float ordering matches integer-bit ordering,
+    // so the CAS-max loop in DataCallback works correctly via integer
+    // comparison without any float operations on the atomic itself.
+    std::atomic<uint64_t> callbackInvocations{0};
+    std::atomic<uint64_t> framesRendered{0};
+    std::atomic<uint32_t> peakSampleBits{0};
+
     // miniaudio's data callback. Runs on miniaudio's audio thread.
     // Forwards into the engine's render callback. Output is interleaved
     // float32, range [-1, 1], `frameCount` frames across `channels`
@@ -96,6 +135,10 @@ struct MiniaudioBackend::Impl {
             std::memset(output, 0, buf_bytes);
             return;
         }
+        // v0.22.7: every callback invocation increments the counter,
+        // independent of what happens inside OnRender. A nonzero value
+        // proves the audio thread is alive and miniaudio is driving it.
+        self->callbackInvocations.fetch_add(1, std::memory_order_relaxed);
         try {
             self->callback->OnRender(
                 static_cast<float*>(output),
@@ -110,6 +153,50 @@ struct MiniaudioBackend::Impl {
             std::memset(output, 0, buf_bytes);
             self->renderCallbackExceptions.fetch_add(
                 1, std::memory_order_relaxed);
+            return;
+        }
+        // v0.22.7: post-render diagnostic scan. Walks the buffer
+        // miniaudio is about to send to the audio device and:
+        //   (a) accumulates total frames rendered for "is anything
+        //       happening" verification
+        //   (b) finds the peak |sample| in this buffer and CAS-merges
+        //       it into the global peak via integer-bits comparison
+        //       (works because IEEE 754 positive-float ordering
+        //       matches integer ordering of the bit pattern)
+        //
+        // O(N) over the buffer with no allocation, no lock, no log,
+        // no syscall. ~1μs for a 512-frame stereo buffer on modern
+        // x86_64. Acceptable cost for diagnostic value; if a future
+        // production build wants to skip it, gate behind a constexpr
+        // flag in the Impl ctor.
+        self->framesRendered.fetch_add(
+            static_cast<uint64_t>(frameCount),
+            std::memory_order_relaxed);
+        const float*  samples       = static_cast<const float*>(output);
+        const size_t  sample_count  =
+            static_cast<size_t>(frameCount) *
+            static_cast<size_t>(dev->playback.channels);
+        float local_peak = 0.0f;
+        for (size_t i = 0; i < sample_count; ++i) {
+            const float a = samples[i] < 0.0f ? -samples[i] : samples[i];
+            if (a > local_peak) local_peak = a;
+        }
+        if (local_peak > 0.0f) {
+            // CAS-max into the global peak. Only updates if our local
+            // peak is larger than what's currently stored.
+            uint32_t local_bits = 0;
+            std::memcpy(&local_bits, &local_peak, sizeof(local_bits));
+            uint32_t expected = self->peakSampleBits.load(
+                std::memory_order_relaxed);
+            while (local_bits > expected) {
+                if (self->peakSampleBits.compare_exchange_weak(
+                        expected, local_bits,
+                        std::memory_order_relaxed)) {
+                    break;
+                }
+                // expected was updated by compare_exchange_weak with
+                // the current value; loop and re-check.
+            }
         }
     }
 };
@@ -204,6 +291,30 @@ const char* MiniaudioBackend::DeviceDescription() const noexcept {
 
 uint64_t MiniaudioBackend::RenderCallbackExceptions() const noexcept {
     return impl_->renderCallbackExceptions.load(std::memory_order_relaxed);
+}
+
+// v0.22.7: render-thread diagnostic accessors. Counterparts to the
+// atomic counters updated inside DataCallback. All three are lock-
+// free reads; safe to call from any thread but expected use is the
+// control thread (Update() tick on GoolAudioRuntime).
+uint64_t MiniaudioBackend::CallbackInvocations() const noexcept {
+    return impl_->callbackInvocations.load(std::memory_order_relaxed);
+}
+
+uint64_t MiniaudioBackend::FramesRendered() const noexcept {
+    return impl_->framesRendered.load(std::memory_order_relaxed);
+}
+
+float MiniaudioBackend::PeakSampleAbs() const noexcept {
+    const uint32_t bits =
+        impl_->peakSampleBits.load(std::memory_order_relaxed);
+    float result = 0.0f;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+void MiniaudioBackend::ResetPeakSampleAbs() noexcept {
+    impl_->peakSampleBits.store(0, std::memory_order_relaxed);
 }
 
 } // namespace audio
