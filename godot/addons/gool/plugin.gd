@@ -133,9 +133,11 @@ func _enter_tree() -> void:
     _register_prefabs()
     _write_default_config_if_missing()
     _register_inspector_plugin()
+    _connect_filesystem_watch()
     print("[gool] plugin enabled — autoload, prefabs, default config, inspector installed.")
 
 func _exit_tree() -> void:
+    _disconnect_filesystem_watch()
     _unregister_inspector_plugin()
     _unregister_prefabs()
     _remove_autoload()
@@ -166,6 +168,69 @@ func _unregister_inspector_plugin() -> void:
         return
     remove_inspector_plugin(_sound_name_inspector)
     _sound_name_inspector = null
+
+# v0.22.3: live filesystem watching for the sound_name autocomplete.
+#
+# The inspector plugin caches the discovered sound-name list (a
+# project-wide scan of .tres files is expensive to redo on every
+# inspector render). Before v0.22.3 that cache only refreshed when
+# the plugin was re-enabled — so dropping a new audio file in, or
+# adding a new GoolSoundBank, wouldn't appear in the dropdown until
+# you toggled the plugin or restarted Godot.
+#
+# Now plugin.gd subscribes to EditorFileSystem.filesystem_changed
+# (the editor signal that fires after any project file is added,
+# removed, moved, or reimported) and invalidates the inspector's
+# static cache. The next inspector render then does a fresh scan
+# and picks up the new files/banks automatically.
+#
+# We own this connection here, in the EditorPlugin, rather than in
+# the EditorInspectorPlugin itself, because EditorInspectorPlugin
+# is a RefCounted with no _enter_tree/_exit_tree lifecycle — there
+# is no clean place there to connect and (more importantly)
+# disconnect the signal. plugin.gd has a well-defined lifecycle, so
+# the connection is established in _enter_tree and torn down in
+# _exit_tree, with no leak on plugin disable/re-enable.
+func _connect_filesystem_watch() -> void:
+    var efs := EditorInterface.get_resource_filesystem()
+    if efs == null:
+        push_warning(
+            "[gool] EditorFileSystem unavailable; sound_name "
+            + "autocomplete won't auto-refresh on file changes. "
+            + "Toggle the plugin or restart Godot to refresh the "
+            + "dropdown after adding sound banks."
+        )
+        return
+    if not efs.filesystem_changed.is_connected(_on_filesystem_changed):
+        efs.filesystem_changed.connect(_on_filesystem_changed)
+
+func _disconnect_filesystem_watch() -> void:
+    var efs := EditorInterface.get_resource_filesystem()
+    if efs == null:
+        return
+    if efs.filesystem_changed.is_connected(_on_filesystem_changed):
+        efs.filesystem_changed.disconnect(_on_filesystem_changed)
+
+# Filesystem-changed handler. Invalidates the inspector plugin's
+# static name cache so the next inspector render re-scans. Cheap —
+# just flips a bool; the actual rescan is lazy, happening only when
+# an inspector with a sound_name property is next rendered.
+#
+# Note this fires several times during a single import (raw file,
+# then .import sidecar, etc). That's fine here: clear_cache() is
+# idempotent and near-free, and the expensive part (the actual
+# project scan) is deferred to the next _parse_property call, which
+# only happens once regardless of how many times the cache was
+# cleared in between.
+func _on_filesystem_changed() -> void:
+    if _sound_name_inspector == null:
+        return
+    # The inspector plugin exposes a static clear_cache(). Call it
+    # through the script so we don't need a typed reference to the
+    # inner class.
+    var inspector_script := load(INSPECTOR_PLUGIN_PATH)
+    if inspector_script != null and inspector_script.has_method("clear_cache"):
+        inspector_script.clear_cache()
 
 func _add_autoload() -> void:
     add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)

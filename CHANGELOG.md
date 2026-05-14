@@ -12,6 +12,141 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.3] - 2026-05-13
+
+### Added — Live filesystem watching for folder banks + autocomplete
+(no engine changes, editor-only)
+
+The v0.22.0 designer-first features (`GoolFolderSoundBank`, the
+`sound_name` autocomplete dropdown) worked, but had a rough live-
+iteration loop: dropping a new audio file into the watched folder
+didn't update the bank or the dropdown until you re-typed
+`folder_path`, toggled the plugin, or restarted Godot. The
+v0.22.0 CHANGELOG flagged this explicitly as a known caveat.
+
+v0.22.3 closes that gap. Both the bank and the inspector
+autocomplete now subscribe to Godot's
+`EditorFileSystem.filesystem_changed` signal — the editor event
+that fires after any project file is added, removed, moved, or
+reimported. Drop a `.wav` into `res://sounds/sfx/`, and:
+
+- The `GoolFolderSoundBank` re-scans its folder automatically and
+  picks up the new file
+- The `sound_name` autocomplete dropdown's cache is invalidated,
+  so the next inspector render shows the new name
+
+No manual rescan, no `folder_path` re-type, no plugin toggle, no
+editor restart. The drop-a-file-and-it-works loop the v0.22.0
+design promised.
+
+**`GoolFolderSoundBank` changes:**
+
+- In `_init()`, when running in the editor (`Engine.is_editor_hint()`),
+  connects to `EditorInterface.get_resource_filesystem().filesystem_changed`.
+- The handler debounces: Godot fires `filesystem_changed` several
+  times during a single import (raw file lands, then the `.import`
+  sidecar is written, etc). Rather than re-scanning the whole
+  folder 3-5x per dropped file, the handler queues a single
+  deferred rescan via `call_deferred` and collapses repeat signals
+  until it runs.
+- The deferred rescan only logs + emits when the sound count
+  actually changed — a `filesystem_changed` for an unrelated file
+  (a script edit, a scene save) doesn't spam the Output panel.
+- New `rescanned(sound_count: int)` signal, emitted after an
+  editor-triggered rescan. Other tool scripts can connect to it.
+- The connection is guarded (`_fs_watch_connected`) against
+  duplicate connections.
+- At runtime (outside the editor) all of this is a no-op —
+  `EditorInterface` doesn't exist there, and the existing
+  `_init()`-time single scan is unchanged.
+
+**`sound_name` autocomplete changes (`plugin.gd` +
+`sound_name_inspector.gd`):**
+
+- `plugin.gd` now connects to `filesystem_changed` in
+  `_enter_tree` and disconnects in `_exit_tree`. The handler
+  calls the inspector plugin's existing static `clear_cache()`.
+- The connection is owned by `plugin.gd` rather than the
+  `EditorInspectorPlugin` itself, because `EditorInspectorPlugin`
+  is a `RefCounted` with no `_enter_tree`/`_exit_tree` lifecycle —
+  there's no clean place there to both connect and (importantly)
+  disconnect the signal. `plugin.gd` has a well-defined lifecycle,
+  so the connection establishes on plugin enable and tears down on
+  plugin disable, with no leak across re-enables.
+- `clear_cache()` is idempotent and near-free (just flips a bool);
+  the expensive part (the actual project-wide `.tres` scan) stays
+  lazy, happening only on the next `_parse_property` render. So a
+  burst of `filesystem_changed` signals during an import collapses
+  to at most one rescan.
+
+### Workflow this fixes
+
+Before v0.22.3, iterating on audio meant:
+
+1. Drop file into `res://sounds/sfx/`
+2. Re-type `folder_path` on the bank `.tres` (or restart Godot)
+3. Click away from the emitter node and back to refresh the
+   dropdown cache
+4. Pick the new name
+
+After v0.22.3:
+
+1. Drop file into `res://sounds/sfx/`
+2. Pick the new name from the dropdown — it's already there
+
+### Build
+
+Files touched:
+
+- `godot/addons/gool/resources/gool_folder_sound_bank.gd` —
+  filesystem-watch subscription in `_init()`, debounced deferred
+  rescan handler, `rescanned` signal, `_fs_watch_connected` and
+  `_rescan_queued` guards. Updated `rescan()` docstring.
+- `godot/addons/gool/plugin.gd` — `_connect_filesystem_watch()` /
+  `_disconnect_filesystem_watch()` in `_enter_tree` / `_exit_tree`,
+  `_on_filesystem_changed()` handler that invalidates the
+  inspector cache.
+- `godot/addons/gool/editor/sound_name_inspector.gd` — updated
+  cache comments to document the new invalidation trigger. No
+  logic change in this file — it already exposed the static
+  `clear_cache()` that `plugin.gd` now calls.
+- Version triple, CHANGELOG, README — bumped to 0.22.3.
+
+### Verified
+
+- Library + version_test compile clean at the bumped triple. No
+  C++ source changes.
+- YAML validity of `ci.yml` and `release.yml` confirmed (no
+  workflow changes in this release).
+- GDScript reviewed against Godot 4.2+ EditorInterface /
+  EditorFileSystem API: `EditorInterface.get_resource_filesystem()`
+  is static-access in 4.2+, `filesystem_changed` is its documented
+  signal, `is_connected` / `connect` / `disconnect` guards prevent
+  double-connection. The same `call_deferred` debounce idiom is
+  used elsewhere in the addon.
+- `Engine.is_editor_hint()` guard confirmed on the bank's
+  watch-connection path so runtime behavior is unchanged — the
+  v0.21.x runtime scan-once-in-`_init()` behavior still holds for
+  exported games.
+
+### Known caveats (carried forward / new)
+
+- **Godot version sensitivity.** This relies on
+  `EditorInterface.get_resource_filesystem().filesystem_changed`.
+  That API is stable across Godot 4.2 → 4.6, but if a future
+  Godot reworks the EditorFileSystem API, the bank degrades
+  gracefully: the `efs == null` guard disables live-watching and
+  emits a one-line warning rather than erroring. Manual `rescan()`
+  and project-reload still work as fallbacks.
+- **The bank rescans the whole folder on any project filesystem
+  change**, not just changes inside `folder_path`. For a project
+  with a large `res://sounds/` tree and very frequent unrelated
+  file changes, this is mildly wasteful (a DirAccess walk per
+  change-burst). The debounce keeps it to one walk per burst, and
+  the walk is sub-100ms for typical projects, so this is
+  acceptable for now. A future optimization could check whether
+  the changed paths intersect `folder_path` before re-scanning.
+
 ## [0.22.2] - 2026-05-13
 
 ### Fixed — Windows verify step ordering (regression introduced by v0.22.1)
@@ -6620,7 +6755,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.3...HEAD
+[0.22.3]: https://github.com/siliconight/gool/releases/tag/v0.22.3
 [0.22.2]: https://github.com/siliconight/gool/releases/tag/v0.22.2
 [0.22.1]: https://github.com/siliconight/gool/releases/tag/v0.22.1
 [0.22.0]: https://github.com/siliconight/gool/releases/tag/v0.22.0

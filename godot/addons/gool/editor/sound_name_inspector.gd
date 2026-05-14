@@ -39,9 +39,16 @@ const _ASSISTED_PROPERTY_NAMES: Array[String] = [
     "sound_name",
 ]
 
-# Cached sound names. Lazily populated on first request and refreshed
-# when the inspector requests it. Cleared via clear_cache() to force
-# rescan on next access.
+# Cached sound names. Lazily populated on first request. Cleared
+# via clear_cache() to force a rescan on next access.
+#
+# v0.22.3: clear_cache() is now called by plugin.gd whenever the
+# editor's EditorFileSystem.filesystem_changed signal fires (any
+# project file added/removed/moved/reimported). So the cache stays
+# fresh automatically — dropping a new audio file or adding a new
+# GoolSoundBank invalidates the cache, and the next inspector
+# render re-scans and shows the new names. No plugin toggle or
+# editor restart needed anymore.
 static var _cached_names: PackedStringArray = PackedStringArray()
 static var _cache_valid: bool = false
 
@@ -59,11 +66,16 @@ func _parse_property(object: Object, type: int, name: String,
         return false
     if not (name in _ASSISTED_PROPERTY_NAMES):
         return false
-    # Refresh sound names cache on each top-level inspector render.
-    # _parse_property is called once per inspected property per
-    # inspector-open, which is the right granularity — not so often
-    # we re-scan on every keystroke, not so rare that newly-added
-    # banks aren't visible.
+    # Refresh the sound-name cache if it's been invalidated. The
+    # cache is invalidated on two triggers:
+    #   1. First access (cache starts invalid)
+    #   2. Any project filesystem change (plugin.gd calls
+    #      clear_cache() from the filesystem_changed handler —
+    #      v0.22.3)
+    # The actual project scan only runs here, lazily, when an
+    # inspector with a sound_name property is rendered — so a burst
+    # of filesystem_changed signals during an import collapses to
+    # at most one rescan, on the next render.
     if not _cache_valid:
         _refresh_cache()
     if _cached_names.is_empty():
