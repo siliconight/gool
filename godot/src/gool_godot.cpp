@@ -21,6 +21,7 @@
 #include "audio_engine/events.h"
 #include "audio_engine/gpak.h"
 #include "audio_engine/backend/miniaudio_backend.h"
+#include "audio_engine/mixer/audio_mixer.h"  // v0.22.8: diagnostic accessors
 #include "audio_engine/music_channel.h"
 #include "audio_engine/sound_bank.h"
 #include "audio_engine/version.h"
@@ -489,6 +490,18 @@ public:
         d["peak_amplitude"] = mb->PeakSampleAbs();
         d["exception_count"] =
             static_cast<int64_t>(mb->RenderCallbackExceptions());
+        // v0.22.8: mixer-level diagnostics. These let GDScript
+        // distinguish "no emitter active in mixer" from "voices
+        // playing but bus chain silenced" from "audio reaching the
+        // device" failure modes — the key discrimination the v0.22.7
+        // session's "peak=0" output didn't have.
+        const auto* mixer = runtime_->GetMixer();
+        if (mixer) {
+            d["active_voices"] =
+                static_cast<int64_t>(mixer->ActiveVoicesApprox());
+            d["mixer_peak"]    = mixer->MasterPreGainPeak();
+            d["master_gain"]   = mixer->MasterGainLinear();
+        }
         return d;
     }
 
@@ -499,22 +512,30 @@ public:
     // — that way a "peak == 0" reading proves silence in the most
     // recent window rather than the whole runtime lifetime.
     //
+    // v0.22.8: also resets the mixer's master pre-gain peak so the
+    // two peaks stay synchronized to the same observation window.
+    //
     // No-op if the runtime isn't initialized or the backend isn't
     // a MiniaudioBackend.
     void reset_render_peak() {
         if (!runtime_) return;
         const auto* backend = runtime_->GetBackend();
-        if (!backend) return;
-        // const_cast is correct here: the diagnostic state is
-        // mutable-by-design (atomic counters that the render thread
-        // writes to). GetBackend returns a const pointer because
-        // the IAudioBackend control surface (Start/Stop) is owned
-        // by the runtime; the diagnostic accessors are orthogonal.
-        const auto* cmb =
-            dynamic_cast<const audio::MiniaudioBackend*>(backend);
-        if (!cmb) return;
-        auto* mb = const_cast<audio::MiniaudioBackend*>(cmb);
-        mb->ResetPeakSampleAbs();
+        if (backend) {
+            const auto* cmb =
+                dynamic_cast<const audio::MiniaudioBackend*>(backend);
+            if (cmb) {
+                auto* mb = const_cast<audio::MiniaudioBackend*>(cmb);
+                mb->ResetPeakSampleAbs();
+            }
+        }
+        const auto* mixer = runtime_->GetMixer();
+        if (mixer) {
+            // Same const_cast pattern as above — diagnostic state is
+            // mutable-by-design (atomic counters written by the
+            // render thread), but the const-correctness of the
+            // production interface keeps the accessor const.
+            const_cast<audio::AudioMixer*>(mixer)->ResetMasterPreGainPeak();
+        }
     }
 
     void update(double delta) {

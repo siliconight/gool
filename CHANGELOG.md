@@ -12,6 +12,123 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.22.8] - 2026-05-14
+
+### Added — Mixer-level dead-air discrimination (the next instrumentation layer)
+
+v0.22.7 confirmed the silent-audio symptom is **upstream** of the
+miniaudio device: render callback runs (188/sec, exactly correct
+for 48kHz/512buf), frames flow (96000 per 2-sec window, exactly
+correct), but every sample is zero. The silence is being produced
+by gool's own render path before it reaches miniaudio.
+
+v0.22.8 adds the next instrumentation layer inside `AudioMixer::OnRender`
+so the **specific** stage producing the silence becomes visible from
+GDScript.
+
+### What it adds
+
+**1. `MasterPreGainPeak()` accessor on `AudioMixer`.** Peak of the
+Master bus output buffer, sampled BEFORE the master-gain multiply
+that produces the device buffer. If `peak_amplitude` (device-level)
+is 0 but `mixer_peak` is > 0, the silence is being introduced by
+the master gain — i.e., Master bus output is set to -∞ dB.
+
+**2. `MasterGainLinear()` accessor.** Returns the linear gain
+currently applied to the Master bus output. Confirms whether the
+master multiply is collapsing audio to zero or passing it through.
+
+**3. `ResetMasterPreGainPeak()` method.** Zeros the running peak so
+each `[gool] render:` log entry reflects the most recent 2-second
+window.
+
+**4. Mixer peak-scan in `AudioMixer::OnRender`.** O(N) loop over
+the Master bus output buffer between `RunBusGraph()` and the
+master-gain multiply. CAS-max into the atomic using the IEEE 754
+positive-float bit-pattern trick (same as v0.22.7's render-thread
+peak). ~1μs cost per render, render-thread safe.
+
+**5. `AudioRuntime::GetMixer()` accessor.** Non-owning const
+pointer to the runtime's `AudioMixer`. Lifetime contract identical
+to `GetBackend()`: nullptr before Initialize, nullptr after
+Shutdown.
+
+**6. Mixer stats exposed via `get_render_stats()`.** Three new
+Dictionary entries when the binary supports them:
+- `active_voices` — `AudioMixer::ActiveVoicesApprox()` value
+- `mixer_peak` — Master bus pre-gain peak
+- `master_gain` — Master bus linear gain
+
+Older binaries return a Dictionary without these keys; the
+GDScript log path handles both cases gracefully.
+
+**7. Discriminating dead-air diagnosis in `runtime_singleton.gd`.**
+The `[gool] render:` log line now includes `mixer_peak`, `voices`,
+and `gain`. When peak=0 indicates silent device output, the
+push_warning now distinguishes **four specific causes**:
+
+| Symptom | Cause |
+|---|---|
+| `active_voices == 0` | Emitter wasn't actually wired into the mixer's voice pool. `create_emitter` returned a handle but the voice slot didn't get promoted from `Inactive`. Check command queue draining and voice-slot allocation. |
+| `active_voices > 0, mixer_peak == 0` | Voices ARE being mixed but Master bus output is silent. Either voices are producing silence (decoder fed empty PCM), or bus chain isn't summing into Master. Check decoder PCM state and bus routing. |
+| `mixer_peak > 0, master_gain == 0` | Master bus output gain is set to 0 (-∞ dB). Either config sets it to that, or runtime code zeroed it. |
+| `mixer_peak > 0, master_gain > 0, peak == 0` | Unexpected — file a bug report. Possible buffer-copy mistake, miniaudio format truncation, or unpredicted issue. |
+
+### What v0.22.8 will tell us about the silent-audio symptom
+
+When the user F5s with v0.22.8, the Output panel's `[gool] render:`
+lines will pinpoint the failure stage. From the v0.22.7 reading
+(callback running, frames flowing, device peak 0), v0.22.8's
+next reading will look like one of:
+
+```
+# Cause A: emitter not wired
+[gool] render: cb=188 ... peak=0.0000 mixer_peak=0.0000 voices=0 gain=1.00 exc=0
+[gool] DEAD AIR (no active voices): ... command queue draining issue ...
+
+# Cause B: mixer silent
+[gool] render: cb=188 ... peak=0.0000 mixer_peak=0.0000 voices=1 gain=1.00 exc=0
+[gool] DEAD AIR (mixer silent, 1 voices active): ... decoder fed empty PCM ...
+
+# Cause C: master muted
+[gool] render: cb=188 ... peak=0.0000 mixer_peak=0.4521 voices=1 gain=0.00 exc=0
+[gool] DEAD AIR (master gain = 0): ... Master gain_db at -inf ...
+
+# Cause D: post-gain mystery (unlikely)
+[gool] render: cb=188 ... peak=0.0000 mixer_peak=0.4521 voices=1 gain=0.71 exc=0
+[gool] DEAD AIR (post-gain mystery): file a report
+```
+
+### Files touched
+
+- `src/audio_engine/mixer/audio_mixer.h` — declared new accessors,
+  added `masterPreGainPeakBits_` atomic
+- `src/audio_engine/mixer/audio_mixer.cpp` — peak-scan loop at end
+  of OnRender (~25 lines), 3 accessor implementations (~25 lines)
+- `include/audio_engine/audio_runtime.h` — forward declaration of
+  `AudioMixer`, `GetMixer()` accessor declaration
+- `src/audio_engine/runtime/audio_runtime.cpp` — `GetMixer()`
+  forwarder implementation
+- `src/audio_engine/runtime/audio_runtime_impl.h` — inline
+  `GetMixer()` returning `mixer_.get()`
+- `godot/src/gool_godot.cpp` — `audio_mixer.h` include, extended
+  `get_render_stats()` and `reset_render_peak()` with mixer state
+- `godot/addons/gool/runtime_singleton.gd` — extended
+  `_log_render_stats()` with 4-way symptom discrimination
+- Version triple, README, CHANGELOG — bumped to 0.22.8
+
+### Verified
+
+- C++ library + version_test compile clean at 0.22.8
+- New `audio_mixer.cpp` peak-scan loop is allocation-free, lock-
+  free, log-free — render-thread contract preserved
+- Mixer stats are present in `get_render_stats()` only when a
+  mixer is installed (NullAudioBackend test paths return without
+  them; GDScript handles both cases via `get(key, -1)` defaults)
+- CAS-max loop in OnRender uses identical IEEE 754 integer-bits
+  pattern to v0.22.7's render-thread peak — proven correct for
+  non-negative floats
+
 ## [0.22.7] - 2026-05-14
 
 ### Added — Render-thread instrumentation (silent-audio root-cause diagnostic)
@@ -7237,7 +7354,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.7...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.8...HEAD
+[0.22.8]: https://github.com/siliconight/gool/releases/tag/v0.22.8
 [0.22.7]: https://github.com/siliconight/gool/releases/tag/v0.22.7
 [0.22.6]: https://github.com/siliconight/gool/releases/tag/v0.22.6
 [0.22.5]: https://github.com/siliconight/gool/releases/tag/v0.22.5

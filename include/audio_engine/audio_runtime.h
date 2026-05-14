@@ -38,6 +38,7 @@ namespace audio {
 
 // Forward declaration for pimpl. Defined in src/audio_engine/runtime/.
 class AudioRuntimeImpl;
+class AudioMixer;   // v0.22.8: forward-declared so GetMixer() can return const AudioMixer*
 
 // Forward declare to avoid pulling telemetry.h into every translation
 // unit that includes audio_runtime.h. The host opts in by including
@@ -219,6 +220,20 @@ public:
     // non-const operations (Start, Stop) are runtime-internal and
     // not part of the public surface here.
     const IAudioBackend* GetBackend() const noexcept;
+
+    // v0.22.8: non-owning accessor for the AudioMixer instance built
+    // at Initialize() time. Same lifetime contract as GetBackend():
+    // nullptr before Initialize, nullptr after Shutdown. Const-
+    // qualified because the public surface here is diagnostic-only;
+    // production mixing operations go through SetGameState,
+    // RegisterSoundDefinition, SubmitEvent, etc. which mutate the
+    // mixer internally via the command queue.
+    //
+    // The class AudioMixer is forward-declared at namespace scope at
+    // the top of this file. Callers that want to actually USE the
+    // mixer's diagnostic accessors must include <audio_engine/mixer/
+    // audio_mixer.h> themselves to get the complete type.
+    const AudioMixer* GetMixer() const noexcept;
 
     // Per-frame tick. Drains event queues, advances simulation, recomputes
     // spatial state, publishes the next mixer snapshot for the render thread.

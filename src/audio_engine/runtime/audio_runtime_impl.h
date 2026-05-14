@@ -93,6 +93,12 @@ public:
     // Shutdown (the unique_ptr is moved/reset there). Read-only.
     const IAudioBackend* GetBackend() const noexcept { return backend_.get(); }
 
+    // v0.22.8: non-owning accessor for the AudioMixer. Same lifetime
+    // contract as GetBackend(). Used by GoolAudioRuntime to expose
+    // mixer diagnostic state (active voice count, master pre-gain
+    // peak, master gain) to GDScript.
+    const AudioMixer* GetMixer() const noexcept { return mixer_.get(); }
+
     void Update(float deltaSeconds) noexcept;
 
     // v0.15.0: the actual Update body, kept separate from the public

@@ -82,6 +82,66 @@ public:
         return underruns_.load(std::memory_order_relaxed);
     }
 
+    // v0.22.8: mixer-level dead-air discrimination diagnostics.
+    //
+    // The v0.22.7 instrumentation in MiniaudioBackend's DataCallback
+    // confirmed that the audio thread is running and writing frames,
+    // but every sample is zero — meaning the engine's render callback
+    // (this OnRender) is producing pure silence. This release adds
+    // three new pieces of state, sampled every render, to discriminate
+    // between the three possible causes of silent output:
+    //
+    //   ActiveVoicesApprox() == 0      →  no emitter is actually
+    //                                      active in the voice pool.
+    //                                      create_emitter returned a
+    //                                      handle but the voice slot
+    //                                      didn't get wired in. Look
+    //                                      at command queue draining
+    //                                      and voice-slot allocation.
+    //
+    //   ActiveVoicesApprox() > 0
+    //   AND MasterPreGainPeak() == 0   →  voices ARE being mixed but
+    //                                      no audio is reaching the
+    //                                      Master bus output buffer.
+    //                                      Either the voices are
+    //                                      producing silence (decoder
+    //                                      issue: empty PCM buffer for
+    //                                      the registered sound, or
+    //                                      voice writing to a bus
+    //                                      input that doesn't propagate
+    //                                      to Master), or the bus
+    //                                      graph is summing to zero
+    //                                      somewhere (impossible with
+    //                                      non-zero inputs unless an
+    //                                      effect is muting).
+    //
+    //   MasterPreGainPeak() > 0
+    //   AND MasterGainLinear() == 0    →  Master bus output gain is
+    //                                      set to 0 (i.e. -inf dB).
+    //                                      Audio is being produced
+    //                                      and routed correctly but
+    //                                      the final master multiply
+    //                                      silences it.
+    //
+    //   MasterPreGainPeak() > 0
+    //   AND MasterGainLinear() > 0     →  This shouldn't produce
+    //                                      silence at the device.
+    //                                      Either miniaudio is
+    //                                      truncating, the buffer
+    //                                      copy in OnRender is going
+    //                                      to the wrong destination,
+    //                                      or there's a bug we
+    //                                      haven't predicted.
+    //
+    // Sampled every OnRender (which is many times per second), so the
+    // atomic write cost matters. We use relaxed memory ordering and
+    // the IEEE 754 positive-float bit-pattern trick (same as
+    // MiniaudioBackend::peakSampleBits) to avoid float ops on the
+    // atomic itself.
+    float MasterPreGainPeak() const noexcept;
+    float MasterGainLinear() const noexcept;
+    void  ResetMasterPreGainPeak() noexcept;
+
 private:
     enum class VoiceMode : uint8_t {
         Inactive,
@@ -319,6 +379,15 @@ private:
     std::atomic<uint32_t> activeApprox_{0};
     std::atomic<uint64_t> totalCallbacks_{0};
     std::atomic<uint64_t> underruns_{0};
+
+    // v0.22.8: running max of |sample| in the Master bus output buffer
+    // BEFORE the master gain multiply. Updated at the end of OnRender
+    // via a CAS-max loop on the bit pattern (IEEE 754 positive-float
+    // ordering matches integer-bit ordering, so we can compare and
+    // store as uint32_t without unpacking to float on the render
+    // thread). Reset via ResetMasterPreGainPeak() from the control
+    // thread between sample windows.
+    std::atomic<uint32_t> masterPreGainPeakBits_{0};
 };
 
 } // namespace audio

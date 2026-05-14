@@ -781,11 +781,68 @@ void AudioMixer::OnRender(float* output, uint32_t frames, uint32_t channels) noe
     const float*   master    = busGraph_->OutputBufferConst(masterIdx);
     const float    masterG   = busGraph_->OutputGainLinear(masterIdx);
     const uint32_t total     = frames * channels;
+
+    // v0.22.8: peak-scan the Master bus output BEFORE applying master
+    // gain. This is the "did the engine produce non-silent audio?"
+    // diagnostic. Compared with the device-level peak from
+    // MiniaudioBackend, the gap tells us whether the silence is
+    // upstream of the device or being introduced by the master-gain
+    // multiply. O(N) over the buffer, no allocation, no log.
+    {
+        float local_peak = 0.0f;
+        for (uint32_t i = 0; i < total; ++i) {
+            const float a = master[i] < 0.0f ? -master[i] : master[i];
+            if (a > local_peak) local_peak = a;
+        }
+        if (local_peak > 0.0f) {
+            uint32_t local_bits = 0;
+            std::memcpy(&local_bits, &local_peak, sizeof(local_bits));
+            uint32_t expected = masterPreGainPeakBits_.load(
+                std::memory_order_relaxed);
+            while (local_bits > expected) {
+                if (masterPreGainPeakBits_.compare_exchange_weak(
+                        expected, local_bits,
+                        std::memory_order_relaxed)) {
+                    break;
+                }
+            }
+        }
+    }
+
     if (std::abs(masterG - 1.0f) < 1e-6f) {
         std::memcpy(output, master, sizeof(float) * total);
     } else {
         for (uint32_t i = 0; i < total; ++i) output[i] = master[i] * masterG;
     }
+}
+
+// v0.22.8: diagnostic accessors for the master pre-gain peak. Read
+// from any thread; updates happen on the render thread. The accessor
+// converts the IEEE 754 bit pattern back to a float for the caller.
+float AudioMixer::MasterPreGainPeak() const noexcept {
+    const uint32_t bits =
+        masterPreGainPeakBits_.load(std::memory_order_relaxed);
+    float result = 0.0f;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+// Linear gain currently applied to the Master bus's output before
+// writing to the device. Returns 0 if the graph isn't built yet.
+// Sampled snapshot — not atomic; the control thread races with the
+// render thread on the underlying value but the read is bounded and
+// only used for diagnostics, so a torn read is acceptable.
+float AudioMixer::MasterGainLinear() const noexcept {
+    if (!busGraph_ || busGraph_->BusCount() == 0) return 0.0f;
+    const uint32_t masterIdx = busGraph_->MasterIndex();
+    return busGraph_->OutputGainLinear(masterIdx);
+}
+
+// Zero the peak atomic so the next read reflects samples seen SINCE
+// this call. Intended polling pattern: read, log, reset, wait N
+// seconds, repeat.
+void AudioMixer::ResetMasterPreGainPeak() noexcept {
+    masterPreGainPeakBits_.store(0, std::memory_order_relaxed);
 }
 
 } // namespace audio

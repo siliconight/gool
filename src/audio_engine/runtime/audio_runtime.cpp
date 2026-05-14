@@ -44,6 +44,13 @@ const IAudioBackend* AudioRuntime::GetBackend() const noexcept {
     return impl_->GetBackend();
 }
 
+// v0.22.8: forward to AudioRuntimeImpl. The mixer_ unique_ptr lives
+// inside Impl; we expose its raw const pointer non-owning. Returns
+// nullptr before Initialize() or after Shutdown().
+const AudioMixer* AudioRuntime::GetMixer() const noexcept {
+    return impl_->GetMixer();
+}
+
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
     return impl_->RegisterSoundDefinition(d);
 }

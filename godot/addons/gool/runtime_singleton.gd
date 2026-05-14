@@ -183,15 +183,29 @@ func _log_render_stats() -> void:
     var frames: int = stats.get("frames_rendered", 0)
     var peak: float = stats.get("peak_amplitude", 0.0)
     var exceptions: int = stats.get("exception_count", 0)
+    # v0.22.8: mixer-level stats (may be absent on older binaries).
+    var active_voices: int = stats.get("active_voices", -1)
+    var mixer_peak: float = stats.get("mixer_peak", -1.0)
+    var master_gain: float = stats.get("master_gain", -1.0)
     var delta_invocations: int = invocations - _render_stats_last_invocations
     var delta_frames: int = frames - _render_stats_last_frames
     _render_stats_last_invocations = invocations
     _render_stats_last_frames = frames
     # Diagnosis line — one log every 2 seconds when running.
-    print("[gool] render: cb=%d (Δ%d) frames=%d (Δ%d) peak=%.4f exc=%d"
-            % [invocations, delta_invocations, frames, delta_frames,
-               peak, exceptions])
-    # Layer additional diagnosis when something looks broken.
+    if active_voices >= 0:
+        # v0.22.8 binary — full mixer stats available
+        print("[gool] render: cb=%d (Δ%d) frames=%d (Δ%d) peak=%.4f mixer_peak=%.4f voices=%d gain=%.2f exc=%d"
+                % [invocations, delta_invocations, frames, delta_frames,
+                   peak, mixer_peak, active_voices, master_gain,
+                   exceptions])
+    else:
+        # Older binary — only backend stats available
+        print("[gool] render: cb=%d (Δ%d) frames=%d (Δ%d) peak=%.4f exc=%d"
+                % [invocations, delta_invocations, frames, delta_frames,
+                   peak, exceptions])
+    # Layered diagnosis when something looks broken. v0.22.8 ordering
+    # is bottom-up: most-upstream cause first (audio thread dead) →
+    # most-downstream cause last (master gain silencing).
     if delta_invocations == 0 and invocations == 0:
         push_warning(
             "[gool] DEAD AIR: render callback has never been invoked. "
@@ -207,20 +221,60 @@ func _log_render_stats() -> void:
             + "Audio output frozen as of this interval."
         )
     elif peak == 0.0 and delta_frames > 0:
-        # Callback IS running, frames ARE being written, but every
-        # sample is zero. This is exactly the silent-audio symptom
-        # in the v0.22.6 session: gool reports playing but no audio
-        # reaches the device.
-        push_warning(
-            "[gool] DEAD AIR: %d frames written this interval, all "
-            % delta_frames
-            + "zero amplitude. Render callback is active but the "
-            + "engine is producing silence. Possible causes: no "
-            + "emitter actually active in the mixer (handle was "
-            + "returned but not wired), bus chain muted somewhere, "
-            + "or decoder produced an empty PCM buffer for the "
-            + "registered sound."
-        )
+        # v0.22.8: now use mixer stats to discriminate the cause.
+        if active_voices == 0:
+            push_warning(
+                "[gool] DEAD AIR (no active voices): %d frames "
+                % delta_frames
+                + "written this interval but the mixer's voice pool "
+                + "is empty. Emitters that called create_emitter "
+                + "didn't actually wire into the voice list. Likely "
+                + "cause: command queue draining issue, or "
+                + "DrainCommands isn't promoting the voice slot to "
+                + "VoiceMode::Sound/Streaming/Voice. Check the "
+                + "MixerCommand dispatch path in audio_mixer.cpp."
+            )
+        elif mixer_peak == 0.0 and active_voices > 0:
+            push_warning(
+                "[gool] DEAD AIR (mixer silent, %d voices active): "
+                % active_voices
+                + "voices ARE being mixed but the Master bus output "
+                + "buffer is all zeros. The voices are producing "
+                + "silence (decoder fed empty PCM, voice mode mismatch, "
+                + "wrong bus routing), OR the bus chain is summing to "
+                + "zero somewhere upstream of Master. Check decoder "
+                + "PCM state and bus-graph routing."
+            )
+        elif mixer_peak > 0.0 and master_gain == 0.0:
+            push_warning(
+                "[gool] DEAD AIR (master gain = 0): mixer produced "
+                + "non-silent audio (peak=%.4f) but Master bus output "
+                % mixer_peak
+                + "gain is 0 (-inf dB). Either config.json sets Master "
+                + "gain_db to -inf, or set_bus_gain_db zeroed it at "
+                + "runtime. Check config and any gain-control code."
+            )
+        elif mixer_peak > 0.0 and master_gain > 0.0 and peak == 0.0:
+            push_warning(
+                "[gool] DEAD AIR (post-gain mystery): mixer peak=%.4f, "
+                % mixer_peak
+                + "master gain=%.2f, but device-buffer peak is 0.0. "
+                % master_gain
+                + "Unexpected — file a report with this output. "
+                + "Possible causes: buffer copy going to wrong "
+                + "destination, miniaudio format-conversion truncating, "
+                + "or a bug we haven't predicted."
+            )
+        else:
+            push_warning(
+                "[gool] DEAD AIR (unknown cause): %d frames written "
+                % delta_frames
+                + "this interval, all zero amplitude. Mixer stats: "
+                + "voices=%d peak=%.4f gain=%.2f. "
+                % [active_voices, mixer_peak, master_gain]
+                + "Symptom doesn't match any predicted cause; manual "
+                + "investigation needed."
+            )
     elif exceptions > 0:
         push_warning(
             "[gool] %d render-callback exception(s) caught since "
@@ -229,7 +283,8 @@ func _log_render_stats() -> void:
             + "audio frames have been dropped to silence by the "
             + "catch-all barrier."
         )
-    # Reset peak for the next interval window.
+    # Reset peak for the next interval window (resets BOTH backend
+    # peak AND mixer peak — v0.22.8).
     _runtime.reset_render_peak()
 
 
