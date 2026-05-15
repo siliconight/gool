@@ -12,6 +12,168 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.10] - 2026-05-14 — Break circular class_name dep (GoolLog ↔ GoolLogContext)
+
+### Problem
+
+After a clean reinstall of v0.23.9, Godot fails to load any scene
+that uses gool with:
+
+```
+Parser Error: Could not resolve class "GoolLog",
+              because of a parser error.
+   at: GDScript::reload (res://addons/gool/runtime_singleton.gd:122)
+```
+
+`runtime_singleton.gd:122` is the call `GoolLog.info("runtime", "ready", {...})`.
+The error suffix `"because of a parser error"` means Godot found
+`logging.gd` (which declares `class_name GoolLog`) but couldn't
+parse it — so `GoolLog` is never registered, and every reference
+to it elsewhere fails.
+
+### Root cause: circular class_name dependency
+
+v0.23.4 added `GoolLogContext` (a new script `logging_context.gd`)
+and a `create_context()` factory method on `GoolLog`:
+
+```
+logging.gd:                       logging_context.gd:
+  class_name GoolLog                class_name GoolLogContext
+  func create_context()             func info(msg, ...):
+      -> GoolLogContext                 GoolLog.info(...)  ← needs GoolLog
+      ↑ needs GoolLogContext
+```
+
+Each script references the other's `class_name` as a TYPE (in
+signatures and constructor calls), creating a parse-time cycle.
+Godot 4's class_name resolver cannot reliably break such cycles —
+particularly during fresh project import after a clean addon
+reinstall, which wipes `.godot/global_script_class_cache.cfg`.
+
+The bug shipped in v0.23.4 and was MASKED in v0.23.4/5/6 by
+leftover entries in the user's class cache from earlier (lucky)
+parse orderings. The clean reinstall of v0.23.9 — which deleted
+`addons/gool/` and forced Godot to re-scan — exposed the latent
+cycle.
+
+This is the same family of class_name resolution issues we saw
+in the v0.23.6 headless-smoke false positives, but symmetric:
+- **Smoke env:** no class_names registered at all → all references fail
+- **Fresh editor scan:** circular deps unresolvable in one pass → both fail
+
+The cycle was always going to be a problem; we just got lucky for
+several releases.
+
+### Fix
+
+Break the cycle in `logging.gd`'s `create_context`:
+
+```gdscript
+# Before (v0.23.4–v0.23.9):
+static func create_context(category: String, label: String = "") -> GoolLogContext:
+    var ctx := GoolLogContext.new()
+    ...
+
+# After (v0.23.10):
+static func create_context(category: String, label: String = "") -> Object:
+    var ctx_script: Script = load("res://addons/gool/logging_context.gd")
+    var ctx := ctx_script.new()
+    ...
+```
+
+Two changes:
+
+1. **Return type changes from `GoolLogContext` to `Object`** —
+   no class_name reference in the signature.
+2. **Body uses `load(path)` instead of `GoolLogContext.new()`** —
+   no class_name reference at parse time. The script is loaded
+   by absolute path at call time.
+
+`logging.gd` is now parse-self-contained: it references no
+external class_names. The cycle is broken.
+
+### User-facing API impact
+
+**Same call site, slightly different type ergonomics.**
+
+The user-facing API is unchanged: `GoolLog.create_context(category, label)`
+still returns a usable context object with the same methods.
+
+For best autocomplete, **explicitly annotate the variable**:
+
+```gdscript
+# Recommended (full autocomplete):
+var _log_ctx: GoolLogContext = GoolLog.create_context("emitter", "audio_emitter_3d.gd")
+_log_ctx.info("play", {"sound": name})
+
+# Works but loses autocomplete on _log_ctx (infers Object):
+var _log_ctx := GoolLog.create_context("emitter", "audio_emitter_3d.gd")
+```
+
+The `:=` form still works at runtime — only the editor autocomplete
+hint is affected. If you don't use autocomplete on the context
+methods, the inference form is fine.
+
+### Added — `"Could not resolve class"` to CI's KNOWN_REAL_ERRORS
+
+Added to the headless-smoke Tier 3 grep so this class of bug
+fails CI in the future. This bug pattern appears in Godot's
+stderr exclusively for real parse-cycle failures, not benign
+class_name resolution warnings.
+
+### Lesson on circular class_name dependencies
+
+Going forward, **any time gool adds a new `class_name` script
+that references another gool `class_name` script as a TYPE, audit
+the back-reference direction.** If both sides reference each other
+as types, you have a cycle that will fail on fresh class-cache
+scans.
+
+Rule of thumb: when designing cross-class APIs:
+- It's safe for class A's BODY to call `B.method()` (resolved at
+  call time)
+- It's NOT safe for class A's SIGNATURE to declare `-> B` if B's
+  body in turn calls `A.method()`
+- If you need both directions, use `load(path)` on at least one
+  side, OR make one class not have a `class_name`
+
+The gool codebase now has only ONE typed cross-class reference
+direction (logging_context.gd → GoolLog body calls). The reverse
+direction goes through `load()`.
+
+### Files touched
+
+- `godot/addons/gool/logging.gd` — `create_context` return type
+  and body changed to break the cycle. ~15 lines net change
+  including expanded comment explaining the workaround.
+- `.github/workflows/ci.yml` — added 1 pattern to KNOWN_REAL_ERRORS.
+- Version triple, README, CHANGELOG — bumped to 0.23.10.
+
+No other changes. Pure GDScript + 1-line CI grep addition.
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.10
+- `create_context` signature in logging.gd no longer references
+  `GoolLogContext` as a type
+- Body uses `load("res://addons/gool/logging_context.gd")`
+  followed by `.new()` — no class_name reference at parse time
+- CI step's KNOWN_REAL_ERRORS now has 7 patterns; the new pattern
+  `"Could not resolve class"` exactly matches the user-reported
+  error string
+
+### What this does NOT fix (separate, less urgent)
+
+- **`templates/test_beep.wav` missing from user installs.** The
+  file IS in the v0.23.x source archives and the release.yml
+  staging includes it, but at least one user reported it missing
+  after `gool-install.cmd`. Workaround: clean reinstall and check
+  `addons/gool/templates/` after; if still missing, the
+  `quickstart_3d.tscn` template fails to load but does not block
+  your own scenes from working. Permanent fix planned: replace
+  the .wav with programmatic AudioStreamGenerator beep in
+  `quickstart_3d.tscn`, eliminating the file dependency entirely.
+
 ## [0.23.9] - 2026-05-14 — Fix `remove_tool_submenu_item` (nonexistent Godot API)
 
 ### Problem
@@ -8967,7 +9129,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.9...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.10...HEAD
+[0.23.10]: https://github.com/siliconight/gool/releases/tag/v0.23.10
 [0.23.9]: https://github.com/siliconight/gool/releases/tag/v0.23.9
 [0.23.8]: https://github.com/siliconight/gool/releases/tag/v0.23.8
 [0.23.7]: https://github.com/siliconight/gool/releases/tag/v0.23.7

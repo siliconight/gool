@@ -741,6 +741,7 @@ jobs:
             "Mixed use of tabs and spaces"
             "Cyclic dependency between"
             "not found in base"
+            "Could not resolve class"
           )
           patterns_found=0
           for pattern in "${KNOWN_REAL_ERRORS[@]}"; do

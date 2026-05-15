@@ -273,8 +273,31 @@ static func get_verbosity() -> int:
 #
 # Per-call overrides are still possible — pass a custom label as
 # the optional 3rd arg to bypass the bound one.
-static func create_context(category: String, label: String = "") -> GoolLogContext:
-    var ctx := GoolLogContext.new()
+static func create_context(category: String, label: String = "") -> Object:
+    # v0.23.10: load by path instead of referencing GoolLogContext
+    # as a type. Avoids a circular class_name dependency between
+    # logging.gd and logging_context.gd: this method's signature
+    # and body would otherwise need GoolLogContext registered as a
+    # global class, and GoolLogContext's methods need GoolLog
+    # registered, and Godot 4's class_name resolver can't reliably
+    # break such cycles — particularly during fresh project import
+    # after a clean addon reinstall (which wipes the cached
+    # `.godot/global_script_class_cache.cfg`). Loading by path
+    # makes logging.gd's parse self-contained.
+    #
+    # NOTE on return type: declared as Object instead of the more
+    # specific GoolLogContext for the same cycle-breaking reason.
+    # Callers that want GoolLogContext autocomplete on the returned
+    # value should explicitly annotate their variable:
+    #
+    #   var ctx: GoolLogContext = GoolLog.create_context("mixer", "audio_mixer.gd")
+    #   ctx.info("...", {...})   # full autocomplete
+    #
+    # Type inference (`var ctx := GoolLog.create_context(...)`)
+    # will infer Object, losing the autocomplete. Annotate for the
+    # better DX.
+    var ctx_script: Script = load("res://addons/gool/logging_context.gd")
+    var ctx := ctx_script.new()
     ctx.category = category
     ctx.label = label
     return ctx
