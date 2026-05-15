@@ -12,6 +12,151 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.9] - 2026-05-14 — Fix `remove_tool_submenu_item` (nonexistent Godot API)
+
+### Problem
+
+The plugin failed to load in v0.23.0+ with:
+
+```
+ERROR: res://addons/gool/plugin.gd:415 - Parse Error:
+       Function "remove_tool_submenu_item()" not found in base self.
+ERROR: Failed to load script "res://addons/gool/plugin.gd"
+       with error "Parse error".
+```
+
+Godot then auto-disables the plugin:
+
+> Unable to load addon script from path: 'res://addons/gool/plugin.gd'.
+> This might be due to a code error in that script.
+> Disabling the addon at 'res://addons/gool/plugin.cfg' to prevent
+> further errors.
+
+### Root cause
+
+The v0.23.0 onboarding overhaul added a Project → Tools → Gool
+submenu via `EditorPlugin.add_tool_submenu_item()`. The cleanup
+path in `_unregister_tools_menu` called the assumed-symmetric
+`remove_tool_submenu_item()` — **but that method doesn't exist
+on EditorPlugin.** Godot's API is asymmetric:
+
+- `add_tool_submenu_item(name, popup_menu)` — adds a submenu
+- `add_tool_menu_item(name, callable)` — adds a single item
+- `remove_tool_menu_item(name)` — cleans up **either** kind
+
+Per Godot's official docs:
+> "This submenu should be cleaned up using `remove_tool_menu_item(name)`."
+
+The bug shipped in v0.23.0 and was silent for 9 releases because
+the bad call was inside `_unregister_tools_menu`, which only runs
+on plugin disable or project close. Most users never triggered
+the path. Brannen hit it when reloading the project caused Godot
+to revalidate plugin scripts, and Godot 4.x does compile-time
+method-existence checks at script load — so the parse error
+surfaced even though `_unregister_tools_menu` itself wasn't
+called yet.
+
+### Why audio still worked
+
+The `Gool` autoload entry lives in `project.godot` under
+`[autoload]`. It was originally added there by `plugin.gd._enter_tree`
+during an earlier successful plugin load. That entry **persists in
+project.godot regardless of whether the plugin can later parse**,
+so the runtime path (autoload → GoolAudioRuntime → AudioEmitter3D
+playback) continued working even with the plugin disabled.
+
+What was actually broken: editor-side plugin features.
+- Project → Tools → Gool menu items (scaffold scene, create bank, etc.)
+- Inspector autocomplete for `sound_name` properties
+- Filesystem watching for bank reloads
+- Scene-template helper
+
+Once the plugin fails to parse, none of those features run.
+
+### Fix
+
+One method-call correction in `plugin.gd:425` and a comment update
+explaining the API asymmetry so the next maintainer doesn't
+re-introduce the same mistake.
+
+```gdscript
+# Before:
+remove_tool_submenu_item(TOOLS_MENU_NAME)
+
+# After:
+remove_tool_menu_item(TOOLS_MENU_NAME)
+```
+
+### Added — `"not found in base"` to CI smoke's known-real-error patterns
+
+Godot's parse-time method-existence check produces the error
+string `Function "X()" not found in base Y.` for calls to
+nonexistent methods. This is a distinct pattern from class_name
+resolution failures (`"Identifier X not declared in the current
+scope"`) and benign warnings — it's exclusively from real bugs.
+
+Added `"not found in base"` to the Tier 3 KNOWN_REAL_ERRORS grep
+patterns in the headless-smoke CI step. Catches this kind of bug
++ similar API-misuse mistakes in future PRs.
+
+### Why didn't the v0.23.6/v0.23.8 smoke catch this?
+
+Looking at the v0.23.6 smoke output, the failure list didn't
+include `plugin.gd` — suggesting `load()` returned non-null for it
+in the smoke environment despite Godot's editor reporting a parse
+error locally. This is one of those discrepancies between
+"headless mode parsing" and "editor-time parsing" where Godot's
+type checker behaves differently in the two contexts.
+
+The new Tier 3 grep pattern catches the bug pattern regardless of
+how Godot decides to surface it. Belt-and-suspenders defense
+again — same approach that protected against `_LEVEL_NAMES` in
+v0.23.6.
+
+### Files touched
+
+- `godot/addons/gool/plugin.gd` — one method-call correction +
+  expanded comment explaining the API asymmetry.
+- `.github/workflows/ci.yml` — one pattern addition to
+  KNOWN_REAL_ERRORS in the headless-smoke step.
+- Version triple, README, CHANGELOG — bumped to 0.23.9
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.9
+- No executable calls to `remove_tool_submenu_item` remain in
+  `plugin.gd` (grep `^[^#]*remove_tool_submenu_item\(` returns
+  empty). Comment-level references remain for institutional memory.
+- `plugin.gd:426` now calls `remove_tool_menu_item(TOOLS_MENU_NAME)`
+  as Godot's API requires.
+- CI step's KNOWN_REAL_ERRORS now has 6 patterns; `"not found in
+  base"` would have caught this bug had it existed in the smoke's
+  signal set at the time.
+
+### Two-pattern lesson
+
+Across this session:
+- v0.23.2 shipped `_LEVEL_NAMES` const-expression bug — caught by
+  end-user, fixed in v0.23.5, smoke pattern added in v0.23.6
+- v0.23.0 shipped this `remove_tool_submenu_item` bug — caught by
+  end-user (today), fixed in v0.23.9, smoke pattern added here
+
+Both were Godot-API-mismatch bugs that compiled C++ cleanly,
+passed bracket-balance, passed function-name presence checks, and
+slipped past the headless smoke. The pattern: I assumed an API
+shape that didn't exist, and only Godot's actual parser caught it.
+
+**The right structural fix is still: a headless Godot smoke that
+runs the addon as enabled** — not parse-only, but plugin-enabled,
+autoload-wired, with the GDExtension binary present. That's the
+Tier 4 work the v0.23.6 CHANGELOG flagged for future. With the
+plugin actually enabled, `_enter_tree` runs and any bad call in
+the plugin lifecycle would surface immediately. Currently a
+parse-only smoke under-tests the plugin specifically.
+
+In the meantime, the Tier 3 KNOWN_REAL_ERRORS pattern set is
+the practical defense. Each new bug class adds one more pattern.
+
 ## [0.23.8] - 2026-05-14 — Redesign headless-smoke Tier 2 (source-text scan)
 
 ### Problem
@@ -8822,7 +8967,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.8...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.9...HEAD
+[0.23.9]: https://github.com/siliconight/gool/releases/tag/v0.23.9
 [0.23.8]: https://github.com/siliconight/gool/releases/tag/v0.23.8
 [0.23.7]: https://github.com/siliconight/gool/releases/tag/v0.23.7
 [0.23.6]: https://github.com/siliconight/gool/releases/tag/v0.23.6

@@ -382,6 +382,11 @@ func _scaffold_sounds_tree_if_missing() -> void:
 # it the same way they discover other editor tooling.
 #
 # add_tool_submenu_item takes a PopupMenu instance we own; the
+# Tools menu adopts it but doesn't take ownership. We hold the
+# reference in _tools_menu so we can clean up on _exit_tree.
+# Note: Godot uses `remove_tool_menu_item(name)` for cleanup of
+# BOTH `add_tool_menu_item` and `add_tool_submenu_item` — there is
+# no separate `remove_tool_submenu_item`. v0.23.9 fix.
 # PopupMenu emits id_pressed when an item is clicked, which we
 # dispatch to the appropriate handler.
 var _tools_menu: PopupMenu = null
@@ -412,7 +417,13 @@ func _register_tools_menu() -> void:
 func _unregister_tools_menu() -> void:
     if _tools_menu == null:
         return
-    remove_tool_submenu_item(TOOLS_MENU_NAME)
+    # v0.23.9: was `remove_tool_submenu_item(...)` — that method
+    # doesn't exist on EditorPlugin. The correct API for cleaning
+    # up a submenu added via add_tool_submenu_item is the same as
+    # for a single item: remove_tool_menu_item(name). Godot's
+    # docs are explicit: "This submenu should be cleaned up using
+    # remove_tool_menu_item(name)."
+    remove_tool_menu_item(TOOLS_MENU_NAME)
     # PopupMenu is a Node; if we added it to the scene tree somewhere
     # we'd queue_free, but add_tool_submenu_item doesn't reparent it,
     # so we just drop our reference and let the GC collect.
