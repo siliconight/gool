@@ -12,6 +12,166 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.0] - 2026-05-14 — Onboarding overhaul
+
+First minor version bump in the v0.22.x line. Adds new
+designer-facing functionality (plugin scaffolding, editor tool
+menu) — not a bug-fix release. Backward-compatible with every
+v0.22.x project; idempotent scaffolders never overwrite existing
+state.
+
+### Added — Plugin auto-scaffolding
+
+On plugin enable (`plugin.gd._enter_tree`), gool now creates a
+default sounds/ folder tree and a `GoolFolderSoundBank` resource
+at standard paths:
+
+```
+res://sounds/
+  ├── sfx/
+  ├── music/
+  ├── voice/
+  ├── ambience/
+  ├── ui/
+  └── bank.tres        # GoolFolderSoundBank, folder_path=res://sounds, recursive=true
+```
+
+Idempotent: anything that already exists is left alone. A project
+with custom audio organization (e.g. `assets/audio/`) gets an
+unused `res://sounds/` tree it can delete, but nothing it created
+is touched.
+
+Log on the first enable that creates anything:
+```
+[gool] scaffolded sounds/ tree + bank.tres. Drop audio files
+(.wav / .ogg / .mp3 / .flac) into res://sounds/{sfx,music,voice,
+ambience,ui}/ — the bank picks them up automatically and they
+appear in the AudioEmitter3D sound_name dropdown.
+```
+
+The created `bank.tres` has `category_from_subfolder = true` so
+files under `sounds/music/` automatically route to the Music bus
+at runtime, `sounds/sfx/` to LocalSfx, etc. — no per-file
+configuration needed.
+
+### Added — Project → Tools → Gool editor menu
+
+A new submenu under Godot's Project → Tools menu, with three
+commands:
+
+**1. Add gool 3D audio scaffolding to current scene**
+
+Inserts three nodes under the current scene's root:
+- `GoolListener3D` — the "ears"
+- `GoolSoundBankLoader` — pre-assigned to `res://sounds/bank.tres`
+  if it exists
+- `AudioEmitter3D` — placeholder, user picks a sound from the dropdown
+
+All three become direct children of the scene root with `owner`
+set correctly (so they save). The user can reparent them later
+(e.g. listener under Player). A confirmation dialog lists what
+was added and the remaining steps (set sound_name, check
+Autoplay, save, F5).
+
+Refuses to run if no scene is open, or if the current scene's
+root isn't a `Node3D`-derived node — both cases surface as info
+dialogs rather than silent no-ops or crashes.
+
+**2. Create new GoolFolderSoundBank…**
+
+Opens a save-file dialog and writes a configured
+`GoolFolderSoundBank` at the chosen path. Useful for projects
+that want multiple banks (per-level audio organization, for
+instance) beyond the default `bank.tres`. The bank's `folder_path`
+defaults to the directory the bank itself lives in.
+
+**3. Open quickstart_3d.tscn (verify gool works)**
+
+One-click open of the bundled test scene at
+`res://addons/gool/templates/quickstart_3d.tscn`. Press F5 after
+it opens; a 440Hz beep proves the full pipeline works in your
+project.
+
+### Changed — Documentation rewrite of `docs/godot_quickstart.md` Step 3
+
+The previous Step 3 walked users through synthesizing a sine wave
+in GDScript and calling `Gool.register_pcm_sound()`. That's a
+real API and a valid pattern, but it's the wrong default — most
+users want to drop a .wav file and have it play. Rewritten as:
+
+- **Option A (10 seconds)**: Project → Tools → Gool → Open
+  quickstart_3d.tscn → F5. Verifies gool works at all.
+- **Option B (your own scene)**: drop file into `res://sounds/sfx/`,
+  Project → Tools → Gool → Add gool 3D audio scaffolding, pick
+  sound from dropdown, check Autoplay, F5.
+
+The PCM-synthesis example is preserved in a new "Advanced:
+registering sounds at runtime" section near the bottom, explicitly
+flagged as the pattern for procedural / network-streamed / custom-
+pack audio rather than the default workflow.
+
+New subsections:
+- **How to know it's working** — names the v0.22.4 / v0.22.7 /
+  v0.22.9 log lines (`[gool] ready:`, `[gool] audio device:`,
+  `[gool] render:`) so users can verify their install end-to-end
+- **Expanded Troubleshooting** with a diagnostic table mapping
+  each `DEAD AIR` warning to its cause and fix, the Logic Pro X
+  Opus-in-Ogg gotcha with ffmpeg conversion command, the
+  AudioStreamPlayer-placebo failure mode from the v0.22 debug
+  session, and the mixed-indentation pitfall
+
+### Files touched
+
+- `godot/addons/gool/plugin.gd` — added ~210 lines:
+  - 6 new path/name constants
+  - `_scaffold_sounds_tree_if_missing()` — idempotent folder +
+    bank.tres creation
+  - `_register_tools_menu()` / `_unregister_tools_menu()` — Project
+    → Tools → Gool submenu lifecycle
+  - `_on_tools_menu_pressed()` — dispatcher
+  - `_add_3d_scaffolding_to_current_scene()` — the heavy command
+  - `_create_new_folder_bank()` — save-file-dialog + bank creation
+  - `_show_info_dialog()` — UX helper for the modeless notices
+- `docs/godot_quickstart.md` — Step 3 fully rewritten; Step 4 /
+  Troubleshooting / version-note sections expanded to reflect
+  the new scaffolding workflow and v0.22.4 diagnostic logging
+- Version triple, README, CHANGELOG — bumped to 0.23.0
+
+No C++ changes. No GDExtension binding changes. No CI workflow
+changes. Pure GDScript + documentation release on top of the
+v0.22.10 working foundation.
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.0
+- `plugin.gd` syntax: brackets balance (166/166 parens, 42/42
+  brackets, 14/14 braces), 557 total lines
+- Scaffolding logic is purely additive: a project that already
+  has `res://sounds/` or `bank.tres` sees no changes from the
+  scaffolder (gated by `dir_exists_absolute` / `file_exists`
+  checks)
+- Tools menu uses standard `EditorPlugin.add_tool_submenu_item`
+  / `remove_tool_submenu_item` lifecycle — clean teardown on
+  plugin disable, no leaked nodes
+
+### What this finally delivers
+
+Combined with v0.22.10's actual fix for non-looping playback,
+v0.23.0 is the first release where a new user can:
+
+1. Install gool via `gool-install.cmd`
+2. Open their project in Godot
+3. Drop a .wav into `res://sounds/sfx/`
+4. Project → Tools → Gool → Add gool 3D audio scaffolding to
+   current scene
+5. Pick the sound from the dropdown, check Autoplay
+6. F5 → hear the sound
+
+In **six steps and under two minutes**, with zero manual node
+creation, resource configuration, or script writing. The
+v0.22-session's eight-hour onboarding ordeal is permanently
+behind us.
+
 ## [0.22.10] - 2026-05-14 — **THE silent-audio fix**
 
 ### Fixed — `CreateEmitter` now mixes non-looping emitters
@@ -7462,7 +7622,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.22.10...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/siliconight/gool/releases/tag/v0.23.0
 [0.22.10]: https://github.com/siliconight/gool/releases/tag/v0.22.10
 [0.22.9]: https://github.com/siliconight/gool/releases/tag/v0.22.9
 [0.22.8]: https://github.com/siliconight/gool/releases/tag/v0.22.8

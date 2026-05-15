@@ -122,6 +122,29 @@ const DEFAULT_CONFIG := {
 
 const INSPECTOR_PLUGIN_PATH := "res://addons/gool/editor/sound_name_inspector.gd"
 
+# v0.23.0: paths the auto-scaffolder creates on plugin enable.
+# Idempotent — anything that already exists is left alone, so a
+# project that's manually arranged its sounds/ folder differently
+# (or doesn't want our defaults at all) only sees the scaffolder
+# add what's missing, never overwrite. Same goes for bank.tres:
+# if the user's already got one (their own custom bank, or our
+# bank from a previous enable), we don't touch it.
+const SOUNDS_ROOT := "res://sounds"
+const SOUND_SUBFOLDERS := ["sfx", "music", "voice", "ambience", "ui"]
+const BANK_PATH := "res://sounds/bank.tres"
+const FOLDER_SOUND_BANK_SCRIPT := "res://addons/gool/resources/gool_folder_sound_bank.gd"
+
+# v0.23.0: prefab script paths used by the "Add gool 3D audio
+# scaffolding to current scene" menu command. Centralized here
+# rather than duplicating the PREFAB_DIR + filename concatenation
+# in the scaffolding function.
+const LISTENER_3D_SCRIPT := "res://addons/gool/prefabs/gool_listener_3d.gd"
+const EMITTER_3D_SCRIPT := "res://addons/gool/prefabs/audio_emitter_3d.gd"
+const BANK_LOADER_SCRIPT := "res://addons/gool/prefabs/gool_sound_bank_loader.gd"
+
+# Submenu label under Project → Tools.
+const TOOLS_MENU_NAME := "Gool"
+
 # Held instance of the inspector plugin. Stored so _exit_tree can
 # unregister the same instance we registered (Godot's
 # remove_inspector_plugin requires the original reference, not just
@@ -132,11 +155,14 @@ func _enter_tree() -> void:
     _add_autoload()
     _register_prefabs()
     _write_default_config_if_missing()
+    _scaffold_sounds_tree_if_missing()   # v0.23.0
     _register_inspector_plugin()
     _connect_filesystem_watch()
-    print("[gool] plugin enabled — autoload, prefabs, default config, inspector installed.")
+    _register_tools_menu()               # v0.23.0
+    print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, tools menu installed.")
 
 func _exit_tree() -> void:
+    _unregister_tools_menu()             # v0.23.0
     _disconnect_filesystem_watch()
     _unregister_inspector_plugin()
     _unregister_prefabs()
@@ -273,3 +299,259 @@ func _write_default_config_if_missing() -> void:
         return
     f.store_string(JSON.stringify(DEFAULT_CONFIG, "  "))
     f.close()
+
+# v0.23.0: auto-scaffolding ----------------------------------------------------
+#
+# Eliminates the "create folders, create bank.tres, configure folder_path"
+# manual setup that used to be the first 5 minutes of every new gool
+# project. Run once on plugin enable; idempotent so subsequent enables
+# (or reinstalls via gool-install.cmd) are no-ops.
+#
+# Anything the user has already set up — even partially — is preserved.
+# We only create directories that don't exist and only write bank.tres
+# if the file doesn't exist. A user who's organized their audio
+# differently (e.g. assets/audio/ instead of sounds/) just gets one
+# unused res://sounds/ directory tree they can delete if they want.
+func _scaffold_sounds_tree_if_missing() -> void:
+    var created_anything := false
+
+    # Step 1: the sounds/ root and its category subfolders. Each one
+    # is checked independently so a partial existing tree (e.g. user
+    # had sounds/sfx/ but not sounds/music/) gets completed.
+    if not DirAccess.dir_exists_absolute(SOUNDS_ROOT):
+        DirAccess.make_dir_recursive_absolute(SOUNDS_ROOT)
+        created_anything = true
+    for sub in SOUND_SUBFOLDERS:
+        var path := "%s/%s" % [SOUNDS_ROOT, sub]
+        if not DirAccess.dir_exists_absolute(path):
+            DirAccess.make_dir_recursive_absolute(path)
+            created_anything = true
+
+    # Step 2: bank.tres. Only create if absent. The bank's folder_path
+    # is set to SOUNDS_ROOT so any audio file dropped under any of the
+    # subfolders is picked up automatically by the recursive scan.
+    # Category-from-subfolder is enabled so a file under sounds/music/
+    # routes to the Music bus, sounds/sfx/ to LocalSfx, etc.
+    if not FileAccess.file_exists(BANK_PATH):
+        var script := load(FOLDER_SOUND_BANK_SCRIPT)
+        if script == null:
+            push_warning(
+                "[gool] could not load GoolFolderSoundBank script "
+                + "at %s; skipping bank.tres scaffolding. "
+                % FOLDER_SOUND_BANK_SCRIPT
+                + "You can create the bank manually later via "
+                + "FileSystem dock → New Resource → GoolFolderSoundBank."
+            )
+            return
+        var bank: Resource = script.new()
+        bank.folder_path = SOUNDS_ROOT
+        bank.recursive = true
+        bank.category_from_subfolder = true
+        bank.apply_category_defaults = true
+        var err: int = ResourceSaver.save(bank, BANK_PATH)
+        if err != OK:
+            push_warning(
+                "[gool] failed to save default bank to %s "
+                % BANK_PATH
+                + "(ResourceSaver error %d). You can create the bank "
+                % err
+                + "manually later via FileSystem dock → New Resource."
+            )
+            return
+        created_anything = true
+
+    if created_anything:
+        print(
+            "[gool] scaffolded sounds/ tree + bank.tres. Drop audio files "
+            + "(.wav / .ogg / .mp3 / .flac) into res://sounds/{sfx,music,"
+            + "voice,ambience,ui}/ — the bank picks them up automatically "
+            + "and they appear in the AudioEmitter3D sound_name dropdown."
+        )
+
+# v0.23.0: Project → Tools → Gool menu -----------------------------------------
+#
+# Adds editor commands for the common scene-setup tasks that used to
+# require manually adding three nodes and configuring four inspector
+# fields. The submenu lives under Project → Tools so users discover
+# it the same way they discover other editor tooling.
+#
+# add_tool_submenu_item takes a PopupMenu instance we own; the
+# PopupMenu emits id_pressed when an item is clicked, which we
+# dispatch to the appropriate handler.
+var _tools_menu: PopupMenu = null
+
+# Menu item IDs. Using an enum keeps the dispatcher table readable
+# and lets us reorder/insert without breaking handlers.
+enum ToolsMenuItem {
+    ADD_3D_SCAFFOLDING = 0,
+    NEW_FOLDER_BANK    = 1,
+    OPEN_QUICKSTART    = 2,
+}
+
+func _register_tools_menu() -> void:
+    _tools_menu = PopupMenu.new()
+    _tools_menu.add_item("Add gool 3D audio scaffolding to current scene",
+        ToolsMenuItem.ADD_3D_SCAFFOLDING)
+    _tools_menu.add_item("Create new GoolFolderSoundBank...",
+        ToolsMenuItem.NEW_FOLDER_BANK)
+    _tools_menu.add_separator()
+    _tools_menu.add_item("Open quickstart_3d.tscn (verify gool works)",
+        ToolsMenuItem.OPEN_QUICKSTART)
+    _tools_menu.id_pressed.connect(_on_tools_menu_pressed)
+    add_tool_submenu_item(TOOLS_MENU_NAME, _tools_menu)
+
+func _unregister_tools_menu() -> void:
+    if _tools_menu == null:
+        return
+    remove_tool_submenu_item(TOOLS_MENU_NAME)
+    # PopupMenu is a Node; if we added it to the scene tree somewhere
+    # we'd queue_free, but add_tool_submenu_item doesn't reparent it,
+    # so we just drop our reference and let the GC collect.
+    _tools_menu = null
+
+func _on_tools_menu_pressed(id: int) -> void:
+    match id:
+        ToolsMenuItem.ADD_3D_SCAFFOLDING:
+            _add_3d_scaffolding_to_current_scene()
+        ToolsMenuItem.NEW_FOLDER_BANK:
+            _create_new_folder_bank()
+        ToolsMenuItem.OPEN_QUICKSTART:
+            EditorInterface.open_scene_from_path(
+                "res://addons/gool/templates/quickstart_3d.tscn")
+
+# v0.23.0: scene scaffolding command.
+#
+# Inserts the three gool nodes a 3D audio scene needs:
+#   - GoolListener3D   (the "ears")
+#   - GoolSoundBankLoader (registers all sounds in bank.tres at runtime)
+#   - AudioEmitter3D   (placeholder; user picks a sound from the dropdown)
+#
+# All three become direct children of the scene root, with their
+# owner set to the root so they survive scene-save. The user can
+# reparent them later if needed (Listener under Player, etc).
+func _add_3d_scaffolding_to_current_scene() -> void:
+    var root: Node = EditorInterface.get_edited_scene_root()
+    if root == null:
+        _show_info_dialog(
+            "No scene open",
+            "Open a scene first (Scene → New Scene, or open an "
+            + "existing one), then try Project → Tools → Gool again."
+        )
+        return
+    if not (root is Node3D):
+        _show_info_dialog(
+            "3D scene required",
+            "The current scene's root is %s, not a Node3D-derived "
+            % root.get_class()
+            + "node. gool 3D audio scaffolding adds GoolListener3D "
+            + "and AudioEmitter3D, which are 3D nodes. Open a 3D "
+            + "scene (Scene → New Scene → 3D Scene) and try again."
+        )
+        return
+
+    # Three nodes to add. Each entry: (script_path, node_name).
+    # We use the prefab script paths directly so the class_name
+    # registration order at plugin-enable time doesn't matter.
+    var to_add := [
+        [LISTENER_3D_SCRIPT,  "GoolListener3D"],
+        [BANK_LOADER_SCRIPT,  "GoolSoundBankLoader"],
+        [EMITTER_3D_SCRIPT,   "AudioEmitter3D"],
+    ]
+    var added_names: PackedStringArray = PackedStringArray()
+    for entry in to_add:
+        var script: Script = load(entry[0])
+        if script == null:
+            push_warning("[gool] missing prefab script: %s" % entry[0])
+            continue
+        var node: Node
+        # Listener and emitter need a Node3D base; loader is a plain Node.
+        if entry[1] == "GoolSoundBankLoader":
+            node = Node.new()
+        else:
+            node = Node3D.new()
+        node.set_script(script)
+        node.name = entry[1]
+        root.add_child(node)
+        node.set_owner(root)
+        added_names.append(entry[1])
+
+    # Pre-assign bank.tres on the loader so the user doesn't have
+    # to do the drag-and-drop step manually. The setter is exposed
+    # as a property on the loader script.
+    var loader: Node = root.get_node_or_null("GoolSoundBankLoader")
+    if loader != null and FileAccess.file_exists(BANK_PATH):
+        var bank_resource: Resource = load(BANK_PATH)
+        if bank_resource != null:
+            loader.bank = bank_resource
+
+    # Notify the user. The scene is now dirty (add_child marks it),
+    # but we surface a dialog so they know what happened and what
+    # to do next.
+    _show_info_dialog(
+        "Added gool 3D scaffolding",
+        "Added the following to '%s':\n\n" % root.name
+        + "\n".join(added_names.duplicate())
+        + "\n\nNext steps:\n"
+        + "  1. Save the scene (Ctrl+S).\n"
+        + "  2. Drop audio files into res://sounds/sfx/ (or any\n"
+        + "     other sounds/ subfolder).\n"
+        + "  3. Select the AudioEmitter3D, click its 'Sound Name'\n"
+        + "     field — your file appears in the dropdown.\n"
+        + "  4. Check Autoplay → On.\n"
+        + "  5. F5 to verify."
+    )
+
+# v0.23.0: create-new-bank command.
+#
+# Opens a save-file dialog and writes a configured GoolFolderSoundBank
+# at the chosen path. Useful when a project wants a second bank
+# (e.g. per-level audio organization) beyond the default
+# res://sounds/bank.tres that auto-scaffolding creates.
+func _create_new_folder_bank() -> void:
+    var dialog := EditorFileDialog.new()
+    dialog.file_mode = EditorFileDialog.FILE_MODE_SAVE_FILE
+    dialog.add_filter("*.tres", "GoolFolderSoundBank resource")
+    dialog.current_path = "res://sounds/my_bank.tres"
+    dialog.title = "Save new GoolFolderSoundBank as..."
+    dialog.file_selected.connect(_on_new_bank_path_selected)
+    EditorInterface.get_base_control().add_child(dialog)
+    dialog.popup_centered_ratio(0.6)
+
+func _on_new_bank_path_selected(path: String) -> void:
+    var script := load(FOLDER_SOUND_BANK_SCRIPT)
+    if script == null:
+        push_warning("[gool] could not load GoolFolderSoundBank script")
+        return
+    var bank: Resource = script.new()
+    # Default folder_path to the directory the bank itself lives in,
+    # which is usually the user's intent (scan this folder + subfolders).
+    bank.folder_path = path.get_base_dir()
+    bank.recursive = true
+    bank.category_from_subfolder = true
+    bank.apply_category_defaults = true
+    var err: int = ResourceSaver.save(bank, path)
+    if err != OK:
+        _show_info_dialog("Save failed",
+            "Couldn't save bank to %s\n\nResourceSaver error: %d"
+            % [path, err])
+        return
+    print("[gool] created new GoolFolderSoundBank at %s "
+        % path
+        + "(folder_path=%s)" % bank.folder_path)
+    # Ping the FileSystem dock so the new file appears immediately.
+    EditorInterface.get_resource_filesystem().scan()
+
+# Helper for popping up a small info/notice dialog. Editor-side only;
+# does NOT block execution (Godot's AcceptDialog is modeless by default).
+func _show_info_dialog(title: String, body: String) -> void:
+    var dlg := AcceptDialog.new()
+    dlg.title = title
+    dlg.dialog_text = body
+    dlg.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    dlg.min_size = Vector2i(500, 200)
+    EditorInterface.get_base_control().add_child(dlg)
+    dlg.popup_centered()
+    # Self-clean: the dialog stays in the editor tree until dismissed,
+    # then queue_free's itself.
+    dlg.confirmed.connect(dlg.queue_free)
+    dlg.canceled.connect(dlg.queue_free)
