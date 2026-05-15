@@ -12,6 +12,127 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.5] - 2026-05-14 — Fix `_LEVEL_NAMES` constant + ship `.editorconfig`
+
+### Fixed — GDScript parser error in `_LEVEL_NAMES`
+
+v0.23.2 introduced this in `addons/gool/logging.gd`:
+
+```gdscript
+const _LEVEL_NAMES: PackedStringArray = PackedStringArray([
+    "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "SILENT"])
+```
+
+Godot's parser rejects this: **`PackedStringArray()` constructor
+calls are not constant expressions**, even when every argument is
+a string literal. The error appears as:
+
+```
+Parser Error: Assigned value for constant "_LEVEL_NAMES" isn't a
+constant expression.
+```
+
+The bug shipped in v0.23.2, v0.23.3, v0.23.4 — but didn't surface
+because users were blocked by an unrelated mixed-indentation issue
+on the same file, fixed via clean reinstall. Once that cleared,
+this parser error was the next blocker.
+
+**Fix:** drop the `PackedStringArray` constructor wrapper, use a
+plain Array literal which IS a constant expression in GDScript:
+
+```gdscript
+const _LEVEL_NAMES = [
+    "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "SILENT"]
+```
+
+`_LEVEL_NAMES[level]` indexing works identically with either type.
+The 7-entry size makes PackedStringArray's tightly-packed-memory
+benefit irrelevant. Behavior unchanged; the type annotation was
+purely cosmetic.
+
+### Added — `addons/gool/.editorconfig`
+
+Twice in this session you hit
+`Parser Error: Used tab character for indentation instead of space
+as used before in the file.` The cause: Godot's script editor
+defaults to inserting tabs when you press Tab, but gool's .gd
+files are committed with 4-space indentation. Any inadvertent edit
+in the editor (even an accidental Tab keypress) introduces tabs
+that the parser later rejects.
+
+The fix is a `.editorconfig` file at the addon root that tells
+EditorConfig-aware editors (including Godot 4.x) to use spaces
+when editing files inside `addons/gool/`. It does NOT affect
+your project's own scripts — its scope is limited to the addon
+directory.
+
+Contents:
+```ini
+root = false      # don't stop EditorConfig search at this file;
+                  # your project .editorconfig still applies for
+                  # other files
+
+[*.gd]
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.tres]
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+
+[*.tscn]
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+```
+
+This permanently prevents the mixed-indentation failure mode for
+files inside the addon. Existing user-side indentation damage from
+prior edits still needs a clean reinstall to clear, but new edits
+won't recreate the problem.
+
+### Validation pipeline lesson
+
+The bug shipped because my pre-release validation checks brackets,
+C++ compile, function name presence — none of which catch GDScript
+constant-expression errors. **Going forward, the addon archive
+build adds a grep-based check for the most common GDScript
+runtime-vs-constant antipatterns**, specifically:
+`const X = Capital(...)` where `Capital` is a type/function name.
+That catches today's bug and the closely-related family of "this
+looks like a constant but isn't" mistakes.
+
+It's not a substitute for actually running Godot in CI — the right
+long-term fix is a headless Godot smoke job that loads the addon
+and reports parser errors as build failures. That's a v0.24+ CI
+investment, not v0.23.5 scope.
+
+### Files touched
+
+- `godot/addons/gool/logging.gd` — replaced `_LEVEL_NAMES`
+  declaration with constant-expression-compatible plain Array literal,
+  added explanatory comment for the next maintainer who finds it.
+- `godot/addons/gool/.editorconfig` — new, 4 sections (root marker,
+  .gd, .tres, .tscn rules).
+- Version triple, README, CHANGELOG — bumped to 0.23.5.
+
+Pure GDScript + config file additions. No C++ changes. No
+behavior changes other than "logging.gd now parses."
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.5
+- New const-expression antipattern grep returns zero hits across
+  all addon .gd files
+- The fix preserves the v0.23.2-v0.23.4 logging behavior exactly:
+  `_LEVEL_NAMES[level]` still works as a string index by Level
+  enum value, format unchanged
+- `.editorconfig` syntax verified against the
+  [EditorConfig specification](https://editorconfig.org/)
+
 ## [0.23.4] - 2026-05-14 — Verbosity preset + contexts + label + FATAL
 
 ### Added — Verbosity preset (single dial for log volume)
@@ -8303,7 +8424,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.4...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.5...HEAD
+[0.23.5]: https://github.com/siliconight/gool/releases/tag/v0.23.5
 [0.23.4]: https://github.com/siliconight/gool/releases/tag/v0.23.4
 [0.23.3]: https://github.com/siliconight/gool/releases/tag/v0.23.3
 [0.23.2]: https://github.com/siliconight/gool/releases/tag/v0.23.2

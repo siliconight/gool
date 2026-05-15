@@ -1,0 +1,38 @@
+# addons/gool/.editorconfig
+#
+# Godot 4.x and most editors respect EditorConfig files. This file
+# scopes its rules to files inside the gool addon — it does NOT
+# affect your project's own scripts.
+#
+# Why this file exists: when you open one of gool's .gd files in
+# Godot's script editor (or any editor that defaults to tabs), the
+# editor inserts tab characters when you press Tab. gool's source
+# files are committed with 4-space indentation, so saving an edit
+# can create a file with mixed tab/space indentation, which Godot's
+# parser rejects with "Used tab character for indentation instead
+# of space as used before in the file."
+#
+# By placing this .editorconfig at the addon root, any editor that
+# respects EditorConfig will use spaces when editing files inside
+# this directory, preventing the failure mode.
+
+# Don't stop EditorConfig search above this file; the user's project
+# .editorconfig (if any) still applies, but our rules win on conflict
+# for files inside this directory.
+root = false
+
+[*.gd]
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.tres]
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+
+[*.tscn]
+indent_style = space
+indent_size = 4
+insert_final_newline = true

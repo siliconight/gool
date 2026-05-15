@@ -100,8 +100,13 @@ enum Verbosity {
 }
 
 # Human-readable level names, indexed by Level enum value.
-const _LEVEL_NAMES: PackedStringArray = PackedStringArray([
-    "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "SILENT"])
+# v0.23.5: was `const _LEVEL_NAMES: PackedStringArray = PackedStringArray([...])`
+# but Godot's parser rejects that — the constructor call isn't a constant
+# expression. A plain Array literal IS constant in GDScript, and indexing
+# by integer (level) works identically. The 7-entry size makes the
+# memory-packing benefit of PackedStringArray irrelevant.
+const _LEVEL_NAMES = [
+    "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "SILENT"]
 
 # Project Settings paths. These are read once at first-use time and
 # cached. Runtime API calls (set_global_level etc) override the
