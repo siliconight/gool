@@ -67,7 +67,7 @@ jobs:
             binary_path: build-godot/libgool_godot.dylib
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Derive version from tag
         id: version
@@ -174,7 +174,7 @@ jobs:
 
       - name: Cache godot-cpp build
         id: godot-cpp-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: third_party/godot-cpp
           # Bump the trailing `v1` if godot-cpp build inputs change in
@@ -218,7 +218,7 @@ jobs:
 
       - name: Cache vcpkg-installed packages (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:/vcpkg/installed
           # Bump trailing version when vcpkg's opus/opusfile portfiles
@@ -454,7 +454,7 @@ jobs:
       # ============================================================
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ steps.version.outputs.archive_name }}.${{ matrix.archive_ext }}

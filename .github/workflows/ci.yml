@@ -33,7 +33,7 @@ jobs:
         build_type: [Release]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         # CI's build-and-test job intentionally compiles the MINIMAL
@@ -86,7 +86,7 @@ jobs:
     name: sanitize / asan+ubsan / ubuntu
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -S . -B build-asan
@@ -111,7 +111,7 @@ jobs:
     name: sanitize / tsan / ubuntu
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -S . -B build-tsan
@@ -167,7 +167,7 @@ jobs:
             scons_platform: macos
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up MSVC dev environment (Windows)
         if: runner.os == 'Windows'
@@ -192,7 +192,7 @@ jobs:
 
       - name: Cache godot-cpp build
         id: godot-cpp-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: third_party/godot-cpp
           key: godot-cpp-${{ matrix.platform }}-${{ env.GODOT_CPP_REF }}-v1
@@ -219,7 +219,7 @@ jobs:
 
       - name: Cache vcpkg-installed packages (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:/vcpkg/installed
           key: vcpkg-windows-opus-static-md-v1
@@ -333,7 +333,7 @@ jobs:
     # the cleanup pass.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install clang-tidy
         run: |
@@ -394,7 +394,7 @@ jobs:
     name: static-analysis / cppcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install cppcheck
         run: |
@@ -448,7 +448,7 @@ jobs:
     # and sound bank parsers (parseEffect/ParseFromJson/etc).
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install lizard
         run: |
@@ -489,7 +489,7 @@ jobs:
     name: coverage / gcovr
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install gcovr
         run: |
@@ -531,7 +531,7 @@ jobs:
                 build-cov
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-report
           path: coverage.xml
@@ -563,7 +563,7 @@ jobs:
     name: godot / gdscript-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -625,7 +625,7 @@ jobs:
     name: godot / headless-smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download Godot 4.6.2 headless
         run: |

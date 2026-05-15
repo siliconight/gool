@@ -51,7 +51,7 @@ jobs:
             binary_path: build-godot/libgool_godot.dylib
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Compute artifact name
         id: name
@@ -84,7 +84,7 @@ jobs:
 
       - name: Cache godot-cpp build
         id: godot-cpp-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: third_party/godot-cpp
           key: godot-cpp-${{ matrix.platform }}-${{ env.GODOT_CPP_REF }}-v1
@@ -111,7 +111,7 @@ jobs:
 
       - name: Cache vcpkg-installed packages (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:/vcpkg/installed
           key: vcpkg-windows-opus-static-md-v1
@@ -194,7 +194,7 @@ jobs:
           Compress-Archive -Path "stage\$env:ADDON_ARCHIVE_NAME" -DestinationPath "$env:ADDON_ARCHIVE_NAME.zip"
 
       - name: Upload addon archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.name.outputs.addon_archive_name }}
           path: ${{ steps.name.outputs.addon_archive_name }}.${{ matrix.archive_ext }}

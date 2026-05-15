@@ -12,6 +12,131 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.7] - 2026-05-14 — CI maintenance: Node 24 actions + fuzz ubuntu pin
+
+CI-only release. No addon source changes. Two unrelated CI fixes
+in one focused pass:
+
+### Fixed — GitHub Actions Node 24 migration
+
+GitHub Actions runners will switch JavaScript-based action default
+runtime from Node.js 20 to Node.js 24 on **June 2nd, 2026**. Node
+20 is removed entirely on **September 16th, 2026**. The
+deprecation warning surfaced on every CI run from when GitHub
+started emitting it.
+
+Bumped all `actions/*@v4` references plus `softprops/action-gh-release@v1`
+to versions that natively run on Node 24:
+
+| Action | Before | After | Where |
+|---|---|---|---|
+| `actions/checkout` | `@v4` | `@v5` | 14 references across 5 workflows |
+| `actions/cache` | `@v4` | `@v5` | 6 references |
+| `actions/upload-artifact` | `@v4` | `@v5` | 4 references |
+| `softprops/action-gh-release` | `@v1` | `@v2` | 1 reference in release.yml |
+
+Total: 25 version pins updated across `ci.yml`, `fuzz.yml`,
+`nightly.yml`, `pvs-studio.yml`, and `release.yml`.
+
+**Not bumped (intentionally):**
+- `actions/setup-python@v5` — already at v5; not yet confirmed
+  whether v6 is needed for Node 24. Will surface as a warning if
+  so; can be bumped in a follow-up.
+- `github/codeql-action/upload-sarif@v3` — specialized, low traffic,
+  GitHub's CodeQL maintainers will release a Node-24 version on
+  their own cadence.
+- `ilammy/msvc-dev-cmd@v1` — third-party Windows-only action.
+  Maintainers will publish a Node-24 version eventually; v1 has
+  been stable for years.
+
+The bump is mechanical with no expected behavior change. v5 of
+`checkout` / `cache` / `upload-artifact` is API-compatible with v4
+for the way gool uses them (basic checkout, cache key + path,
+artifact upload with retention-days).
+
+### Fixed — Fuzz CI broken by ubuntu-latest libstdc++14 upgrade
+
+The nightly Fuzz workflow has been failing for 16+ hours with
+hundreds of clang errors like:
+
+```
+error: no matching function for call to '__begin'
+note: while checking constraint satisfaction for template
+      '_Utf_view<char32_t, std::ranges::subrange<...>>'
+note: in instantiation of template type alias '_Utf32_view'
+      requested here in <format>
+```
+
+Root cause: `ubuntu-latest` (Ubuntu 24.04) updated its default
+libstdc++ to version 14, which ships C++23 `<format>` and
+`<ranges>` implementations whose concept-evaluation rules
+clang-15 can't fully parse. Clang 15's constraint evaluator
+disagrees with libstdc++14 on whether `std::ranges::subrange`
+satisfies the `range` concept inside the standard library's own
+headers, producing the cascade of errors. Same failure mode
+already documented and fixed in the clang-tidy job back in v0.21.2.
+
+**Fix:** pin the fuzz job's runner to `ubuntu-22.04` (GCC 13 +
+libstdc++13), matching the same precedent the clang-tidy job
+established. Mirror comment in `fuzz.yml` documents the rationale
+so the next maintainer who wonders why it's pinned can find the
+explanation in-place.
+
+```yaml
+# Before:
+runs-on: ubuntu-latest
+
+# After:
+runs-on: ubuntu-22.04
+```
+
+When we upgrade to clang-18 or clang-19 in a future maintenance
+pass, both the clang-tidy job and the fuzz job can drop back to
+`ubuntu-latest` together — they have the same compatibility
+constraint.
+
+### Files touched
+
+- `.github/workflows/ci.yml` — 14 checkout bumps + 5 cache + 2
+  upload-artifact bumps. Other contents unchanged.
+- `.github/workflows/fuzz.yml` — runner pin + 2 action bumps + new
+  comment explaining the pin.
+- `.github/workflows/nightly.yml` — 2 checkout + 1 cache + 1
+  upload-artifact bumps.
+- `.github/workflows/pvs-studio.yml` — 1 checkout bump.
+- `.github/workflows/release.yml` — bumps for all 3 platforms +
+  the gh-release publish step.
+- Version triple, README, CHANGELOG — bumped to 0.23.7
+
+No C++ changes. No GDScript changes. No addon changes. CI infrastructure only.
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.7
+- All 5 workflow YAML files parse as valid YAML
+- 25 of 25 targeted action references updated; 0 remaining at
+  old versions for actions in scope
+- Fuzz job now pinned to ubuntu-22.04 matching clang-tidy
+  precedent
+- 3 third-party actions left at their current pins (documented
+  rationale)
+
+### What this CI work does NOT include
+
+- **clang-tidy non-blocking gate** still has `continue-on-error: true`
+  with ~70 latent findings. The original v0.21.4 plan was "re-enable
+  as a blocking gate in v0.22 after the cleanup pass." Cleanup
+  pass not yet done; remains on the roadmap as v0.24.0.
+- **Headless Godot integration smoke** (the smoke that would catch
+  GDExtension binding errors at CI-time) — not added here.
+  Requires chaining `build-gdextension` artifact into
+  `godot-headless-smoke`. Documented as future work in v0.23.6's
+  CHANGELOG.
+- **Newer clang in fuzz/clang-tidy jobs** — could drop to
+  ubuntu-latest if we upgrade to clang-18+. Doable but not urgent;
+  the ubuntu-22.04 pin is supported through April 2027 per
+  GitHub's runner image lifecycle.
+
 ## [0.23.6] - 2026-05-14 — Headless Godot CI catches parser errors
 
 ### Problem
@@ -8561,7 +8686,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.6...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.7...HEAD
+[0.23.7]: https://github.com/siliconight/gool/releases/tag/v0.23.7
 [0.23.6]: https://github.com/siliconight/gool/releases/tag/v0.23.6
 [0.23.5]: https://github.com/siliconight/gool/releases/tag/v0.23.5
 [0.23.4]: https://github.com/siliconight/gool/releases/tag/v0.23.4

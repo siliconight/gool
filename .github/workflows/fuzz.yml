@@ -43,7 +43,15 @@ on:
 jobs:
   fuzz:
     name: fuzz / ${{ matrix.harness }}
-    runs-on: ubuntu-latest
+    # v0.23.7: pinned to ubuntu-22.04 (GCC 13 + libstdc++13) because
+    # ubuntu-latest (24.04) ships libstdc++14, whose C++23 <format>
+    # and <ranges> implementations clang-15 can't fully parse — its
+    # constraint evaluator rejects `std::ranges::subrange` inside the
+    # standard library's own headers, producing dozens of errors that
+    # aren't actual project issues. This is the same fix already
+    # applied to the clang-tidy job in ci.yml for the same root cause.
+    # Bump together when we upgrade to a newer clang in both jobs.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +72,7 @@ jobs:
               -DAUDIO_ENGINE_VOICE_OPUS=ON
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install clang
         # libFuzzer is a Clang sanitizer; Ubuntu's default GCC won't
@@ -110,7 +118,7 @@ jobs:
 
       - name: Upload findings on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fuzz-findings-${{ matrix.harness }}
           path: build-fuzz/findings-${{ matrix.harness }}/

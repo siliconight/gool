@@ -41,7 +41,7 @@ jobs:
     name: static-analysis / pvs-studio
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check for PVS-Studio license
         id: license_check
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload HTML report as artifact
         if: steps.license_check.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: pvs-studio-report
           path: pvs-report.html
