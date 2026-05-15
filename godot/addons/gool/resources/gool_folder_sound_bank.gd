@@ -164,11 +164,9 @@ func _connect_filesystem_watch() -> void:
         # Defensive: should never happen inside the editor, but if
         # the API surface changes we degrade to "manual rescan only"
         # rather than erroring.
-        push_warning(
-            "GoolFolderSoundBank: EditorFileSystem unavailable; "
-            + "live folder-watching disabled. Re-open the project "
-            + "or re-set folder_path to rescan manually."
-        )
+        GoolLog.warn("bank", "EditorFileSystem unavailable",
+            {"effect": "live folder-watching disabled",
+             "fix": "re-open the project or re-set folder_path to rescan manually"})
         return
     efs.filesystem_changed.connect(_on_filesystem_changed)
     _fs_watch_connected = true
@@ -196,10 +194,11 @@ func _do_deferred_rescan() -> void:
     # filesystem_changed signal for an unrelated file (a script
     # edit, a scene save) shouldn't spam the output.
     if before != after:
-        print(
-            "[GoolFolderSoundBank] folder rescanned: %d → %d sounds"
-            % [before, after]
-        )
+        # v0.23.2: routed via GoolLog. DEBUG-level — this fires
+        # whenever the user drops a file into res://sounds/, and
+        # is interesting during dev but noisy in steady state.
+        GoolLog.debug("bank", "folder rescanned",
+            {"before": before, "after": after, "delta": after - before})
     rescanned.emit(after)
 
 func _scan_folder() -> void:
@@ -261,12 +260,11 @@ func _scan_recursive(absolute_path: String, relative_from_root: String) -> void:
         var stream: Resource = load(child_absolute)
         if stream == null or not (stream is AudioStream):
             var classification: Dictionary = _classify_audio_file(child_absolute)
-            push_warning(
-                "[GoolFolderSoundBank] could not register '%s'. "
-                % child_absolute
-                + "Detected format: %s. " % classification.codec
-                + "Fix: %s" % classification.advice
-            )
+            GoolLog.warn("bank", "could not register audio file", {
+                "path": child_absolute,
+                "detected_format": classification.codec,
+                "fix": classification.advice,
+            })
             continue
         var sound_name: String = _derive_name(child_relative)
         sounds[sound_name] = stream

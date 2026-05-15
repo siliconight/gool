@@ -12,6 +12,197 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.2] - 2026-05-14 — Structured logging
+
+### Added — `GoolLog` static logging class
+
+Godot's logging is minimal: `print()` for info, `push_warning()`
+for warnings, `push_error()` for errors, all routed to the same
+Output panel with no filtering, levels, or category control. For
+a system the size of gool — with subsystems for runtime, mixer,
+emitter, loader, bank, decoder, voice, and net — that lack of
+structure makes debugging slow.
+
+`GoolLog` adds the structured logging layer Godot itself doesn't
+provide, while still feeding into Godot's native output (so
+existing color-coding for warnings/errors works unchanged).
+
+### Features
+
+**1. Five severity levels:** `TRACE`, `DEBUG`, `INFO`, `WARN`,
+`ERROR`, plus a `SILENT` toggle that suppresses everything.
+Levels map to native Godot output:
+
+```
+TRACE / DEBUG / INFO  →  print()
+WARN                  →  push_warning()  (yellow in Output panel)
+ERROR                 →  push_error()    (red in Output panel)
+```
+
+**2. Per-category filtering.** Each subsystem logs under a named
+category (`runtime`, `mixer`, `emitter`, `loader`, `bank`,
+`decoder`, `voice`, `net`). The global level applies by default;
+specific categories can be overridden:
+
+```
+mixer at TRACE        # detailed audio thread diagnostics
+decoder at WARN       # silence routine "registered" pings
+voice at SILENT       # mute voice chat entirely
+```
+
+**3. Structured fields via Dictionary parameter:**
+
+```gdscript
+GoolLog.info("emitter", "play", {
+    "node": name, "sound": sound_name,
+    "pos": global_transform.origin, "looping": looping,
+})
+# Output: [gool/emitter INFO] play  node=AudioEmitter3D sound=sfx/click pos=(0, 0, 0) looping=false
+```
+
+Field rendering follows logfmt conventions: bare values for
+identifiers, single-quoted for strings with spaces/equals signs.
+The resulting lines are both human-readable and grep-parseable.
+
+**4. Project Settings integration.** All defaults configurable
+in the editor (Project → Project Settings → General →
+"addons/gool/logging/..."):
+
+| Setting | Type | Default | Effect |
+|---|---|---|---|
+| `global_level` | enum | `info` | Default level for all categories |
+| `categories` | string | `""` | Comma-separated overrides (e.g. `mixer:trace,voice:silent`) |
+| `file_sink_enabled` | bool | `false` | Mirror all logs to `user://gool.log` |
+| `file_path` | string | `user://gool.log` | File sink destination |
+| `include_timestamps` | bool | `false` | Prepend ISO 8601 timestamps to Output panel lines |
+
+The file sink writes timestamps regardless of the
+`include_timestamps` setting — file logs are reviewed
+asynchronously, so the time context always matters.
+
+**5. Runtime API for ad-hoc control:**
+
+```gdscript
+GoolLog.set_global_level(GoolLog.Level.DEBUG)
+GoolLog.set_category_level("mixer", "trace")
+GoolLog.enable_file_sink("user://session_2026-05-14.log")
+```
+
+**6. Gating helper for expensive log construction:**
+
+```gdscript
+# Skip building the diagnostic string if mixer logs are gated off.
+if GoolLog.is_enabled("mixer", GoolLog.Level.DEBUG):
+    GoolLog.debug("mixer", _build_expensive_state_summary())
+```
+
+### Migrated to `GoolLog` in v0.23.2
+
+The four files responsible for ~80% of gool's logging output
+during normal operation:
+
+- `godot/addons/gool/runtime_singleton.gd`:
+  - `[gool] ready: ...`  → `GoolLog.info("runtime", "ready", {...})`
+  - `[gool] audio device: ...` → `GoolLog.info("runtime", "audio device", {...})`
+  - `[gool] render: cb=... peak=...` (every 2s) → `GoolLog.debug("mixer", "render", {...})` ← now silenced by default for cleaner output; opt back in with `mixer:debug`
+  - `DEAD AIR` push_warnings (all 6 variants) → `GoolLog.warn("mixer", "DEAD AIR: <cause>", {...})`
+- `godot/addons/gool/prefabs/audio_emitter_3d.gd`:
+  - `[AudioEmitter3D 'name'] play: ...` → `GoolLog.info("emitter", "play", {...})`
+  - create_emitter failure warning → `GoolLog.warn("emitter", "create_emitter returned 0", {...})`
+- `godot/addons/gool/prefabs/gool_sound_bank_loader.gd`:
+  - `[GoolSoundBankLoader] registered N/M sounds` → `GoolLog.info("loader", "registered sounds", {...})`
+  - Registration-failure warning → `GoolLog.warn("loader", "failed to register sounds", {...})`
+- `godot/addons/gool/resources/gool_folder_sound_bank.gd`:
+  - `[GoolFolderSoundBank] folder rescanned: N → M` → `GoolLog.debug("bank", "folder rescanned", {...})` ← also DEBUG-level now
+  - Format-aware Opus/Vorbis warning → `GoolLog.warn("bank", "could not register audio file", {...})`
+
+### Behavior change worth noting
+
+The verbose per-2-second `[gool] render:` line and the
+`[GoolFolderSoundBank] folder rescanned:` line are now at
+**DEBUG** level, not INFO. This means **by default** they no
+longer appear in the Output panel.
+
+If you want them back (e.g. when debugging an audio issue):
+
+```
+Project Settings → addons/gool/logging/categories
+Value: mixer:debug,bank:debug
+```
+
+Restart your scene; the verbose lines reappear.
+
+This is the right default — those lines were noisy in steady
+state and only useful when actively diagnosing. The DEAD AIR
+warnings, which are the actual signal you want to see if
+something's wrong, are still WARN-level and always visible.
+
+### What this unlocks
+
+**For development:** turn up specific subsystems while keeping
+the Output panel calm. "What's the mixer doing right now?"
+becomes a one-line config change instead of grepping print
+statements.
+
+**For bug reports from users:** enable the file sink, reproduce
+the issue, share the log file. The structured key=value format
+is parseable; the timestamps let analyzers correlate to other
+events.
+
+**For your own game code:** call `GoolLog.info("your_system",
+"what happened", {...})` from anywhere. You don't need to
+register a category first — just pick a name and use it. Your
+project's log entries gain the same filtering, file sink, and
+structured-field affordances as gool's own.
+
+### Unmigrated logs in v0.23.2
+
+The four files above were chosen for migration because they
+account for the bulk of runtime logging during normal operation.
+Other files still use bare `print()` / `push_warning()` /
+`push_error()` calls — typically one-shot errors at init or
+config-time, where filtering isn't valuable.
+
+Specifically unchanged in v0.23.2:
+- Init-failure errors (binary missing, autoload missing) —
+  always visible regardless of log level
+- Configuration-parse warnings — fire at most once per session
+- `plugin.gd` scaffolding messages — only fire on plugin enable
+
+Those can be migrated incrementally over future releases without
+breaking anything.
+
+### Files touched
+
+- `godot/addons/gool/logging.gd` — new, 388 lines
+- `godot/addons/gool/runtime_singleton.gd` — replaced 9 log
+  call sites with `GoolLog.*` equivalents
+- `godot/addons/gool/prefabs/audio_emitter_3d.gd` — replaced
+  2 log call sites
+- `godot/addons/gool/prefabs/gool_sound_bank_loader.gd` —
+  replaced 2 log call sites
+- `godot/addons/gool/resources/gool_folder_sound_bank.gd` —
+  replaced 3 log call sites
+- Version triple, README, CHANGELOG — bumped to 0.23.2
+
+No C++ changes. No binding changes. No CI workflow changes.
+Pure GDScript on top of the v0.23.1 working foundation.
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.2
+- All 5 GDScript files have balanced brackets:
+  - `logging.gd`: 131/131 parens, 24/24 brackets, 16/16 braces
+  - `runtime_singleton.gd`: 309/309, 30/30, 21/21
+  - `audio_emitter_3d.gd`: 73/73, 0/0, 2/2
+  - `gool_sound_bank_loader.gd`: 53/53, 11/11, 3/3
+  - `gool_folder_sound_bank.gd`: 134/134, 14/14, 17/17
+- Existing log behavior preserved at default log level (INFO):
+  ready / audio device / registration / play success / create_emitter
+  warning / DEAD AIR warning / bank-format warning all still visible
+- Verbose lines (render stats per-2sec, folder rescanned) silenced
+  by default; explicitly opt in via `mixer:debug,bank:debug`
+
 ## [0.23.1] - 2026-05-14 — Runtime debug overlay
 
 ### Added — `GoolDebugOverlay` prefab
@@ -7758,7 +7949,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.2...HEAD
+[0.23.2]: https://github.com/siliconight/gool/releases/tag/v0.23.2
 [0.23.1]: https://github.com/siliconight/gool/releases/tag/v0.23.1
 [0.23.0]: https://github.com/siliconight/gool/releases/tag/v0.23.0
 [0.22.10]: https://github.com/siliconight/gool/releases/tag/v0.22.10

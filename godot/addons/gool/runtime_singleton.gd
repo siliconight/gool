@@ -115,16 +115,26 @@ func _ready() -> void:
     else:
         bus_count = 1   # single Master bus when no config
     var config_source: String = CONFIG_PATH if has_bus_graph else "defaults"
-    print("[gool] ready: version=%s rate=%dHz buffer=%d buses=%d config=%s"
-            % [version_str, sr, bs, bus_count, config_source])
+    # v0.23.2: routed through GoolLog so projects can silence/redirect
+    # via Project Settings → addons/gool/logging. Same visible-by-
+    # default behavior as before; users can opt-in to a quieter
+    # output with `runtime:warn` in the categories override.
+    GoolLog.info("runtime", "ready", {
+        "version": version_str,
+        "rate": "%dHz" % sr,
+        "buffer": bs,
+        "buses": bus_count,
+        "config": config_source,
+    })
     # v0.22.7: log the audio device miniaudio actually opened. If the
     # name doesn't match where the user expects sound, that's the bug
     # (wrong default output device) — no further C++ debugging needed.
     var device_desc: String = _runtime.get_backend_description()
     if device_desc != "":
-        print("[gool] audio device: %s" % device_desc)
+        GoolLog.info("runtime", "audio device", {"name": device_desc})
     else:
-        print("[gool] audio device: (unknown — backend doesn't expose name)")
+        GoolLog.info("runtime", "audio device unknown",
+            {"reason": "backend doesn't expose name"})
     _ready_emitted = true
     ready_to_play.emit()
 
@@ -192,97 +202,79 @@ func _log_render_stats() -> void:
     _render_stats_last_invocations = invocations
     _render_stats_last_frames = frames
     # Diagnosis line — one log every 2 seconds when running.
+    # v0.23.2: routed through GoolLog at DEBUG level on the "mixer"
+    # category so projects can quiet this verbose per-interval ping
+    # via Project Settings (categories="mixer:warn"). The DEAD AIR
+    # warnings below remain WARN-level so they're always visible
+    # even when the routine ping is silenced.
     if active_voices >= 0:
-        # v0.22.8 binary — full mixer stats available
-        print("[gool] render: cb=%d (Δ%d) frames=%d (Δ%d) peak=%.4f mixer_peak=%.4f voices=%d gain=%.2f exc=%d"
-                % [invocations, delta_invocations, frames, delta_frames,
-                   peak, mixer_peak, active_voices, master_gain,
-                   exceptions])
+        GoolLog.debug("mixer", "render", {
+            "cb": invocations, "dcb": delta_invocations,
+            "frames": frames, "dframes": delta_frames,
+            "peak": "%.4f" % peak, "mixer_peak": "%.4f" % mixer_peak,
+            "voices": active_voices, "gain": "%.2f" % master_gain,
+            "exc": exceptions,
+        })
     else:
         # Older binary — only backend stats available
-        print("[gool] render: cb=%d (Δ%d) frames=%d (Δ%d) peak=%.4f exc=%d"
-                % [invocations, delta_invocations, frames, delta_frames,
-                   peak, exceptions])
+        GoolLog.debug("mixer", "render", {
+            "cb": invocations, "dcb": delta_invocations,
+            "frames": frames, "dframes": delta_frames,
+            "peak": "%.4f" % peak, "exc": exceptions,
+        })
     # Layered diagnosis when something looks broken. v0.22.8 ordering
     # is bottom-up: most-upstream cause first (audio thread dead) →
     # most-downstream cause last (master gain silencing).
     if delta_invocations == 0 and invocations == 0:
-        push_warning(
-            "[gool] DEAD AIR: render callback has never been invoked. "
-            + "miniaudio's audio thread didn't start. The backend "
-            + "init reported success but the playback device was "
-            + "never opened. This is a real backend bug — file a "
-            + "report at github.com/siliconight/gool/issues."
-        )
+        GoolLog.warn("mixer", "DEAD AIR: render callback never invoked",
+            {"cause": "miniaudio audio thread didn't start; backend "
+                    + "init reported success but playback device was "
+                    + "never opened",
+             "action": "file a report at github.com/siliconight/gool/issues"})
     elif delta_invocations == 0:
-        push_warning(
-            "[gool] DEAD AIR: render callback stopped being called. "
-            + "miniaudio's audio thread may have died or paused. "
-            + "Audio output frozen as of this interval."
-        )
+        GoolLog.warn("mixer", "DEAD AIR: render callback stopped",
+            {"cause": "miniaudio audio thread died or paused",
+             "effect": "audio output frozen as of this interval"})
     elif peak == 0.0 and delta_frames > 0:
         # v0.22.8: now use mixer stats to discriminate the cause.
         if active_voices == 0:
-            push_warning(
-                "[gool] DEAD AIR (no active voices): %d frames "
-                % delta_frames
-                + "written this interval but the mixer's voice pool "
-                + "is empty. Emitters that called create_emitter "
-                + "didn't actually wire into the voice list. Likely "
-                + "cause: command queue draining issue, or "
-                + "DrainCommands isn't promoting the voice slot to "
-                + "VoiceMode::Sound/Streaming/Voice. Check the "
-                + "MixerCommand dispatch path in audio_mixer.cpp."
-            )
+            GoolLog.warn("mixer", "DEAD AIR: no active voices",
+                {"frames_this_interval": delta_frames,
+                 "cause": "create_emitter returned a handle but voice "
+                        + "slot didn't get promoted from Inactive",
+                 "investigate": "MixerCommand dispatch path in audio_mixer.cpp"})
         elif mixer_peak == 0.0 and active_voices > 0:
-            push_warning(
-                "[gool] DEAD AIR (mixer silent, %d voices active): "
-                % active_voices
-                + "voices ARE being mixed but the Master bus output "
-                + "buffer is all zeros. The voices are producing "
-                + "silence (decoder fed empty PCM, voice mode mismatch, "
-                + "wrong bus routing), OR the bus chain is summing to "
-                + "zero somewhere upstream of Master. Check decoder "
-                + "PCM state and bus-graph routing."
-            )
+            GoolLog.warn("mixer", "DEAD AIR: mixer silent with voices active",
+                {"active_voices": active_voices,
+                 "cause": "voices producing silence (empty PCM, mode mismatch, "
+                        + "wrong bus routing) OR bus chain summing to zero "
+                        + "upstream of Master",
+                 "investigate": "decoder PCM state, bus-graph routing"})
         elif mixer_peak > 0.0 and master_gain == 0.0:
-            push_warning(
-                "[gool] DEAD AIR (master gain = 0): mixer produced "
-                + "non-silent audio (peak=%.4f) but Master bus output "
-                % mixer_peak
-                + "gain is 0 (-inf dB). Either config.json sets Master "
-                + "gain_db to -inf, or set_bus_gain_db zeroed it at "
-                + "runtime. Check config and any gain-control code."
-            )
+            GoolLog.warn("mixer", "DEAD AIR: master gain = 0",
+                {"mixer_peak": "%.4f" % mixer_peak, "master_gain": 0.0,
+                 "cause": "Master bus output gain is -inf dB",
+                 "investigate": "config.json Master gain_db, runtime set_bus_gain_db calls"})
         elif mixer_peak > 0.0 and master_gain > 0.0 and peak == 0.0:
-            push_warning(
-                "[gool] DEAD AIR (post-gain mystery): mixer peak=%.4f, "
-                % mixer_peak
-                + "master gain=%.2f, but device-buffer peak is 0.0. "
-                % master_gain
-                + "Unexpected — file a report with this output. "
-                + "Possible causes: buffer copy going to wrong "
-                + "destination, miniaudio format-conversion truncating, "
-                + "or a bug we haven't predicted."
-            )
+            GoolLog.warn("mixer", "DEAD AIR: post-gain mystery",
+                {"mixer_peak": "%.4f" % mixer_peak,
+                 "master_gain": "%.2f" % master_gain,
+                 "device_peak": 0.0,
+                 "cause": "unexpected — buffer copy to wrong destination, "
+                        + "format-conversion truncating, or unknown bug",
+                 "action": "file a report with this output"})
         else:
-            push_warning(
-                "[gool] DEAD AIR (unknown cause): %d frames written "
-                % delta_frames
-                + "this interval, all zero amplitude. Mixer stats: "
-                + "voices=%d peak=%.4f gain=%.2f. "
-                % [active_voices, mixer_peak, master_gain]
-                + "Symptom doesn't match any predicted cause; manual "
-                + "investigation needed."
-            )
+            GoolLog.warn("mixer", "DEAD AIR: unknown cause",
+                {"frames_this_interval": delta_frames,
+                 "active_voices": active_voices,
+                 "mixer_peak": "%.4f" % mixer_peak,
+                 "master_gain": "%.2f" % master_gain,
+                 "note": "symptom doesn't match any predicted cause; manual investigation needed"})
     elif exceptions > 0:
-        push_warning(
-            "[gool] %d render-callback exception(s) caught since "
-            % exceptions
-            + "Initialize. Engine's OnRender path is throwing — "
-            + "audio frames have been dropped to silence by the "
-            + "catch-all barrier."
-        )
+        GoolLog.warn("mixer", "render-callback exceptions caught",
+            {"count": exceptions,
+             "since": "Initialize",
+             "effect": "audio frames dropped to silence by catch-all barrier"})
     # Reset peak for the next interval window (resets BOTH backend
     # peak AND mixer peak — v0.22.8).
     _runtime.reset_render_peak()

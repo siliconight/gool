@@ -190,26 +190,27 @@ func play() -> void:
         # an emitter" visible in the Output panel — distinguishes
         # successful playback from silent failure modes downstream
         # (muted bus, wrong sample format, wrong audio device, etc).
-        print("[AudioEmitter3D '%s'] play: sound='%s' pos=%s looping=%s"
-                % [name, sound_name, global_transform.origin, looping])
+        # v0.23.2: routed via GoolLog. INFO-level so it's visible by
+        # default; silence with `emitter:warn` in the categories
+        # override if the per-play noise becomes too much.
+        GoolLog.info("emitter", "play", {
+            "node": name,
+            "sound": sound_name,
+            "pos": global_transform.origin,
+            "looping": looping,
+        })
         sound_started.emit()
     else:
         # create_emitter returned 0 — the sound name isn't registered.
         # Most common cause: emitter ran before the bank loader
         # finished registering, or the name has a typo.
-        push_warning(
-            "AudioEmitter3D '%s': create_emitter returned 0 for "
-            % name
-            + "sound_name '%s'. The sound isn't registered with the "
-            % sound_name
-            + "runtime. Causes: (1) GoolSoundBankLoader hasn't run yet "
-            + "(it should run before emitters via scene-tree order); "
-            + "(2) the bank doesn't contain this name — verify by "
-            + "opening the bank.tres and checking its `sounds` dict; "
-            + "(3) the name has a typo — sound_name matching is "
-            + "case-sensitive and uses forward slashes (e.g., "
-            + "'sfx/explosion', not 'sfx\\\\explosion')."
-        )
+        GoolLog.warn("emitter", "create_emitter returned 0",
+            {"node": name, "sound_name": sound_name,
+             "causes": "(1) GoolSoundBankLoader hasn't run yet; "
+                     + "(2) bank doesn't contain this name (open bank.tres "
+                     + "and check `sounds` dict); "
+                     + "(3) typo (sound_name is case-sensitive, uses "
+                     + "forward slashes, e.g. 'sfx/explosion')"})
 
 func stop() -> void:
     if _runtime != null and _handle != 0:

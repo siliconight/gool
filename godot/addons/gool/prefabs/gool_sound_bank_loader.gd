@@ -164,16 +164,20 @@ func _register_all() -> void:
         if results[entry_name] != 0:
             name_list.append(entry_name)
     if ok_count > 0:
-        print(
-            "[GoolSoundBankLoader] registered %d/%d sounds from %s: [%s]"
-            % [ok_count, results.size(), bank_label,
-                ", ".join(name_list)]
-        )
+        # v0.23.2: routed via GoolLog. INFO-level so the success
+        # summary stays visible (this is once-per-bank-load, not
+        # per-frame, so it's not noisy).
+        GoolLog.info("loader", "registered sounds", {
+            "ok": ok_count,
+            "total": results.size(),
+            "bank": bank_label,
+            "names": "[%s]" % ", ".join(name_list),
+        })
     if failed_names.size() > 0:
-        push_warning(
-            "[GoolSoundBankLoader] failed to register %d sound(s) from %s: [%s]. "
-            % [failed_names.size(), bank_label, ", ".join(failed_names)]
-            + "See earlier warnings for the specific failure cause "
-            + "of each entry."
-        )
+        GoolLog.warn("loader", "failed to register sounds", {
+            "count": failed_names.size(),
+            "bank": bank_label,
+            "names": "[%s]" % ", ".join(failed_names),
+            "note": "see earlier warnings for each entry's specific cause",
+        })
     registration_complete.emit(results)
