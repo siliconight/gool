@@ -12,6 +12,143 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.6] - 2026-05-14 — Headless Godot CI catches parser errors
+
+### Problem
+
+v0.23.2 introduced this in `addons/gool/logging.gd`:
+
+```gdscript
+const _LEVEL_NAMES: PackedStringArray = PackedStringArray([...])
+```
+
+The constant-expression error shipped through v0.23.2 → v0.23.3 →
+v0.23.4 undetected by CI. Three releases of a fundamentally
+broken addon went out before a real user (Brannen) hit the parse
+error trying to F5 a scene.
+
+The headless-smoke job had existed since v0.21.1. It walks every
+`.gd` file in the addon, calls `load()`, and emits SMOKE OK /
+SMOKE FAIL based on whether load() returned null. Yet it did not
+catch this bug. Why isn't fully clear — either the job was not
+running for those versions, or Godot's `load()` doesn't return
+null for this specific parse-failure category. Either way, the
+contract "load() returns null on parse error" turned out to be
+insufficient as a sole signal.
+
+### Fix — two-tier verification in the existing smoke job
+
+**Tier 1 (strengthened, unchanged):** `main.gd` still walks every
+`.gd` file under `res://addons/gool/` and calls `load()`. If any
+return null, fail with SMOKE FAIL.
+
+**Tier 2 (new):** `main.gd` ALSO performs critical-script
+interface verification. For specific files we know are critical
+to the addon working at all, after `load()` returns non-null,
+introspect the resulting Script for expected constants and
+methods. If a constant the script declares doesn't appear in
+`Script.get_script_constant_map()`, or an expected method doesn't
+appear in `Script.get_script_method_list()`, fail.
+
+Current critical-script verification list:
+
+| File | Required constants | Required methods |
+|---|---|---|
+| `logging.gd` | `_LEVEL_NAMES`, `_PS_GLOBAL_LEVEL`, `_PS_VERBOSITY` | `info`, `warn`, `error`, `fatal`, `set_global_level`, `set_verbosity`, `create_context` |
+| `logging_context.gd` | (none) | `info`, `warn`, `error`, `fatal` |
+| `runtime_singleton.gd` | (none) | `get_render_stats` |
+
+Adding more entries is cheap — pick any constant or method whose
+absence would meaningfully break the addon. Aim for breadth-of-
+coverage, not exhaustiveness.
+
+**Tier 3 (new, belt-and-suspenders in CI step):** Even if main.gd
+somehow reports SMOKE OK incorrectly, the CI step also greps
+`smoke.log` for known-real-error patterns:
+
+```
+"isn't a constant expression"           ← today's bug
+"is not a constant expression"          ← variant phrasing
+"Used tab character for indentation"    ← prior session's bug
+"Mixed use of tabs and spaces"          ← related
+"Cyclic dependency between"             ← would catch import loops
+```
+
+If any of these strings appear in the log, fail the build
+regardless of main.gd's verdict. These patterns are exclusive to
+real parse/compile failures — they never appear in benign
+class_name resolution warnings, which is what the v0.21.5 smoke
+specifically didn't want to over-trigger on.
+
+### Why this would have caught v0.23.2
+
+With either Tier 2 or Tier 3, the `_LEVEL_NAMES` bug would have
+broken CI on the first push of v0.23.2:
+
+- **Tier 2:** `load("res://addons/gool/logging.gd")` either
+  returns null (caught by Tier 1, the existing check) or returns
+  a Script object that doesn't have `_LEVEL_NAMES` in its constant
+  map (caught by the new Tier 2 check). Either path → SMOKE FAIL.
+- **Tier 3:** Godot emits
+  `Parse Error: Assigned value for constant "_LEVEL_NAMES" isn't a constant expression.`
+  to stderr at startup. The grep pattern `"isn't a constant expression"`
+  is a strict substring match for this. Caught.
+
+The Tier 3 grep is the more reliable safety net — it works
+regardless of how `load()` behaves and doesn't depend on us
+maintaining the critical-script list. The Tier 2 check is more
+precise but requires manual upkeep.
+
+### What this still doesn't catch
+
+- **GDExtension binding errors.** The smoke project doesn't load
+  the compiled `.so` / `.dll` / `.dylib` (no plugin enabled).
+  Those are exercised by `build-gdextension` separately.
+- **Runtime behavior of the addon.** The smoke is a parse / load
+  / interface check, not an integration test. An audio playback
+  regression like the v0.22.x silent-audio bug wouldn't show up
+  here.
+- **Project-specific configurations.** The smoke project is
+  minimal; a bug that only manifests with specific Project
+  Settings won't surface.
+- **Scene parsing.** Smoke checks `.gd` files; `.tscn` and
+  `.tres` parsing isn't currently exercised. Adding that is a
+  potential future enhancement.
+
+### Files touched
+
+- `tests/godot/smoke/main.gd` — added critical-script interface
+  verification loop (Tier 2). Walks a small Dictionary of
+  `path → {constants, methods}` and verifies each shows up on
+  the loaded Script object.
+- `.github/workflows/ci.yml` — added known-real-error pattern
+  grep step (Tier 3) after the existing SMOKE OK / SMOKE FAIL
+  check. Whitelist-style pattern matching with explicit error
+  messages for CI's `::error::` annotations.
+- Version triple, README, CHANGELOG — bumped to 0.23.6
+
+No changes to addon source. No changes to engine. CI-only
+release.
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.6
+- `main.gd`: 212 lines, balanced brackets (77/77 parens, 37/37
+  brackets, 4/4 braces)
+- `ci.yml`: parses as valid YAML
+- All Tier 2 interface checks reachable in main.gd's source
+- All Tier 3 pattern strings present in the CI step
+
+### Roadmap note
+
+A natural future enhancement: include a Tier 4 that enables
+the gool plugin in the smoke project and runs through plugin
+initialization. That requires the GDExtension binary to be
+present, which means chaining the `build-gdextension` job's
+artifact into this one. Worth doing eventually — would catch
+plugin-init bugs that the parse-only smoke can't surface — but
+not in scope for this CI hardening pass.
+
 ## [0.23.5] - 2026-05-14 — Fix `_LEVEL_NAMES` constant + ship `.editorconfig`
 
 ### Fixed — GDScript parser error in `_LEVEL_NAMES`
@@ -8424,7 +8561,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.5...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.6...HEAD
+[0.23.6]: https://github.com/siliconight/gool/releases/tag/v0.23.6
 [0.23.5]: https://github.com/siliconight/gool/releases/tag/v0.23.5
 [0.23.4]: https://github.com/siliconight/gool/releases/tag/v0.23.4
 [0.23.3]: https://github.com/siliconight/gool/releases/tag/v0.23.3

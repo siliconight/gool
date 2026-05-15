@@ -703,3 +703,61 @@ jobs:
             exit 1
           fi
           echo "smoke passed (main.gd reported SMOKE OK)."
+
+          # v0.23.6: belt-and-suspenders error-pattern grep.
+          #
+          # main.gd's SMOKE OK signal is the primary check: it walks
+          # every addon script, calls load(), and verifies critical
+          # scripts' static interfaces (specific constants + methods
+          # are exposed). If anything fails, it reports SMOKE FAIL.
+          #
+          # As a fallback, also scan smoke.log for KNOWN-REAL-ERROR
+          # patterns — strings that appear in Godot's stderr output
+          # exclusively for actual parse/compile failures, never for
+          # benign class_name resolution warnings. If any of these
+          # patterns appear ANYWHERE in the log, fail the build
+          # regardless of what main.gd reported.
+          #
+          # Why both? load()'s return-null contract isn't fully
+          # documented for all parse-error categories. In v0.23.2 a
+          # const-expression error in logging.gd shipped through
+          # three releases (0.23.2, 0.23.3, 0.23.4) — we don't have
+          # evidence that load() returned non-null for it in CI, but
+          # the bug also wasn't caught, so something failed. Either
+          # main.gd's load() check wasn't sufficient, OR the smoke
+          # job wasn't actually running for those versions. Either
+          # way, this fallback grep is cheap insurance.
+          #
+          # The pattern list is positive (whitelist of real errors)
+          # rather than negative (suppression of false-positives)
+          # because Godot's parser-error messages are surprisingly
+          # specific and distinguishable.
+          echo ""
+          echo "===== known-real-error pattern scan ====="
+          KNOWN_REAL_ERRORS=(
+            "isn't a constant expression"
+            "is not a constant expression"
+            "Used tab character for indentation"
+            "Mixed use of tabs and spaces"
+            "Cyclic dependency between"
+          )
+          patterns_found=0
+          for pattern in "${KNOWN_REAL_ERRORS[@]}"; do
+            if grep -qF "$pattern" smoke.log; then
+              patterns_found=$((patterns_found + 1))
+              echo ""
+              echo "::error::Detected real parser-error pattern: '$pattern'"
+              echo "Matching lines:"
+              grep -F "$pattern" smoke.log | sed 's/^/  /'
+            fi
+          done
+          if [ "$patterns_found" -gt 0 ]; then
+            echo ""
+            echo "::error::Headless smoke saw $patterns_found pattern(s)"
+            echo "::error::indicating real parse errors in the addon. Even"
+            echo "::error::though main.gd may have reported SMOKE OK, these"
+            echo "::error::patterns indicate actual problems that would"
+            echo "::error::break the addon in real Godot projects."
+            exit 1
+          fi
+          echo "no known-real-error patterns detected."
