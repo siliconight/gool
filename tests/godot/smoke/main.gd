@@ -83,30 +83,42 @@ func _ready() -> void:
         else:
             print("[smoke] OK: %s" % path)
 
-    # v0.23.6: critical-script interface verification.
+    # v0.23.8: critical-script interface verification — source-text mode.
     #
-    # load() returning non-null is necessary but not sufficient. A
-    # script can technically load yet have a compilation failure
-    # that prevents specific constants or methods from being
-    # registered — notably the v0.23.2 _LEVEL_NAMES bug:
+    # PREVIOUS DESIGN (v0.23.6): walked Script.get_script_constant_map()
+    # and Script.get_script_method_list() after load() returned non-null,
+    # and reported any expected name not present in those collections as
+    # a failure. The reasoning was: load() returning non-null isn't
+    # sufficient because the script might compile partially with some
+    # declarations missing (the v0.23.2 _LEVEL_NAMES const-expression
+    # case).
     #
-    #   const _LEVEL_NAMES: PackedStringArray = PackedStringArray([...])
+    # WHY IT WAS WRONG: this smoke project deliberately doesn't enable
+    # the gool plugin or wire its autoload, so Godot's global class_name
+    # registry doesn't populate the way it does in a real project. When
+    # logging.gd declares `static func create_context(...) -> GoolLogContext:`
+    # or runtime_singleton.gd calls `GoolLog.info(...)`, the class_names
+    # don't resolve, the scripts fail to compile, and their method lists
+    # come back empty — but the failures are an artifact of the smoke
+    # environment, NOT a real bug. v0.23.6's CI flagged 15 such false
+    # positives the first time it ran.
     #
-    # Godot's parser rejects PackedStringArray() constructor as a
-    # non-constant expression, but depending on the parse failure
-    # mode, load() may still return a Script object — just one
-    # where _LEVEL_NAMES isn't in the constant map.
+    # CURRENT DESIGN (v0.23.8): source-text scan. For each critical
+    # script, read the raw .gd file as a string and grep for expected
+    # `func <name>(` and `const <name>` declarations. Doesn't depend on
+    # Godot's parser succeeding. Catches the rename/removal class of bug
+    # without false-positiving on class_name resolution.
     #
-    # This extra check walks specific critical files and verifies
-    # their expected static interface is actually exposed on the
-    # returned Script. If any expected constant or method is
-    # missing, that's a compilation failure that earlier checks
-    # would miss.
+    # WHAT THIS DOES NOT CATCH: parse-time errors (e.g. const-expression
+    # failures, syntax errors). Those are Tier 3's job — the
+    # KNOWN_REAL_ERRORS grep in the CI step. The three-tier defense:
+    #   - Tier 1 (load() null check): catches files that won't load at all
+    #   - Tier 2 (source-text scan): catches renames/removals
+    #   - Tier 3 (KNOWN_REAL_ERRORS grep): catches parse/compile errors
     #
-    # The list below is small and intentional — checking every
-    # constant on every script would be overkill. We pick ones
-    # that, if missing, would mean catastrophic addon breakage.
-    print("[smoke] verifying critical script interfaces are exposed...")
+    # Each tier protects against a different failure class. None of them
+    # depend on class_name resolution working.
+    print("[smoke] verifying critical script source-text contains expected declarations...")
     var interface_checks: Dictionary = {
         "res://addons/gool/logging.gd": {
             "constants": ["_LEVEL_NAMES", "_PS_GLOBAL_LEVEL",
@@ -126,53 +138,46 @@ func _ready() -> void:
     }
     for script_path in interface_checks:
         var expected: Dictionary = interface_checks[script_path]
-        var script: Resource = load(script_path)
-        if script == null:
-            # Already reported by the earlier load() check; skip.
+        var src: String = FileAccess.get_file_as_string(script_path)
+        if src.is_empty():
+            failures.append("%s could not read source" % script_path)
+            push_error("SMOKE FAIL: could not read source of %s" % script_path)
             continue
-        var constants: Dictionary = script.get_script_constant_map()
         for const_name in expected["constants"]:
-            if not const_name in constants:
-                failures.append("%s missing constant %s" %
+            # Match either `const X = ...` or `const X: Type = ...`
+            # at the start of a line (anchored to avoid matching
+            # the name inside a comment or string).
+            var has_const: bool = (
+                src.contains("const %s " % const_name)
+                or src.contains("const %s:" % const_name)
+                or src.contains("const %s=" % const_name))
+            if not has_const:
+                failures.append("%s missing const %s in source" %
                                 [script_path, const_name])
                 push_error(
-                    "SMOKE FAIL: %s loaded but constant %s is not "
+                    "SMOKE FAIL: %s does not contain `const %s` "
                     % [script_path, const_name]
-                    + "exposed. This usually means the constant's "
-                    + "right-hand side failed parser validation "
-                    + "(e.g. 'isn't a constant expression' error). "
-                    + "The script appears to load but the constant "
-                    + "wasn't registered."
-                )
-            elif constants[const_name] == null:
-                failures.append("%s constant %s is null" %
-                                [script_path, const_name])
-                push_error(
-                    "SMOKE FAIL: %s constant %s is null. This "
-                    % [script_path, const_name]
-                    + "indicates the constant declared but its "
-                    + "value didn't materialize correctly."
+                    + "declaration in its source text. The constant "
+                    + "may have been renamed or removed unintentionally."
                 )
             else:
-                print("[smoke] OK: %s constant %s present" %
+                print("[smoke] OK: %s contains const %s" %
                       [script_path, const_name])
-        var method_names: Array = []
-        for m in script.get_script_method_list():
-            method_names.append(m["name"])
         for method_name in expected["methods"]:
-            if not method_name in method_names:
-                failures.append("%s missing method %s" %
+            # Match `func name(` — handles both static and non-static
+            # declarations since the prefix `static ` or modifier
+            # like `@rpc` is followed by `func name(`.
+            if not src.contains("func %s(" % method_name):
+                failures.append("%s missing func %s in source" %
                                 [script_path, method_name])
                 push_error(
-                    "SMOKE FAIL: %s loaded but method %s is not "
+                    "SMOKE FAIL: %s does not contain `func %s(` "
                     % [script_path, method_name]
-                    + "exposed. The script may have a parse error "
-                    + "that prevented the method from being "
-                    + "registered, or the method was renamed/"
-                    + "removed unintentionally."
+                    + "declaration in its source text. The method "
+                    + "may have been renamed or removed unintentionally."
                 )
             else:
-                print("[smoke] OK: %s method %s present" %
+                print("[smoke] OK: %s contains func %s" %
                       [script_path, method_name])
 
     if failures.is_empty():

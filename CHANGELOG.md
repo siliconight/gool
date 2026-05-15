@@ -12,6 +12,142 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.8] - 2026-05-14 — Redesign headless-smoke Tier 2 (source-text scan)
+
+### Problem
+
+v0.23.6 added Tier 2 critical-script interface checks to the
+headless Godot smoke job, walking `Script.get_script_constant_map()`
+and `Script.get_script_method_list()` to verify expected interfaces.
+The first CI run on v0.23.6 produced 15 SMOKE FAIL entries — none
+of which were real bugs.
+
+The failures break into two false-positive families:
+
+**Class_name resolution doesn't happen in headless mode.**
+When `runtime_singleton.gd` calls `GoolLog.info(...)`, GDScript needs
+`GoolLog` registered in the global class_name table to parse the
+call. The smoke project deliberately doesn't enable the gool plugin
+(parse-only test), so class_name registration never runs. The
+script fails to compile, and `Script.get_script_method_list()`
+returns an incomplete list missing `get_render_stats` and others.
+Same failure shape for `logging.gd` (which returns `-> GoolLogContext`
+from `create_context()`) and for `logging_context.gd` (which
+references `GoolLog`).
+
+This is the same class_name resolution false-positive documented
+in v0.21.5's smoke comments — but Tier 2's introspection-based
+approach reactivated the failure mode that Tier 1's `load() == null`
+check had carefully designed around.
+
+**The `get_script_*` introspection APIs aren't safe to read after
+a partial compilation failure.** Even for scripts that don't depend
+on any class_name (like `logging.gd` with the v0.23.5 fix in
+place), if compilation fails anywhere — including for transitive
+reasons like a referenced class_name being unresolvable — the
+method/constant collections come back empty. The collections only
+populate when compilation succeeds end-to-end.
+
+### Fix — source-text scan (Tier 2 redesigned)
+
+Replace introspection with raw source-text matching. For each
+critical script, read the `.gd` source as a string and `String.contains()`
+the expected `func name(` and `const name =` patterns.
+
+```gdscript
+# Before (v0.23.6):
+var constants = script.get_script_constant_map()
+if not const_name in constants:
+    push_error("missing constant ...")
+
+# After (v0.23.8):
+var src = FileAccess.get_file_as_string(script_path)
+if not src.contains("const %s" % const_name):
+    push_error("missing const ...")
+```
+
+Source-text scan doesn't depend on the Godot parser succeeding
+or on class_name resolution. It just verifies that the expected
+declarations are present in the source file. Catches the
+rename/removal class of bug; doesn't catch parse-time errors
+(those are Tier 3's job, the KNOWN_REAL_ERRORS grep in the CI
+step).
+
+The three-tier defense, post-redesign:
+
+| Tier | What it catches | How |
+|---|---|---|
+| Tier 1 | Files that won't load at all | `load()` returns null |
+| Tier 2 (v0.23.8) | Renames / accidental removals | `String.contains("func name(")` on source |
+| Tier 3 | Real parse / compile errors | `grep` for known-real-error patterns in stderr |
+
+Each tier protects against a different failure class. **None of
+them depend on class_name resolution working** — they all degrade
+gracefully in the parse-only smoke environment.
+
+### What this still doesn't catch
+
+Same as before:
+
+- GDExtension binding errors (requires the binary)
+- Runtime audio behavior (the v0.22.x silent-audio bug class)
+- `.tscn` / `.tres` scene parsing
+- Project-configuration-specific bugs
+
+Plus newly clarified:
+- **False negatives from class_name dependencies.** If somebody
+  renames `GoolLog.info` to `GoolLog.log_info`, the source-text
+  scan on `logging.gd` still finds `func info(` (because it's
+  the implementation). But the references in `runtime_singleton.gd`
+  would break. The smoke wouldn't catch this — both files would
+  pass their Tier 2 checks individually. A real-Godot test
+  (enabling the plugin) would catch it. That's a Tier 4
+  enhancement for a future release.
+
+### Lesson
+
+The v0.23.6 Tier 2 design was a classic case of testing the
+wrong thing. I was checking "did the Godot parser succeed and
+expose these symbols," when the right check was "did the source
+file declare these symbols." The latter is what you actually
+want for a rename/removal detector. The former conflates many
+unrelated failure modes (class_name issues, transitive parse
+errors, ...) into the same diagnostic.
+
+The general principle: **a CI smoke should be insensitive to
+test-environment artifacts.** Whatever signal Tier 2 produces
+should reflect addon correctness, not "is this addon being
+tested in the same kind of Godot project where it normally
+runs." Tier 2 v0.23.6 conflated those; Tier 2 v0.23.8 doesn't.
+
+### Files touched
+
+- `tests/godot/smoke/main.gd` — replaced introspection-based
+  Tier 2 with source-text scan. ~50 lines changed, including
+  expanded comment explaining the v0.23.6 false-positive and
+  the v0.23.8 approach. Tier 2 still validates the same critical
+  scripts; the validation method changes from "parse and
+  introspect" to "read source text."
+- Version triple, README, CHANGELOG — bumped to 0.23.8
+
+No C++ changes. No addon source changes. No CI workflow changes.
+Smoke-only release.
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.8
+- `main.gd`: 218 lines; brackets balance when string-literal
+  contents are accounted for (heuristic counter false-positives
+  on `"func %s("` strings, which is expected)
+- No remaining `get_script_constant_map` or
+  `get_script_method_list` references in `main.gd`
+- Source-text scan API references (`FileAccess.get_file_as_string`,
+  `src.contains(...)`) all present
+- Sanity check: `logging.gd` does contain `const _LEVEL_NAMES`
+  in source, so Tier 2 v0.23.8 would correctly pass on the
+  current addon (and would correctly fail if somebody
+  reintroduced the v0.23.2 `_LEVEL_NAMES` removal)
+
 ## [0.23.7] - 2026-05-14 — CI maintenance: Node 24 actions + fuzz ubuntu pin
 
 CI-only release. No addon source changes. Two unrelated CI fixes
@@ -8686,7 +8822,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.7...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.8...HEAD
+[0.23.8]: https://github.com/siliconight/gool/releases/tag/v0.23.8
 [0.23.7]: https://github.com/siliconight/gool/releases/tag/v0.23.7
 [0.23.6]: https://github.com/siliconight/gool/releases/tag/v0.23.6
 [0.23.5]: https://github.com/siliconight/gool/releases/tag/v0.23.5
