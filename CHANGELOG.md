@@ -12,6 +12,142 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.1] - 2026-05-14 — Runtime debug overlay
+
+### Added — `GoolDebugOverlay` prefab
+
+A drop-in HUD that displays gool's real-time runtime stats during
+gameplay. Add a single `GoolDebugOverlay` node to your scene root
+(or use the new menu command) and the overlay appears in a corner
+with no further configuration.
+
+**What it shows** (refreshed every 250 ms by default):
+
+```
+gool 0.23.1
+device: WASAPI / Speakers (Realtek HD Audio)
+──────────────────────────
+cb_rate:       93.7 /s
+frame_rate:   48128 /s
+peak:         0.4521
+mixer_peak:   0.4521
+voices:            3  gain: 1.00
+──────────────────────────
+frames total: 2,348,672
+```
+
+Pulls from `Gool.get_render_stats()` and
+`Gool.get_backend_description()` — both v0.22.7+/v0.22.9+/v0.22.10
+diagnostic infrastructure exposed through the binding. Polling at
+4 Hz is far below the C++ atomic-read cost; the only visible
+overhead is the Label text replacement, invisible at this rate.
+
+**Configuration via Inspector exports:**
+
+- `update_interval_ms` (50–5000 ms, default 250) — polling rate
+- `visible_at_startup` (default `true`) — for shipping builds,
+  set `false` and bind a hidden toggle hotkey
+- `toggle_action` (default empty) — InputMap action that toggles
+  visibility at runtime
+- `toggle_key` (default F3) — direct keycode fallback when
+  `toggle_action` is empty
+- `anchor_corner` (default Top Left) — choose any of the four
+  screen corners to avoid overlap with your own UI
+- `background_opacity` (default 0.6) — transparent panel for
+  readability over busy game art
+- `text_color` (default near-white) — match your HUD aesthetic
+- `monospace` (default `true`) — column-aligned numbers vs.
+  proportional font
+
+**Cost model:**
+
+- **Visible:** ~4 dictionary reads + Label.text reassignment per
+  250 ms = single-digit microseconds. Negligible.
+- **Hidden:** the polling Timer is stopped on hide and restarted
+  on show — zero cost while hidden.
+- **In production:** ship with `visible_at_startup = false` so
+  the overlay is added-but-dormant. Wire `toggle_action` to a
+  developer-only hotkey (or remove the node entirely from your
+  shipped scene tree).
+
+**Toggle behavior:**
+
+If `toggle_action` is set and exists in the InputMap, presses on
+that action toggle visibility. Otherwise the direct `toggle_key`
+keycode applies — default F3, matching Minecraft and many other
+engines. Set `toggle_key = KEY_NONE` (0) to disable the toggle
+entirely (e.g. if you want the overlay always-on for a debug
+build).
+
+**Headless-safe:**
+
+When `/root/Gool` autoload isn't available (plugin disabled, or
+running headless), the overlay shows a single-line "runtime not
+available" message instead of crashing. When the runtime hasn't
+finished initializing yet (waiting on `ready_to_play`), shows
+"initializing..." until it's up.
+
+### Added — Editor menu command
+
+**Project → Tools → Gool → Add debug overlay to current scene**
+
+Inserts a configured `GoolDebugOverlay` under the current scene's
+root. Idempotent: refuses to add a second overlay if one already
+exists in the scene (one is enough; multiple would just stack on
+top of each other). Works in 2D scenes, 3D scenes, UI-only scenes
+— the overlay is a `CanvasLayer` and renders independent of
+camera setup.
+
+### Files touched
+
+- `godot/addons/gool/prefabs/gool_debug_overlay.gd` — new, 325 lines
+- `godot/addons/gool/prefabs/gool_debug_overlay.svg` — new icon
+- `godot/addons/gool/plugin.gd` — added prefab registration entry,
+  new `ADD_DEBUG_OVERLAY` menu item + dispatcher case,
+  `_add_debug_overlay_to_current_scene()` method (~50 lines)
+- Version triple, README, CHANGELOG — bumped to 0.23.1
+
+No C++ changes. No GDExtension binding changes. Pure GDScript
+prefab on top of the v0.22.x diagnostic infrastructure.
+
+### Why this matters for multi-region multiplayer
+
+The original v0.22 debug session needed three releases of
+instrumentation built into the engine + binding (v0.22.7, v0.22.9,
+v0.22.10) to pinpoint the silent-audio bug. With `GoolDebugOverlay`
+v0.23.1, **any future user can SEE that same information visually,
+live, in any scene**, without writing any code.
+
+For 4-client cross-region multiplayer scenarios:
+
+- **Voice budget pressure** is visible — watch `voices:` count
+  during firefights, compare against `maxVoiceSources` in
+  config.json
+- **Audio thread health** is visible — `cb_rate` should hover
+  near (sample_rate / buffer_size); drops mean audio thread
+  starvation
+- **Dead-air conditions** are visible — `peak: 0.0000` for
+  more than a moment means something is silent and shouldn't be
+- **Cross-machine consistency check** — players in different
+  regions can screenshot their overlays during a session to
+  compare audio-device sample rates, voice counts, etc.
+
+The cost of leaving the overlay node in a shipping build (with
+visibility off) is literally zero — making it a fine candidate
+for permanent inclusion as a player-facing debug hotkey, the
+way many games include a "show FPS" toggle.
+
+### Verified
+
+- `plugin.gd` syntax: brackets balance (188/188 parens, 44/44
+  brackets, 14/14 braces)
+- `gool_debug_overlay.gd` syntax: brackets balance (115/115
+  parens, 3/3 brackets), 325 lines
+- C++ library + version_test compile clean at 0.23.1
+- Overlay uses only stable Gool autoload API (`get_render_stats`,
+  `get_backend_description`, `get_version`, `is_initialized`,
+  `reset_render_peak`) — no internal API access, future-safe
+
 ## [0.23.0] - 2026-05-14 — Onboarding overhaul
 
 First minor version bump in the v0.22.x line. Adds new
@@ -7622,7 +7758,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/siliconight/gool/releases/tag/v0.23.1
 [0.23.0]: https://github.com/siliconight/gool/releases/tag/v0.23.0
 [0.22.10]: https://github.com/siliconight/gool/releases/tag/v0.22.10
 [0.22.9]: https://github.com/siliconight/gool/releases/tag/v0.22.9

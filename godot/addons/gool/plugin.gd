@@ -46,6 +46,12 @@ const PREFABS := [
     # instead of a script-only chore.
     ["GoolListener3D",            "Node3D", "gool_listener_3d.gd",            "gool_listener_3d.svg"],
     ["GoolSoundBankLoader",       "Node",   "gool_sound_bank_loader.gd",      "gool_sound_bank_loader.svg"],
+    # v0.23.1: drop-in debug HUD. Polls Gool.get_render_stats() at
+    # 4 Hz and renders a corner overlay showing callback rate, peak
+    # amplitude, active voices, audio device, etc. Useful for
+    # development; shipping builds can leave it added with
+    # visible_at_startup=false + toggle_key bound to a hidden hotkey.
+    ["GoolDebugOverlay",          "CanvasLayer", "gool_debug_overlay.gd",     "gool_debug_overlay.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"
@@ -386,12 +392,15 @@ enum ToolsMenuItem {
     ADD_3D_SCAFFOLDING = 0,
     NEW_FOLDER_BANK    = 1,
     OPEN_QUICKSTART    = 2,
+    ADD_DEBUG_OVERLAY  = 3,   # v0.23.1
 }
 
 func _register_tools_menu() -> void:
     _tools_menu = PopupMenu.new()
     _tools_menu.add_item("Add gool 3D audio scaffolding to current scene",
         ToolsMenuItem.ADD_3D_SCAFFOLDING)
+    _tools_menu.add_item("Add debug overlay to current scene",
+        ToolsMenuItem.ADD_DEBUG_OVERLAY)
     _tools_menu.add_item("Create new GoolFolderSoundBank...",
         ToolsMenuItem.NEW_FOLDER_BANK)
     _tools_menu.add_separator()
@@ -418,6 +427,8 @@ func _on_tools_menu_pressed(id: int) -> void:
         ToolsMenuItem.OPEN_QUICKSTART:
             EditorInterface.open_scene_from_path(
                 "res://addons/gool/templates/quickstart_3d.tscn")
+        ToolsMenuItem.ADD_DEBUG_OVERLAY:
+            _add_debug_overlay_to_current_scene()
 
 # v0.23.0: scene scaffolding command.
 #
@@ -555,3 +566,55 @@ func _show_info_dialog(title: String, body: String) -> void:
     # then queue_free's itself.
     dlg.confirmed.connect(dlg.queue_free)
     dlg.canceled.connect(dlg.queue_free)
+
+# v0.23.1: scene-level debug-overlay command.
+#
+# Adds a GoolDebugOverlay node under the current scene root. Unlike
+# the 3D-scaffolding command, this works in 2D scenes, UI-only
+# scenes, even an empty Node-rooted scene — the overlay is a
+# CanvasLayer and renders regardless of camera setup. Idempotent:
+# if a GoolDebugOverlay already exists under the root, nothing is
+# added (one is enough per scene).
+func _add_debug_overlay_to_current_scene() -> void:
+    var root: Node = EditorInterface.get_edited_scene_root()
+    if root == null:
+        _show_info_dialog(
+            "No scene open",
+            "Open a scene first (Scene → New Scene), then try "
+            + "Project → Tools → Gool → Add debug overlay again."
+        )
+        return
+    # Check for existing overlay; one per scene is the right model.
+    for child in root.get_children():
+        if child.get_script() != null and \
+                child.get_script().resource_path == \
+                "res://addons/gool/prefabs/gool_debug_overlay.gd":
+            _show_info_dialog(
+                "Already present",
+                "This scene already has a GoolDebugOverlay node "
+                + "('%s'). Select it to configure visibility, "
+                % child.name
+                + "toggle key, or position."
+            )
+            return
+    var script: Script = load(
+        "res://addons/gool/prefabs/gool_debug_overlay.gd")
+    if script == null:
+        push_warning("[gool] missing gool_debug_overlay.gd")
+        return
+    var overlay := CanvasLayer.new()
+    overlay.set_script(script)
+    overlay.name = "GoolDebugOverlay"
+    root.add_child(overlay)
+    overlay.set_owner(root)
+    _show_info_dialog(
+        "Added GoolDebugOverlay",
+        "A GoolDebugOverlay node has been added under '%s'.\n\n"
+        % root.name
+        + "Save the scene (Ctrl+S), then F5. The overlay shows in "
+        + "the top-left corner with real-time stats.\n\n"
+        + "Toggle visibility in-game by pressing F3 (default), or "
+        + "configure a custom toggle_action / toggle_key in the "
+        + "Inspector. For shipping builds, set "
+        + "visible_at_startup=false."
+    )
