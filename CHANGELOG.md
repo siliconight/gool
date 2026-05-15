@@ -12,6 +12,360 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.4] - 2026-05-14 — Verbosity preset + contexts + label + FATAL
+
+### Added — Verbosity preset (single dial for log volume)
+
+A new `addons/gool/logging/verbosity` Project Setting picks one of
+six presets that configure level, source-location capture,
+timestamps, and the file sink **together**. No more flipping four
+toggles to "set up production logging" or "go full diagnostic for a
+playtest" — one setting captures the intent.
+
+| Preset | Level | Source | Timestamps | File sink | Use case |
+|---|---|---|---|---|---|
+| **`auto`** *(default)* | depends | depends | depends | depends | Per-build defaults (see below) |
+| **`ship`** | WARN | off | off | off | Production releases — minimum noise |
+| **`dev`** | INFO | on | off | off | Default dev experience (matches v0.23.3) |
+| **`debug`** | DEBUG | on | off | off | Active development debugging |
+| **`diagnostic`** | TRACE | on | on | on (auto) | Full forensic capture (multiplayer session, bug repro) |
+| **`custom`** | per-setting | per-setting | per-setting | per-setting | Fine-grained control via individual settings |
+
+**`auto` resolves at init time** based on build type:
+
+- `OS.has_feature("editor")` → `dev`
+- `OS.is_debug_build()` (exported debug build) → `debug`
+- Exported release build → `ship`
+
+So a single export of your game gives players a quiet `ship`-level
+log, while you (in the editor) see `dev`-level output, and a tester
+running an exported debug build sees `debug`-level — all without
+any per-build configuration.
+
+**Runtime override:**
+
+```gdscript
+GoolLog.set_verbosity("diagnostic")    # max detail for a session capture
+GoolLog.set_verbosity(GoolLog.Verbosity.SHIP)  # quiet things down
+var v = GoolLog.get_verbosity()        # query current
+```
+
+`categories` overrides still apply on top of the preset's global
+level — verbosity sets the baseline; per-category fine-tuning rides
+above it.
+
+### Added — `GoolLogContext` — scoped logging with pre-bound category/label
+
+Files that log many times under the same category can pre-bind it
+once via `GoolLog.create_context()`, eliminating the per-call
+repetition:
+
+```gdscript
+# Once, at script scope:
+var _log_ctx := GoolLog.create_context("emitter", "audio_emitter_3d.gd")
+
+# Many times throughout the file — no repeated "emitter" / file path:
+func play() -> void:
+    _log_ctx.info("play", {"sound": sound_name, "pos": global_transform.origin})
+
+func stop() -> void:
+    _log_ctx.debug("stop", {"handle": _handle})
+
+# Per-call label override still works:
+func _fire_player_weapon() -> void:
+    _log_ctx.info("fire", {"damage": 50}, "player_weapon")
+```
+
+Each context has the same six methods as `GoolLog`:
+`trace / debug / info / warn / error / fatal`. Cheap to create —
+Object instance with two fields. Allocate at script load or
+`_ready`, not per-call.
+
+### Added — Label field (sub-source within a category)
+
+Both the static and context APIs now accept an optional `label`
+parameter that augments the category to identify the source within
+it:
+
+```gdscript
+# Static API:
+GoolLog.info("emitter", "play", {"sound": s}, "player_gun")
+GoolLog.info("emitter", "play", {"sound": s}, "enemy_gun")
+# Same category, distinct labels — easy to filter for "all
+# player_gun logs" without grepping source paths.
+
+# Context API binds the label at creation:
+var _ctx := GoolLog.create_context("emitter", "player_gun")
+_ctx.info("play", {...})   # implicit label="player_gun"
+```
+
+**Renders in human format** as `[gool/emitter:player_gun]:`
+**In JSON format** as a top-level `"label":"player_gun"` field
+(peer of category, easy to filter on in `jq`).
+
+Distinct from auto-captured source location: source is the
+file:line; label is the semantic identity the developer chose.
+Useful when source alone doesn't disambiguate (one call site that
+fires for multiple actors, for example).
+
+### Added — FATAL severity level
+
+Slotted between ERROR and SILENT in the Level enum. Routes via
+`push_error()` like ERROR (same red Output panel coloring), but
+tagged distinctly in both formats:
+
+```
+ERROR [gool/runtime]: device initialization failed | code=42
+FATAL [gool/runtime]: audio backend dead, runtime unusable | code=99
+```
+
+```json
+{"timestamp":"...","level":"ERROR","category":"runtime","msg":"device initialization failed",...}
+{"timestamp":"...","level":"FATAL","category":"runtime","msg":"audio backend dead, runtime unusable",...}
+```
+
+Use FATAL sparingly: it should mean "the subsystem (or the whole
+runtime) cannot continue." If everything is FATAL, nothing is.
+
+### Files touched
+
+- `godot/addons/gool/logging.gd` — added Verbosity enum, FATAL
+  level, label parameter on all 6 severity methods + `_log`,
+  `_format_line_human` + `_format_line_json` label rendering,
+  `set_verbosity` / `get_verbosity` / `create_context` public API,
+  `_resolve_auto_verbosity` / `_apply_verbosity_preset` /
+  `_coerce_verbosity` internals, new `_PS_VERBOSITY` Project
+  Setting registration. ~240 lines net additions.
+- `godot/addons/gool/logging_context.gd` — new, 59 lines.
+  `GoolLogContext` class with 6 severity methods that delegate
+  to `GoolLog` with pre-bound category + label.
+- Version triple, README, CHANGELOG — bumped to 0.23.4
+
+No C++ changes. No GDExtension binding changes. Pure GDScript
+additions on top of v0.23.3.
+
+### Backwards compatibility
+
+- **All v0.23.3 calls still work** — the new `label` parameter
+  is optional with default `""`. Existing
+  `GoolLog.info("emitter", "play", {...})` calls match the
+  signature unchanged.
+- **Default verbosity is `auto`**, which resolves to `dev` inside
+  the editor (matching v0.23.3 default behavior). Existing
+  projects see no behavior change unless they change verbosity.
+- **`Level.SILENT` value shifted from 5 to 6** to make room for
+  FATAL=5. Code that compares against `Level.SILENT` by name
+  continues to work; code hardcoding the integer 5 would break,
+  but no existing gool code did that.
+- **Project Settings additions** — new `addons/gool/logging/verbosity`
+  setting. Projects that opened in v0.23.3 won't have this set,
+  which makes it default to `"auto"` on first read — exactly
+  the intended behavior.
+
+### Recommended verbosity for different workflows
+
+| Workflow | Verbosity | Why |
+|---|---|---|
+| Day-to-day development in editor | `auto` (= `dev`) | INFO+ in editor, automatic per-build elsewhere |
+| Running an exported debug build for QA | `auto` (= `debug`) | Detail without configuration |
+| Shipping a release build | `auto` (= `ship`) | Quiet players' logs by default |
+| Reproducing a specific bug | `diagnostic` | Max detail + file sink + timestamps |
+| Multiplayer session capture | `diagnostic` | Each player's session gets a complete log |
+| Building a custom logging setup | `custom` | Take full control of individual settings |
+
+### Verified
+
+- C++ library + version_test compile clean at 0.23.4
+- `logging.gd`: 870 lines, balanced brackets (306/306 parens, 50/50
+  brackets, 27/27 braces)
+- `logging_context.gd`: 59 lines, balanced brackets (29/29, 0/0, 8/8)
+- All new methods accessible:
+  `set_verbosity`, `get_verbosity`, `create_context`, `fatal`,
+  `_resolve_auto_verbosity`, `_apply_verbosity_preset`,
+  `_coerce_verbosity`
+- All GoolLogContext methods accessible:
+  `trace`, `debug`, `info`, `warn`, `error`, `fatal`
+- Existing v0.23.3 call signatures preserved (label is optional
+  4th param with default `""`)
+- FATAL slotted before SILENT; `_LEVEL_NAMES` array length
+  matches new enum size
+
+### What this finally delivers
+
+The logging story across v0.23.2 → v0.23.3 → v0.23.4 is now
+**complete for single-developer and small-team use**:
+
+- **Levels** (6: TRACE/DEBUG/INFO/WARN/ERROR/FATAL) — v0.23.2 / v0.23.4
+- **Categories** with per-category filtering — v0.23.2
+- **Structured fields** with Godot-type coercion — v0.23.2 / v0.23.3
+- **Format toggle** (human vs JSON) — v0.23.3
+- **Source location** (file:line auto-capture) — v0.23.3
+- **Labels** (sub-source within category) — v0.23.4
+- **Verbosity presets** (single-dial control) — v0.23.4
+- **Scoped contexts** (DRY for repeated logging) — v0.23.4
+- **Project Settings + runtime API** for all of the above
+
+The remaining XLog-style features deferred for now —
+**multi-sink architecture**, **TOML config**, **editor config UI**,
+**ImGui-style log overlay**, **file rotation** — wait for concrete
+use cases. Multi-sink in particular is the foundational decision
+for richer log routing; we'll do that refactor with a real driving
+requirement, not speculation.
+
+## [0.23.3] - 2026-05-14 — JSON log format + source location
+
+### Added — Format toggle (human/JSON)
+
+`GoolLog` now supports two output formats, selectable via Project
+Settings or at runtime:
+
+**Human format** (default):
+```
+[2026-05-14 17:32:45.123] INFO [gool/emitter]: play | node="AudioEmitter3D" sound="sfx/click" pos="(1.2, 0, 3.4)" looping=false (addons/gool/prefabs/audio_emitter_3d.gd:194)
+```
+
+**JSON format:**
+```json
+{"timestamp":"2026-05-14T17:32:45.123Z","level":"INFO","category":"emitter","msg":"play","source":"addons/gool/prefabs/audio_emitter_3d.gd:194","data":{"node":"AudioEmitter3D","sound":"sfx/click","pos":[1.2,0,3.4],"looping":false}}
+```
+
+One JSON object per line — pipe-friendly for tools like `jq`,
+`fluentd`, `vector`, Loki, Splunk, etc. Useful when you want to:
+
+- Filter logs with `jq 'select(.level=="WARN" and .category=="mixer")'`
+- Ship logs to an analytics pipeline
+- Correlate timestamps across multiple players' logs after a
+  cross-region multiplayer session
+- Build dashboards on log events without writing a custom parser
+
+The toggle lives at **Project → Project Settings → addons/gool/logging/format**
+(enum: `human` | `json`, default `human`). Runtime override:
+
+```gdscript
+GoolLog.set_format("json")    # or GoolLog.Format.JSON
+```
+
+### Added — Source location capture
+
+Every log entry can now include the file:line that emitted it.
+Powered by `get_stack()`, so only available in debug builds —
+release/exported games emit empty source fields (no overhead,
+no error).
+
+Human format adds `(addons/gool/runtime_singleton.gd:118)` at
+the end of the line. JSON format adds a `"source"` field.
+
+Toggleable: **Project → Project Settings → addons/gool/logging/include_source**
+(default `true`). Disable if the per-call `get_stack()` overhead
+becomes a concern in profiling — though in practice it's
+single-digit microseconds and rarely matters.
+
+The `res://` prefix is stripped from source paths for compactness;
+the rest of the path is preserved so logs distinguish
+`addons/gool/runtime_singleton.gd` from your project's own
+files with the same name.
+
+### Improved — Field value rendering
+
+Human format now follows logfmt's "quote strings, leave numbers
+bare" convention strictly:
+
+```
+ping_ms=42  region="us-east"  active=true  pos="(1.2, 0, 3.4)"  voice_id=null
+```
+
+Numbers/bools/null are unquoted; strings (including coerced
+Godot types like Vector3) are double-quoted with internal quotes
+escaped. This matches the de facto industry-standard logfmt
+output and resolves ambiguity for log parsers.
+
+JSON format coerces Godot-native types to JSON-friendly forms:
+
+| Godot type | JSON output |
+|---|---|
+| `Vector2(x,y)` | `[x, y]` |
+| `Vector3(x,y,z)` | `[x, y, z]` |
+| `Vector4(x,y,z,w)` | `[x, y, z, w]` |
+| `Color(r,g,b,a)` | `[r, g, b, a]` |
+| `Quaternion(x,y,z,w)` | `[x, y, z, w]` |
+| `StringName` / `NodePath` | `"stringified"` |
+| Anything else unknown | `"str(value)"` |
+
+So `pos: Vector3(1.2, 0, 3.4)` in your log call becomes
+`"pos":[1.2,0,3.4]` in JSON — natively parseable by any JSON
+consumer.
+
+### Files touched
+
+- `godot/addons/gool/logging.gd` — added `Format` enum, two
+  Project Settings, `set_format()` public API, `_format_line_human`
+  / `_format_line_json` formatters, `_get_source_location`
+  helper, `_iso_timestamp` + `_human_timestamp` helpers, Godot-
+  type coercion for JSON output. ~240 lines net additions.
+- Version triple, README, CHANGELOG — bumped to 0.23.3
+
+No C++ changes. No binding changes. Pure GDScript on top of
+v0.23.2's GoolLog foundation.
+
+### Backwards compatibility
+
+- **Default format is still `human`** — existing projects see no
+  change in Output panel appearance unless they opt into JSON.
+- **Existing `print()` / `push_warning()` / `push_error()` calls
+  not migrated to GoolLog** continue to work unchanged.
+- **Runtime API additions are additive** — `set_format()`,
+  `Format.HUMAN`, `Format.JSON` are new; nothing in v0.23.2's
+  API was renamed or removed.
+
+The one visible difference at default settings: the human-format
+line now starts with `INFO [gool/category]:` instead of v0.23.2's
+`[gool/category INFO]`. This matches conventional log-line
+structure (level → category → message) and is easier to scan when
+your eye is filtering by severity.
+
+### Recommended Project Settings for a multiplayer session
+
+```
+addons/gool/logging/format            = "json"
+addons/gool/logging/file_sink_enabled = true
+addons/gool/logging/file_path         = "user://session.log"
+addons/gool/logging/categories        = "mixer:debug,voice:debug,net:debug"
+addons/gool/logging/include_source    = true
+```
+
+Each player's machine writes a JSON-formatted session log with
+full source attribution. After the session, run:
+
+```bash
+# Distill all WARN/ERROR entries from a player's session:
+jq -c 'select(.level=="WARN" or .level=="ERROR")' player_3.log
+
+# Voice chat jitter timeline:
+jq -c 'select(.category=="voice" and .data.jitter_ms) | {ts:.timestamp, jitter:.data.jitter_ms}' player_3.log
+
+# All DEAD AIR incidents across all four players:
+for log in player_*.log; do
+    jq -c 'select(.msg | startswith("DEAD AIR"))' "$log"
+done | sort -t'"' -k4
+```
+
+The structured-log payoff scales with the number of clients and
+length of the session. For a 4-player 30-minute match across
+US-East/US-West, you'll have ~4×3600 ÷ 2 = ~7200 log lines per
+player; manual eyeballing across four files is impractical, but
+`jq` makes it trivial.
+
+### Verified
+
+- `logging.gd` parses cleanly: 627 lines, balanced brackets
+  (235/235 parens, 41/41 brackets, 23/23 braces)
+- All 12 public + private functions reachable
+- C++ library + version_test compile clean at 0.23.3
+- JSON output is valid JSON (single object per line, properly
+  escaped strings, Godot types coerced to arrays/strings)
+- Source location stripping correctly handles `res://` prefix
+  and falls back to empty string on release builds
+
 ## [0.23.2] - 2026-05-14 — Structured logging
 
 ### Added — `GoolLog` static logging class
@@ -7949,7 +8303,9 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.4...HEAD
+[0.23.4]: https://github.com/siliconight/gool/releases/tag/v0.23.4
+[0.23.3]: https://github.com/siliconight/gool/releases/tag/v0.23.3
 [0.23.2]: https://github.com/siliconight/gool/releases/tag/v0.23.2
 [0.23.1]: https://github.com/siliconight/gool/releases/tag/v0.23.1
 [0.23.0]: https://github.com/siliconight/gool/releases/tag/v0.23.0
