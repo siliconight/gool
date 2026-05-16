@@ -39,45 +39,45 @@ var _runtime: Node = null
 var _occupied: bool = false
 
 func _ready() -> void:
-    if Engine.is_editor_hint():
-        return
-    _runtime = get_node_or_null("/root/Gool")
-    if _runtime == null:
-        push_warning("ReverbZone: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
-        return
-    body_entered.connect(_on_body_entered)
-    body_exited.connect(_on_body_exited)
+	if Engine.is_editor_hint():
+		return
+	_runtime = get_node_or_null("/root/Gool")
+	if _runtime == null:
+		push_warning("ReverbZone: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
+		return
+	body_entered.connect(_on_body_entered)
+	body_exited.connect(_on_body_exited)
 
 func _on_body_entered(body: Node) -> void:
-    if not body.is_in_group(listener_group):
-        return
-    if _occupied:
-        return
-    _occupied = true
-    listener_entered.emit()
-    _apply_zone_settings()
+	if not body.is_in_group(listener_group):
+		return
+	if _occupied:
+		return
+	_occupied = true
+	listener_entered.emit()
+	_apply_zone_settings()
 
 func _on_body_exited(body: Node) -> void:
-    if not body.is_in_group(listener_group):
-        return
-    if not _occupied:
-        return
-    _occupied = false
-    listener_exited.emit()
-    _restore_default_settings()
+	if not body.is_in_group(listener_group):
+		return
+	if not _occupied:
+		return
+	_occupied = false
+	listener_exited.emit()
+	_restore_default_settings()
 
 func _apply_zone_settings() -> void:
-    # NOTE: Calling SetBusParameter on the underlying engine isn't
-    # exposed through the v0 binding yet. For now, this prefab
-    # emits the listener_entered signal so the host can update bus
-    # parameters directly via a small C++ helper, OR just record
-    # the desired room_size/damping/wet for use by the host's
-    # custom reverb logic.
-    #
-    # When the binding adds set_bus_parameter() (planned), this
-    # method calls into it directly and the zone becomes fully
-    # self-contained.
-    pass
+	# NOTE: Calling SetBusParameter on the underlying engine isn't
+	# exposed through the v0 binding yet. For now, this prefab
+	# emits the listener_entered signal so the host can update bus
+	# parameters directly via a small C++ helper, OR just record
+	# the desired room_size/damping/wet for use by the host's
+	# custom reverb logic.
+	#
+	# When the binding adds set_bus_parameter() (planned), this
+	# method calls into it directly and the zone becomes fully
+	# self-contained.
+	pass
 
 func _restore_default_settings() -> void:
-    pass
+	pass

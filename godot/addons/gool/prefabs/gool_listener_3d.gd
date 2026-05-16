@@ -56,53 +56,53 @@ var _warned_multiple: bool = false
 const _LISTENER_GROUP: StringName = &"gool_listeners"
 
 func _ready() -> void:
-    if Engine.is_editor_hint():
-        return
-    _runtime = get_node_or_null("/root/Gool")
-    if _runtime == null:
-        push_warning(
-            "GoolListener3D: /root/Gool autoload not found. The gool "
-            + "plugin is installed but not enabled. Fix: open Project "
-            + "Settings → Plugins, find 'gool' in the list, tick the "
-            + "Enable checkbox."
-        )
-        return
-    if not _runtime.is_initialized():
-        await _runtime.ready_to_play
-    add_to_group(_LISTENER_GROUP)
-    _check_for_duplicates()
+	if Engine.is_editor_hint():
+		return
+	_runtime = get_node_or_null("/root/Gool")
+	if _runtime == null:
+		push_warning(
+			"GoolListener3D: /root/Gool autoload not found. The gool "
+			+ "plugin is installed but not enabled. Fix: open Project "
+			+ "Settings → Plugins, find 'gool' in the list, tick the "
+			+ "Enable checkbox."
+		)
+		return
+	if not _runtime.is_initialized():
+		await _runtime.ready_to_play
+	add_to_group(_LISTENER_GROUP)
+	_check_for_duplicates()
 
 func _check_for_duplicates() -> void:
-    var listeners := get_tree().get_nodes_in_group(_LISTENER_GROUP)
-    if listeners.size() > 1 and not _warned_multiple:
-        push_warning(
-            "GoolListener3D: %d listener nodes found in the scene. "
-            % listeners.size()
-            + "gool supports a single active listener; the last node "
-            + "to call set_listener_transform per frame wins. "
-            + "Remove duplicates, or disable all but one via the "
-            + "`enabled` property to make the active listener "
-            + "unambiguous."
-        )
-        _warned_multiple = true
+	var listeners := get_tree().get_nodes_in_group(_LISTENER_GROUP)
+	if listeners.size() > 1 and not _warned_multiple:
+		push_warning(
+			"GoolListener3D: %d listener nodes found in the scene. "
+			% listeners.size()
+			+ "gool supports a single active listener; the last node "
+			+ "to call set_listener_transform per frame wins. "
+			+ "Remove duplicates, or disable all but one via the "
+			+ "`enabled` property to make the active listener "
+			+ "unambiguous."
+		)
+		_warned_multiple = true
 
 func _process(delta: float) -> void:
-    if Engine.is_editor_hint():
-        return
-    if not enabled or _runtime == null:
-        return
-    var pos: Vector3 = global_transform.origin
-    # Godot convention: -Z is forward for Camera3D and the engine's
-    # default node orientation. Matches the convention used by
-    # AudioEmitter3D's forward computation.
-    var fwd: Vector3 = -global_transform.basis.z
-    var vel: Vector3 = Vector3.ZERO
-    if track_velocity and _have_prev and delta > 0.0:
-        vel = (pos - _prev_position) / delta
-    _prev_position = pos
-    _have_prev = true
-    _runtime.set_listener_transform(pos, fwd, vel)
+	if Engine.is_editor_hint():
+		return
+	if not enabled or _runtime == null:
+		return
+	var pos: Vector3 = global_transform.origin
+	# Godot convention: -Z is forward for Camera3D and the engine's
+	# default node orientation. Matches the convention used by
+	# AudioEmitter3D's forward computation.
+	var fwd: Vector3 = -global_transform.basis.z
+	var vel: Vector3 = Vector3.ZERO
+	if track_velocity and _have_prev and delta > 0.0:
+		vel = (pos - _prev_position) / delta
+	_prev_position = pos
+	_have_prev = true
+	_runtime.set_listener_transform(pos, fwd, vel)
 
 func _exit_tree() -> void:
-    if is_in_group(_LISTENER_GROUP):
-        remove_from_group(_LISTENER_GROUP)
+	if is_in_group(_LISTENER_GROUP):
+		remove_from_group(_LISTENER_GROUP)

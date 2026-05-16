@@ -34,109 +34,109 @@ var _voice_counter: int = 0
 signal ready_to_play
 
 func _ready() -> void:
-    _runtime = ClassDB.instantiate("GoolAudioRuntime")
-    if _runtime == null:
-        push_error(
-            "[gool] GoolAudioRuntime class not registered. This almost "
-            + "always means the GDExtension binary is missing from "
-            + "addons/gool/bin/. Fixes:\n"
-            + "  (1) Download the addon zip from "
-            + "https://github.com/siliconight/gool/releases that matches "
-            + "your OS, and unzip its addons/gool/ over yours.\n"
-            + "  (2) Or build from source: see SETUP.md.\n"
-            + "Check addons/gool/bin/ for one of: libgool_godot.so "
-            + "(Linux), gool_godot.dll (Windows), libgool_godot.dylib "
-            + "(macOS). If the file is there but Godot still can't "
-            + "load it, the binary likely targets a different Godot "
-            + "minor version than yours — match versions or rebuild."
-        )
-        return
-    add_child(_runtime)
+	_runtime = ClassDB.instantiate("GoolAudioRuntime")
+	if _runtime == null:
+		push_error(
+			"[gool] GoolAudioRuntime class not registered. This almost "
+			+ "always means the GDExtension binary is missing from "
+			+ "addons/gool/bin/. Fixes:\n"
+			+ "  (1) Download the addon zip from "
+			+ "https://github.com/siliconight/gool/releases that matches "
+			+ "your OS, and unzip its addons/gool/ over yours.\n"
+			+ "  (2) Or build from source: see SETUP.md.\n"
+			+ "Check addons/gool/bin/ for one of: libgool_godot.so "
+			+ "(Linux), gool_godot.dll (Windows), libgool_godot.dylib "
+			+ "(macOS). If the file is there but Godot still can't "
+			+ "load it, the binary likely targets a different Godot "
+			+ "minor version than yours — match versions or rebuild."
+		)
+		return
+	add_child(_runtime)
 
-    # Load the project's audio config. If config.json contains a
-    # "buses" array, we route through init_with_config() so the
-    # engine builds the multi-tier bus graph at startup. If the file
-    # is missing, empty, or has no buses key, we fall back to plain
-    # init() — which builds a single-master topology, the legacy
-    # behavior.
-    var cfg_text := _load_config_text()
-    var cfg_dict := _parse_config_dict(cfg_text)
-    var sr : int = cfg_dict.get("sample_rate", 48000)
-    var bs : int = cfg_dict.get("buffer_size", 512)
-    var has_bus_graph: bool = cfg_dict.has("buses") \
-        and cfg_dict["buses"] is Array \
-        and (cfg_dict["buses"] as Array).size() > 0
+	# Load the project's audio config. If config.json contains a
+	# "buses" array, we route through init_with_config() so the
+	# engine builds the multi-tier bus graph at startup. If the file
+	# is missing, empty, or has no buses key, we fall back to plain
+	# init() — which builds a single-master topology, the legacy
+	# behavior.
+	var cfg_text := _load_config_text()
+	var cfg_dict := _parse_config_dict(cfg_text)
+	var sr : int = cfg_dict.get("sample_rate", 48000)
+	var bs : int = cfg_dict.get("buffer_size", 512)
+	var has_bus_graph: bool = cfg_dict.has("buses") \
+		and cfg_dict["buses"] is Array \
+		and (cfg_dict["buses"] as Array).size() > 0
 
-    var ok: bool
-    if has_bus_graph:
-        # Pass the raw JSON text through — the C++ side parses it
-        # using the same loader that's unit-tested at the engine
-        # level. This keeps GDScript out of the schema-translation
-        # business: the binding is the only place the format is
-        # interpreted.
-        ok = _runtime.init_with_config(cfg_text, sr, bs)
-    else:
-        ok = _runtime.init(sr, bs)
+	var ok: bool
+	if has_bus_graph:
+		# Pass the raw JSON text through — the C++ side parses it
+		# using the same loader that's unit-tested at the engine
+		# level. This keeps GDScript out of the schema-translation
+		# business: the binding is the only place the format is
+		# interpreted.
+		ok = _runtime.init_with_config(cfg_text, sr, bs)
+	else:
+		ok = _runtime.init(sr, bs)
 
-    if not ok:
-        if has_bus_graph:
-            push_error(
-                "[gool] runtime init failed: bus config rejected. "
-                + "Check the prior error from the JSON parser above for "
-                + "the specific line. Common causes: duplicate bus ids, "
-                + "a bus that references a parent which doesn't exist, "
-                + "an effect kind that isn't recognized. Fix res://gool/"
-                + "config.json or delete it to regenerate defaults."
-            )
-        else:
-            push_error(
-                "[gool] runtime init failed: no audio device available. "
-                + "Possible causes:\n"
-                + "  (1) Sample rate or buffer size in res://gool/config.json "
-                + "isn't supported by your audio device. Try sample_rate=44100 "
-                + "or buffer_size=1024.\n"
-                + "  (2) Another app has exclusive access to the device "
-                + "(some DAWs do this on Windows).\n"
-                + "  (3) Running headless without an audio device — set the "
-                + "AUDIO_ENGINE_BACKEND env var to 'null' to use the silent "
-                + "backend for CI / server use."
-            )
-        return
-    # v0.22.4: audible "I'm alive" line. Previously a successful init
-    # was completely silent — the autoload's _ready returned cleanly
-    # with no output, making "no sound" indistinguishable from
-    # "runtime never started." This single print is the
-    # most-requested diagnostic from the v0.22.3 session.
-    var v: Dictionary = _runtime.get_version()
-    var version_str: String = v.get("full", "unknown") if v else "unknown"
-    var bus_count: int = 0
-    if has_bus_graph and cfg_dict.has("buses"):
-        bus_count = cfg_dict["buses"].size()
-    else:
-        bus_count = 1   # single Master bus when no config
-    var config_source: String = CONFIG_PATH if has_bus_graph else "defaults"
-    # v0.23.2: routed through GoolLog so projects can silence/redirect
-    # via Project Settings → addons/gool/logging. Same visible-by-
-    # default behavior as before; users can opt-in to a quieter
-    # output with `runtime:warn` in the categories override.
-    GoolLog.info("runtime", "ready", {
-        "version": version_str,
-        "rate": "%dHz" % sr,
-        "buffer": bs,
-        "buses": bus_count,
-        "config": config_source,
-    })
-    # v0.22.7: log the audio device miniaudio actually opened. If the
-    # name doesn't match where the user expects sound, that's the bug
-    # (wrong default output device) — no further C++ debugging needed.
-    var device_desc: String = _runtime.get_backend_description()
-    if device_desc != "":
-        GoolLog.info("runtime", "audio device", {"name": device_desc})
-    else:
-        GoolLog.info("runtime", "audio device unknown",
-            {"reason": "backend doesn't expose name"})
-    _ready_emitted = true
-    ready_to_play.emit()
+	if not ok:
+		if has_bus_graph:
+			push_error(
+				"[gool] runtime init failed: bus config rejected. "
+				+ "Check the prior error from the JSON parser above for "
+				+ "the specific line. Common causes: duplicate bus ids, "
+				+ "a bus that references a parent which doesn't exist, "
+				+ "an effect kind that isn't recognized. Fix res://gool/"
+				+ "config.json or delete it to regenerate defaults."
+			)
+		else:
+			push_error(
+				"[gool] runtime init failed: no audio device available. "
+				+ "Possible causes:\n"
+				+ "  (1) Sample rate or buffer size in res://gool/config.json "
+				+ "isn't supported by your audio device. Try sample_rate=44100 "
+				+ "or buffer_size=1024.\n"
+				+ "  (2) Another app has exclusive access to the device "
+				+ "(some DAWs do this on Windows).\n"
+				+ "  (3) Running headless without an audio device — set the "
+				+ "AUDIO_ENGINE_BACKEND env var to 'null' to use the silent "
+				+ "backend for CI / server use."
+			)
+		return
+	# v0.22.4: audible "I'm alive" line. Previously a successful init
+	# was completely silent — the autoload's _ready returned cleanly
+	# with no output, making "no sound" indistinguishable from
+	# "runtime never started." This single print is the
+	# most-requested diagnostic from the v0.22.3 session.
+	var v: Dictionary = _runtime.get_version()
+	var version_str: String = v.get("full", "unknown") if v else "unknown"
+	var bus_count: int = 0
+	if has_bus_graph and cfg_dict.has("buses"):
+		bus_count = cfg_dict["buses"].size()
+	else:
+		bus_count = 1   # single Master bus when no config
+	var config_source: String = CONFIG_PATH if has_bus_graph else "defaults"
+	# v0.23.2: routed through GoolLog so projects can silence/redirect
+	# via Project Settings → addons/gool/logging. Same visible-by-
+	# default behavior as before; users can opt-in to a quieter
+	# output with `runtime:warn` in the categories override.
+	GoolLog.info("runtime", "ready", {
+		"version": version_str,
+		"rate": "%dHz" % sr,
+		"buffer": bs,
+		"buses": bus_count,
+		"config": config_source,
+	})
+	# v0.22.7: log the audio device miniaudio actually opened. If the
+	# name doesn't match where the user expects sound, that's the bug
+	# (wrong default output device) — no further C++ debugging needed.
+	var device_desc: String = _runtime.get_backend_description()
+	if device_desc != "":
+		GoolLog.info("runtime", "audio device", {"name": device_desc})
+	else:
+		GoolLog.info("runtime", "audio device unknown",
+			{"reason": "backend doesn't expose name"})
+	_ready_emitted = true
+	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
 # the C++ data callback writes (callback invocations, frames rendered,
@@ -176,108 +176,108 @@ var _render_stats_last_invocations: int = 0
 var _render_stats_last_frames: int = 0
 
 func _process(delta: float) -> void:
-    if _runtime != null and _runtime.is_initialized():
-        _runtime.update(delta)
-        if not _mirrored_buses.is_empty():
-            _poll_mirrored_buses()
-        _render_stats_accum += delta
-        if _render_stats_accum >= _RENDER_STATS_INTERVAL:
-            _render_stats_accum = 0.0
-            _log_render_stats()
+	if _runtime != null and _runtime.is_initialized():
+		_runtime.update(delta)
+		if not _mirrored_buses.is_empty():
+			_poll_mirrored_buses()
+		_render_stats_accum += delta
+		if _render_stats_accum >= _RENDER_STATS_INTERVAL:
+			_render_stats_accum = 0.0
+			_log_render_stats()
 
 func _log_render_stats() -> void:
-    var stats: Dictionary = _runtime.get_render_stats()
-    if stats.is_empty():
-        return
-    var invocations: int = stats.get("callback_invocations", 0)
-    var frames: int = stats.get("frames_rendered", 0)
-    var peak: float = stats.get("peak_amplitude", 0.0)
-    var exceptions: int = stats.get("exception_count", 0)
-    # v0.22.8: mixer-level stats (may be absent on older binaries).
-    var active_voices: int = stats.get("active_voices", -1)
-    var mixer_peak: float = stats.get("mixer_peak", -1.0)
-    var master_gain: float = stats.get("master_gain", -1.0)
-    var delta_invocations: int = invocations - _render_stats_last_invocations
-    var delta_frames: int = frames - _render_stats_last_frames
-    _render_stats_last_invocations = invocations
-    _render_stats_last_frames = frames
-    # Diagnosis line — one log every 2 seconds when running.
-    # v0.23.2: routed through GoolLog at DEBUG level on the "mixer"
-    # category so projects can quiet this verbose per-interval ping
-    # via Project Settings (categories="mixer:warn"). The DEAD AIR
-    # warnings below remain WARN-level so they're always visible
-    # even when the routine ping is silenced.
-    if active_voices >= 0:
-        GoolLog.debug("mixer", "render", {
-            "cb": invocations, "dcb": delta_invocations,
-            "frames": frames, "dframes": delta_frames,
-            "peak": "%.4f" % peak, "mixer_peak": "%.4f" % mixer_peak,
-            "voices": active_voices, "gain": "%.2f" % master_gain,
-            "exc": exceptions,
-        })
-    else:
-        # Older binary — only backend stats available
-        GoolLog.debug("mixer", "render", {
-            "cb": invocations, "dcb": delta_invocations,
-            "frames": frames, "dframes": delta_frames,
-            "peak": "%.4f" % peak, "exc": exceptions,
-        })
-    # Layered diagnosis when something looks broken. v0.22.8 ordering
-    # is bottom-up: most-upstream cause first (audio thread dead) →
-    # most-downstream cause last (master gain silencing).
-    if delta_invocations == 0 and invocations == 0:
-        GoolLog.warn("mixer", "DEAD AIR: render callback never invoked",
-            {"cause": "miniaudio audio thread didn't start; backend "
-                    + "init reported success but playback device was "
-                    + "never opened",
-             "action": "file a report at github.com/siliconight/gool/issues"})
-    elif delta_invocations == 0:
-        GoolLog.warn("mixer", "DEAD AIR: render callback stopped",
-            {"cause": "miniaudio audio thread died or paused",
-             "effect": "audio output frozen as of this interval"})
-    elif peak == 0.0 and delta_frames > 0:
-        # v0.22.8: now use mixer stats to discriminate the cause.
-        if active_voices == 0:
-            GoolLog.warn("mixer", "DEAD AIR: no active voices",
-                {"frames_this_interval": delta_frames,
-                 "cause": "create_emitter returned a handle but voice "
-                        + "slot didn't get promoted from Inactive",
-                 "investigate": "MixerCommand dispatch path in audio_mixer.cpp"})
-        elif mixer_peak == 0.0 and active_voices > 0:
-            GoolLog.warn("mixer", "DEAD AIR: mixer silent with voices active",
-                {"active_voices": active_voices,
-                 "cause": "voices producing silence (empty PCM, mode mismatch, "
-                        + "wrong bus routing) OR bus chain summing to zero "
-                        + "upstream of Master",
-                 "investigate": "decoder PCM state, bus-graph routing"})
-        elif mixer_peak > 0.0 and master_gain == 0.0:
-            GoolLog.warn("mixer", "DEAD AIR: master gain = 0",
-                {"mixer_peak": "%.4f" % mixer_peak, "master_gain": 0.0,
-                 "cause": "Master bus output gain is -inf dB",
-                 "investigate": "config.json Master gain_db, runtime set_bus_gain_db calls"})
-        elif mixer_peak > 0.0 and master_gain > 0.0 and peak == 0.0:
-            GoolLog.warn("mixer", "DEAD AIR: post-gain mystery",
-                {"mixer_peak": "%.4f" % mixer_peak,
-                 "master_gain": "%.2f" % master_gain,
-                 "device_peak": 0.0,
-                 "cause": "unexpected — buffer copy to wrong destination, "
-                        + "format-conversion truncating, or unknown bug",
-                 "action": "file a report with this output"})
-        else:
-            GoolLog.warn("mixer", "DEAD AIR: unknown cause",
-                {"frames_this_interval": delta_frames,
-                 "active_voices": active_voices,
-                 "mixer_peak": "%.4f" % mixer_peak,
-                 "master_gain": "%.2f" % master_gain,
-                 "note": "symptom doesn't match any predicted cause; manual investigation needed"})
-    elif exceptions > 0:
-        GoolLog.warn("mixer", "render-callback exceptions caught",
-            {"count": exceptions,
-             "since": "Initialize",
-             "effect": "audio frames dropped to silence by catch-all barrier"})
-    # Reset peak for the next interval window (resets BOTH backend
-    # peak AND mixer peak — v0.22.8).
-    _runtime.reset_render_peak()
+	var stats: Dictionary = _runtime.get_render_stats()
+	if stats.is_empty():
+		return
+	var invocations: int = stats.get("callback_invocations", 0)
+	var frames: int = stats.get("frames_rendered", 0)
+	var peak: float = stats.get("peak_amplitude", 0.0)
+	var exceptions: int = stats.get("exception_count", 0)
+	# v0.22.8: mixer-level stats (may be absent on older binaries).
+	var active_voices: int = stats.get("active_voices", -1)
+	var mixer_peak: float = stats.get("mixer_peak", -1.0)
+	var master_gain: float = stats.get("master_gain", -1.0)
+	var delta_invocations: int = invocations - _render_stats_last_invocations
+	var delta_frames: int = frames - _render_stats_last_frames
+	_render_stats_last_invocations = invocations
+	_render_stats_last_frames = frames
+	# Diagnosis line — one log every 2 seconds when running.
+	# v0.23.2: routed through GoolLog at DEBUG level on the "mixer"
+	# category so projects can quiet this verbose per-interval ping
+	# via Project Settings (categories="mixer:warn"). The DEAD AIR
+	# warnings below remain WARN-level so they're always visible
+	# even when the routine ping is silenced.
+	if active_voices >= 0:
+		GoolLog.debug("mixer", "render", {
+			"cb": invocations, "dcb": delta_invocations,
+			"frames": frames, "dframes": delta_frames,
+			"peak": "%.4f" % peak, "mixer_peak": "%.4f" % mixer_peak,
+			"voices": active_voices, "gain": "%.2f" % master_gain,
+			"exc": exceptions,
+		})
+	else:
+		# Older binary — only backend stats available
+		GoolLog.debug("mixer", "render", {
+			"cb": invocations, "dcb": delta_invocations,
+			"frames": frames, "dframes": delta_frames,
+			"peak": "%.4f" % peak, "exc": exceptions,
+		})
+	# Layered diagnosis when something looks broken. v0.22.8 ordering
+	# is bottom-up: most-upstream cause first (audio thread dead) →
+	# most-downstream cause last (master gain silencing).
+	if delta_invocations == 0 and invocations == 0:
+		GoolLog.warn("mixer", "DEAD AIR: render callback never invoked",
+			{"cause": "miniaudio audio thread didn't start; backend "
+					+ "init reported success but playback device was "
+					+ "never opened",
+			 "action": "file a report at github.com/siliconight/gool/issues"})
+	elif delta_invocations == 0:
+		GoolLog.warn("mixer", "DEAD AIR: render callback stopped",
+			{"cause": "miniaudio audio thread died or paused",
+			 "effect": "audio output frozen as of this interval"})
+	elif peak == 0.0 and delta_frames > 0:
+		# v0.22.8: now use mixer stats to discriminate the cause.
+		if active_voices == 0:
+			GoolLog.warn("mixer", "DEAD AIR: no active voices",
+				{"frames_this_interval": delta_frames,
+				 "cause": "create_emitter returned a handle but voice "
+						+ "slot didn't get promoted from Inactive",
+				 "investigate": "MixerCommand dispatch path in audio_mixer.cpp"})
+		elif mixer_peak == 0.0 and active_voices > 0:
+			GoolLog.warn("mixer", "DEAD AIR: mixer silent with voices active",
+				{"active_voices": active_voices,
+				 "cause": "voices producing silence (empty PCM, mode mismatch, "
+						+ "wrong bus routing) OR bus chain summing to zero "
+						+ "upstream of Master",
+				 "investigate": "decoder PCM state, bus-graph routing"})
+		elif mixer_peak > 0.0 and master_gain == 0.0:
+			GoolLog.warn("mixer", "DEAD AIR: master gain = 0",
+				{"mixer_peak": "%.4f" % mixer_peak, "master_gain": 0.0,
+				 "cause": "Master bus output gain is -inf dB",
+				 "investigate": "config.json Master gain_db, runtime set_bus_gain_db calls"})
+		elif mixer_peak > 0.0 and master_gain > 0.0 and peak == 0.0:
+			GoolLog.warn("mixer", "DEAD AIR: post-gain mystery",
+				{"mixer_peak": "%.4f" % mixer_peak,
+				 "master_gain": "%.2f" % master_gain,
+				 "device_peak": 0.0,
+				 "cause": "unexpected — buffer copy to wrong destination, "
+						+ "format-conversion truncating, or unknown bug",
+				 "action": "file a report with this output"})
+		else:
+			GoolLog.warn("mixer", "DEAD AIR: unknown cause",
+				{"frames_this_interval": delta_frames,
+				 "active_voices": active_voices,
+				 "mixer_peak": "%.4f" % mixer_peak,
+				 "master_gain": "%.2f" % master_gain,
+				 "note": "symptom doesn't match any predicted cause; manual investigation needed"})
+	elif exceptions > 0:
+		GoolLog.warn("mixer", "render-callback exceptions caught",
+			{"count": exceptions,
+			 "since": "Initialize",
+			 "effect": "audio frames dropped to silence by catch-all barrier"})
+	# Reset peak for the next interval window (resets BOTH backend
+	# peak AND mixer peak — v0.22.8).
+	_runtime.reset_render_peak()
 
 
 # Called from _process when at least one bus pair is registered for
@@ -285,26 +285,26 @@ func _log_render_stats() -> void:
 # check short-circuits the C++ call. Logs a one-time warning if a
 # registered Godot bus name disappears between frames.
 func _poll_mirrored_buses() -> void:
-    for godot_bus_name in _mirrored_buses:
-        var idx := AudioServer.get_bus_index(godot_bus_name)
-        if idx < 0:
-            continue   # bus was renamed/removed; silently skip
-        var db := AudioServer.get_bus_volume_db(idx)
-        if _mirrored_last_db.get(godot_bus_name, 1e9) == db:
-            continue
-        _mirrored_last_db[godot_bus_name] = db
-        var gool_bus_name: String = _mirrored_buses[godot_bus_name]
-        _runtime.set_bus_gain_db(gool_bus_name, db)
+	for godot_bus_name in _mirrored_buses:
+		var idx := AudioServer.get_bus_index(godot_bus_name)
+		if idx < 0:
+			continue   # bus was renamed/removed; silently skip
+		var db := AudioServer.get_bus_volume_db(idx)
+		if _mirrored_last_db.get(godot_bus_name, 1e9) == db:
+			continue
+		_mirrored_last_db[godot_bus_name] = db
+		var gool_bus_name: String = _mirrored_buses[godot_bus_name]
+		_runtime.set_bus_gain_db(gool_bus_name, db)
 
 func _exit_tree() -> void:
-    if _runtime != null and _runtime.is_initialized():
-        _runtime.shutdown()
+	if _runtime != null and _runtime.is_initialized():
+		_runtime.shutdown()
 
 # Forward common methods so prefabs can call get_node("/root/Gool")
 # directly without reaching into _runtime.
 
 func is_initialized() -> bool:
-    return _runtime != null and _runtime.is_initialized()
+	return _runtime != null and _runtime.is_initialized()
 
 # Returns the engine version as a Dictionary:
 #   { "major": int, "minor": int, "patch": int,
@@ -312,9 +312,9 @@ func is_initialized() -> bool:
 # Useful in debug overlays, crash reports, and bug-report forms.
 # Available before init() since the version is compile-time.
 func get_version() -> Dictionary:
-    if _runtime == null:
-        return {}
-    return _runtime.get_version()
+	if _runtime == null:
+		return {}
+	return _runtime.get_version()
 
 # Render-thread health & activity stats. Polled by GoolDebugOverlay
 # (and any user-facing debug HUDs) to surface mix-thread metrics
@@ -331,13 +331,13 @@ func get_version() -> Dictionary:
 # documentation comment referenced `Gool.get_render_stats()` even
 # though that wrapper didn't exist).
 func get_render_stats() -> Dictionary:
-    if _runtime == null:
-        return {}
-    return _runtime.get_render_stats()
+	if _runtime == null:
+		return {}
+	return _runtime.get_render_stats()
 
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
-                         sr: int = 48000, ch: int = 1) -> int:
-    return _runtime.register_pcm_sound(name, samples, sr, ch)
+						 sr: int = 48000, ch: int = 1) -> int:
+	return _runtime.register_pcm_sound(name, samples, sr, ch)
 
 ## AudioFileFormat constants — pass to register_sound_from_bytes()
 ## as `format_hint`. FORMAT_AUTO sniffs by magic bytes (recommended);
@@ -370,10 +370,10 @@ const FORMAT_OPUS:        int = 4
 ## to keep resident, see the upcoming streaming-from-file binding
 ## (deferred to a follow-up release; see CHANGELOG).
 func register_sound_from_file(name: String, path: String) -> int:
-    if not is_initialized():
-        push_error("[gool] register_sound_from_file called before init")
-        return 0
-    return _runtime.register_sound_from_file(name, path)
+	if not is_initialized():
+		push_error("[gool] register_sound_from_file called before init")
+		return 0
+	return _runtime.register_sound_from_file(name, path)
 
 ## Same as register_sound_from_file but takes already-loaded bytes.
 ## Useful when the host wants to manage file I/O (e.g. custom asset
@@ -383,11 +383,11 @@ func register_sound_from_file(name: String, path: String) -> int:
 ## by magic bytes — RIFF/WAVE for WAV, OggS+OpusHead for Opus,
 ## OggS+Vorbis for Vorbis, fLaC for FLAC.
 func register_sound_from_bytes(name: String, bytes: PackedByteArray,
-                                  format_hint: int = FORMAT_AUTO) -> int:
-    if not is_initialized():
-        push_error("[gool] register_sound_from_bytes called before init")
-        return 0
-    return _runtime.register_sound_from_bytes(name, bytes, format_hint)
+								  format_hint: int = FORMAT_AUTO) -> int:
+	if not is_initialized():
+		push_error("[gool] register_sound_from_bytes called before init")
+		return 0
+	return _runtime.register_sound_from_bytes(name, bytes, format_hint)
 
 ## Register a Godot AudioStream resource as a gool sound. Convenience
 ## wrapper over the C++ binding's `register_sound_from_stream` (added
@@ -409,10 +409,10 @@ func register_sound_from_bytes(name: String, bytes: PackedByteArray,
 ##
 ## Returns the AudioSoundId on success, 0 on failure.
 func register_sound_from_stream(name: String, stream: AudioStream) -> int:
-    if not is_initialized():
-        push_error("[gool] register_sound_from_stream called before init")
-        return 0
-    return _runtime.register_sound_from_stream(name, stream)
+	if not is_initialized():
+		push_error("[gool] register_sound_from_stream called before init")
+		return 0
+	return _runtime.register_sound_from_stream(name, stream)
 
 ## AudioCategory enum mirrored for GDScript callers. Matches the
 ## C++ enum order (audio::AudioCategory in types.h). Hosts pass one
@@ -439,16 +439,16 @@ const CATEGORY_DIALOGUE: int = 5
 ## under different gameplay names: e.g., "rifle_fire_local" →
 ## LocalSfx, "rifle_fire_remote" → RemoteSfx.
 func register_sound_definition(name: String, spatialized: bool = true,
-                                 looping: bool = false,
-                                 min_distance: float = 1.0,
-                                 max_distance: float = 50.0,
-                                 loop_crossfade_ms: float = 0.0,
-                                 category: int = CATEGORY_SFX,
-                                 target_bus_name: String = "") -> void:
-    _runtime.register_sound_definition(name, spatialized, looping,
-                                         min_distance, max_distance,
-                                         loop_crossfade_ms,
-                                         category, target_bus_name)
+								 looping: bool = false,
+								 min_distance: float = 1.0,
+								 max_distance: float = 50.0,
+								 loop_crossfade_ms: float = 0.0,
+								 category: int = CATEGORY_SFX,
+								 target_bus_name: String = "") -> void:
+	_runtime.register_sound_definition(name, spatialized, looping,
+										 min_distance, max_distance,
+										 loop_crossfade_ms,
+										 category, target_bus_name)
 
 ## Resolve a bus name to its BusId. Returns -1 if no bus matches.
 ## Use to bridge between code that knows bus names (config files,
@@ -456,82 +456,82 @@ func register_sound_definition(name: String, spatialized: bool = true,
 ## set_effect_parameter). O(N) over kMaxBuses; fine for init/
 ## registration time, not per-frame.
 func find_bus_id_by_name(name: String) -> int:
-    if not is_initialized():
-        return -1
-    return _runtime.find_bus_id_by_name(name)
+	if not is_initialized():
+		return -1
+	return _runtime.find_bus_id_by_name(name)
 
 func play_sound_at_location(name: String, position: Vector3) -> void:
-    _runtime.play_sound_at_location(name, position)
+	_runtime.play_sound_at_location(name, position)
 
 func create_emitter(name: String, position: Vector3,
-                     looping: bool = false,
-                     fade_in_ms: float = 0.0) -> int:
-    return _runtime.create_emitter(name, position, looping, fade_in_ms)
+					 looping: bool = false,
+					 fade_in_ms: float = 0.0) -> int:
+	return _runtime.create_emitter(name, position, looping, fade_in_ms)
 
 func destroy_emitter(handle: int, fade_out_ms: float = 0.0) -> void:
-    _runtime.destroy_emitter(handle, fade_out_ms)
+	_runtime.destroy_emitter(handle, fade_out_ms)
 
 func set_emitter_transform(handle: int, position: Vector3,
-                              forward: Vector3, velocity: Vector3) -> void:
-    _runtime.set_emitter_transform(handle, position, forward, velocity)
+							  forward: Vector3, velocity: Vector3) -> void:
+	_runtime.set_emitter_transform(handle, position, forward, velocity)
 
 func set_emitter_playback_speed(handle: int, speed: float,
-                                   smoothing_ms: float = 50.0) -> void:
-    _runtime.set_emitter_playback_speed(handle, speed, smoothing_ms)
+								   smoothing_ms: float = 50.0) -> void:
+	_runtime.set_emitter_playback_speed(handle, speed, smoothing_ms)
 
 func set_listener_transform(position: Vector3, forward: Vector3,
-                              velocity: Vector3 = Vector3.ZERO) -> void:
-    _runtime.set_listener_transform(position, forward, velocity)
+							  velocity: Vector3 = Vector3.ZERO) -> void:
+	_runtime.set_listener_transform(position, forward, velocity)
 
 func register_voice_source(player_id: int) -> bool:
-    return _runtime.register_voice_source(player_id)
+	return _runtime.register_voice_source(player_id)
 
 func submit_voice_packet(player_id: int, bytes: PackedByteArray,
-                            sequence_number: int,
-                            send_timestamp_ms: int,
-                            arrival_timestamp_ms: int = -1) -> bool:
-    return _runtime.submit_voice_packet(
-        player_id, bytes, sequence_number,
-        send_timestamp_ms, arrival_timestamp_ms)
+							sequence_number: int,
+							send_timestamp_ms: int,
+							arrival_timestamp_ms: int = -1) -> bool:
+	return _runtime.submit_voice_packet(
+		player_id, bytes, sequence_number,
+		send_timestamp_ms, arrival_timestamp_ms)
 
 func get_voice_jitter_ms(player_id: int) -> float:
-    return _runtime.get_voice_jitter_ms(player_id)
+	return _runtime.get_voice_jitter_ms(player_id)
 
 func get_voice_packet_loss_ratio(player_id: int) -> float:
-    return _runtime.get_voice_packet_loss_ratio(player_id)
+	return _runtime.get_voice_packet_loss_ratio(player_id)
 
 # ---- Replication / multiplayer ----
 
 func on_tick_advanced(simulation_tick: int, server_time_ms: int) -> void:
-    _runtime.on_tick_advanced(simulation_tick, server_time_ms)
+	_runtime.on_tick_advanced(simulation_tick, server_time_ms)
 
 func submit_event_local(sound_name: String, position: Vector3,
-                          prediction_id: int = 0,
-                          priority: int = 128,
-                          timestamp_ms: int = 0) -> void:
-    _runtime.submit_event_local(sound_name, position,
-                                  prediction_id, priority, timestamp_ms)
+						  prediction_id: int = 0,
+						  priority: int = 128,
+						  timestamp_ms: int = 0) -> void:
+	_runtime.submit_event_local(sound_name, position,
+								  prediction_id, priority, timestamp_ms)
 
 func submit_replicated_event(sound_name: String, position: Vector3,
-                               simulation_tick: int = 0,
-                               server_time_ms: int = 0,
-                               priority: int = 128) -> void:
-    _runtime.submit_replicated_event(sound_name, position,
-                                       simulation_tick, server_time_ms,
-                                       priority)
+							   simulation_tick: int = 0,
+							   server_time_ms: int = 0,
+							   priority: int = 128) -> void:
+	_runtime.submit_replicated_event(sound_name, position,
+									   simulation_tick, server_time_ms,
+									   priority)
 
 func cancel_predicted_event(prediction_id: int,
-                               fade_out_ms: float = 50.0) -> void:
-    _runtime.cancel_predicted_event(prediction_id, fade_out_ms)
+							   fade_out_ms: float = 50.0) -> void:
+	_runtime.cancel_predicted_event(prediction_id, fade_out_ms)
 
 func update_replicated_transform(handle: int, position: Vector3,
-                                    forward: Vector3, velocity: Vector3,
-                                    simulation_tick: int) -> void:
-    _runtime.update_replicated_transform(handle, position, forward,
-                                            velocity, simulation_tick)
+									forward: Vector3, velocity: Vector3,
+									simulation_tick: int) -> void:
+	_runtime.update_replicated_transform(handle, position, forward,
+											velocity, simulation_tick)
 
 func make_prediction_id() -> int:
-    return _runtime.make_prediction_id()
+	return _runtime.make_prediction_id()
 
 # ---- v0.22.0: simplified one-shot networked SFX ------------------------
 
@@ -562,28 +562,28 @@ func make_prediction_id() -> int:
 ## skips the RPC silently — useful for testing networked events in
 ## single-player without a separate code path.
 func play_networked(sound_name: String,
-                       position: Vector3 = Vector3.ZERO,
-                       volume_db: float = 0.0,
-                       pitch: float = 1.0) -> void:
-    if not is_initialized():
-        push_error(
-            "[gool] play_networked('%s') called before runtime init. "
-            % sound_name
-            + "Either wait for the ready_to_play signal or call from "
-            + "_ready() after the autoload has finished initializing."
-        )
-        return
-    var t_ms: int = Time.get_ticks_msec()
-    # Local immediate play.
-    _runtime.submit_event_local(sound_name, position, 0, 128, t_ms)
-    # If no multiplayer peer is connected, the local play is all that's
-    # needed. Otherwise broadcast to other peers. We use the default
-    # priority of 128 (medium) which the engine routes to the
-    # drop-if-late event ring.
-    if multiplayer != null and multiplayer.has_multiplayer_peer() \
-            and multiplayer.get_multiplayer_peer().get_connection_status() \
-                == MultiplayerPeer.CONNECTION_CONNECTED:
-        _rpc_play_networked.rpc(sound_name, position, volume_db, pitch, t_ms)
+					   position: Vector3 = Vector3.ZERO,
+					   volume_db: float = 0.0,
+					   pitch: float = 1.0) -> void:
+	if not is_initialized():
+		push_error(
+			"[gool] play_networked('%s') called before runtime init. "
+			% sound_name
+			+ "Either wait for the ready_to_play signal or call from "
+			+ "_ready() after the autoload has finished initializing."
+		)
+		return
+	var t_ms: int = Time.get_ticks_msec()
+	# Local immediate play.
+	_runtime.submit_event_local(sound_name, position, 0, 128, t_ms)
+	# If no multiplayer peer is connected, the local play is all that's
+	# needed. Otherwise broadcast to other peers. We use the default
+	# priority of 128 (medium) which the engine routes to the
+	# drop-if-late event ring.
+	if multiplayer != null and multiplayer.has_multiplayer_peer() \
+			and multiplayer.get_multiplayer_peer().get_connection_status() \
+				== MultiplayerPeer.CONNECTION_CONNECTED:
+		_rpc_play_networked.rpc(sound_name, position, volume_db, pitch, t_ms)
 
 # RPC handler invoked on every receiving peer. Plays the sound locally
 # on the receiver with the same parameters the sender used. The Vector3
@@ -596,19 +596,19 @@ func play_networked(sound_name: String,
 # expansion can wire them through without a binding compatibility break.
 @rpc("any_peer", "call_remote", "unreliable")
 func _rpc_play_networked(sound_name: String, position: Vector3,
-                            volume_db: float, pitch: float,
-                            sender_t_ms: int) -> void:
-    if not is_initialized():
-        return
-    # Optional staleness check: if the event is more than 250ms old
-    # by our clock, drop it. Matches the default category-staleness
-    # for SFX (see DefaultStalenessMsForCategory in events.h). This
-    # is the "drop-if-late" behaviour we promised in the doc above.
-    var local_t_ms: int = Time.get_ticks_msec()
-    if local_t_ms - sender_t_ms > 250:
-        # Telemetry could go here if needed.
-        return
-    _runtime.submit_event_local(sound_name, position, 0, 128, sender_t_ms)
+							volume_db: float, pitch: float,
+							sender_t_ms: int) -> void:
+	if not is_initialized():
+		return
+	# Optional staleness check: if the event is more than 250ms old
+	# by our clock, drop it. Matches the default category-staleness
+	# for SFX (see DefaultStalenessMsForCategory in events.h). This
+	# is the "drop-if-late" behaviour we promised in the doc above.
+	var local_t_ms: int = Time.get_ticks_msec()
+	if local_t_ms - sender_t_ms > 250:
+		# Telemetry could go here if needed.
+		return
+	_runtime.submit_event_local(sound_name, position, 0, 128, sender_t_ms)
 
 
 # =============================================================================
@@ -631,39 +631,39 @@ func _rpc_play_networked(sound_name: String, position: Vector3,
 # Returns true if the event was queued; false if the runtime is not
 # initialized or the queue is full.
 func play_3d(name: String, position: Vector3, priority: int = 128) -> bool:
-    if _runtime == null:
-        return false
-    var rc: int = _runtime.submit_event_local(name, position, 0, priority, 0)
-    return rc == 0  # AudioResult::Success
+	if _runtime == null:
+		return false
+	var rc: int = _runtime.submit_event_local(name, position, 0, priority, 0)
+	return rc == 0  # AudioResult::Success
 
 # Switch the music channel to `state_name` with an equal-power crossfade.
 # Idempotent: passing the currently-playing state is a no-op so callers
 # can poll-style invoke this every frame without churn. The first call
 # lazily creates a GoolMusicChannel under this autoload.
 func play_music_state(state_name: String, fade_ms: float = 500.0) -> bool:
-    if _runtime == null:
-        return false
-    if _music_channel == null:
-        _music_channel = ClassDB.instantiate("GoolMusicChannel")
-        if _music_channel == null:
-            push_error("[gool] GoolMusicChannel class not registered. "
-                       + "Build and install the GDExtension first.")
-            return false
-        add_child(_music_channel)
-        _music_channel.attach(_runtime)
-    if state_name == _music_state and _music_channel.is_playing():
-        return true  # already in this state
-    _music_state = state_name
-    _music_channel.play(state_name, fade_ms)
-    return true
+	if _runtime == null:
+		return false
+	if _music_channel == null:
+		_music_channel = ClassDB.instantiate("GoolMusicChannel")
+		if _music_channel == null:
+			push_error("[gool] GoolMusicChannel class not registered. "
+					   + "Build and install the GDExtension first.")
+			return false
+		add_child(_music_channel)
+		_music_channel.attach(_runtime)
+	if state_name == _music_state and _music_channel.is_playing():
+		return true  # already in this state
+	_music_state = state_name
+	_music_channel.play(state_name, fade_ms)
+	return true
 
 # Stop the music channel with a fade-out. Subsequent play_music_state
 # calls work normally afterward.
 func stop_music(fade_ms: float = 500.0) -> void:
-    if _music_channel == null:
-        return
-    _music_state = ""
-    _music_channel.stop(fade_ms)
+	if _music_channel == null:
+		return
+	_music_state = ""
+	_music_channel.stop(fade_ms)
 
 # Play `audio_stream` as voice for `player_id`. The clip is decoded to
 # PCM, registered as an ephemeral sound, and dispatched through the
@@ -677,27 +677,27 @@ func stop_music(fade_ms: float = 500.0) -> void:
 # Returns true if the clip was queued; false on input errors or
 # missing runtime.
 func play_voice(player_id: int, audio_stream: AudioStream) -> bool:
-    if _runtime == null:
-        return false
-    if not (audio_stream is AudioStreamWAV):
-        push_error("[gool] play_voice currently supports AudioStreamWAV only. "
-                   + "AudioStreamOggVorbis support is on the roadmap. For "
-                   + "Opus voice packets from a network layer, use "
-                   + "Gool.submit_voice_packet directly.")
-        return false
-    var wav: AudioStreamWAV = audio_stream
-    var samples := _wav_to_pcm_mono(wav)
-    if samples.is_empty():
-        return false
-    _voice_counter += 1
-    var clip_name := "_voice_%d_%d" % [player_id, _voice_counter]
-    var sample_rate: int = int(wav.mix_rate)
-    if sample_rate <= 0:
-        sample_rate = 48000
-    _runtime.register_pcm_sound(clip_name, samples, sample_rate, 1)
-    _runtime.register_sound_definition(clip_name, false)
-    _runtime.play_sound_at_location(clip_name, Vector3.ZERO)
-    return true
+	if _runtime == null:
+		return false
+	if not (audio_stream is AudioStreamWAV):
+		push_error("[gool] play_voice currently supports AudioStreamWAV only. "
+				   + "AudioStreamOggVorbis support is on the roadmap. For "
+				   + "Opus voice packets from a network layer, use "
+				   + "Gool.submit_voice_packet directly.")
+		return false
+	var wav: AudioStreamWAV = audio_stream
+	var samples := _wav_to_pcm_mono(wav)
+	if samples.is_empty():
+		return false
+	_voice_counter += 1
+	var clip_name := "_voice_%d_%d" % [player_id, _voice_counter]
+	var sample_rate: int = int(wav.mix_rate)
+	if sample_rate <= 0:
+		sample_rate = 48000
+	_runtime.register_pcm_sound(clip_name, samples, sample_rate, 1)
+	_runtime.register_sound_definition(clip_name, false)
+	_runtime.play_sound_at_location(clip_name, Vector3.ZERO)
+	return true
 
 # Set a real-time parameter ("RTPC" in middleware lingo) by name.
 # Stored as a key-value pair in the runtime; authored sound definitions
@@ -706,27 +706,27 @@ func play_voice(player_id: int, audio_stream: AudioStream) -> bool:
 # Returns true if the value was stored; false on budget exhaustion or
 # missing runtime. See AudioConfig::maxGlobalParameters (default 256).
 func set_rtpc(name: String, value: float) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.set_global_parameter(name, value)
+	if _runtime == null:
+		return false
+	return _runtime.set_global_parameter(name, value)
 
 # Read the current value of an RTPC. Returns 0.0 if the parameter has
 # never been set; use has_rtpc() to disambiguate "set to zero" from
 # "never set."
 func get_rtpc(name: String) -> float:
-    if _runtime == null:
-        return 0.0
-    return _runtime.get_global_parameter(name)
+	if _runtime == null:
+		return 0.0
+	return _runtime.get_global_parameter(name)
 
 func has_rtpc(name: String) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.has_global_parameter(name)
+	if _runtime == null:
+		return false
+	return _runtime.has_global_parameter(name)
 
 func clear_rtpc(name: String) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.clear_global_parameter(name)
+	if _runtime == null:
+		return false
+	return _runtime.clear_global_parameter(name)
 
 # =============================================================================
 # RTPC binding facades (v0.5+)
@@ -761,60 +761,60 @@ func clear_rtpc(name: String) -> bool:
 
 # Bind a Volume target with a linear curve. The most common case.
 func bind_volume_rtpc(sound_name: String, param_name: String,
-                       min_value: float, max_value: float,
-                       min_output: float, max_output: float,
-                       smoothing_ms: float = 50.0) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.set_sound_rtpc(sound_name, param_name,
-                                     "volume", "linear",
-                                     min_value, max_value,
-                                     min_output, max_output,
-                                     2.0, smoothing_ms)
+					   min_value: float, max_value: float,
+					   min_output: float, max_output: float,
+					   smoothing_ms: float = 50.0) -> bool:
+	if _runtime == null:
+		return false
+	return _runtime.set_sound_rtpc(sound_name, param_name,
+									 "volume", "linear",
+									 min_value, max_value,
+									 min_output, max_output,
+									 2.0, smoothing_ms)
 
 # Bind a Pitch target with a linear curve. Output is a pitch multiplier
 # (1.0 = unchanged, 2.0 = octave up, 0.5 = octave down).
 func bind_pitch_rtpc(sound_name: String, param_name: String,
-                      min_value: float, max_value: float,
-                      min_output: float, max_output: float,
-                      smoothing_ms: float = 50.0) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.set_sound_rtpc(sound_name, param_name,
-                                     "pitch", "linear",
-                                     min_value, max_value,
-                                     min_output, max_output,
-                                     2.0, smoothing_ms)
+					  min_value: float, max_value: float,
+					  min_output: float, max_output: float,
+					  smoothing_ms: float = 50.0) -> bool:
+	if _runtime == null:
+		return false
+	return _runtime.set_sound_rtpc(sound_name, param_name,
+									 "pitch", "linear",
+									 min_value, max_value,
+									 min_output, max_output,
+									 2.0, smoothing_ms)
 
 # Bind a LowPassCutoff target. Output in [0, 1]; 0 = no filter, 1 = fully
 # muffled. Combined with the spatializer's baseline via max(), so RTPC
 # can add filtering on top of occlusion / air absorption but never reduce
 # what the world applied.
 func bind_lowpass_rtpc(sound_name: String, param_name: String,
-                        min_value: float, max_value: float,
-                        min_output: float, max_output: float,
-                        smoothing_ms: float = 50.0) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.set_sound_rtpc(sound_name, param_name,
-                                     "lowpass", "linear",
-                                     min_value, max_value,
-                                     min_output, max_output,
-                                     2.0, smoothing_ms)
+						min_value: float, max_value: float,
+						min_output: float, max_output: float,
+						smoothing_ms: float = 50.0) -> bool:
+	if _runtime == null:
+		return false
+	return _runtime.set_sound_rtpc(sound_name, param_name,
+									 "lowpass", "linear",
+									 min_value, max_value,
+									 min_output, max_output,
+									 2.0, smoothing_ms)
 
 # Bind a ReverbSend target. Output in [0, 1] is added to the global
 # reverb send amount with a clamp at 1.0.
 func bind_reverb_rtpc(sound_name: String, param_name: String,
-                       min_value: float, max_value: float,
-                       min_output: float, max_output: float,
-                       smoothing_ms: float = 50.0) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.set_sound_rtpc(sound_name, param_name,
-                                     "reverb", "linear",
-                                     min_value, max_value,
-                                     min_output, max_output,
-                                     2.0, smoothing_ms)
+					   min_value: float, max_value: float,
+					   min_output: float, max_output: float,
+					   smoothing_ms: float = 50.0) -> bool:
+	if _runtime == null:
+		return false
+	return _runtime.set_sound_rtpc(sound_name, param_name,
+									 "reverb", "linear",
+									 min_value, max_value,
+									 min_output, max_output,
+									 2.0, smoothing_ms)
 
 # Advanced: bind any target with any curve, configured via Dictionary.
 # Keys (all required unless marked optional):
@@ -829,41 +829,41 @@ func bind_reverb_rtpc(sound_name: String, param_name: String,
 #   max_output:    float — output at max_value (after curve)
 #   smoothing_ms:  float (optional, default 50.0)
 func bind_rtpc(sound_name: String, binding: Dictionary) -> bool:
-    if _runtime == null:
-        return false
-    var param      = binding.get("parameter", "")
-    var target     = binding.get("target",    "")
-    var curve      = binding.get("curve",     "linear")
-    var exponent   = binding.get("exponent",      2.0)
-    var min_value  = binding.get("min_value",     0.0)
-    var max_value  = binding.get("max_value",     1.0)
-    var min_output = binding.get("min_output",    0.0)
-    var max_output = binding.get("max_output",    1.0)
-    var smoothing  = binding.get("smoothing_ms",  50.0)
-    if param == "" or target == "":
-        push_error("[gool] bind_rtpc requires 'parameter' and 'target' keys")
-        return false
-    return _runtime.set_sound_rtpc(sound_name, param, target, curve,
-                                     min_value, max_value,
-                                     min_output, max_output,
-                                     exponent, smoothing)
+	if _runtime == null:
+		return false
+	var param      = binding.get("parameter", "")
+	var target     = binding.get("target",    "")
+	var curve      = binding.get("curve",     "linear")
+	var exponent   = binding.get("exponent",      2.0)
+	var min_value  = binding.get("min_value",     0.0)
+	var max_value  = binding.get("max_value",     1.0)
+	var min_output = binding.get("min_output",    0.0)
+	var max_output = binding.get("max_output",    1.0)
+	var smoothing  = binding.get("smoothing_ms",  50.0)
+	if param == "" or target == "":
+		push_error("[gool] bind_rtpc requires 'parameter' and 'target' keys")
+		return false
+	return _runtime.set_sound_rtpc(sound_name, param, target, curve,
+									 min_value, max_value,
+									 min_output, max_output,
+									 exponent, smoothing)
 
 # Remove one binding for (sound, target). Returns true if it existed.
 func clear_rtpc_binding(sound_name: String, target: String) -> bool:
-    if _runtime == null:
-        return false
-    return _runtime.clear_sound_rtpc(sound_name, target)
+	if _runtime == null:
+		return false
+	return _runtime.clear_sound_rtpc(sound_name, target)
 
 # Remove every binding for a sound. Returns the number of bindings removed.
 func clear_all_rtpc_bindings(sound_name: String) -> int:
-    if _runtime == null:
-        return 0
-    return _runtime.clear_all_sound_rtpc(sound_name)
+	if _runtime == null:
+		return 0
+	return _runtime.clear_all_sound_rtpc(sound_name)
 
 # Backward-compat convenience: same as clear_rtpc_binding(name, "volume").
 # Kept so v0.4 call sites don't break on upgrade.
 func clear_volume_rtpc(sound_name: String) -> bool:
-    return clear_rtpc_binding(sound_name, "volume")
+	return clear_rtpc_binding(sound_name, "volume")
 
 # =============================================================================
 # Internal helpers
@@ -878,70 +878,70 @@ func clear_volume_rtpc(sound_name: String) -> bool:
 # is malformed; the caller has already pushed an error message in
 # that case so we just bail.
 func _wav_to_pcm_mono(wav: AudioStreamWAV) -> PackedFloat32Array:
-    var out := PackedFloat32Array()
-    if wav.format != AudioStreamWAV.FORMAT_16_BITS:
-        push_error("[gool] play_voice supports FORMAT_16_BITS WAVs only. "
-                   + "Re-import your asset as 16-bit PCM in Godot's "
-                   + "import dock.")
-        return out
-    var data: PackedByteArray = wav.data
-    var byte_count: int = data.size()
-    if byte_count == 0 or byte_count % 2 != 0:
-        return out
-    var sample_count: int = byte_count / 2
-    var stereo: bool = wav.stereo
-    if stereo and sample_count % 2 != 0:
-        return out
-    var frames: int = (sample_count / 2) if stereo else sample_count
-    out.resize(frames)
-    var inv: float = 1.0 / 32768.0
-    if stereo:
-        for i in range(frames):
-            var lo_l: int = data[i * 4 + 0]
-            var hi_l: int = data[i * 4 + 1]
-            var lo_r: int = data[i * 4 + 2]
-            var hi_r: int = data[i * 4 + 3]
-            var l: int = (hi_l << 8) | lo_l
-            var r: int = (hi_r << 8) | lo_r
-            if l >= 32768:
-                l -= 65536
-            if r >= 32768:
-                r -= 65536
-            out[i] = ((l + r) * 0.5) * inv
-    else:
-        for i in range(frames):
-            var lo: int = data[i * 2 + 0]
-            var hi: int = data[i * 2 + 1]
-            var s: int = (hi << 8) | lo
-            if s >= 32768:
-                s -= 65536
-            out[i] = float(s) * inv
-    return out
+	var out := PackedFloat32Array()
+	if wav.format != AudioStreamWAV.FORMAT_16_BITS:
+		push_error("[gool] play_voice supports FORMAT_16_BITS WAVs only. "
+				   + "Re-import your asset as 16-bit PCM in Godot's "
+				   + "import dock.")
+		return out
+	var data: PackedByteArray = wav.data
+	var byte_count: int = data.size()
+	if byte_count == 0 or byte_count % 2 != 0:
+		return out
+	var sample_count: int = byte_count / 2
+	var stereo: bool = wav.stereo
+	if stereo and sample_count % 2 != 0:
+		return out
+	var frames: int = (sample_count / 2) if stereo else sample_count
+	out.resize(frames)
+	var inv: float = 1.0 / 32768.0
+	if stereo:
+		for i in range(frames):
+			var lo_l: int = data[i * 4 + 0]
+			var hi_l: int = data[i * 4 + 1]
+			var lo_r: int = data[i * 4 + 2]
+			var hi_r: int = data[i * 4 + 3]
+			var l: int = (hi_l << 8) | lo_l
+			var r: int = (hi_r << 8) | lo_r
+			if l >= 32768:
+				l -= 65536
+			if r >= 32768:
+				r -= 65536
+			out[i] = ((l + r) * 0.5) * inv
+	else:
+		for i in range(frames):
+			var lo: int = data[i * 2 + 0]
+			var hi: int = data[i * 2 + 1]
+			var s: int = (hi << 8) | lo
+			if s >= 32768:
+				s -= 65536
+			out[i] = float(s) * inv
+	return out
 
 func _load_config_text() -> String:
-    # Returns the raw config.json text, or "" if missing / unreadable.
-    # The text (not the parsed dict) is what gets passed to the C++
-    # parser when bus graph is configured.
-    if not FileAccess.file_exists(CONFIG_PATH):
-        return ""
-    var f := FileAccess.open(CONFIG_PATH, FileAccess.READ)
-    if f == null:
-        return ""
-    var text := f.get_as_text()
-    f.close()
-    return text
+	# Returns the raw config.json text, or "" if missing / unreadable.
+	# The text (not the parsed dict) is what gets passed to the C++
+	# parser when bus graph is configured.
+	if not FileAccess.file_exists(CONFIG_PATH):
+		return ""
+	var f := FileAccess.open(CONFIG_PATH, FileAccess.READ)
+	if f == null:
+		return ""
+	var text := f.get_as_text()
+	f.close()
+	return text
 
 func _parse_config_dict(text: String) -> Dictionary:
-    # Parses the config text into a Godot Dictionary. Used to peek
-    # at top-level fields (sample_rate, buffer_size, buses) before
-    # deciding which runtime init() variant to call. If parsing
-    # fails OR the top-level isn't an object, returns {}.
-    if text.is_empty():
-        return {}
-    var parsed = JSON.parse_string(text)
-    if parsed is Dictionary:
-        return parsed
-    return {}
+	# Parses the config text into a Godot Dictionary. Used to peek
+	# at top-level fields (sample_rate, buffer_size, buses) before
+	# deciding which runtime init() variant to call. If parsing
+	# fails OR the top-level isn't an object, returns {}.
+	if text.is_empty():
+		return {}
+	var parsed = JSON.parse_string(text)
+	if parsed is Dictionary:
+		return parsed
+	return {}
 
 # ---- v0.14.0: native-Godot integration helpers ---------------------
 
@@ -962,17 +962,17 @@ func _parse_config_dict(text: String) -> Dictionary:
 ##
 ## Returns true on success, false if either bus name is unknown.
 func sync_volume_from_godot_bus(godot_bus_name: String = "Master",
-                                  gool_bus_name: String = "") -> bool:
-    if _runtime == null:
-        return false
-    var idx := AudioServer.get_bus_index(godot_bus_name)
-    if idx < 0:
-        push_warning("[gool] sync_volume_from_godot_bus: no Godot bus named '%s'"
-                       % godot_bus_name)
-        return false
-    var db := AudioServer.get_bus_volume_db(idx)
-    var target := gool_bus_name if gool_bus_name != "" else godot_bus_name
-    return _runtime.set_bus_gain_db(target, db)
+								  gool_bus_name: String = "") -> bool:
+	if _runtime == null:
+		return false
+	var idx := AudioServer.get_bus_index(godot_bus_name)
+	if idx < 0:
+		push_warning("[gool] sync_volume_from_godot_bus: no Godot bus named '%s'"
+					   % godot_bus_name)
+		return false
+	var db := AudioServer.get_bus_volume_db(idx)
+	var target := gool_bus_name if gool_bus_name != "" else godot_bus_name
+	return _runtime.set_bus_gain_db(target, db)
 
 
 ## Continuous variant: install an every-frame poll that mirrors the
@@ -985,13 +985,13 @@ func sync_volume_from_godot_bus(godot_bus_name: String = "Master",
 ## Pass `false` to disable polling for a specific bus pair, e.g.
 ## when switching back to explicit per-callback syncing.
 func auto_mirror_godot_bus(godot_bus_name: String,
-                            gool_bus_name: String = "",
-                            enabled: bool = true) -> void:
-    if enabled:
-        var target := gool_bus_name if gool_bus_name != "" else godot_bus_name
-        _mirrored_buses[godot_bus_name] = target
-    else:
-        _mirrored_buses.erase(godot_bus_name)
+							gool_bus_name: String = "",
+							enabled: bool = true) -> void:
+	if enabled:
+		var target := gool_bus_name if gool_bus_name != "" else godot_bus_name
+		_mirrored_buses[godot_bus_name] = target
+	else:
+		_mirrored_buses.erase(godot_bus_name)
 
 
 # Storage for auto_mirror_godot_bus pairs. Keys are Godot bus names;

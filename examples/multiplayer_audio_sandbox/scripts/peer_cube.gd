@@ -16,19 +16,19 @@ extends Node3D
 
 
 func _ready() -> void:
-    # Apply a color based on whether this is the local peer's cube.
-    var my_peer_id := multiplayer.get_unique_id()
-    var owning_peer_id := get_multiplayer_authority()
-    var is_mine := (owning_peer_id == my_peer_id)
+	# Apply a color based on whether this is the local peer's cube.
+	var my_peer_id := multiplayer.get_unique_id()
+	var owning_peer_id := get_multiplayer_authority()
+	var is_mine := (owning_peer_id == my_peer_id)
 
-    var mat := StandardMaterial3D.new()
-    if is_mine:
-        # Local peer's cube: bright cyan (matches the icon).
-        mat.albedo_color = Color(0.49, 0.78, 0.89)
-    else:
-        # Remote peer's cube: warm orange so it stands out.
-        mat.albedo_color = Color(0.95, 0.55, 0.25)
-    mesh.material_override = mat
+	var mat := StandardMaterial3D.new()
+	if is_mine:
+		# Local peer's cube: bright cyan (matches the icon).
+		mat.albedo_color = Color(0.49, 0.78, 0.89)
+	else:
+		# Remote peer's cube: warm orange so it stands out.
+		mat.albedo_color = Color(0.95, 0.55, 0.25)
+	mesh.material_override = mat
 
-    print("[peer_%d] ready (is_mine=%s)"
-            % [owning_peer_id, str(is_mine)])
+	print("[peer_%d] ready (is_mine=%s)"
+			% [owning_peer_id, str(is_mine)])

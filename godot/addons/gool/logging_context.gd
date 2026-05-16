@@ -34,26 +34,26 @@ var category: String = ""
 var label: String = ""
 
 func trace(msg: String, fields: Dictionary = {}, override_label: String = "") -> void:
-    GoolLog.trace(category, msg, fields, _effective_label(override_label))
+	GoolLog.trace(category, msg, fields, _effective_label(override_label))
 
 func debug(msg: String, fields: Dictionary = {}, override_label: String = "") -> void:
-    GoolLog.debug(category, msg, fields, _effective_label(override_label))
+	GoolLog.debug(category, msg, fields, _effective_label(override_label))
 
 func info(msg: String, fields: Dictionary = {}, override_label: String = "") -> void:
-    GoolLog.info(category, msg, fields, _effective_label(override_label))
+	GoolLog.info(category, msg, fields, _effective_label(override_label))
 
 func warn(msg: String, fields: Dictionary = {}, override_label: String = "") -> void:
-    GoolLog.warn(category, msg, fields, _effective_label(override_label))
+	GoolLog.warn(category, msg, fields, _effective_label(override_label))
 
 func error(msg: String, fields: Dictionary = {}, override_label: String = "") -> void:
-    GoolLog.error(category, msg, fields, _effective_label(override_label))
+	GoolLog.error(category, msg, fields, _effective_label(override_label))
 
 func fatal(msg: String, fields: Dictionary = {}, override_label: String = "") -> void:
-    GoolLog.fatal(category, msg, fields, _effective_label(override_label))
+	GoolLog.fatal(category, msg, fields, _effective_label(override_label))
 
 # Returns the label that should be attached to the next log call:
 # the per-call override if non-empty, otherwise the bound label.
 # Empty bound + empty override = no label (and the formatters
 # render the line without a label tag).
 func _effective_label(override_label: String) -> String:
-    return override_label if override_label != "" else label
+	return override_label if override_label != "" else label

@@ -100,51 +100,51 @@ var _runtime: Node = null
 # ─── lifecycle ────────────────────────────────────────────────
 
 func _ready() -> void:
-    if Engine.is_editor_hint():
-        # In the editor we don't have a running game; build the UI
-        # so the user can preview position/styling but don't poll.
-        _build_ui()
-        return
-    _runtime = get_node_or_null("/root/Gool")
-    if _runtime == null:
-        push_warning(
-            "[GoolDebugOverlay] /root/Gool autoload not found. "
-            + "The overlay needs the gool plugin enabled to display "
-            + "stats. Enable the plugin in Project Settings → Plugins."
-        )
-        # Build the UI anyway so the user sees we tried; first
-        # _refresh will just show "runtime not available."
-    _build_ui()
-    _container.visible = visible_at_startup
-    _timer = Timer.new()
-    _timer.wait_time = update_interval_ms / 1000.0
-    _timer.one_shot = false
-    _timer.autostart = true
-    _timer.timeout.connect(_refresh)
-    add_child(_timer)
-    _last_poll_time_ms = Time.get_ticks_msec()
-    _refresh()
+	if Engine.is_editor_hint():
+		# In the editor we don't have a running game; build the UI
+		# so the user can preview position/styling but don't poll.
+		_build_ui()
+		return
+	_runtime = get_node_or_null("/root/Gool")
+	if _runtime == null:
+		push_warning(
+			"[GoolDebugOverlay] /root/Gool autoload not found. "
+			+ "The overlay needs the gool plugin enabled to display "
+			+ "stats. Enable the plugin in Project Settings → Plugins."
+		)
+		# Build the UI anyway so the user sees we tried; first
+		# _refresh will just show "runtime not available."
+	_build_ui()
+	_container.visible = visible_at_startup
+	_timer = Timer.new()
+	_timer.wait_time = update_interval_ms / 1000.0
+	_timer.one_shot = false
+	_timer.autostart = true
+	_timer.timeout.connect(_refresh)
+	add_child(_timer)
+	_last_poll_time_ms = Time.get_ticks_msec()
+	_refresh()
 
 func _process(_delta: float) -> void:
-    if Engine.is_editor_hint():
-        return
-    # Toggle handling. Both action-based and direct-keycode are
-    # supported; action takes precedence if set.
-    var pressed := false
-    if toggle_action != "" and InputMap.has_action(toggle_action):
-        pressed = Input.is_action_just_pressed(toggle_action)
-    elif toggle_key != KEY_NONE:
-        pressed = Input.is_key_pressed(toggle_key) and not _was_key_held
-        _was_key_held = Input.is_key_pressed(toggle_key)
-    if pressed:
-        _container.visible = not _container.visible
-        # When showing, force a refresh so the overlay isn't blank
-        # for up to 250ms. When hiding, pause the timer to save CPU.
-        if _container.visible:
-            _refresh()
-            _timer.start()
-        else:
-            _timer.stop()
+	if Engine.is_editor_hint():
+		return
+	# Toggle handling. Both action-based and direct-keycode are
+	# supported; action takes precedence if set.
+	var pressed := false
+	if toggle_action != "" and InputMap.has_action(toggle_action):
+		pressed = Input.is_action_just_pressed(toggle_action)
+	elif toggle_key != KEY_NONE:
+		pressed = Input.is_key_pressed(toggle_key) and not _was_key_held
+		_was_key_held = Input.is_key_pressed(toggle_key)
+	if pressed:
+		_container.visible = not _container.visible
+		# When showing, force a refresh so the overlay isn't blank
+		# for up to 250ms. When hiding, pause the timer to save CPU.
+		if _container.visible:
+			_refresh()
+			_timer.start()
+		else:
+			_timer.stop()
 
 # Edge-detect helper for the direct-keycode path (Input.is_key_pressed
 # returns true while held; we want one toggle per press).
@@ -153,173 +153,173 @@ var _was_key_held: bool = false
 # ─── UI construction ──────────────────────────────────────────
 
 func _build_ui() -> void:
-    _container = Control.new()
-    _container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _container.set_anchors_preset(_anchor_preset())
-    _container.offset_left = 8
-    _container.offset_top = 8
-    _container.offset_right = -8
-    _container.offset_bottom = -8
-    add_child(_container)
+	_container = Control.new()
+	_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.set_anchors_preset(_anchor_preset())
+	_container.offset_left = 8
+	_container.offset_top = 8
+	_container.offset_right = -8
+	_container.offset_bottom = -8
+	add_child(_container)
 
-    _bg_panel = Panel.new()
-    _bg_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    var sb := StyleBoxFlat.new()
-    sb.bg_color = Color(0.05, 0.05, 0.05, background_opacity)
-    sb.border_width_left = 1
-    sb.border_width_top = 1
-    sb.border_width_right = 1
-    sb.border_width_bottom = 1
-    sb.border_color = Color(0.2, 0.2, 0.2, background_opacity)
-    sb.corner_radius_top_left = 4
-    sb.corner_radius_top_right = 4
-    sb.corner_radius_bottom_left = 4
-    sb.corner_radius_bottom_right = 4
-    sb.content_margin_left = 8
-    sb.content_margin_top = 6
-    sb.content_margin_right = 8
-    sb.content_margin_bottom = 6
-    _bg_panel.add_theme_stylebox_override("panel", sb)
-    _bg_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
-    _container.add_child(_bg_panel)
+	_bg_panel = Panel.new()
+	_bg_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.05, 0.05, background_opacity)
+	sb.border_width_left = 1
+	sb.border_width_top = 1
+	sb.border_width_right = 1
+	sb.border_width_bottom = 1
+	sb.border_color = Color(0.2, 0.2, 0.2, background_opacity)
+	sb.corner_radius_top_left = 4
+	sb.corner_radius_top_right = 4
+	sb.corner_radius_bottom_left = 4
+	sb.corner_radius_bottom_right = 4
+	sb.content_margin_left = 8
+	sb.content_margin_top = 6
+	sb.content_margin_right = 8
+	sb.content_margin_bottom = 6
+	_bg_panel.add_theme_stylebox_override("panel", sb)
+	_bg_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_container.add_child(_bg_panel)
 
-    _label = Label.new()
-    _label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _label.add_theme_color_override("font_color", text_color)
-    if monospace:
-        # Use Godot's built-in monospace font ("res://...") — if not
-        # available, falls back to default. We don't ship a custom
-        # font with the addon to keep the archive small.
-        var font := ThemeDB.fallback_font
-        _label.add_theme_font_override("font", font)
-    _label.position = Vector2(8, 6)
-    _label.text = "gool debug overlay\n(waiting for first refresh...)"
-    _bg_panel.add_child(_label)
-    # Resize the panel to fit the label after first text update.
+	_label = Label.new()
+	_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_label.add_theme_color_override("font_color", text_color)
+	if monospace:
+		# Use Godot's built-in monospace font ("res://...") — if not
+		# available, falls back to default. We don't ship a custom
+		# font with the addon to keep the archive small.
+		var font := ThemeDB.fallback_font
+		_label.add_theme_font_override("font", font)
+	_label.position = Vector2(8, 6)
+	_label.text = "gool debug overlay\n(waiting for first refresh...)"
+	_bg_panel.add_child(_label)
+	# Resize the panel to fit the label after first text update.
 
 # Maps the anchor_corner enum to Godot's Control anchor preset
 # constants. Couldn't just store the constant directly in the
 # export since Control.LayoutPreset isn't easily exportable as an
 # enum-typed property in @tool scripts.
 func _anchor_preset() -> int:
-    match anchor_corner:
-        0: return Control.PRESET_TOP_LEFT
-        1: return Control.PRESET_TOP_RIGHT
-        2: return Control.PRESET_BOTTOM_LEFT
-        3: return Control.PRESET_BOTTOM_RIGHT
-    return Control.PRESET_TOP_LEFT
+	match anchor_corner:
+		0: return Control.PRESET_TOP_LEFT
+		1: return Control.PRESET_TOP_RIGHT
+		2: return Control.PRESET_BOTTOM_LEFT
+		3: return Control.PRESET_BOTTOM_RIGHT
+	return Control.PRESET_TOP_LEFT
 
 # ─── stats polling and rendering ──────────────────────────────
 
 func _refresh() -> void:
-    if _label == null:
-        return
-    if Engine.is_editor_hint() or _runtime == null:
-        _label.text = _build_offline_text()
-        _resize_panel_to_label()
-        return
-    if not _runtime.is_initialized():
-        _label.text = (
-            "gool — initializing...\n"
-            + "(autoload found, runtime not yet ready)"
-        )
-        _resize_panel_to_label()
-        return
+	if _label == null:
+		return
+	if Engine.is_editor_hint() or _runtime == null:
+		_label.text = _build_offline_text()
+		_resize_panel_to_label()
+		return
+	if not _runtime.is_initialized():
+		_label.text = (
+			"gool — initializing...\n"
+			+ "(autoload found, runtime not yet ready)"
+		)
+		_resize_panel_to_label()
+		return
 
-    var stats: Dictionary = _runtime.get_render_stats()
-    var now_ms: int = Time.get_ticks_msec()
-    var interval_s: float = max(0.001, (now_ms - _last_poll_time_ms) / 1000.0)
-    _last_poll_time_ms = now_ms
+	var stats: Dictionary = _runtime.get_render_stats()
+	var now_ms: int = Time.get_ticks_msec()
+	var interval_s: float = max(0.001, (now_ms - _last_poll_time_ms) / 1000.0)
+	_last_poll_time_ms = now_ms
 
-    var cb_total: int = stats.get("callback_invocations", 0)
-    var frames_total: int = stats.get("frames_rendered", 0)
-    var cb_rate: float = (cb_total - _last_callback_count) / interval_s
-    var frame_rate: float = (frames_total - _last_frame_count) / interval_s
-    _last_callback_count = cb_total
-    _last_frame_count = frames_total
+	var cb_total: int = stats.get("callback_invocations", 0)
+	var frames_total: int = stats.get("frames_rendered", 0)
+	var cb_rate: float = (cb_total - _last_callback_count) / interval_s
+	var frame_rate: float = (frames_total - _last_frame_count) / interval_s
+	_last_callback_count = cb_total
+	_last_frame_count = frames_total
 
-    var peak: float = stats.get("peak_amplitude", 0.0)
-    var mixer_peak: float = stats.get("mixer_peak", 0.0)
-    var voices: int = stats.get("active_voices", 0)
-    var master_gain: float = stats.get("master_gain", 1.0)
-    var exc: int = stats.get("exception_count", 0)
+	var peak: float = stats.get("peak_amplitude", 0.0)
+	var mixer_peak: float = stats.get("mixer_peak", 0.0)
+	var voices: int = stats.get("active_voices", 0)
+	var master_gain: float = stats.get("master_gain", 1.0)
+	var exc: int = stats.get("exception_count", 0)
 
-    # Reset peak so the next interval reads samples-since-now.
-    _runtime.reset_render_peak()
+	# Reset peak so the next interval reads samples-since-now.
+	_runtime.reset_render_peak()
 
-    var version: Dictionary = _runtime.get_version()
-    var version_str: String = version.get("full", "?")
-    var device: String = _runtime.get_backend_description()
-    if device == "":
-        device = "(unknown)"
+	var version: Dictionary = _runtime.get_version()
+	var version_str: String = version.get("full", "?")
+	var device: String = _runtime.get_backend_description()
+	if device == "":
+		device = "(unknown)"
 
-    var lines: PackedStringArray = PackedStringArray()
-    lines.append("gool %s" % version_str)
-    lines.append("device: %s" % _truncate(device, 40))
-    lines.append("──────────────────────────")
-    lines.append("cb_rate:     %6.1f /s" % cb_rate)
-    lines.append("frame_rate:  %6.0f /s" % frame_rate)
-    lines.append("peak:        %6.4f" % peak)
-    lines.append("mixer_peak:  %6.4f" % mixer_peak)
-    lines.append("voices:      %6d  gain: %.2f" % [voices, master_gain])
-    if exc > 0:
-        lines.append("⚠ exceptions: %d (audio frames dropped)" % exc)
-    lines.append("──────────────────────────")
-    lines.append("frames total: %s" % _fmt_int(frames_total))
+	var lines: PackedStringArray = PackedStringArray()
+	lines.append("gool %s" % version_str)
+	lines.append("device: %s" % _truncate(device, 40))
+	lines.append("──────────────────────────")
+	lines.append("cb_rate:     %6.1f /s" % cb_rate)
+	lines.append("frame_rate:  %6.0f /s" % frame_rate)
+	lines.append("peak:        %6.4f" % peak)
+	lines.append("mixer_peak:  %6.4f" % mixer_peak)
+	lines.append("voices:      %6d  gain: %.2f" % [voices, master_gain])
+	if exc > 0:
+		lines.append("⚠ exceptions: %d (audio frames dropped)" % exc)
+	lines.append("──────────────────────────")
+	lines.append("frames total: %s" % _fmt_int(frames_total))
 
-    _label.text = "\n".join(lines)
-    _resize_panel_to_label()
+	_label.text = "\n".join(lines)
+	_resize_panel_to_label()
 
 # Editor / no-runtime fallback text. Lets the user preview the
 # overlay's positioning and styling without a running game.
 func _build_offline_text() -> String:
-    if Engine.is_editor_hint():
-        return (
-            "gool debug overlay (preview)\n"
-            + "device: (live in-game)\n"
-            + "──────────────────────────\n"
-            + "cb_rate:      93.8 /s\n"
-            + "peak:        0.4521\n"
-            + "voices:           1  gain: 1.00\n"
-            + "──────────────────────────\n"
-            + "(live data shown when game is running)"
-        )
-    return (
-        "gool debug overlay\n"
-        + "/root/Gool autoload not found.\n"
-        + "Enable the gool plugin in Project Settings."
-    )
+	if Engine.is_editor_hint():
+		return (
+			"gool debug overlay (preview)\n"
+			+ "device: (live in-game)\n"
+			+ "──────────────────────────\n"
+			+ "cb_rate:      93.8 /s\n"
+			+ "peak:        0.4521\n"
+			+ "voices:           1  gain: 1.00\n"
+			+ "──────────────────────────\n"
+			+ "(live data shown when game is running)"
+		)
+	return (
+		"gool debug overlay\n"
+		+ "/root/Gool autoload not found.\n"
+		+ "Enable the gool plugin in Project Settings."
+	)
 
 # Resize the background panel to wrap the label exactly. Called
 # after every label text change since the dimensions may change
 # (longer device names, more lines, etc).
 func _resize_panel_to_label() -> void:
-    if _label == null or _bg_panel == null:
-        return
-    var label_size: Vector2 = _label.get_minimum_size()
-    var pad := Vector2(16, 12)  # matches stylebox content margins
-    _bg_panel.size = label_size + pad
+	if _label == null or _bg_panel == null:
+		return
+	var label_size: Vector2 = _label.get_minimum_size()
+	var pad := Vector2(16, 12)  # matches stylebox content margins
+	_bg_panel.size = label_size + pad
 
 # Compact int formatting with thousands separators. 1234567 → "1,234,567".
 # Pure GDScript so it works in @tool context.
 func _fmt_int(n: int) -> String:
-    var s: String = str(n)
-    var out: String = ""
-    var count: int = 0
-    var i: int = s.length() - 1
-    while i >= 0:
-        if count == 3:
-            out = "," + out
-            count = 0
-        out = s[i] + out
-        count += 1
-        i -= 1
-    return out
+	var s: String = str(n)
+	var out: String = ""
+	var count: int = 0
+	var i: int = s.length() - 1
+	while i >= 0:
+		if count == 3:
+			out = "," + out
+			count = 0
+		out = s[i] + out
+		count += 1
+		i -= 1
+	return out
 
 # Truncate to fit when device names get long (e.g. "WASAPI / High
 # Definition Audio Device (Intel SST Audio Controller)" exceeds
 # the overlay's width).
 func _truncate(s: String, max_len: int) -> String:
-    if s.length() <= max_len:
-        return s
-    return s.substr(0, max_len - 1) + "…"
+	if s.length() <= max_len:
+		return s
+	return s.substr(0, max_len - 1) + "…"

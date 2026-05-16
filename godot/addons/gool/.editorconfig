@@ -2,37 +2,36 @@
 #
 # Godot 4.x and most editors respect EditorConfig files. This file
 # scopes its rules to files inside the gool addon — it does NOT
-# affect your project's own scripts.
+# affect your project's own scripts (provided your project has its
+# own .editorconfig with root = true).
 #
-# Why this file exists: when you open one of gool's .gd files in
-# Godot's script editor (or any editor that defaults to tabs), the
-# editor inserts tab characters when you press Tab. gool's source
-# files are committed with 4-space indentation, so saving an edit
-# can create a file with mixed tab/space indentation, which Godot's
-# parser rejects with "Used tab character for indentation instead
-# of space as used before in the file."
+# As of v0.23.14: gool's source uses TABS for indentation, matching
+# Godot's official GDScript style guide. Earlier releases (v0.23.5
+# through v0.23.13) tried to use spaces with EditorConfig enforcing
+# them, but the Godot editor's tab-default conversion behavior
+# caused mixed-indentation parse errors when users opened addon
+# files in the script editor and made local edits. Aligning with
+# Godot's tabs convention eliminates the conflict entirely.
 #
-# By placing this .editorconfig at the addon root, any editor that
-# respects EditorConfig will use spaces when editing files inside
-# this directory, preventing the failure mode.
+# Reference: https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html#indentation
 
-# Don't stop EditorConfig search above this file; the user's project
-# .editorconfig (if any) still applies, but our rules win on conflict
-# for files inside this directory.
 root = false
 
 [*.gd]
-indent_style = space
+indent_style = tab
 indent_size = 4
+tab_width = 4
 trim_trailing_whitespace = true
 insert_final_newline = true
 
 [*.tres]
-indent_style = space
+indent_style = tab
 indent_size = 4
+tab_width = 4
 insert_final_newline = true
 
 [*.tscn]
-indent_style = space
+indent_style = tab
 indent_size = 4
+tab_width = 4
 insert_final_newline = true

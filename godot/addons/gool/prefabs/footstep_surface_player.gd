@@ -35,40 +35,40 @@ var _runtime: Node = null
 var _last_played: Dictionary = {}    # surface -> last sound index
 
 func _ready() -> void:
-    if Engine.is_editor_hint():
-        return
-    _runtime = get_node_or_null("/root/Gool")
-    if _runtime == null:
-        push_warning("FootstepSurfacePlayer: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
+	if Engine.is_editor_hint():
+		return
+	_runtime = get_node_or_null("/root/Gool")
+	if _runtime == null:
+		push_warning("FootstepSurfacePlayer: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
 
 # Call this from your locomotion code at each footfall.
 func step() -> void:
-    if _runtime == null:
-        return
-    var surface := _detect_surface()
-    var variants: Array = surface_sounds.get(surface,
-                                                surface_sounds.get(default_surface, []))
-    if variants.is_empty():
-        return
+	if _runtime == null:
+		return
+	var surface := _detect_surface()
+	var variants: Array = surface_sounds.get(surface,
+												surface_sounds.get(default_surface, []))
+	if variants.is_empty():
+		return
 
-    var idx := randi() % variants.size()
-    # Avoid immediate repeat when more than one variant exists.
-    if variants.size() > 1 and idx == _last_played.get(surface, -1):
-        idx = (idx + 1) % variants.size()
-    _last_played[surface] = idx
+	var idx := randi() % variants.size()
+	# Avoid immediate repeat when more than one variant exists.
+	if variants.size() > 1 and idx == _last_played.get(surface, -1):
+		idx = (idx + 1) % variants.size()
+	_last_played[surface] = idx
 
-    _runtime.play_sound_at_location(variants[idx], global_transform.origin)
+	_runtime.play_sound_at_location(variants[idx], global_transform.origin)
 
 func _detect_surface() -> String:
-    var space := get_world_3d().direct_space_state
-    var from := global_transform.origin
-    var to := from + Vector3.DOWN * raycast_distance
-    var query := PhysicsRayQueryParameters3D.create(from, to)
-    var hit := space.intersect_ray(query)
-    if hit.is_empty():
-        return default_surface
-    var collider: Node = hit["collider"]
-    for surface_name in surface_sounds.keys():
-        if collider.is_in_group(surface_name):
-            return surface_name
-    return default_surface
+	var space := get_world_3d().direct_space_state
+	var from := global_transform.origin
+	var to := from + Vector3.DOWN * raycast_distance
+	var query := PhysicsRayQueryParameters3D.create(from, to)
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		return default_surface
+	var collider: Node = hit["collider"]
+	for surface_name in surface_sounds.keys():
+		if collider.is_in_group(surface_name):
+			return surface_name
+	return default_surface

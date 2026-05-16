@@ -12,6 +12,179 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.14] - 2026-05-16 — Switch all GDScript to tab indentation (Godot convention)
+
+### Problem
+
+After installing v0.23.13, Brannen's project still hit the same
+"Could not resolve class 'GoolLog', because of a parser error"
+that we've been chasing for four releases. Inspection of his
+installed addon revealed the actual root cause that's been
+hiding behind every other diagnosis in this saga:
+
+**mixed tab/space indentation in `logging.gd`.**
+
+Specifically, his installed copy of the file had:
+- 300 tab-indented lines
+- 214 space-indented lines
+
+…in the same file. Godot's parser rejects this as
+"Used space character for indentation instead of tab as used
+before in the file" (or the symmetric tab-used-instead-of-space
+variant). The file fails to parse → `class_name GoolLog` doesn't
+register → every `GoolLog.info(...)` call elsewhere cascades to
+"Could not resolve class 'GoolLog', because of a parser error."
+
+### Why the previous fixes didn't catch this
+
+v0.23.4 introduced `GoolLogContext` and `create_context()`. The
+classes were structured plausibly but the underlying file was
+already accruing indentation drift from my str_replace edits that
+used spaces against an existing tab-indented file.
+
+v0.23.10's "break the circular class_name dep" fix was a
+reasonable second-order diagnosis but addressed a symptom of the
+parse failure, not the cause. The same parse error would have
+surfaced regardless of how the cycle was broken, because the file
+itself had mixed indentation.
+
+v0.23.13's `get_render_stats` wrapper was a real and necessary
+fix for the smoke's Tier 2 source-text expectation. But it didn't
+help with logging.gd's mixed indentation.
+
+The shipped tarballs (v0.23.10/.11/.12/.13) were each internally
+consistent (my working tree converted to all-spaces as I edited),
+but Brannen's installed copies were mixing tabs and spaces. The
+question that's now obvious in retrospect: **why was his file
+different from my tarball?**
+
+### Root cause of the indentation drift
+
+The Godot editor's script editor defaults to inserting TAB
+characters when the user presses Tab or makes edits — regardless
+of what the file's existing indentation style was, and regardless
+of `.editorconfig` settings in some configurations.
+
+Brannen has spent this entire saga opening `logging.gd`,
+`runtime_singleton.gd`, and `audio_emitter_3d.gd` in the Godot
+script editor to inspect them (and occasionally make small
+exploratory edits while debugging). Each save reintroduced tabs
+into a file that started as all-spaces.
+
+His three contaminated files map exactly to the three files he's
+had open in the script editor across this session:
+- `runtime_singleton.gd`: 516 tabs / 4 spaces  (4 = the v0.23.13
+  `get_render_stats` wrapper I added AFTER his last save)
+- `logging.gd`: 300 tabs / 214 spaces           (most-edited file)
+- `prefabs/audio_emitter_3d.gd`: 132 tabs / 5 spaces
+- All 14 other addon files: 0 tabs / clean spaces
+
+The pattern is unmistakable: tabs appear in proportion to script
+editor exposure.
+
+### Why `.editorconfig` didn't prevent it
+
+`godot/addons/gool/.editorconfig` was added in v0.23.5 and
+explicitly set `indent_style = space` for `*.gd`. The intent was
+to override Godot editor's tab default. In practice, Godot's
+EditorConfig support in 4.6.2 is incomplete or inconsistent for
+runtime indent enforcement — the editor displays the file with
+tabs and inserts tabs on edit, regardless of `.editorconfig`
+saying otherwise.
+
+The .editorconfig was fighting Godot's editor and losing.
+
+### Fix: switch to tabs everywhere
+
+Rather than fight Godot's editor convention, align with it.
+Godot's official GDScript style guide specifies **tabs** for
+indentation, with `tab_width = 4` for display:
+https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html#indentation
+
+Converted all `.gd` files in this release to tab indentation:
+- 17 addon scripts (`godot/addons/gool/*.gd`, prefabs/, resources/, editor/)
+- 4 example scripts (`examples/multiplayer_audio_sandbox/scripts/*.gd`)
+- 1 smoke script (`tests/godot/smoke/main.gd`)
+- **Total: 22 files converted** via `unexpand --first-only -t 4`
+
+Updated `.editorconfig` to specify `indent_style = tab` so that
+EditorConfig-respecting editors (and ideally future Godot
+versions) reinforce rather than fight the convention.
+
+This eliminates the failure mode entirely: there's nothing to
+mix when both the source AND the editor default agree on tabs.
+
+### What this means for users
+
+After installing v0.23.14:
+- The addon files arrive with tab indentation
+- Godot's script editor uses tabs by default
+- Opening + editing + saving in the script editor preserves tabs
+- No more mixed-indentation parse errors
+
+If a user has existing tab/space-mixed installations from
+v0.23.13 or earlier:
+- A clean reinstall via `gool-install.cmd` (which removes
+  `addons/gool/` entirely before extracting) replaces the
+  contaminated files with the new tab-clean ones.
+- No manual cleanup required.
+
+### Files touched
+
+- **22 `.gd` files**: spaces-to-tabs conversion via `unexpand
+  --first-only -t 4`. Semantic content unchanged; only leading
+  whitespace converted.
+- `godot/addons/gool/.editorconfig`: `indent_style = space` →
+  `indent_style = tab`, plus added `tab_width = 4` and a
+  prominent comment block explaining the v0.23.14 rationale.
+- Version triple, README, CHANGELOG — bumped to 0.23.14.
+
+### Verified
+
+- 0 space-indented lines remain in any `.gd` file under
+  `godot/addons/gool/`, `examples/multiplayer_audio_sandbox/`, or
+  `tests/godot/smoke/`.
+- All 22 converted files retain their semantic content (the
+  conversion only touches leading whitespace).
+- C++ library + version_test compile clean at 0.23.14.
+- The smoke's Tier 2 `func get_render_stats(` source-text check
+  still passes (the literal `func get_render_stats(` is present;
+  only its leading indent changed, and there ISN'T any since it's
+  a top-level function).
+
+### Lesson on indentation in mixed editor environments
+
+For any project where the user's editor is a Godot-flavored IDE
+that defaults to tabs, the source code should match that
+default. Writing committed source in spaces and asking
+`.editorconfig` to enforce them is fragile — it requires every
+contributor's editor to respect EditorConfig faithfully, which
+isn't true in practice for all editors.
+
+Going forward in this codebase: tabs only for `.gd` source.
+
+### Apology for the four-release detour
+
+This took four releases (v0.23.10 → v0.23.13) of increasingly
+contorted CI fixes before the real cause surfaced. The pattern:
+
+1. **v0.23.10**: assumed class_name cycle, fixed with `load()`.
+   Real bug masked.
+2. **v0.23.11**: refined headless-smoke grep pattern. False
+   positives from headless mode class_name resolution.
+3. **v0.23.12**: removed the unreliable grep pattern. Latent
+   Tier 2 staleness surfaced.
+4. **v0.23.13**: added missing `get_render_stats` wrapper. CI
+   should have gone green, but Brannen's editor-mode bug
+   persisted.
+5. **v0.23.14**: actual root cause found and fixed.
+
+The honest lesson: when a single user's environment fails in a
+way that CI doesn't replicate, look at the user's actual files,
+not at CI patterns or theoretical bug models. Brannen's
+contaminated file was a 60-second diagnosis once I looked at
+his uploaded project; I should have looked there much earlier.
+
 ## [0.23.13] - 2026-05-16 — Add `Gool.get_render_stats()` public wrapper (fixes smoke Tier 2)
 
 ### Problem
@@ -9614,7 +9787,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.13...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.14...HEAD
+[0.23.14]: https://github.com/siliconight/gool/releases/tag/v0.23.14
 [0.23.13]: https://github.com/siliconight/gool/releases/tag/v0.23.13
 [0.23.12]: https://github.com/siliconight/gool/releases/tag/v0.23.12
 [0.23.11]: https://github.com/siliconight/gool/releases/tag/v0.23.11

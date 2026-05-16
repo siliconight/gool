@@ -97,12 +97,12 @@ const _AUDIO_EXTENSIONS: Array[String] = ["wav", "ogg", "mp3", "flac", "opus"]
 # a load-time dependency on the autoload (the bank may be evaluated
 # in @tool mode before /root/Gool exists).
 const _CATEGORY_BY_SUBFOLDER: Dictionary = {
-    "sfx":      0,   # CATEGORY_SFX
-    "voice":    1,   # CATEGORY_VOICE
-    "music":    2,   # CATEGORY_MUSIC
-    "ambience": 3,   # CATEGORY_AMBIENCE
-    "ui":       4,   # CATEGORY_UI
-    "dialogue": 5,   # CATEGORY_DIALOGUE
+	"sfx":      0,   # CATEGORY_SFX
+	"voice":    1,   # CATEGORY_VOICE
+	"music":    2,   # CATEGORY_MUSIC
+	"ambience": 3,   # CATEGORY_AMBIENCE
+	"ui":       4,   # CATEGORY_UI
+	"dialogue": 5,   # CATEGORY_DIALOGUE
 }
 
 # Per-entry category, indexed by the same string keys as `sounds`.
@@ -135,160 +135,160 @@ var _rescan_queued: bool = false
 signal rescanned(sound_count: int)
 
 func _init() -> void:
-    # Scan happens at construction. For runtime, this populates the
-    # parent's `sounds` Dictionary before GoolSoundBankLoader iterates
-    # it. For editor (@tool mode), this also runs so the inspector
-    # can show the discovered count — DirAccess is fast (sub-100ms
-    # for typical project sizes) so we don't gate on editor vs runtime.
-    _scan_folder()
-    # In the editor, wire up live filesystem watching so the bank
-    # stays in sync with the project folder without manual rescans.
-    # Guarded by is_editor_hint() because EditorInterface only
-    # exists inside the editor process — at runtime this is a no-op.
-    if Engine.is_editor_hint():
-        _connect_filesystem_watch()
+	# Scan happens at construction. For runtime, this populates the
+	# parent's `sounds` Dictionary before GoolSoundBankLoader iterates
+	# it. For editor (@tool mode), this also runs so the inspector
+	# can show the discovered count — DirAccess is fast (sub-100ms
+	# for typical project sizes) so we don't gate on editor vs runtime.
+	_scan_folder()
+	# In the editor, wire up live filesystem watching so the bank
+	# stays in sync with the project folder without manual rescans.
+	# Guarded by is_editor_hint() because EditorInterface only
+	# exists inside the editor process — at runtime this is a no-op.
+	if Engine.is_editor_hint():
+		_connect_filesystem_watch()
 
 # Subscribes to the editor's filesystem-changed signal. Safe to
 # call more than once — the _fs_watch_connected guard prevents
 # duplicate connections (which Godot would otherwise allow,
 # resulting in N rescans per change).
 func _connect_filesystem_watch() -> void:
-    if _fs_watch_connected:
-        return
-    # EditorInterface is a static-access singleton in Godot 4.2+.
-    # get_resource_filesystem() returns the EditorFileSystem whose
-    # filesystem_changed signal fires after any project file is
-    # added, removed, moved, or reimported.
-    var efs := EditorInterface.get_resource_filesystem()
-    if efs == null:
-        # Defensive: should never happen inside the editor, but if
-        # the API surface changes we degrade to "manual rescan only"
-        # rather than erroring.
-        GoolLog.warn("bank", "EditorFileSystem unavailable",
-            {"effect": "live folder-watching disabled",
-             "fix": "re-open the project or re-set folder_path to rescan manually"})
-        return
-    efs.filesystem_changed.connect(_on_filesystem_changed)
-    _fs_watch_connected = true
+	if _fs_watch_connected:
+		return
+	# EditorInterface is a static-access singleton in Godot 4.2+.
+	# get_resource_filesystem() returns the EditorFileSystem whose
+	# filesystem_changed signal fires after any project file is
+	# added, removed, moved, or reimported.
+	var efs := EditorInterface.get_resource_filesystem()
+	if efs == null:
+		# Defensive: should never happen inside the editor, but if
+		# the API surface changes we degrade to "manual rescan only"
+		# rather than erroring.
+		GoolLog.warn("bank", "EditorFileSystem unavailable",
+			{"effect": "live folder-watching disabled",
+			 "fix": "re-open the project or re-set folder_path to rescan manually"})
+		return
+	efs.filesystem_changed.connect(_on_filesystem_changed)
+	_fs_watch_connected = true
 
 # Signal handler for EditorFileSystem.filesystem_changed. Rather
 # than rescanning immediately (the signal fires several times per
 # import), we queue a single deferred rescan and collapse repeat
 # signals until it runs.
 func _on_filesystem_changed() -> void:
-    if _rescan_queued:
-        return
-    _rescan_queued = true
-    # call_deferred pushes the actual rescan to the end of the
-    # current idle frame. Multiple filesystem_changed signals
-    # within the same frame all set _rescan_queued = true but only
-    # the first schedules the deferred call.
-    _do_deferred_rescan.call_deferred()
+	if _rescan_queued:
+		return
+	_rescan_queued = true
+	# call_deferred pushes the actual rescan to the end of the
+	# current idle frame. Multiple filesystem_changed signals
+	# within the same frame all set _rescan_queued = true but only
+	# the first schedules the deferred call.
+	_do_deferred_rescan.call_deferred()
 
 func _do_deferred_rescan() -> void:
-    _rescan_queued = false
-    var before := sounds.size()
-    _scan_folder()
-    var after := sounds.size()
-    # Only emit + log when something actually changed. A
-    # filesystem_changed signal for an unrelated file (a script
-    # edit, a scene save) shouldn't spam the output.
-    if before != after:
-        # v0.23.2: routed via GoolLog. DEBUG-level — this fires
-        # whenever the user drops a file into res://sounds/, and
-        # is interesting during dev but noisy in steady state.
-        GoolLog.debug("bank", "folder rescanned",
-            {"before": before, "after": after, "delta": after - before})
-    rescanned.emit(after)
+	_rescan_queued = false
+	var before := sounds.size()
+	_scan_folder()
+	var after := sounds.size()
+	# Only emit + log when something actually changed. A
+	# filesystem_changed signal for an unrelated file (a script
+	# edit, a scene save) shouldn't spam the output.
+	if before != after:
+		# v0.23.2: routed via GoolLog. DEBUG-level — this fires
+		# whenever the user drops a file into res://sounds/, and
+		# is interesting during dev but noisy in steady state.
+		GoolLog.debug("bank", "folder rescanned",
+			{"before": before, "after": after, "delta": after - before})
+	rescanned.emit(after)
 
 func _scan_folder() -> void:
-    sounds.clear()
-    sounds_category.clear()
-    sounds_looping.clear()
-    if folder_path == "":
-        return
-    if not DirAccess.dir_exists_absolute(folder_path):
-        # Don't push_warning during @tool execution at project load;
-        # too noisy. The Loader emits a runtime warning when it tries
-        # to register from an empty bank.
-        return
-    _scan_recursive(folder_path, "")
+	sounds.clear()
+	sounds_category.clear()
+	sounds_looping.clear()
+	if folder_path == "":
+		return
+	if not DirAccess.dir_exists_absolute(folder_path):
+		# Don't push_warning during @tool execution at project load;
+		# too noisy. The Loader emits a runtime warning when it tries
+		# to register from an empty bank.
+		return
+	_scan_recursive(folder_path, "")
 
 func _scan_recursive(absolute_path: String, relative_from_root: String) -> void:
-    var dir: DirAccess = DirAccess.open(absolute_path)
-    if dir == null:
-        return
-    dir.list_dir_begin()
-    while true:
-        var entry: String = dir.get_next()
-        if entry == "":
-            break
-        if entry.begins_with("."):
-            continue
-        # Skip Godot's own import-cache directory which sometimes
-        # shows up as a sibling of the audio files.
-        if entry == ".godot" or entry.ends_with(".import") or entry.ends_with(".uid"):
-            continue
-        var child_absolute: String = absolute_path.path_join(entry)
-        var child_relative: String
-        if relative_from_root == "":
-            child_relative = entry
-        else:
-            child_relative = relative_from_root.path_join(entry)
-        if dir.current_is_dir():
-            if recursive:
-                _scan_recursive(child_absolute, child_relative)
-            continue
-        if not _is_audio_file(entry):
-            continue
-        # Try to load the file as an AudioStream. Godot imports audio
-        # files (wav, ogg, mp3, flac) into AudioStreamWAV /
-        # AudioStreamOggVorbis / AudioStreamMP3 / AudioStreamFLAC
-        # automatically. If load() returns null, the file isn't a
-        # form Godot can import.
-        #
-        # v0.22.4: when this fails we now peek the file's first 64
-        # bytes and tell the user what the file actually is plus
-        # how to fix it. Previously the warning was generic ("not a
-        # loadable AudioStream — perhaps not yet imported"); the
-        # user was left to figure out whether the file was just
-        # un-reimported, or was in a format Godot doesn't support,
-        # or had a wrong extension. The codec-detection path here
-        # turns a 30-minute detective session into a one-line
-        # warning that names the actual codec and points at the
-        # fix.
-        var stream: Resource = load(child_absolute)
-        if stream == null or not (stream is AudioStream):
-            var classification: Dictionary = _classify_audio_file(child_absolute)
-            GoolLog.warn("bank", "could not register audio file", {
-                "path": child_absolute,
-                "detected_format": classification.codec,
-                "fix": classification.advice,
-            })
-            continue
-        var sound_name: String = _derive_name(child_relative)
-        sounds[sound_name] = stream
-        # Categorize. The "category" comes from the FIRST path segment
-        # in relative_from_root when category_from_subfolder is on.
-        if category_from_subfolder:
-            var first_segment: String = child_relative.split("/")[0].to_lower()
-            if _CATEGORY_BY_SUBFOLDER.has(first_segment):
-                sounds_category[sound_name] = _CATEGORY_BY_SUBFOLDER[first_segment]
-            else:
-                sounds_category[sound_name] = default_category
-        else:
-            sounds_category[sound_name] = default_category
-        # Apply category defaults: music + ambience loop by default.
-        if apply_category_defaults:
-            var cat: int = sounds_category[sound_name]
-            sounds_looping[sound_name] = (cat == 2 or cat == 3)  # Music or Ambience
-        else:
-            sounds_looping[sound_name] = false
-    dir.list_dir_end()
+	var dir: DirAccess = DirAccess.open(absolute_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var entry: String = dir.get_next()
+		if entry == "":
+			break
+		if entry.begins_with("."):
+			continue
+		# Skip Godot's own import-cache directory which sometimes
+		# shows up as a sibling of the audio files.
+		if entry == ".godot" or entry.ends_with(".import") or entry.ends_with(".uid"):
+			continue
+		var child_absolute: String = absolute_path.path_join(entry)
+		var child_relative: String
+		if relative_from_root == "":
+			child_relative = entry
+		else:
+			child_relative = relative_from_root.path_join(entry)
+		if dir.current_is_dir():
+			if recursive:
+				_scan_recursive(child_absolute, child_relative)
+			continue
+		if not _is_audio_file(entry):
+			continue
+		# Try to load the file as an AudioStream. Godot imports audio
+		# files (wav, ogg, mp3, flac) into AudioStreamWAV /
+		# AudioStreamOggVorbis / AudioStreamMP3 / AudioStreamFLAC
+		# automatically. If load() returns null, the file isn't a
+		# form Godot can import.
+		#
+		# v0.22.4: when this fails we now peek the file's first 64
+		# bytes and tell the user what the file actually is plus
+		# how to fix it. Previously the warning was generic ("not a
+		# loadable AudioStream — perhaps not yet imported"); the
+		# user was left to figure out whether the file was just
+		# un-reimported, or was in a format Godot doesn't support,
+		# or had a wrong extension. The codec-detection path here
+		# turns a 30-minute detective session into a one-line
+		# warning that names the actual codec and points at the
+		# fix.
+		var stream: Resource = load(child_absolute)
+		if stream == null or not (stream is AudioStream):
+			var classification: Dictionary = _classify_audio_file(child_absolute)
+			GoolLog.warn("bank", "could not register audio file", {
+				"path": child_absolute,
+				"detected_format": classification.codec,
+				"fix": classification.advice,
+			})
+			continue
+		var sound_name: String = _derive_name(child_relative)
+		sounds[sound_name] = stream
+		# Categorize. The "category" comes from the FIRST path segment
+		# in relative_from_root when category_from_subfolder is on.
+		if category_from_subfolder:
+			var first_segment: String = child_relative.split("/")[0].to_lower()
+			if _CATEGORY_BY_SUBFOLDER.has(first_segment):
+				sounds_category[sound_name] = _CATEGORY_BY_SUBFOLDER[first_segment]
+			else:
+				sounds_category[sound_name] = default_category
+		else:
+			sounds_category[sound_name] = default_category
+		# Apply category defaults: music + ambience loop by default.
+		if apply_category_defaults:
+			var cat: int = sounds_category[sound_name]
+			sounds_looping[sound_name] = (cat == 2 or cat == 3)  # Music or Ambience
+		else:
+			sounds_looping[sound_name] = false
+	dir.list_dir_end()
 
 func _is_audio_file(filename: String) -> bool:
-    var ext: String = filename.get_extension().to_lower()
-    return ext in _AUDIO_EXTENSIONS
+	var ext: String = filename.get_extension().to_lower()
+	return ext in _AUDIO_EXTENSIONS
 
 # v0.22.4: peek a file's first 64 bytes to identify what audio
 # codec/container it actually contains. Used to produce specific
@@ -303,139 +303,139 @@ func _is_audio_file(filename: String) -> bool:
 # kind of magic-number check Godot's own importers do internally,
 # just exposed here as actionable feedback.
 func _classify_audio_file(path: String) -> Dictionary:
-    var f: FileAccess = FileAccess.open(path, FileAccess.READ)
-    if f == null:
-        return {
-            "codec": "unreadable",
-            "advice": "Cannot open the file — check permissions and that the path exists."
-        }
-    var header_bytes: PackedByteArray = f.get_buffer(64)
-    f.close()
-    if header_bytes.size() < 4:
-        return {
-            "codec": "empty or truncated",
-            "advice": "File is too small to be valid audio. Re-export from your DAW."
-        }
-    # Build an ASCII-only string from the bytes for pattern
-    # matching. Non-printable bytes become '.' which is fine —
-    # we're looking for ASCII signatures like "OpusHead", "vorbis",
-    # "RIFF", "fLaC", "ID3".
-    var header: String = ""
-    for b in header_bytes:
-        if b >= 32 and b < 127:
-            header += char(b)
-        else:
-            header += "."
-    # Ogg container detection. The "OggS" magic is at byte 0;
-    # the codec identification (OpusHead or "vorbis") appears in
-    # the first page's payload, which lives within the first ~60
-    # bytes of the file.
-    if header.begins_with("OggS"):
-        if header.find("OpusHead") >= 0:
-            return {
-                "codec": "Opus (in Ogg container)",
-                "advice":
-                    "Godot 4.x has no built-in Opus importer. "
-                    + "Re-export from your DAW as WAV (always works) or "
-                    + "as Ogg Vorbis. **Logic Pro X note**: Logic's Ogg "
-                    + "export defaults to Opus — bounce as WAV instead, "
-                    + "or convert with: "
-                    + "ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg"
-            }
-        if header.find("vorbis") >= 0:
-            return {
-                "codec": "Vorbis (in Ogg container)",
-                "advice":
-                    "File contains valid Vorbis data but Godot couldn't "
-                    + "import it. Possible causes: (1) Godot hasn't "
-                    + "reimported the file yet — right-click in the "
-                    + "FileSystem dock and select Reimport. (2) The "
-                    + "Vorbis stream is corrupted or uses an unsupported "
-                    + "variant — try re-encoding from WAV: "
-                    + "ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg"
-            }
-        return {
-            "codec": "Unknown codec inside Ogg container",
-            "advice":
-                "Ogg container detected but the codec inside is neither "
-                + "Vorbis nor Opus. Re-export from your DAW as WAV."
-        }
-    # RIFF/WAV detection: "RIFF" at byte 0, "WAVE" at byte 8.
-    if header.begins_with("RIFF") and header.find("WAVE") >= 0:
-        return {
-            "codec": "RIFF/WAV",
-            "advice":
-                "WAV file detected but Godot couldn't import it. Possible "
-                + "causes: (1) Not yet imported — right-click in "
-                + "FileSystem and Reimport. (2) Unsupported WAV variant "
-                + "(e.g., 32-bit float or A-law/μ-law encoding) — "
-                + "re-export as 16-bit or 24-bit PCM."
-        }
-    # FLAC: "fLaC" magic at byte 0.
-    if header.begins_with("fLaC"):
-        return {
-            "codec": "FLAC",
-            "advice":
-                "FLAC file detected. Right-click in the FileSystem dock "
-                + "and select Reimport. If Reimport doesn't help, the "
-                + "FLAC stream may be corrupted — re-export from your DAW."
-        }
-    # MP3: ID3v2 header is "ID3" at byte 0; raw MPEG frames start
-    # with the 11-bit sync word 0xFFE0.
-    if header.begins_with("ID3"):
-        return {
-            "codec": "MP3 (with ID3 tags)",
-            "advice":
-                "MP3 file detected. Right-click in the FileSystem dock "
-                + "and select Reimport. MP3 import requires Godot's "
-                + "standard MP3 importer (enabled by default)."
-        }
-    if header_bytes.size() >= 2 \
-            and header_bytes[0] == 0xFF \
-            and (header_bytes[1] & 0xE0) == 0xE0:
-        return {
-            "codec": "MP3 (raw MPEG frame)",
-            "advice":
-                "MP3 file detected (no ID3 tags). Right-click in "
-                + "FileSystem and Reimport."
-        }
-    return {
-        "codec": "Unknown format",
-        "advice":
-            "File header doesn't match any known audio container "
-            + "(Ogg, RIFF/WAV, FLAC, MP3). The file may not actually "
-            + "contain audio data, or may use an unsupported format. "
-            + "First 16 bytes (hex): %s. " % _bytes_to_hex(header_bytes, 16)
-            + "Re-export from your DAW as WAV — it's the most reliable "
-            + "format for Godot's importer."
-    }
+	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return {
+			"codec": "unreadable",
+			"advice": "Cannot open the file — check permissions and that the path exists."
+		}
+	var header_bytes: PackedByteArray = f.get_buffer(64)
+	f.close()
+	if header_bytes.size() < 4:
+		return {
+			"codec": "empty or truncated",
+			"advice": "File is too small to be valid audio. Re-export from your DAW."
+		}
+	# Build an ASCII-only string from the bytes for pattern
+	# matching. Non-printable bytes become '.' which is fine —
+	# we're looking for ASCII signatures like "OpusHead", "vorbis",
+	# "RIFF", "fLaC", "ID3".
+	var header: String = ""
+	for b in header_bytes:
+		if b >= 32 and b < 127:
+			header += char(b)
+		else:
+			header += "."
+	# Ogg container detection. The "OggS" magic is at byte 0;
+	# the codec identification (OpusHead or "vorbis") appears in
+	# the first page's payload, which lives within the first ~60
+	# bytes of the file.
+	if header.begins_with("OggS"):
+		if header.find("OpusHead") >= 0:
+			return {
+				"codec": "Opus (in Ogg container)",
+				"advice":
+					"Godot 4.x has no built-in Opus importer. "
+					+ "Re-export from your DAW as WAV (always works) or "
+					+ "as Ogg Vorbis. **Logic Pro X note**: Logic's Ogg "
+					+ "export defaults to Opus — bounce as WAV instead, "
+					+ "or convert with: "
+					+ "ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg"
+			}
+		if header.find("vorbis") >= 0:
+			return {
+				"codec": "Vorbis (in Ogg container)",
+				"advice":
+					"File contains valid Vorbis data but Godot couldn't "
+					+ "import it. Possible causes: (1) Godot hasn't "
+					+ "reimported the file yet — right-click in the "
+					+ "FileSystem dock and select Reimport. (2) The "
+					+ "Vorbis stream is corrupted or uses an unsupported "
+					+ "variant — try re-encoding from WAV: "
+					+ "ffmpeg -i input.wav -c:a libvorbis -q:a 6 output.ogg"
+			}
+		return {
+			"codec": "Unknown codec inside Ogg container",
+			"advice":
+				"Ogg container detected but the codec inside is neither "
+				+ "Vorbis nor Opus. Re-export from your DAW as WAV."
+		}
+	# RIFF/WAV detection: "RIFF" at byte 0, "WAVE" at byte 8.
+	if header.begins_with("RIFF") and header.find("WAVE") >= 0:
+		return {
+			"codec": "RIFF/WAV",
+			"advice":
+				"WAV file detected but Godot couldn't import it. Possible "
+				+ "causes: (1) Not yet imported — right-click in "
+				+ "FileSystem and Reimport. (2) Unsupported WAV variant "
+				+ "(e.g., 32-bit float or A-law/μ-law encoding) — "
+				+ "re-export as 16-bit or 24-bit PCM."
+		}
+	# FLAC: "fLaC" magic at byte 0.
+	if header.begins_with("fLaC"):
+		return {
+			"codec": "FLAC",
+			"advice":
+				"FLAC file detected. Right-click in the FileSystem dock "
+				+ "and select Reimport. If Reimport doesn't help, the "
+				+ "FLAC stream may be corrupted — re-export from your DAW."
+		}
+	# MP3: ID3v2 header is "ID3" at byte 0; raw MPEG frames start
+	# with the 11-bit sync word 0xFFE0.
+	if header.begins_with("ID3"):
+		return {
+			"codec": "MP3 (with ID3 tags)",
+			"advice":
+				"MP3 file detected. Right-click in the FileSystem dock "
+				+ "and select Reimport. MP3 import requires Godot's "
+				+ "standard MP3 importer (enabled by default)."
+		}
+	if header_bytes.size() >= 2 \
+			and header_bytes[0] == 0xFF \
+			and (header_bytes[1] & 0xE0) == 0xE0:
+		return {
+			"codec": "MP3 (raw MPEG frame)",
+			"advice":
+				"MP3 file detected (no ID3 tags). Right-click in "
+				+ "FileSystem and Reimport."
+		}
+	return {
+		"codec": "Unknown format",
+		"advice":
+			"File header doesn't match any known audio container "
+			+ "(Ogg, RIFF/WAV, FLAC, MP3). The file may not actually "
+			+ "contain audio data, or may use an unsupported format. "
+			+ "First 16 bytes (hex): %s. " % _bytes_to_hex(header_bytes, 16)
+			+ "Re-export from your DAW as WAV — it's the most reliable "
+			+ "format for Godot's importer."
+	}
 
 # Helper for the diagnostic above. Returns space-separated hex of
 # the first `count` bytes, useful when the format detector can't
 # identify anything.
 func _bytes_to_hex(bytes: PackedByteArray, count: int) -> String:
-    var hex: String = ""
-    var n: int = min(count, bytes.size())
-    for i in n:
-        if i > 0:
-            hex += " "
-        hex += "%02X" % bytes[i]
-    return hex
+	var hex: String = ""
+	var n: int = min(count, bytes.size())
+	for i in n:
+		if i > 0:
+			hex += " "
+		hex += "%02X" % bytes[i]
+	return hex
 
 func _derive_name(relative_path: String) -> String:
-    # "music/explore_loop.ogg" → derived per naming_style.
-    var without_ext: String = relative_path.get_basename()
-    match naming_style:
-        0: return without_ext.get_file()            # "explore_loop"
-        1: return without_ext                       # "music/explore_loop"
-        2: return without_ext.replace("/", "_").to_lower()  # "music_explore_loop"
-        _: return without_ext
+	# "music/explore_loop.ogg" → derived per naming_style.
+	var without_ext: String = relative_path.get_basename()
+	match naming_style:
+		0: return without_ext.get_file()            # "explore_loop"
+		1: return without_ext                       # "music/explore_loop"
+		2: return without_ext.replace("/", "_").to_lower()  # "music_explore_loop"
+		_: return without_ext
 
 ## Returns the count of discovered sounds. Useful for editor
 ## inspectors and loader prefabs to display "X sounds will be
 ## registered from this bank".
 func get_sound_count() -> int:
-    return sounds.size()
+	return sounds.size()
 
 ## Forces a fresh scan of the folder. Call this from script after
 ## changing folder_path or naming_style at runtime.
@@ -447,6 +447,6 @@ func get_sound_count() -> int:
 ## naming_style change (which filesystem_changed won't catch since
 ## no file changed), or scripted tooling.
 func rescan() -> void:
-    _scan_folder()
-    if Engine.is_editor_hint():
-        rescanned.emit(sounds.size())
+	_scan_folder()
+	if Engine.is_editor_hint():
+		rescanned.emit(sounds.size())

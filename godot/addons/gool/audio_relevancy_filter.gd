@@ -25,13 +25,13 @@ extends RefCounted
 
 ## Per-peer context the filter needs to make decisions.
 class PeerInfo:
-    var peer_id: int
-    var position: Vector3
-    var team: int = 0          # 0 = no team / global
-    func _init(pid: int, pos: Vector3, t: int = 0) -> void:
-        peer_id = pid
-        position = pos
-        team = t
+	var peer_id: int
+	var position: Vector3
+	var team: int = 0          # 0 = no team / global
+	func _init(pid: int, pos: Vector3, t: int = 0) -> void:
+		peer_id = pid
+		position = pos
+		team = t
 
 ## Currently-known peers. Caller updates this from their multiplayer
 ## peer-tracking code. Map: peer_id -> PeerInfo.
@@ -45,15 +45,15 @@ var default_audible_radius: float = 50.0
 ## or move (typically every network tick for moving peers, or
 ## on-change-only for static ones).
 func update_peer(peer_id: int, position: Vector3, team: int = 0) -> void:
-    if peers.has(peer_id):
-        var p: PeerInfo = peers[peer_id]
-        p.position = position
-        p.team = team
-    else:
-        peers[peer_id] = PeerInfo.new(peer_id, position, team)
+	if peers.has(peer_id):
+		var p: PeerInfo = peers[peer_id]
+		p.position = position
+		p.team = team
+	else:
+		peers[peer_id] = PeerInfo.new(peer_id, position, team)
 
 func remove_peer(peer_id: int) -> void:
-    peers.erase(peer_id)
+	peers.erase(peer_id)
 
 ## Return the list of peer_ids that should receive a sound event at
 ## `source_position`. Pass `audible_radius` to override the default
@@ -65,19 +65,19 @@ func remove_peer(peer_id: int) -> void:
 ## If `exclude_peer_id` is non-zero, that peer is omitted (used by
 ## the source to avoid sending an RPC back to themselves).
 func filter(source_position: Vector3,
-              audible_radius: float = -1.0,
-              source_team: int = 0,
-              exclude_peer_id: int = 0) -> PackedInt32Array:
-    var radius := audible_radius if audible_radius >= 0.0 else default_audible_radius
-    var radius_sq := radius * radius
-    var out := PackedInt32Array()
-    for peer_id in peers.keys():
-        if peer_id == exclude_peer_id:
-            continue
-        var p: PeerInfo = peers[peer_id]
-        if source_team > 0 and p.team != source_team:
-            continue
-        var d_sq := source_position.distance_squared_to(p.position)
-        if d_sq <= radius_sq:
-            out.push_back(peer_id)
-    return out
+			  audible_radius: float = -1.0,
+			  source_team: int = 0,
+			  exclude_peer_id: int = 0) -> PackedInt32Array:
+	var radius := audible_radius if audible_radius >= 0.0 else default_audible_radius
+	var radius_sq := radius * radius
+	var out := PackedInt32Array()
+	for peer_id in peers.keys():
+		if peer_id == exclude_peer_id:
+			continue
+		var p: PeerInfo = peers[peer_id]
+		if source_team > 0 and p.team != source_team:
+			continue
+		var d_sq := source_position.distance_squared_to(p.position)
+		if d_sq <= radius_sq:
+			out.push_back(peer_id)
+	return out

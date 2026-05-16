@@ -76,130 +76,130 @@ var _last_received_tick: int = 0
 var _last_received_local_time: float = 0.0
 
 func _ready() -> void:
-    if Engine.is_editor_hint():
-        return
-    _runtime = get_node_or_null("/root/Gool")
-    if _runtime == null:
-        push_warning("NetworkedAudioEmitter3D: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
-        return
-    if not _runtime.is_initialized():
-        await _runtime.ready_to_play
-    _runtime.register_sound_definition(sound_name, true, looping,
-                                          min_distance, max_distance,
-                                          loop_crossfade_ms)
-    if autoplay:
-        play()
+	if Engine.is_editor_hint():
+		return
+	_runtime = get_node_or_null("/root/Gool")
+	if _runtime == null:
+		push_warning("NetworkedAudioEmitter3D: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
+		return
+	if not _runtime.is_initialized():
+		await _runtime.ready_to_play
+	_runtime.register_sound_definition(sound_name, true, looping,
+										  min_distance, max_distance,
+										  loop_crossfade_ms)
+	if autoplay:
+		play()
 
 # ---- Public API ----
 
 func play() -> void:
-    if _runtime == null or sound_name == "":
-        return
-    if _handle != 0:
-        return
-    _handle = _runtime.create_emitter(
-        sound_name, global_transform.origin, looping, fade_in_ms)
-    if _handle != 0:
-        emitter_created.emit()
+	if _runtime == null or sound_name == "":
+		return
+	if _handle != 0:
+		return
+	_handle = _runtime.create_emitter(
+		sound_name, global_transform.origin, looping, fade_in_ms)
+	if _handle != 0:
+		emitter_created.emit()
 
 func stop() -> void:
-    if _handle != 0 and _runtime != null:
-        _runtime.destroy_emitter(_handle, fade_out_ms)
-        _handle = 0
-        await get_tree().create_timer(fade_out_ms / 1000.0).timeout
-        emitter_destroyed.emit()
+	if _handle != 0 and _runtime != null:
+		_runtime.destroy_emitter(_handle, fade_out_ms)
+		_handle = 0
+		await get_tree().create_timer(fade_out_ms / 1000.0).timeout
+		emitter_destroyed.emit()
 
 # ---- Process loop ----
 
 func _process(delta: float) -> void:
-    if _runtime == null or _handle == 0:
-        return
+	if _runtime == null or _handle == 0:
+		return
 
-    if _is_authority():
-        # Update local engine state immediately every frame so the
-        # authority hears its own emitter without latency.
-        var fwd := -global_transform.basis.z
-        _runtime.set_emitter_transform(
-            _handle, global_transform.origin, fwd, _estimate_velocity(delta))
-        # Broadcast at network tick rate to other peers.
-        _broadcast_timer += delta * 1000.0
-        if _broadcast_timer >= network_tick_ms:
-            _broadcast_timer = 0.0
-            _broadcast_transform()
-    else:
-        # Non-authority: interpolate between last two received transforms.
-        if interpolate_received and _last_received_tick > 0:
-            var local_dt := (Time.get_ticks_msec() / 1000.0) - _last_received_local_time
-            var t := clamp(local_dt / (network_tick_ms / 1000.0), 0.0, 1.5)
-            var interpolated := _previous_received_position.lerp(
-                _last_received_position, t)
-            _runtime.set_emitter_transform(
-                _handle, interpolated, Vector3.FORWARD, _last_received_velocity)
-            global_transform.origin = interpolated
+	if _is_authority():
+		# Update local engine state immediately every frame so the
+		# authority hears its own emitter without latency.
+		var fwd := -global_transform.basis.z
+		_runtime.set_emitter_transform(
+			_handle, global_transform.origin, fwd, _estimate_velocity(delta))
+		# Broadcast at network tick rate to other peers.
+		_broadcast_timer += delta * 1000.0
+		if _broadcast_timer >= network_tick_ms:
+			_broadcast_timer = 0.0
+			_broadcast_transform()
+	else:
+		# Non-authority: interpolate between last two received transforms.
+		if interpolate_received and _last_received_tick > 0:
+			var local_dt := (Time.get_ticks_msec() / 1000.0) - _last_received_local_time
+			var t := clamp(local_dt / (network_tick_ms / 1000.0), 0.0, 1.5)
+			var interpolated := _previous_received_position.lerp(
+				_last_received_position, t)
+			_runtime.set_emitter_transform(
+				_handle, interpolated, Vector3.FORWARD, _last_received_velocity)
+			global_transform.origin = interpolated
 
 func _exit_tree() -> void:
-    if _runtime != null and _handle != 0:
-        _runtime.destroy_emitter(_handle, fade_out_ms)
-        _handle = 0
+	if _runtime != null and _handle != 0:
+		_runtime.destroy_emitter(_handle, fade_out_ms)
+		_handle = 0
 
 # ---- Authority-side broadcast ----
 
 func _broadcast_transform() -> void:
-    if not multiplayer.has_multiplayer_peer():
-        return
-    var pos := global_transform.origin
-    var fwd := -global_transform.basis.z
-    var vel := _estimate_velocity(network_tick_ms / 1000.0)
-    var sim_tick := Time.get_ticks_msec() / 16
-    var targets := _filter_targets(pos)
-    for pid in targets:
-        rpc_id(pid, "_receive_transform", pos, fwd, vel, sim_tick)
+	if not multiplayer.has_multiplayer_peer():
+		return
+	var pos := global_transform.origin
+	var fwd := -global_transform.basis.z
+	var vel := _estimate_velocity(network_tick_ms / 1000.0)
+	var sim_tick := Time.get_ticks_msec() / 16
+	var targets := _filter_targets(pos)
+	for pid in targets:
+		rpc_id(pid, "_receive_transform", pos, fwd, vel, sim_tick)
 
 @rpc("authority", "unreliable_ordered", "call_remote")
 func _receive_transform(position: Vector3, forward: Vector3,
-                          velocity: Vector3, simulation_tick: int) -> void:
-    if _runtime == null or _handle == 0:
-        return
-    # Save for interpolation; the actual engine update happens in
-    # _process to keep the rate consistent with display.
-    _previous_received_position = _last_received_position
-    _last_received_position = position
-    _last_received_velocity = velocity
-    _last_received_tick = simulation_tick
-    _last_received_local_time = Time.get_ticks_msec() / 1000.0
-    if not interpolate_received:
-        _runtime.update_replicated_transform(_handle, position, forward,
-                                                velocity, simulation_tick)
-        global_transform.origin = position
+						  velocity: Vector3, simulation_tick: int) -> void:
+	if _runtime == null or _handle == 0:
+		return
+	# Save for interpolation; the actual engine update happens in
+	# _process to keep the rate consistent with display.
+	_previous_received_position = _last_received_position
+	_last_received_position = position
+	_last_received_velocity = velocity
+	_last_received_tick = simulation_tick
+	_last_received_local_time = Time.get_ticks_msec() / 1000.0
+	if not interpolate_received:
+		_runtime.update_replicated_transform(_handle, position, forward,
+												velocity, simulation_tick)
+		global_transform.origin = position
 
 # ---- Helpers ----
 
 func _is_authority() -> bool:
-    if not multiplayer.has_multiplayer_peer():
-        return true   # singleplayer / offline: this peer is authority
-    return is_multiplayer_authority()
+	if not multiplayer.has_multiplayer_peer():
+		return true   # singleplayer / offline: this peer is authority
+	return is_multiplayer_authority()
 
 var _last_position_for_velocity: Vector3 = Vector3.ZERO
 var _has_velocity_baseline: bool = false
 
 func _estimate_velocity(dt: float) -> Vector3:
-    if dt < 0.001:
-        return Vector3.ZERO
-    var current := global_transform.origin
-    if not _has_velocity_baseline:
-        _last_position_for_velocity = current
-        _has_velocity_baseline = true
-        return Vector3.ZERO
-    var v := (current - _last_position_for_velocity) / dt
-    _last_position_for_velocity = current
-    return v
+	if dt < 0.001:
+		return Vector3.ZERO
+	var current := global_transform.origin
+	if not _has_velocity_baseline:
+		_last_position_for_velocity = current
+		_has_velocity_baseline = true
+		return Vector3.ZERO
+	var v := (current - _last_position_for_velocity) / dt
+	_last_position_for_velocity = current
+	return v
 
 func _filter_targets(position: Vector3) -> PackedInt32Array:
-    if relevancy_filter != null:
-        return relevancy_filter.filter(position, audible_radius, 0,
-                                          multiplayer.get_unique_id())
-    var out := PackedInt32Array()
-    if multiplayer.has_multiplayer_peer():
-        for pid in multiplayer.get_peers():
-            out.push_back(pid)
-    return out
+	if relevancy_filter != null:
+		return relevancy_filter.filter(position, audible_radius, 0,
+										  multiplayer.get_unique_id())
+	var out := PackedInt32Array()
+	if multiplayer.has_multiplayer_peer():
+		for pid in multiplayer.get_peers():
+			out.push_back(pid)
+	return out
