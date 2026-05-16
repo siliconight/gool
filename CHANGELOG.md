@@ -12,6 +12,151 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.15] - 2026-05-16 — Revert v0.23.10's `load()` workaround (cycle was a false diagnosis)
+
+### Problem
+
+After installing v0.23.14 (which fixed the actual root-cause
+indentation bug), Brannen pressed F5 and hit a NEW parse error:
+
+```
+Error at (300, 16): Cannot infer the type of "ctx" variable
+because the value doesn't have a set type.
+```
+
+at `logging.gd:300`:
+
+```gdscript
+var ctx := ctx_script.new()
+```
+
+### Root cause
+
+This is the side effect of v0.23.10's "circular class_name dep"
+workaround — which we now know was based on a wrong diagnosis.
+
+v0.23.10 changed `create_context` from:
+
+```gdscript
+static func create_context(...) -> GoolLogContext:
+    var ctx := GoolLogContext.new()
+```
+
+to:
+
+```gdscript
+static func create_context(...) -> Object:
+    var ctx_script: Script = load("res://addons/gool/logging_context.gd")
+    var ctx := ctx_script.new()
+```
+
+The `load()` form works around an imagined class_name cycle by
+loading the script via path string instead of by class_name
+reference. The problem: `Script.new()` returns `Variant` in the
+Godot 4 type system. `var ctx := ctx_script.new()` then can't
+infer a type, and the parser rejects it.
+
+This wouldn't have surfaced in CI's headless smoke because the
+smoke does parse-only loading; it doesn't actually call
+`create_context()`. The first time the line runs is when a real
+Godot project tries to instantiate a context — i.e., when
+`runtime_singleton.gd:_ready()` does `GoolLog.create_context(...)`
+at startup.
+
+### Why we're reverting v0.23.10's workaround entirely
+
+v0.23.14 established that the original "Could not resolve class
+GoolLog, because of a parser error" was caused by mixed
+tab/space indentation in logging.gd — NOT by a class_name cycle.
+With indentation now fixed (tabs everywhere), both class_names
+register cleanly during editor scan, and direct cross-references
+resolve fine.
+
+The cycle was never a real problem in editor mode. v0.23.10's
+`load()` workaround was solving a non-existent issue, and as a
+side effect introduced this `:=`-infer-Variant bug that's now
+biting us.
+
+Reverting to the direct form:
+
+```gdscript
+static func create_context(category: String, label: String = "") -> GoolLogContext:
+    var ctx := GoolLogContext.new()
+    ctx.category = category
+    ctx.label = label
+    return ctx
+```
+
+This is the original v0.23.4 code. Cleaner, type-safe, no
+Variant inference issue. The lengthy v0.23.10 comment block
+explaining the workaround is replaced with a shorter comment
+documenting WHY the previous workaround was reverted (so the
+next maintainer doesn't re-add it).
+
+### What this looks like in practice
+
+Calling sites stay the same:
+
+```gdscript
+var _log_ctx: GoolLogContext = GoolLog.create_context("emitter", "audio_emitter_3d.gd")
+_log_ctx.info("play", {"sound": name})
+```
+
+The variable annotation `: GoolLogContext` was previously
+recommended (in v0.23.10's comment) because the return type was
+`Object`. Now the signature returns `GoolLogContext` directly, so
+type inference works:
+
+```gdscript
+var _log_ctx := GoolLog.create_context("emitter", "audio_emitter_3d.gd")
+# ↑ inferred as GoolLogContext, full autocomplete
+```
+
+Both forms work; the second is now also fine.
+
+### Files touched
+
+- `godot/addons/gool/logging.gd` — `create_context` signature
+  and body reverted to direct GoolLogContext reference. Comment
+  block updated to document the v0.23.10/v0.23.15 history so the
+  workaround doesn't get re-introduced speculatively.
+- Version triple, README, CHANGELOG — bumped to 0.23.15.
+
+### Verified
+
+- `create_context` signature reads `-> GoolLogContext`
+- Body is `var ctx := GoolLogContext.new()` (direct reference)
+- No `ctx_script` / `load("res://addons/gool/logging_context.gd")`
+  references remain in the file
+- C++ library + version_test compile clean at 0.23.15
+- File remains all-tab-indented (matching v0.23.14's convention)
+- No new patterns triggered in the smoke's KNOWN_REAL_ERRORS
+
+### Lessons accumulated
+
+The full v0.23.10 → v0.23.15 saga in summary:
+
+| Release | What I thought was wrong | What was actually wrong |
+|---------|--------------------------|-------------------------|
+| 0.23.10 | Circular class_name dep | Mixed tab/space indent in logging.gd |
+| 0.23.11 | CI smoke grep pattern   | Same (still indent)               |
+| 0.23.12 | Same grep pattern       | Same                              |
+| 0.23.13 | Smoke Tier 2 staleness  | Same                              |
+| 0.23.14 | **Actual indentation**  | (correct)                         |
+| 0.23.15 | (this) v0.23.10's side effect from solving a non-existent problem | (correct) |
+
+Sequence pattern: the wrong diagnosis at v0.23.10 cascaded into
+3 releases of CI patches followed by 2 releases unwinding the
+workaround. Total damage: 6 releases for what should have been
+a 1-release indentation fix.
+
+Going forward principle: **before adding a workaround, look at
+the actual file contents that exhibit the bug, not at the
+theoretical model of how the bug COULD happen.** A 60-second
+look at Brannen's uploaded project at v0.23.10 would have
+revealed mixed indentation. Instead I theorized about class_name
+resolution semantics.
+
 ## [0.23.14] - 2026-05-16 — Switch all GDScript to tab indentation (Godot convention)
 
 ### Problem
@@ -9787,7 +9932,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.14...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.15...HEAD
+[0.23.15]: https://github.com/siliconight/gool/releases/tag/v0.23.15
 [0.23.14]: https://github.com/siliconight/gool/releases/tag/v0.23.14
 [0.23.13]: https://github.com/siliconight/gool/releases/tag/v0.23.13
 [0.23.12]: https://github.com/siliconight/gool/releases/tag/v0.23.12

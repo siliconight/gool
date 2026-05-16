@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.23.14
+    VERSION 0.23.15
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
