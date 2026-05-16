@@ -316,6 +316,25 @@ func get_version() -> Dictionary:
         return {}
     return _runtime.get_version()
 
+# Render-thread health & activity stats. Polled by GoolDebugOverlay
+# (and any user-facing debug HUDs) to surface mix-thread metrics
+# like voice count, peak amplitude, invocation count, and frame
+# count. The dictionary shape is documented in gool_godot.cpp
+# around line 477; see `get_render_stats[\"peak_amplitude\"]` etc.
+#
+# Returns an empty dict before init() so this is safe to call from
+# overlay UI that initializes before the audio runtime is ready.
+#
+# Added in v0.23.13 to surface the C++-binding method through Gool
+# as a first-class public API (previously callers reached into
+# `_runtime.get_render_stats()` directly, e.g. plugin.gd:49's
+# documentation comment referenced `Gool.get_render_stats()` even
+# though that wrapper didn't exist).
+func get_render_stats() -> Dictionary:
+    if _runtime == null:
+        return {}
+    return _runtime.get_render_stats()
+
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
                          sr: int = 48000, ch: int = 1) -> int:
     return _runtime.register_pcm_sound(name, samples, sr, ch)

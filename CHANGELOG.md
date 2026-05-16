@@ -12,6 +12,131 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.13] - 2026-05-16 — Add `Gool.get_render_stats()` public wrapper (fixes smoke Tier 2)
+
+### Problem
+
+v0.23.12's CI run (workflow run 25948372852 on commit 4733eca)
+again failed `godot / headless-smoke` at step 5, this time at
+line 325 (different line than v0.23.10/11's failures, indicating
+a different failure point now that the Tier 3 pattern was
+removed).
+
+### Root cause: missing GDScript wrapper for a C++ binding method
+
+The smoke's Tier 2 source-text scan (added in v0.23.8) verifies
+that critical scripts expose specific named methods in their
+source text. For `runtime_singleton.gd` the expected method is
+`get_render_stats`:
+
+```gdscript
+# tests/godot/smoke/main.gd:134
+"res://addons/gool/runtime_singleton.gd": {
+    "constants": [],
+    "methods": ["get_render_stats"],
+},
+```
+
+But `runtime_singleton.gd` had no `func get_render_stats(`
+declaration. The method is called internally as
+`_runtime.get_render_stats()` — that's a method on the GDExtension
+C++ binding (`GoolAudioRuntime`), accessed through the private
+`_runtime` reference, NOT a public GDScript wrapper on Gool.
+
+When the smoke ran in v0.23.12 (with the unreliable class_name
+patterns now removed and not masking the real issue), this Tier 2
+check finally surfaced. The smoke reported SMOKE FAIL, which CI
+treats as a hard error.
+
+The bug is latent and has been since the smoke's Tier 2 check was
+added in v0.23.8 — the smoke was always going to fail on this,
+but the spurious Tier 3 class_name pattern failures masked it for
+v0.23.10/11.
+
+### Why the wrapper SHOULD exist
+
+`plugin.gd:49` has a documentation comment:
+
+```gdscript
+# v0.23.1: drop-in debug HUD. Polls Gool.get_render_stats() at
+```
+
+— referencing `Gool.get_render_stats()` as if it were the public
+API. But internal callers (the runtime's own logging in
+`_log_render_stats` and `gool_debug_overlay.gd:229`) reach into
+`_runtime.get_render_stats()` directly because the wrapper was
+never actually added. The comment was forward-looking documentation
+that the implementation didn't catch up to.
+
+### Fix
+
+Added the missing wrapper to `runtime_singleton.gd` next to
+`get_version()` — same style:
+
+```gdscript
+func get_render_stats() -> Dictionary:
+    if _runtime == null:
+        return {}
+    return _runtime.get_render_stats()
+```
+
+Safe to call before init() (returns empty dict) so debug overlay
+UI can poll without ordering constraints. Delegates to the C++
+binding method (defined in `gool_godot.cpp` around line 477).
+This is what the documentation comment claimed all along; now
+the implementation matches.
+
+### What this means for the test rig + GoolDebugOverlay
+
+GoolDebugOverlay (added in v0.23.1) currently calls
+`_runtime.get_render_stats()` directly. It continues to work
+unchanged — accessing _runtime via a friend-like pattern is
+allowed for the prefabs since they're shipped together with the
+autoload.
+
+User code that wants to read render stats can now do so cleanly
+via `Gool.get_render_stats()` instead of poking at internal
+attributes. The session 3 work for the multiplayer audio sandbox
+test rig will use this API to display per-frame voice count
+during the gunshot SFX stress test.
+
+### Lesson on smoke Tier 2 staleness
+
+The Tier 2 source-text scan's expectations were authored under
+the assumption that certain public APIs would be present. When
+the actual implementation drifted from those expectations
+(`get_render_stats` was never added as a public wrapper), the
+smoke could only catch the drift when the noisier Tier 3
+patterns were quieted.
+
+This is a useful pattern: **noise in one tier masked staleness in
+another tier**. Removing the noise (v0.23.12) exposed the
+staleness (v0.23.13). The right response is to fix the staleness,
+not to add the noise back.
+
+Future: the smoke's interface_checks should periodically be
+audited against actual addon use patterns. If a method listed
+there isn't actually called from real client code (game or
+example), it shouldn't be in interface_checks at all. Conversely,
+if a method IS called from real client code but isn't checked,
+add it. The current set (constants + methods on logging.gd,
+logging_context.gd, runtime_singleton.gd) covers the user-facing
+API surface that real code depends on.
+
+### Files touched
+
+- `godot/addons/gool/runtime_singleton.gd` — added 18 lines (the
+  wrapper plus its doc comment).
+- Version triple, README, CHANGELOG — bumped to 0.23.13.
+
+### Verified
+
+- `func get_render_stats(` now matches the smoke's exact
+  source-text pattern via `src.contains("func get_render_stats(")`.
+- C++ library + version_test compile clean at 0.23.13.
+- The wrapper's null-guard mirrors `get_version()` so it's safe to
+  call before `init()` from any overlay code.
+
 ## [0.23.12] - 2026-05-16 — Remove unreliable headless-smoke pattern (third strike)
 
 ### Problem
@@ -9489,7 +9614,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.12...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.13...HEAD
+[0.23.13]: https://github.com/siliconight/gool/releases/tag/v0.23.13
 [0.23.12]: https://github.com/siliconight/gool/releases/tag/v0.23.12
 [0.23.11]: https://github.com/siliconight/gool/releases/tag/v0.23.11
 [0.23.10]: https://github.com/siliconight/gool/releases/tag/v0.23.10
