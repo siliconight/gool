@@ -734,6 +734,28 @@ jobs:
           # specific and distinguishable.
           echo ""
           echo "===== known-real-error pattern scan ====="
+          # v0.23.12: removed "because of a parser error" / "Could
+          # not resolve class" patterns. Both appear in the SAME
+          # Godot stderr line ("Parser Error: Could not resolve
+          # class X, because of a parser error.") and that line is
+          # emitted in headless mode for EVERY cross-script
+          # class_name reference, because --headless doesn't
+          # populate the global class registry the way --editor
+          # does. Three release attempts (v0.23.6, v0.23.10,
+          # v0.23.11) tried to make these patterns work as catch
+          # mechanisms for real class_name cycles; all three caused
+          # false positives in CI. The remaining patterns are all
+          # syntactic checks that DO produce reliable signal in
+          # headless mode.
+          #
+          # We lose: the ability to catch a newly-introduced
+          # class_name cycle via CI grep. We accept: editor-time
+          # error reporting catches these within seconds of opening
+          # a project (proven by v0.23.10 episode — Brannen caught
+          # the GoolLog ↔ GoolLogContext cycle on first F5 attempt,
+          # before CI even completed). The grep was supposed to be
+          # belt-and-suspenders; the belt (main.gd's SMOKE OK and
+          # the editor-time check) is sufficient on its own.
           KNOWN_REAL_ERRORS=(
             "isn't a constant expression"
             "is not a constant expression"
@@ -741,7 +763,6 @@ jobs:
             "Mixed use of tabs and spaces"
             "Cyclic dependency between"
             "not found in base"
-            "because of a parser error"
           )
           patterns_found=0
           for pattern in "${KNOWN_REAL_ERRORS[@]}"; do

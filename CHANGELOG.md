@@ -12,6 +12,113 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.12] - 2026-05-16 — Remove unreliable headless-smoke pattern (third strike)
+
+### Problem
+
+v0.23.11's CI run (workflow run 25948019923 on commit b015ac8)
+again failed `godot / headless-smoke` at step 5 line 304, exit
+code 1. Same place v0.23.10 failed. The "because of a parser
+error" pattern refinement didn't fix it.
+
+### Root cause
+
+I had the wrong mental model of when Godot emits this string.
+The actual Godot error format is a single line:
+
+```
+Parser Error: Could not resolve class "X", because of a parser error.
+```
+
+Both phrases — `"Could not resolve class"` AND `"because of a
+parser error"` — appear in the SAME line. Godot emits this line
+in `--headless` mode for EVERY cross-script `class_name`
+reference, because headless mode doesn't populate the global
+class_name registry the way `--editor` does. The line is benign
+in that context (the same code parses cleanly in the editor).
+
+Neither half of the string is a reliable signal in the smoke
+environment. My v0.23.10 attempt to catch real cascade failures,
+and v0.23.11's refinement, both ended up matching the benign
+case.
+
+### Decision: accept defeat on this pattern, ship without it
+
+Three release attempts (v0.23.6, v0.23.10, v0.23.11) tried to
+make the headless-smoke grep catch class_name cycles. All three
+caused false-positive CI failures. The pattern category is
+fundamentally unreliable in `--headless` mode without
+`--editor`.
+
+What we lose:
+- The CI grep can't catch a newly-introduced class_name cycle.
+
+What we keep:
+- `main.gd`'s SMOKE OK / FAIL signal — primary check, walks every
+  addon script via `load()`, verifies critical interfaces exist.
+- All six remaining KNOWN_REAL_ERROR patterns. These are
+  syntactic / formatting checks that produce reliable signal in
+  headless mode (constant-expression errors, tab/space mixing,
+  cyclic file dependencies, method-not-found-in-base).
+- Editor-time error reporting in actual Godot projects. The
+  v0.23.10 GoolLog ↔ GoolLogContext cycle was caught within
+  seconds of Brannen's first F5 attempt, well before any CI
+  signal could have helped. Editor-time IS the canonical check
+  for class_name cycles.
+
+The grep was originally framed as belt-and-suspenders. The belt
+(SMOKE OK + editor checks) is sufficient on its own. Suspenders
+were causing more problems than they solved.
+
+### Fix
+
+Remove `"because of a parser error"` from KNOWN_REAL_ERRORS in
+`.github/workflows/ci.yml`. Add an extensive comment explaining
+why the pattern can't be used and what we rely on instead.
+
+Three iterations of pattern-tuning surface a real lesson about
+the headless-smoke environment that's now documented in-source
+for the next person who's tempted to add a class_name-related
+pattern.
+
+### Files touched
+
+- `.github/workflows/ci.yml` — removed 1 pattern, added ~20 lines
+  of explanatory comment in its place.
+- Version triple, README, CHANGELOG — bumped to 0.23.12.
+
+### Verified
+
+- KNOWN_REAL_ERRORS array has 6 patterns, all syntactic or
+  formatting checks (not class_name resolution).
+- C++ library + version_test compile clean at 0.23.12.
+- The `"not found in base"` pattern added in v0.23.9 remains —
+  that one IS reliable (Godot emits it only for genuine
+  method-not-found-on-base-class cases, not for headless registry
+  artifacts).
+
+### Lesson archived in ci.yml comments
+
+The headless-smoke environment can detect:
+- Syntactic parse errors (mismatched brackets, bad tokens, etc.)
+- Constant-expression issues (the v0.23.2 `_LEVEL_NAMES` class)
+- Indentation issues
+- Cyclic file imports (different from class_name cycles)
+- Method calls on `self` that don't resolve (the v0.23.9
+  `remove_tool_submenu_item` class)
+
+The headless-smoke environment CANNOT reliably detect:
+- Class_name resolution failures (cascade or otherwise) — every
+  benign cross-reference produces the same error string as a real
+  failure
+- Editor-only behavior (plugin lifecycle, autoload registration,
+  inspector integration)
+- Runtime errors (script body execution)
+
+For the categories CI can't catch, editor-time error reporting in
+real Godot projects fills the gap. Brannen's "open project, press
+F5" workflow is the canonical check for those.
+
 ## [0.23.11] - 2026-05-15 — Smoke pattern refinement + multiplayer audio sandbox example
 
 ### Problem
@@ -9382,7 +9489,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.11...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.12...HEAD
+[0.23.12]: https://github.com/siliconight/gool/releases/tag/v0.23.12
 [0.23.11]: https://github.com/siliconight/gool/releases/tag/v0.23.11
 [0.23.10]: https://github.com/siliconight/gool/releases/tag/v0.23.10
 [0.23.9]: https://github.com/siliconight/gool/releases/tag/v0.23.9
