@@ -61,14 +61,14 @@ jobs:
             extra_cmake: ''
           - harness: fuzz_audio_decoders
             # Decoders are gated on per-format flags; build all three on.
-            extra_cmake: |
+            extra_cmake: >-
               -DAUDIO_ENGINE_DECODERS_WAV=ON
               -DAUDIO_ENGINE_DECODERS_OGG=ON
               -DAUDIO_ENGINE_DECODERS_FLAC=ON
           - harness: fuzz_opus_voice
             # Opus codec is opt-in; the CMake guard above only builds
             # this harness when AUDIO_ENGINE_VOICE_OPUS=ON.
-            extra_cmake: |
+            extra_cmake: >-
               -DAUDIO_ENGINE_VOICE_OPUS=ON
 
     steps:
