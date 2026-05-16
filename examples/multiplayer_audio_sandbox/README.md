@@ -130,8 +130,16 @@ prompt on first host).
 | Alone, host has just started | playing | duck on fire | (none) |
 | Alone, client connected | playing | duck on fire | from peer position |
 | You fire | dips ~6dB during fire | sharp pop | (none) |
-| Peer fires | unchanged | (none) | sharp pop from their location |
+| Peer fires | **dips ~6dB during their fire** | (none) | sharp pop from their location |
 | Both fire | dips ~6dB | sharp pop | sharp pop from their location |
+
+**Note on ducking model:** In this sandbox, **any** gunshot (yours
+or the other peer's) ducks the music because both route to the
+same `Sfx` bus that the music's sidechain compressor listens to.
+A more sophisticated "your-own-actions-only duck the music"
+pattern (used by Helldivers 2 / DRG / L4D2) would require gool to
+expose a play-time bus override API, which it doesn't currently
+have. Tracked as a roadmap item for a future release.
 
 If any of those don't match, see Troubleshooting.
 
@@ -141,16 +149,13 @@ If any of those don't match, see Troubleshooting.
 
 ```
 Master
-├── Music (compressor, sidechain ← LocalSfx)
-└── SfxAll
-    ├── LocalSfx       ← your gunshots route here
-    └── RemoteSfx      ← other peers' gunshots route here
+├── Music (compressor, sidechain ← Sfx)
+└── Sfx        ← all gunshots (yours + remote)
 ```
 
-The compressor on Music has its sidechain input set to LocalSfx.
-When LocalSfx has energy (you firing), the compressor reduces
-the gain on Music. When LocalSfx is quiet, the compressor
-releases over ~200ms.
+The compressor on Music has its sidechain input set to Sfx. When
+Sfx has energy (anyone firing), the compressor reduces the gain
+on Music. When Sfx is quiet, the compressor releases over ~200ms.
 
 ### Sound assets — generated programmatically
 

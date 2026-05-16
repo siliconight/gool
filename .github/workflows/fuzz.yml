@@ -61,6 +61,15 @@ jobs:
             extra_cmake: ''
           - harness: fuzz_audio_decoders
             # Decoders are gated on per-format flags; build all three on.
+            # IMPORTANT: use `>-` (folded scalar, newlines→spaces), NOT
+            # `|` (literal, preserves newlines). With `|`, the multi-
+            # line value gets substituted into the `run:` cmake command
+            # as actual newlines, causing the shell to treat lines 2+
+            # as their own commands ("-DAUDIO_ENGINE_DECODERS_OGG=ON:
+            # command not found", exit 127). The `>-` style folds the
+            # newlines into spaces so the cmake invocation stays on
+            # one logical line. Fixed in v0.23.17 after the v0.23.7
+            # ubuntu-22.04 pin first allowed fuzz to run.
             extra_cmake: >-
               -DAUDIO_ENGINE_DECODERS_WAV=ON
               -DAUDIO_ENGINE_DECODERS_OGG=ON

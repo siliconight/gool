@@ -55,11 +55,16 @@ func _register_sounds() -> void:
 	# --- Gunshot: 0.15s white noise with exponential decay ---
 	var gunshot_samples := _generate_gunshot()
 	Gool.register_pcm_sound("gunshot", gunshot_samples, SAMPLE_RATE, 1)
-	# Hint gool that this category is sfx_local by default — when
-	# triggered via Gool.play_networked(), the firing peer plays it
-	# locally (routed to LocalSfx → triggers ducker), while the
-	# RPC fanout to other peers plays it on RemoteSfx (no duck).
-	# This routing is handled at the playback call site, not here.
+	# Note (v0.23.17): in v0.23.16 we tried to route firing-peer
+	# gunshots to a LocalSfx bus and remote-peer gunshots to a
+	# RemoteSfx bus, but gool's allowed category set is fixed
+	# ({music, voice, sfx, ambience, ui, dialogue}) and the play
+	# APIs don't expose a per-call bus override. So both local
+	# and remote gunshots end up on the same "sfx" → "Sfx" route
+	# in gool/config.json, and BOTH duck the music. Per-peer
+	# ducking ("your own actions duck the music but remote
+	# don't") would need a new gool engine API and is tracked as
+	# a roadmap item.
 
 	# --- Music: 4s harmonic drone with LFO, loopable ---
 	var music_samples := _generate_music_loop()

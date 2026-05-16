@@ -12,6 +12,206 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.17] - 2026-05-16 — Fix bus config (invalid categories) + fuzz CI YAML scalar
+
+### Two unrelated fixes shipped together
+
+#### Fix 1 — `examples/multiplayer_audio_sandbox/gool/config.json`: invalid categories
+
+Brannen's screenshot from running v0.23.16's sandbox showed:
+
+```
+runtime_singleton.gd:77 @ _ready(): GoolAudioRuntime: bus config
+parse failed at line 3: unknown category 'sfx_local'
+runtime_singleton.gd:83 @ _ready(): [gool] runtime init failed:
+bus config rejected.
+audio_setup.gd:49 @ _register_sounds(): [AudioSetup] Gool not
+initialized; sounds not registered.
+```
+
+The cascade started from one mistake: v0.23.16's config used
+category names `sfx_local` and `sfx_remote` that **aren't in
+gool's allowed set**. The runtime accepts only six categories
+per `bus_config_loader.cpp:391-396`:
+
+```
+music | voice | sfx | ambience | ui | dialogue
+```
+
+I invented `sfx_local`/`sfx_remote` to support the "your-own-
+actions duck the music but remote-peer actions don't" pattern
+described in the sandbox README. But gool doesn't expose a
+play-time bus override API — `Gool.play_networked()` takes
+`sound_name, position, volume_db, pitch` only. So even if the
+categories existed, there'd be no way to route a given call to
+LocalSfx vs RemoteSfx based on whether it's the local or remote
+playback.
+
+The README oversold the feature, and the config was syntactically
+invalid for it.
+
+##### Fix
+
+Dropped the LocalSfx/RemoteSfx distinction. New layout:
+
+```
+Master
+├── Music (compressor, sidechain ← Sfx)
+└── Sfx     ← all gunshots (yours + remote peers)
+```
+
+Category routing now uses only allowed names:
+
+```json
+"category_routing": {
+    "music": "Music",
+    "sfx":   "Sfx",
+    "ui":    "Master"
+}
+```
+
+ALL gunshots route to Sfx and ALL trigger the music ducker.
+This is a simpler model that demonstrates sidechain ducking
+just as clearly. The "your-own-actions-only" pattern remains
+a roadmap item for when gool gains a play-time bus override
+API.
+
+Updated `audio_setup.gd`'s comment and the sandbox README to
+reflect this — including a "what you should hear" table that
+honestly shows remote-peer gunshots ALSO ducking the music.
+
+#### Fix 2 — `.github/workflows/fuzz.yml`: YAML scalar style
+
+Brannen's fuzz CI report from the night of 2026-05-15 showed
+`fuzz_audio_decoders` failing with exit 127. From the log:
+
+```
+Run cmake ... -DAUDIO_ENGINE_DECODERS_WAV=ON   ← line 1: configured fine
+...
+-DAUDIO_ENGINE_DECODERS_OGG=ON: command not found   ← line 2: shell error
+Error: Process completed with exit code 127.
+```
+
+The cmake configure succeeded with only `-DAUDIO_ENGINE_DECODERS_WAV=ON`
+because the OTHER decoder flags (OGG, FLAC) were treated by the
+shell as separate commands on their own lines.
+
+##### Root cause
+
+YAML scalar style. The matrix had:
+
+```yaml
+- harness: fuzz_audio_decoders
+  extra_cmake: |
+    -DAUDIO_ENGINE_DECODERS_WAV=ON
+    -DAUDIO_ENGINE_DECODERS_OGG=ON
+    -DAUDIO_ENGINE_DECODERS_FLAC=ON
+```
+
+The `|` (literal block scalar) preserves newlines as newlines.
+When substituted into the `run: cmake ... ${{ matrix.extra_cmake }}`,
+the shell sees actual newlines mid-command and treats lines 2+
+as their own commands.
+
+##### Fix
+
+Changed `|` to `>-` (folded scalar, strips newlines into spaces)
+for both decoder and opus harness matrix entries:
+
+```yaml
+extra_cmake: >-
+  -DAUDIO_ENGINE_DECODERS_WAV=ON
+  -DAUDIO_ENGINE_DECODERS_OGG=ON
+  -DAUDIO_ENGINE_DECODERS_FLAC=ON
+```
+
+Now resolves to a single space-separated string. Verified via
+Python yaml.safe_load:
+
+```
+fuzz_audio_decoders: '-DAUDIO_ENGINE_DECODERS_WAV=ON
+                      -DAUDIO_ENGINE_DECODERS_OGG=ON
+                      -DAUDIO_ENGINE_DECODERS_FLAC=ON'
+```
+
+The fuzz workflow has been red since v0.23.7's ubuntu-22.04 pin
+first allowed fuzz to actually run (prior runs failed earlier
+on clang-15/libstdc++14 incompatibility). The YAML bug has been
+there much longer (likely v0.17.0 original fuzz infrastructure)
+but masked by the earlier compile failure.
+
+### Files touched
+
+- `examples/multiplayer_audio_sandbox/gool/config.json` — bus
+  layout simplified to 3 buses, valid categories only.
+- `examples/multiplayer_audio_sandbox/scripts/audio_setup.gd` —
+  updated comment to reflect the actual routing.
+- `examples/multiplayer_audio_sandbox/README.md` — "what you
+  should hear" table corrected; architecture-notes section
+  matches the actual config; explicit note that per-peer
+  ducking is a roadmap item.
+- `.github/workflows/fuzz.yml` — two `|` → `>-` changes in
+  matrix scalar entries, plus explanatory comment.
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.23.17.
+
+### Verified
+
+- All 3 category names in sandbox `config.json` (`music`, `sfx`,
+  `ui`) are in gool's allowed set (verified via Python script
+  cross-referencing `bus_config_loader.cpp:391-396`)
+- YAML scalar resolution produces single-line space-separated
+  strings (verified via yaml.safe_load)
+- C++ library + version_test compile clean at 0.23.17
+- No addon source changes; the addon is byte-identical to
+  v0.23.16 — this release is example-only + CI-only
+
+### What user needs to do besides push
+
+When applying v0.23.17 to their local sandbox copy at
+`$env:USERPROFILE\Documents\gool-mp-test`, the user also needs
+to delete two stale files that v0.23.16's Copy-Item didn't
+remove:
+
+```powershell
+Remove-Item $env:USERPROFILE\Documents\gool-mp-test\scenes\peer_cube.tscn
+Remove-Item $env:USERPROFILE\Documents\gool-mp-test\scripts\peer_cube.gd
+```
+
+These are session-1 placeholders that v0.23.16 replaced with
+fps_player but `Copy-Item -Recurse -Force` doesn't delete files
+not in the source. Same gotcha as the stray `gool-0.23.13/`
+folder in v0.23.15. Leaving them in place doesn't break
+anything functionally — they're orphans (nothing references
+them since box_level.tscn points at fps_player.tscn) — but they
+clutter the project.
+
+### Lesson on "untested-but-shipped" features
+
+The "your-own-actions duck the music but remote-peer-actions
+don't" feature was described in v0.23.16's README as if it
+worked. It didn't work and couldn't work without engine-level
+API changes I hadn't checked for. The CHANGELOG entry for
+v0.23.16 even claimed empirical verification:
+
+> ✅ Sidechain ducking: your own gunshots dip the music bus
+> via a compressor configured in `gool/config.json`
+
+But the config wasn't even valid JSON-with-gool-semantics — it
+would fail the parser on first load. There was no empirical
+verification, just my assumption that the engine supported what
+the README described.
+
+The pattern (one I keep repeating): claim verification, write
+unverified code, ship, user finds out. The right move would have
+been to actually run the sandbox locally before claiming it
+worked. I don't have local Godot in this sandbox; in lieu of
+that, I should have parsed `bus_config_loader.cpp` for the
+allowed category set and verified the config statically. Same
+discipline as the `func get_render_stats(` source-text check
+v0.23.13 added — verify against the actual engine constraints,
+not against an idealized model of them.
+
 ## [0.23.16] - 2026-05-16 — Multiplayer audio sandbox: sessions 2 + 3 (FPS player + networked SFX + music + ducking)
 
 ### What's new
@@ -10087,7 +10287,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.16...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.17...HEAD
+[0.23.17]: https://github.com/siliconight/gool/releases/tag/v0.23.17
 [0.23.16]: https://github.com/siliconight/gool/releases/tag/v0.23.16
 [0.23.15]: https://github.com/siliconight/gool/releases/tag/v0.23.15
 [0.23.14]: https://github.com/siliconight/gool/releases/tag/v0.23.14

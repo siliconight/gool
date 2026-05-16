@@ -1,5 +1,5 @@
 {
-	"_comment": "Multiplayer audio sandbox bus config. Adapted from examples/coop_shooter_template/gool/config.json. Three-bus layout with sidechain ducking: gunshots route to LocalSfx (own player) or RemoteSfx (other players), and the Music bus has a sidechain compressor keyed off LocalSfx so the music dips during your own gunfire. Loaded by gool's runtime_singleton at startup via Project Settings → addons/gool/config_path (defaults to res://gool/config.json).",
+	"_comment": "Multiplayer audio sandbox bus config. v0.23.17: simplified from the v0.23.16 version which tried to use sfx_local/sfx_remote categories — those aren't in gool's allowed set ({music, voice, sfx, ambience, ui, dialogue}), so the parser rejected the config and runtime init failed. The fix uses a single Sfx bus that sidechains the Music bus, so any gunshot (yours OR a remote peer's) ducks the music. Per-peer ducking (only your own actions duck music) requires a play-time bus override API gool doesn't currently expose; tracked as a roadmap item.",
 
 	"sample_rate": 48000,
 	"buffer_size": 512,
@@ -14,20 +14,15 @@
 		      "attack_ms":     5.0,  "release_ms": 200.0,
 		      "knee_width_db": 4.0,
 		      "max_reduction_db": 10.0,
-		      "sidechain_bus": "LocalSfx" }
+		      "sidechain_bus": "Sfx" }
 		  ] },
 
-		{ "name": "SfxAll", "parent": "Master" },
-
-		{ "name": "LocalSfx", "parent": "SfxAll" },
-
-		{ "name": "RemoteSfx", "parent": "SfxAll" }
+		{ "name": "Sfx", "parent": "Master" }
 	],
 
 	"category_routing": {
-		"music":     "Music",
-		"sfx_local": "LocalSfx",
-		"sfx_remote":"RemoteSfx",
-		"ui":        "Master"
+		"music": "Music",
+		"sfx":   "Sfx",
+		"ui":    "Master"
 	}
 }
