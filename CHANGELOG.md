@@ -12,6 +12,161 @@ upgrading.
 
 Nothing yet — open the next release section here when a feature lands.
 
+## [0.23.16] - 2026-05-16 — Multiplayer audio sandbox: sessions 2 + 3 (FPS player + networked SFX + music + ducking)
+
+### What's new
+
+Expanded the `examples/multiplayer_audio_sandbox/` example from
+session 1's static-cubes scaffolding into a full vertical slice
+that exercises gool's networked audio chain with two clients:
+
+- **Session 2 — FPS player + transform sync.** Promoted the
+  placeholder peer cubes to `CharacterBody3D` players with
+  `Camera3D`, `GoolListener3D`, and `MultiplayerSynchronizer` for
+  position/rotation replication. WASD movement + mouse-look, with
+  each player driven only by its owning client (authority model
+  via `set_multiplayer_authority(peer_id)`).
+
+- **Session 3 — Networked gunshot SFX with sidechain ducking.**
+  Left-click fires a gunshot via `Gool.play_networked()` — local
+  play happens at 0ms latency on the firing client, RPC fanout
+  to other peers handles the positional rendering for them.
+  Looping music plays in the background. The audio bus config
+  routes the firing peer's own gunshots through `LocalSfx`, which
+  is the sidechain trigger for a compressor on the `Music` bus —
+  so the music ducks during your own gunfire but not during the
+  other peer's gunfire. Standard "your actions are highlighted"
+  pattern used by Helldivers 2, DRG, L4D2.
+
+### Sound assets are generated programmatically
+
+To avoid shipping `.wav` / `.ogg` files in the repo, the new
+`scripts/audio_setup.gd` autoload generates both sounds at
+startup via `PackedFloat32Array` + `Gool.register_pcm_sound`:
+
+- **gunshot**: 0.15s exponentially-decaying white noise burst
+- **music**: 4s seamless loopable harmonic drone (110Hz + 5th
+  + octave) with a 0.25Hz tremolo LFO
+
+This makes the example self-contained — anyone with gool
+installed can `git clone` + open + F5 and hear something. In a
+real game you'd swap these for `register_sound_from_file` calls
+with actual recorded audio.
+
+### Bus config (`gool/config.json`)
+
+```
+Master
+├── Music (compressor, sidechain ← LocalSfx)
+└── SfxAll
+    ├── LocalSfx       ← firing peer's own gunshots
+    └── RemoteSfx      ← other peers' gunshots
+```
+
+Adapted from the existing pattern in
+`examples/coop_shooter_template/gool/config.json` (which has
+been in the repo since v0.22.0 as an aspirational template but
+was never wired into an actual playable scene).
+
+### Files added/modified in this release
+
+**New files:**
+- `examples/multiplayer_audio_sandbox/gool/config.json` — bus
+  layout with sidechain ducker (~30 lines)
+- `examples/multiplayer_audio_sandbox/scripts/audio_setup.gd` —
+  programmatic sound generation autoload (~120 lines)
+- `examples/multiplayer_audio_sandbox/scripts/fps_player.gd` —
+  CharacterBody3D FPS controller with fire input (~150 lines)
+- `examples/multiplayer_audio_sandbox/scenes/fps_player.tscn` —
+  player scene with Camera + GoolListener3D + Synchronizer
+
+**Replaced (session 1 → session 2/3):**
+- `scripts/box_level.gd` — now spawns fps_player + starts music
+  on each client
+- `scenes/box_level.tscn` — larger arena (40×40), pillars for
+  spatial audio reference, updated MultiplayerSpawner reference
+- `scripts/lobby.gd` — releases mouse capture on entry (in case
+  user came back from in-game disconnect)
+- `project.godot` — added AudioSetup autoload after Gool +
+  NetworkManager
+
+**Deleted:**
+- `scripts/peer_cube.gd` — replaced by fps_player.gd
+- `scenes/peer_cube.tscn` — replaced by fps_player.tscn
+
+### What this validates about gool
+
+After running the sandbox with two clients, you've empirically
+verified all of these gool features work correctly under
+realistic load:
+
+| Feature | Where in code |
+|---|---|
+| Bus graph config from JSON | `gool/config.json` loaded at runtime startup |
+| PCM sound registration | `Gool.register_pcm_sound(...)` in audio_setup.gd |
+| Looping non-positional emitter | `Gool.create_emitter("music", Vector3.ZERO, true, 250.0)` |
+| 0ms-local networked SFX | `Gool.play_networked("gunshot", muzzle_pos)` in fps_player.gd |
+| GoolListener3D positional rendering | child of Camera3D in fps_player.tscn |
+| Sidechain compressor effect | Music bus in config.json |
+| Multiple simultaneous emitters | music + your gunshots + remote gunshots |
+| `@rpc` fanout via `MultiplayerAPI` | gool's internal `_rpc_play_networked` |
+
+### Test instructions
+
+See `examples/multiplayer_audio_sandbox/README.md`. Short
+version: open the example in Godot, install gool addon, F5 →
+Host on one instance + Join on another with `127.0.0.1`. Move
+around with WASD + mouse, left-click to fire. You should hear:
+
+- Music playing on both instances (starts immediately)
+- Your own gunshots dipping the music ~6dB during fire
+- The other peer's gunshots coming from their 3D position via
+  your camera's GoolListener3D
+- The other peer's gunshots NOT ducking your music (only LocalSfx
+  triggers the ducker, not RemoteSfx)
+
+### Limitations & future work
+
+This release covers sessions 2 + 3 from the original 4-session
+plan. Still deferred:
+
+- **Session 4 — voice chat + multi-emitter stress test.** Bound
+  to user's release-3 milestone for the real game. Not needed to
+  validate the 2-client audio chain works correctly.
+- **Steam P2P transport.** ENet is fine for sandbox testing;
+  Steam migration is mechanical when ready (transport-agnostic
+  Godot multiplayer API underneath).
+- **Real recorded audio.** Programmatic placeholders are
+  perfectly serviceable for testing the chain; swap in real
+  assets when building a real game on top of this skeleton.
+- **Sub-tick timestamp integration** with user's networking
+  module. `NetworkedAudioEvent._current_simulation_tick()` is
+  the documented override point when that module arrives.
+
+### Files touched
+
+22 .gd files in this commit are unchanged from v0.23.15 (just
+moved around as part of the sandbox restructure). The actual
+content delta is:
+
+- ~600 new lines of GDScript in the sandbox
+- ~70 lines of scene markup
+- ~30 lines of JSON config
+- 1 new README documenting the test procedure
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.23.16
+
+### Verified
+
+- All sandbox `.gd` files are tab-indented (matching v0.23.14's
+  convention) — `audio_setup.gd` (55 tabs / 0 spaces),
+  `box_level.gd` (36/0), `fps_player.gd` (99/0), `lobby.gd`
+  (48/0), `network_manager.gd` (57/0)
+- All `res://` references resolve to files that exist (modulo
+  addon paths, which get filled in by `gool-install.cmd`)
+- C++ library + version_test compile clean at 0.23.16
+- No addon source changes; the addon is byte-identical to v0.23.15
+
 ## [0.23.15] - 2026-05-16 — Revert v0.23.10's `load()` workaround (cycle was a false diagnosis)
 
 ### Problem
@@ -9932,7 +10087,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.15...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.16...HEAD
+[0.23.16]: https://github.com/siliconight/gool/releases/tag/v0.23.16
 [0.23.15]: https://github.com/siliconight/gool/releases/tag/v0.23.15
 [0.23.14]: https://github.com/siliconight/gool/releases/tag/v0.23.14
 [0.23.13]: https://github.com/siliconight/gool/releases/tag/v0.23.13

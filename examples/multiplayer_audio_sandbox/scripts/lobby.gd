@@ -25,6 +25,10 @@ const DEFAULT_HOST_ADDRESS: String = "127.0.0.1"
 
 
 func _ready() -> void:
+	# Release mouse capture in case we came back to the lobby from
+	# an in-game disconnect (the FPS player captures the mouse).
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
 	ip_input.text = DEFAULT_HOST_ADDRESS
 	host_button.pressed.connect(_on_host_pressed)
 	join_button.pressed.connect(_on_join_pressed)

@@ -1,154 +1,233 @@
 # Gool Multiplayer Audio Sandbox
 
-A minimal Godot project for validating gool's networked audio chain
-end-to-end with two clients. Built incrementally over a series of
-small sessions, each producing something testable.
+A small Godot project that exercises gool's networked audio chain
+end-to-end with two clients: positional gunshots, looping music,
+and sidechain ducking — all over Godot's vanilla multiplayer API
+with ENet transport.
 
 ## Status
 
 | Session | Goal | State |
 |---|---|---|
-| **1** | Project scaffolding + ENet host/join, see placeholder cubes per peer | **active** |
-| 2 | CharacterBody3D player + transform sync, players walk around | planned |
-| 3 | Networked gunshot SFX via `Gool.play_networked()` — the actual audio test | planned |
-| 4 | Voice chat + multi-emitter stress (deferred to release 3 milestone) | deferred |
+| 1 | Project scaffolding + ENet host/join (placeholder cubes) | done (v0.23.11) |
+| 2 | CharacterBody3D player + transform sync (movement) | done (v0.23.16) |
+| 3 | Networked gunshot SFX + music + ducking | done (v0.23.16) |
+| 4 | Voice chat + multi-emitter stress (deferred to user's release-3) | planned |
 
-## What this validates
+## What this rig proves
 
-This rig is purpose-built to exercise gool's networked audio under
-realistic-ish conditions. It uses Godot's vanilla high-level
-multiplayer API (`@rpc`, `MultiplayerSpawner`) over
-`ENetMultiplayerPeer`. The networking layer is intentionally
-transport-agnostic so this rig keeps working when the eventual real
-networking module (Steam P2P + ENet with listen-server architecture)
-replaces ENet here. Same Godot multiplayer API underneath = same gool
-audio behavior on top.
+After running this end-to-end with two clients, you've validated:
 
-What this rig is NOT:
-- A game (no gameplay loop, no win condition)
-- A network module reference (uses Godot stock multiplayer, not the
-  dual-transport Steam/ENet module your networking person is building)
-- A scalability test (4-player stress is session 4 territory)
+- ✅ gool's audio chain boots and registers programmatic sounds via
+  `Gool.register_pcm_sound`
+- ✅ `Gool.create_emitter` plays a looping music source non-positionally
+- ✅ `Gool.play_networked` plays a gunshot locally (0ms latency on the
+  firing client) and broadcasts via `@rpc` to other peers
+- ✅ Positional audio: gunshots fired by the other peer come from
+  that peer's position in 3D space, via the GoolListener3D attached
+  to your camera
+- ✅ Sidechain ducking: your own gunshots dip the music bus via a
+  compressor configured in `gool/config.json`
+- ✅ All of the above works simultaneously without dropouts or sync
+  issues at the 2-client load
 
 ## Setup
 
 ### Prerequisites
 
-- Godot **4.6.2.stable** or compatible
+- **Godot 4.6.2.stable** (or compatible)
 - The gool addon installed in `addons/gool/`
 
 ### Installing the gool addon
 
-This example folder does NOT ship a copy of the gool addon, to avoid
-the maintenance hazard of a stale duplicated addon source tree (see
-`examples/coop_shooter_template/` for the cautionary tale). Pick one
-of these options to install gool:
+This example folder does NOT ship a copy of the gool addon, to
+avoid the staleness problem visible in
+`examples/coop_shooter_template/` (which bundles a copy of the
+addon from ~30 releases ago). Pick one:
 
 **Option A — Quick install (Windows):**
 
-Drop `scripts/gool-install.cmd` (from the gool repo) into this folder
-and double-click. The installer downloads the latest gool release
-from GitHub and extracts `addons/gool/` here.
+Drop `gool-install.cmd` (from the gool repo's `scripts/`
+directory) into this folder and double-click. Downloads the
+latest release from GitHub and extracts `addons/gool/` here.
 
 **Option B — Dev copy from local gool checkout:**
-
-From `examples/multiplayer_audio_sandbox/`:
 
 ```bash
 # Unix:
 cp -r ../../godot/addons/gool addons/gool
-cp ../../godot/gool.gdextension addons/gool/
+cp ../../godot/gool.gdextension .
 
 # Windows PowerShell:
 Copy-Item -Recurse ..\..\godot\addons\gool addons\gool
-Copy-Item ..\..\godot\gool.gdextension addons\gool\
+Copy-Item ..\..\godot\gool.gdextension .
 ```
 
-You also need to build the GDExtension binary and place it at
-`addons/gool/bin/`. See `SETUP.md` in the gool repo root for the
-build instructions. (Option A skips the build step entirely by
-downloading the prebuilt binary.)
+You also need the GDExtension binary built for your platform at
+`addons/gool/bin/`. See `SETUP.md` in the gool repo root.
+(Option A skips the build step entirely by downloading the
+prebuilt binary.)
 
 ### Open + run
 
-1. Open this folder (`examples/multiplayer_audio_sandbox/`) as a
-   Godot project — File > Open > pick the folder
-2. Enable the gool plugin: Project > Project Settings > Plugins,
-   enable "gool"
+1. Open this folder as a Godot project: File → Open → pick this folder
+2. Enable the gool plugin: Project → Project Settings → Plugins → enable "gool"
 3. Press F5. The lobby scene loads.
 
-## How to test session 1
+## Controls
 
-Two Godot instances on the same machine (simplest):
+| Key | Action |
+|---|---|
+| **W A S D** | Move (relative to where you're looking) |
+| **Mouse** | Look around |
+| **Left click** | Fire (plays networked gunshot SFX) |
+| **Esc** | Release mouse cursor (so you can click outside the window) |
+| Click in window | Re-capture mouse |
 
-1. Open this project in Godot. F5 to launch — lobby appears
-2. Click **Host**. A "Hosting..." status flashes, then the box level
-   loads. You see one placeholder cube (your peer)
-3. Open ANOTHER instance of Godot (Godot supports running multiple
-   editor windows on the same project, but the cleanest way is to
-   launch a second instance of `godot.exe` and open the project in
-   the new window — or use the running game window without opening
-   the editor at all)
-4. F5 the second instance. Lobby appears. IP defaults to `127.0.0.1`
-5. Click **Join**. After a moment, the box level loads. You see TWO
-   cubes — yours and the host's
+## How to test the full vertical slice
 
-If that works → session 1 done. No audio yet.
+Two Godot instances on `127.0.0.1` (simplest):
 
-### Testing across two physical machines (LAN)
+### Instance A (host)
+1. F5 → lobby appears
+2. Click **Host**
+3. Box level loads. You should hear music starting (a sustained
+   drone with a slow tremolo — placeholder generated by AudioSetup)
+4. WASD around. Mouse-look works. Left-click fires.
+5. **Validate ducking**: hold left-click. The music should
+   noticeably dip in volume while gunshots are firing, then
+   recover ~200ms after you release.
 
-Replace `127.0.0.1` in the Join input with the host machine's LAN
-IP (something like `192.168.1.x`). The Windows host needs to allow
-inbound UDP traffic on port 9999 (Windows Firewall will prompt the
-first time).
+### Instance B (client)
+1. Launch a second Godot instance (or duplicate the editor and
+   open the same project)
+2. F5 → lobby appears
+3. Click **Join** with `127.0.0.1`
+4. Box level loads. You see your own cyan capsule plus the host's
+   orange capsule somewhere nearby.
+5. Move toward the host. The other peer's gunshots should sound
+   like they come from the host's actual 3D position.
+6. **Validate positional audio**: walk around the host while
+   they fire. The gunshot direction + volume should track their
+   position from your camera's perspective.
+7. **Validate no remote ducking**: when the OTHER peer fires,
+   your music does NOT dip (only your own gunshots route to
+   LocalSfx, which the music's sidechain compressor listens to).
+   Their gunshots route to RemoteSfx, which doesn't trigger the
+   ducker. This matches the "your own actions are highlighted"
+   pattern used by Helldivers 2, DRG, L4D2.
+
+### Two-machine LAN test
+
+Replace `127.0.0.1` with the host machine's LAN IP. The host
+needs to allow inbound UDP port 9999 (Windows Firewall will
+prompt on first host).
+
+## What you should hear (audio expectations)
+
+| Scenario | Music | Local gunshot | Remote gunshot |
+|---|---|---|---|
+| Alone, host has just started | playing | duck on fire | (none) |
+| Alone, client connected | playing | duck on fire | from peer position |
+| You fire | dips ~6dB during fire | sharp pop | (none) |
+| Peer fires | unchanged | (none) | sharp pop from their location |
+| Both fire | dips ~6dB | sharp pop | sharp pop from their location |
+
+If any of those don't match, see Troubleshooting.
 
 ## Architecture notes
 
-**Authority model:** The host is the multiplayer authority (Godot
-peer_id 1). The MultiplayerSpawner replicates peer cube spawning
-from server to clients. This is integrated listen-server, not the
-separate-process architecture the real game will use — that's a
-networking-module concern that doesn't affect gool's audio
-behavior, so we don't replicate it here.
+### Audio routing (`gool/config.json`)
 
-**Transport:** `ENetMultiplayerPeer`. Swapping to
-`SteamMultiplayerPeer` later is mechanical because everything above
-the `MultiplayerAPI` layer is transport-agnostic.
+```
+Master
+├── Music (compressor, sidechain ← LocalSfx)
+└── SfxAll
+    ├── LocalSfx       ← your gunshots route here
+    └── RemoteSfx      ← other peers' gunshots route here
+```
 
-**Authority of cube nodes:** Each peer cube gets
-`set_multiplayer_authority(peer_id)` so the peer who owns it can
-later drive its position (session 2). For session 1 the cubes are
-static.
+The compressor on Music has its sidechain input set to LocalSfx.
+When LocalSfx has energy (you firing), the compressor reduces
+the gain on Music. When LocalSfx is quiet, the compressor
+releases over ~200ms.
+
+### Sound assets — generated programmatically
+
+`scripts/audio_setup.gd` generates both sounds at startup via
+PackedFloat32Array, registered with `Gool.register_pcm_sound`:
+
+- **gunshot**: 0.15s exponentially-decaying white noise
+- **music**: 4s loopable harmonic drone (110Hz fundamental + 5th
+  + octave) with a 0.25Hz tremolo LFO
+
+No external `.wav` / `.ogg` files are required. In a real game
+you'd replace these with `register_sound_from_file` calls and
+actual recorded audio.
+
+### Networking — Godot's vanilla multiplayer API
+
+- **Transport**: `ENetMultiplayerPeer` (will swap to
+  `SteamMultiplayerPeer` when your real networking module lands;
+  the rest of the code doesn't change)
+- **Authority**: integrated listen-server (host == server). Real
+  game uses dual-process listen-server; we don't replicate that
+  complexity here because it doesn't affect gool's audio behavior.
+- **Spawning**: server-driven via `MultiplayerSpawner`. Each
+  spawned player has its multiplayer authority set to its owning
+  peer.
+- **Movement sync**: `MultiplayerSynchronizer` inside each player
+  replicates position + rotation from the authoritative client.
+- **Gunshots**: `Gool.play_networked()` uses `@rpc("any_peer",
+  "call_remote")`. Local play happens immediately (0ms); the
+  RPC fanout to other peers is async (RTT-bounded).
 
 ## Files
 
 ```
 multiplayer_audio_sandbox/
-├── README.md          (this file)
-├── project.godot      (Godot project file)
-├── icon.svg           (placeholder project icon)
+├── README.md             (this file)
+├── project.godot         (Godot project file, autoloads Gool + NetworkManager + AudioSetup)
+├── icon.svg              (placeholder project icon)
+├── gool/
+│   └── config.json       (bus layout with sidechain ducker)
 ├── scenes/
-│   ├── lobby.tscn         (host/join UI)
-│   ├── box_level.tscn     (a small arena)
-│   └── peer_cube.tscn     (placeholder cube spawned per peer)
+│   ├── lobby.tscn        (host/join UI)
+│   ├── box_level.tscn    (40x40 arena with walls and pillars)
+│   └── fps_player.tscn   (CharacterBody3D + Camera3D + GoolListener3D)
 └── scripts/
     ├── network_manager.gd  (autoload — ENet host/client wrapper)
+    ├── audio_setup.gd      (autoload — registers programmatic sounds)
     ├── lobby.gd            (lobby UI logic)
-    ├── box_level.gd        (spawn cubes per peer)
-    └── peer_cube.gd        (placeholder cube logic, mostly empty)
+    ├── box_level.gd        (spawn players + start music)
+    └── fps_player.gd       (FPS controller + fire)
 ```
 
 ## Troubleshooting
 
-- **"Failed to host"** — port 9999 may already be in use. Edit
-  `network_manager.gd` to use a different port.
-- **"Connection failed"** — host isn't running, or firewall is
-  blocking, or wrong IP.
-- **Lobby loads but cubes don't spawn after connecting** — check
-  the Output panel for errors. The `MultiplayerSpawner` is fiddly
-  about node paths; the `spawn_path` must exist at the time
-  `add_child` is called on the server.
-- **Plugin errors mentioning `GoolLog` or `runtime_singleton`** —
-  the gool addon isn't installed correctly. Verify
-  `addons/gool/runtime_singleton.gd` exists. If you installed via
-  the dev-copy method, did you also build the GDExtension binary?
+- **No music plays**: check Output panel for `[BoxLevel] music
+  started (handle=...)`. If handle is < 0, Gool isn't
+  initialized — usually means addon not installed or plugin not
+  enabled.
+- **Gunshots not audible**: check `[AudioSetup] registered 2 sounds`
+  in Output. If missing, AudioSetup didn't run — verify the
+  autoload is enabled in Project Settings → Autoload.
+- **No ducking**: verify `gool/config.json` was loaded (look for
+  bus_count > 1 in the gool ready log line). The default is 1
+  bus when no config is found. Project Setting
+  `addons/gool/config_path` defaults to `res://gool/config.json`.
+- **Mouse won't release**: press Esc. If still captured, alt-tab
+  out of Godot.
+- **Other peer doesn't appear**: confirm both instances reach the
+  box level. Check Output for `[NetworkManager] peer joined`. If
+  not, firewall is blocking UDP 9999 or you're using the wrong IP.
+- **Both players spawn at same position**: should be rare with
+  the spawn-range randomization, but if it happens just walk
+  apart.
+- **"Could not resolve class" parser errors**: indicates an addon
+  install issue. Make sure you're on gool v0.23.15 or later
+  (earlier versions had a parser-error bug). Clean reinstall
+  via `gool-install.cmd`.
+- **GoolListener3D not found**: the prefab path may have changed.
+  Check that `res://addons/gool/prefabs/gool_listener_3d.gd`
+  exists in your installed addon.

@@ -1,0 +1,33 @@
+{
+	"_comment": "Multiplayer audio sandbox bus config. Adapted from examples/coop_shooter_template/gool/config.json. Three-bus layout with sidechain ducking: gunshots route to LocalSfx (own player) or RemoteSfx (other players), and the Music bus has a sidechain compressor keyed off LocalSfx so the music dips during your own gunfire. Loaded by gool's runtime_singleton at startup via Project Settings → addons/gool/config_path (defaults to res://gool/config.json).",
+
+	"sample_rate": 48000,
+	"buffer_size": 512,
+
+	"buses": [
+		{ "name": "Master", "gain_db": 0.0 },
+
+		{ "name": "Music", "parent": "Master", "gain_db": -3.0,
+		  "effects": [
+		    { "kind": "compressor",
+		      "threshold_db": -20.0, "ratio": 6.0,
+		      "attack_ms":     5.0,  "release_ms": 200.0,
+		      "knee_width_db": 4.0,
+		      "max_reduction_db": 10.0,
+		      "sidechain_bus": "LocalSfx" }
+		  ] },
+
+		{ "name": "SfxAll", "parent": "Master" },
+
+		{ "name": "LocalSfx", "parent": "SfxAll" },
+
+		{ "name": "RemoteSfx", "parent": "SfxAll" }
+	],
+
+	"category_routing": {
+		"music":     "Music",
+		"sfx_local": "LocalSfx",
+		"sfx_remote":"RemoteSfx",
+		"ui":        "Master"
+	}
+}

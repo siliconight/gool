@@ -2,70 +2,72 @@ extends Node3D
 
 # BoxLevel
 #
-# A tiny arena that spawns one placeholder cube per peer.
+# Session 2+3: spawns one FpsPlayer per connected peer (replacing
+# session 1's static peer cubes), starts looping music on each
+# client locally, and provides a small arena for spatial audio
+# testing.
 #
-# Spawn strategy: the SERVER owns spawning. When a peer joins, the
-# server adds a peer_cube child under the "Players" node. The
-# MultiplayerSpawner sibling watches that path and auto-replicates
-# the spawn to all connected clients.
+# Spawn strategy: same as session 1 — server owns spawning,
+# MultiplayerSpawner replicates spawn events to clients. Each
+# spawned player has its multiplayer authority set to its owning
+# peer so the owning client drives input + position, and the
+# MultiplayerSynchronizer inside the player scene replicates
+# transform to other peers.
 #
-# Session 1 scope: cubes are static. Each cube has its multiplayer
-# authority set to its owning peer's peer_id so that in session 2
-# we can drive position from the owning client and replicate to
-# others via a MultiplayerSynchronizer on the cube.
-#
-# Things that would normally go here but don't yet:
-#   - Player input handling (session 2)
-#   - Networked SFX (session 3)
-#   - Voice chat (session 4 / deferred)
-#   - GoolListener3D placement (session 2, when we have a camera)
+# Music strategy: every client (host + remote) independently
+# starts the music loop in its own _ready(). Music is generated
+# programmatically by AudioSetup so it's identical on every
+# client, and since the loop is sample-rate-locked all clients
+# stay closely in sync without an authoritative server step.
+# In a real game with recorded music you'd typically have the
+# host send a "start music NOW" RPC with a sync timestamp.
 
-const PEER_CUBE_SCENE: PackedScene = preload("res://scenes/peer_cube.tscn")
+const FPS_PLAYER_SCENE: PackedScene = preload("res://scenes/fps_player.tscn")
 
-# Range of starting positions so two cubes don't visually overlap.
-const SPAWN_X_RANGE: Vector2 = Vector2(-3.0, 3.0)
-const SPAWN_Z_RANGE: Vector2 = Vector2(-3.0, 3.0)
-const SPAWN_Y: float = 0.5  # half a unit above the floor
+# Range of starting positions so two players don't spawn on top
+# of each other in this small arena.
+const SPAWN_X_RANGE: Vector2 = Vector2(-6.0, 6.0)
+const SPAWN_Z_RANGE: Vector2 = Vector2(-6.0, 6.0)
+const SPAWN_Y: float = 0.0
+
+var _music_handle: int = -1
 
 
 func _ready() -> void:
 	print("[BoxLevel] ready (is_server=%s, my_peer_id=%d)"
 			% [str(multiplayer.is_server()), multiplayer.get_unique_id()])
 
+	_start_music()
+
 	if multiplayer.is_server():
-		# Spawn the host's own cube immediately.
-		_spawn_peer_cube(multiplayer.get_unique_id())
-		# And spawn a cube for each peer that joins from now on.
+		_spawn_player(multiplayer.get_unique_id())
 		NetworkManager.peer_joined.connect(_on_peer_joined)
 		NetworkManager.peer_left.connect(_on_peer_left)
 
 
-# Server-only. Spawning a child of $Players triggers the
-# MultiplayerSpawner sibling to replicate it to all clients.
-func _spawn_peer_cube(peer_id: int) -> void:
+func _exit_tree() -> void:
+	# Stop music when leaving the level.
+	if _music_handle >= 0:
+		Gool.destroy_emitter(_music_handle, 200.0)
+		_music_handle = -1
+
+
+func _spawn_player(peer_id: int) -> void:
 	assert(multiplayer.is_server(), "spawning must happen on the server")
-	var cube: Node3D = PEER_CUBE_SCENE.instantiate()
-	# Name = peer_id so we can find/remove cubes by peer on departure.
-	# Using set_name AFTER instantiate but BEFORE add_child is the
-	# canonical Godot pattern for predictable node paths under
-	# MultiplayerSpawner.
-	cube.name = "peer_%d" % peer_id
-	# The peer who owns this cube is the multiplayer authority for it.
-	# Session 2 will use this so each client drives its own cube's
-	# position and the server (and other clients) receive the sync.
-	cube.set_multiplayer_authority(peer_id)
-	# Spread spawn position so cubes don't all stack at the origin.
-	cube.position = Vector3(
+	var player: Node3D = FPS_PLAYER_SCENE.instantiate()
+	player.name = "peer_%d" % peer_id
+	player.set_multiplayer_authority(peer_id)
+	player.position = Vector3(
 		randf_range(SPAWN_X_RANGE.x, SPAWN_X_RANGE.y),
 		SPAWN_Y,
 		randf_range(SPAWN_Z_RANGE.x, SPAWN_Z_RANGE.y)
 	)
-	$Players.add_child(cube, true)
-	print("[BoxLevel] spawned peer_%d at %s" % [peer_id, cube.position])
+	$Players.add_child(player, true)
+	print("[BoxLevel] spawned peer_%d at %s" % [peer_id, player.position])
 
 
 func _on_peer_joined(peer_id: int) -> void:
-	_spawn_peer_cube(peer_id)
+	_spawn_player(peer_id)
 
 
 func _on_peer_left(peer_id: int) -> void:
@@ -74,3 +76,14 @@ func _on_peer_left(peer_id: int) -> void:
 	if existing != null:
 		print("[BoxLevel] removing %s" % node_name)
 		existing.queue_free()
+
+
+func _start_music() -> void:
+	if not Gool.is_initialized():
+		push_warning("[BoxLevel] Gool not initialized; music not started")
+		return
+	_music_handle = Gool.create_emitter("music", Vector3.ZERO, true, 250.0)
+	if _music_handle < 0:
+		push_warning("[BoxLevel] failed to start music (handle=%d)" % _music_handle)
+	else:
+		print("[BoxLevel] music started (handle=%d)" % _music_handle)

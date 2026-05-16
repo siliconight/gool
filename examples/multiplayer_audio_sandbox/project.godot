@@ -30,6 +30,10 @@ config/icon="res://icon.svg"
 Gool="*res://addons/gool/runtime_singleton.gd"
 ; Our ENet wrapper. Provides host_game() / join_game() with signals.
 NetworkManager="*res://scripts/network_manager.gd"
+; Programmatically generates + registers gunshot + music sounds at
+; startup. Must come AFTER Gool so it can call Gool.register_pcm_sound
+; in its _ready (which it defers one frame to be extra safe).
+AudioSetup="*res://scripts/audio_setup.gd"
 
 [debug]
 
