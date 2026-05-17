@@ -6,85 +6,91 @@ extends EditorDebuggerPlugin
 #
 # Godot 4 runs the editor and the running game in separate
 # processes. When F5 is pressed, the editor spawns a child game
-# process with the debugger attached. Anything the dock wants to
-# display has to traverse that process boundary — there's no
-# shared memory, no shared SceneTree, no `Gool.get_bus_stats()`
-# call that would just work editor-side.
+# process with the debugger attached. The game pushes per-bus
+# stats via `EngineDebugger.send_message("gool:bus_stats",
+# [stats])`; this plugin (subscribed to the "gool" prefix)
+# receives them in `_capture` and caches the latest payload.
+# The mixer dock polls the plugin every editor frame.
 #
-# Godot's solution is the EngineDebugger message channel: the
-# game calls `EngineDebugger.send_message("gool:bus_stats",
-# [payload])`, and an editor-side EditorDebuggerPlugin can
-# subscribe to messages whose prefix it claims (here, "gool").
-# The plugin caches the latest payload; the mixer dock polls
-# the plugin every editor frame.
+# This channel is also what Phase 3.3b/c/d will use for the
+# editor→game direction (faders, S/M/B, effect param edits).
 #
-# This same channel is what 3.3b/c/d will use for editor→game
-# direction (faders, S/M/B, effect param edits): we'll add a
-# matching outbound `send_message("gool:command_X", [...])`
-# from the dock, and the game-side runtime will listen for it.
-# Building this scaffolding now means no rip-and-replace later.
+# v0.25.1: simplified session tracking. v0.25.0 tracked a dict
+# of "which sessions are active" and only returned stats from
+# active ones — that introduced a race where on second F5,
+# session 0's stale data could be returned, or session 1's data
+# could be ignored because its "active" flag had been cleared
+# by a late-firing session-0 stopped signal. The simpler design:
+# one slot for "latest stats", one int for "which session
+# produced them", and on session_stopped only clear if it's the
+# *same* session we last got stats from.
+var _latest_stats: Array = []
+var _current_session_id: int = -1
 
-# Latest bus stats from the game, keyed by debugger session_id
-# so multi-session debugging (rare but possible) doesn't crash.
-# In single-session mode (the common case) there's just one entry.
-var _latest_stats_by_session: Dictionary = {}
-
-# Track which sessions are still active. When a session stops we
-# drop its cached stats so the dock doesn't render stale data
-# after F8 (stop) is pressed.
-var _active_sessions: Dictionary = {}
+# Diagnostic counters. Printed at session lifecycle events so
+# we can see in Output whether stats are actually arriving.
+var _capture_count: int = 0
 
 
-# Called by the editor when a debug session starts. We register
-# message handlers here. Override _capture below handles the
-# actual messages.
+# Called by the editor when a new debug session starts (every F5).
+# Hook the session's stopped signal so we can clear cached stats
+# when F8 is pressed.
 func _setup_session(session_id: int) -> void:
-	_active_sessions[session_id] = true
-	# Listen for the session stopping so we can clear stats.
+	print("[gool] debugger session %d started" % session_id)
+	_current_session_id = session_id
+	_capture_count = 0
 	var session := get_session(session_id)
-	if session != null:
-		# Godot 4: EditorDebuggerSession has started/stopped signals.
-		# When stopped, drop this session's cached stats so the dock
-		# immediately falls back to the empty state.
-		if not session.stopped.is_connected(_on_session_stopped):
-			session.stopped.connect(_on_session_stopped.bind(session_id))
+	if session == null:
+		push_warning("[gool] get_session(%d) returned null" % session_id)
+		return
+	# Bind session_id into the callback so it carries through and we
+	# can compare on stopped. Avoids races where session 0's stopped
+	# signal fires after session 1 started feeding us stats.
+	if not session.stopped.is_connected(_on_session_stopped):
+		session.stopped.connect(_on_session_stopped.bind(session_id))
 
 
 # Tells the editor which message-prefix this plugin claims. Godot
-# routes messages of the form "<prefix>:<rest>" to plugins whose
-# _has_capture returns true for "<prefix>". We claim "gool".
+# routes "<prefix>:<rest>" messages to plugins whose _has_capture
+# returns true for "<prefix>". We claim "gool".
 func _has_capture(prefix: String) -> bool:
 	return prefix == "gool"
 
 
 # Called for every "gool:*" message arriving from a running game.
-# Return true if we handled the message; false lets other plugins
-# try (we shouldn't conflict with anything since "gool" is
-# project-specific).
+# Return true if handled. The payload format matches the game's
+# `EngineDebugger.send_message("gool:bus_stats", [stats])` call:
+# data is [stats], data[0] is the actual stats Array.
 func _capture(message: String, data: Array, session_id: int) -> bool:
 	if message == "gool:bus_stats":
-		# Payload is data[0], which is the Array of bus dicts
-		# the game sent via send_message("gool:bus_stats", [stats]).
-		# Godot wraps the sent-payload in another Array, hence [0].
 		if data.size() >= 1 and data[0] is Array:
-			_latest_stats_by_session[session_id] = data[0]
+			_latest_stats = data[0]
+			_current_session_id = session_id
+			_capture_count += 1
+			# Diagnostic: print on first stats received so user can
+			# see the bridge connected. Subsequent messages are silent
+			# (30 Hz, prints would spam Output).
+			if _capture_count == 1:
+				print("[gool] receiving bus stats from session %d (%d strips)"
+						% [session_id, _latest_stats.size()])
 		return true
 	return false
 
 
-# Returns the most recent bus stats from any active session. The
-# common case is a single F5 session, so this is just whichever
-# session's data we last received. Returns empty Array when no
-# active session has reported stats yet.
+# Polled by the mixer dock at editor frame rate. Returns the
+# most recent stats, or [] when no session is running.
 func get_latest_bus_stats() -> Array:
-	# Prefer the most recently active session. With one session
-	# this is trivially deterministic.
-	for session_id in _latest_stats_by_session:
-		if _active_sessions.get(session_id, false):
-			return _latest_stats_by_session[session_id]
-	return []
+	return _latest_stats
 
 
+# Fired when the session ends (F8, game crash, etc). Only clear
+# stats if it's the session we're currently tracking. Protects
+# against late-firing signals from a stopped older session
+# clobbering data from a newly-started session.
 func _on_session_stopped(session_id: int) -> void:
-	_active_sessions.erase(session_id)
-	_latest_stats_by_session.erase(session_id)
+	print("[gool] debugger session %d stopped (received %d stats messages)"
+			% [session_id, _capture_count])
+	if session_id == _current_session_id:
+		_latest_stats = []
+		_current_session_id = -1
+		_capture_count = 0

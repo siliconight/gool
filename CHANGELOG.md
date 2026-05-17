@@ -11,16 +11,109 @@ upgrading.
 ## [Unreleased]
 
 Nothing shipping yet. With the EngineDebugger bridge built in
-v0.25.0, the path to the rest of Phase 3.3 is unblocked:
+v0.25.0/0.25.1, the path to the rest of Phase 3.3 is unblocked:
 
-- **Phase 3.3b — Volume + S/M/B controls.** Reuse the channel
-  for editor→game commands. Faders push `gool:set_bus_gain`
-  messages; Solo/Mute/Bypass push state changes.
-- **Phase 3.3c — Effect chain edit.** Push effect-param edits
-  through the same channel.
-- **Phase 3.3d — Topology + persistence.** Round-trip config.json.
-- **Phase 5 — Material & acoustic environment authoring**, queued
-  in parallel (see `docs/roadmap.md` Phase 5).
+- **Phase 3.3b — Volume + S/M/B controls.**
+- **Phase 3.3c — Effect chain edit.**
+- **Phase 3.3d — Topology + persistence.**
+- **Phase 5 — Material & acoustic environment authoring.**
+
+## [0.25.1] - 2026-05-17 — Fix mixer dock blanking on second F5
+
+### Problem
+
+v0.25.0 shipped the EngineDebugger cross-process bridge and the
+mixer dock displayed meters correctly **on the first F5 session**.
+On the second F5 (after F8 stop, or pressing F5 again without
+stopping), the meters didn't reappear — the dock returned to its
+empty "Gool audio runtime not initialized" state and stayed there.
+
+### Root cause
+
+v0.25.0's `GoolDebuggerPlugin` tracked active sessions in a
+Dictionary (`_active_sessions[session_id] = true`) and
+`get_latest_bus_stats()` filtered cached stats by whether their
+session was still marked active. Two race conditions in that
+design:
+
+1. **Stale session never cleared** — if a session's `stopped`
+   signal fires late (or doesn't fire reliably across plugin
+   reloads), `_active_sessions[0]` stays `true`. On second F5,
+   `_active_sessions[1]` is also `true`, but the iteration
+   `for session_id in _latest_stats_by_session` returns session
+   0's stale data first.
+2. **Cross-session signal clobber** — if session 0's `stopped`
+   signal fires *after* session 1 starts emitting stats, the
+   handler erases session 1's just-cached data because the
+   handler operates on the bound session_id (which is 0) but
+   the side effect (`_latest_stats_by_session.erase(0)`)
+   doesn't help when session 1's data was already overwriting
+   the dict slot.
+
+Neither race shows up on the first session because there's
+only one set of state. They only manifest on session restart.
+
+### Fix
+
+Replaced the Dictionary-of-sessions tracking with a single slot:
+
+```gdscript
+var _latest_stats: Array = []
+var _current_session_id: int = -1
+```
+
+Every `_capture("gool:bus_stats", ...)` overwrites both. On
+session_stopped, only clear if the stopping session matches
+`_current_session_id` — protects against late-firing signals
+from old sessions clobbering data from a newer one.
+
+Simpler invariant, fewer states, no per-session bookkeeping.
+Verified mechanically by tracing both session-restart sequences
+(F8→F5 and F5→F5 without stopping).
+
+### Diagnostic additions
+
+Added three `print` calls in the debugger plugin so users can
+see what's actually happening in the Output panel:
+
+- `[gool] debugger session N started` — on `_setup_session`
+- `[gool] receiving bus stats from session N (M strips)` —
+  on first `_capture` after setup (silent thereafter at 30 Hz)
+- `[gool] debugger session N stopped (received M stats messages)`
+  — on `_on_session_stopped`
+
+These three lines give a full picture of the bridge's behavior
+across F5/F8 cycles without spamming Output during normal
+playback.
+
+### Files touched
+
+- `godot/addons/gool/editor/debugger_plugin.gd` — rewrote
+  from Dictionary-tracking design to single-slot design
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.25.1.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.25.1
+  with `-Wall -Wextra -Wpedantic` under g++
+- All `.gd` files tab-indented (no space-indent regressions)
+- `version_test` reports `0.25.1`
+- Empirical session-restart behavior to be confirmed by user
+  in the sandbox
+
+### Lesson on Godot 4 editor-plugin state management
+
+EditorDebuggerPlugin instances persist across F5/F8 cycles —
+only the underlying `EditorDebuggerSession` objects come and
+go. Plugin state that holds per-session bookkeeping is prone
+to leaks across sessions: bound signal handlers can fire
+late, dict entries can persist past their session, and signal
+re-binding (`is_connected` checks) won't necessarily protect
+you when the same plugin instance sees multiple different
+sessions over its lifetime. **The general principle: an
+editor plugin should hold the minimum state needed to render
+its current view, not a history of all sessions it's seen.**
 
 ## [0.25.0] - 2026-05-17 — Phase 3.3a redo: EngineDebugger bridge → working mixer dock
 
@@ -10808,7 +10901,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.25.1...HEAD
+[0.25.1]: https://github.com/siliconight/gool/releases/tag/v0.25.1
 [0.25.0]: https://github.com/siliconight/gool/releases/tag/v0.25.0
 [0.24.2]: https://github.com/siliconight/gool/releases/tag/v0.24.2
 [0.24.1]: https://github.com/siliconight/gool/releases/tag/v0.24.1
