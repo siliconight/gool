@@ -19,25 +19,39 @@ namespace {
 // v0.24.1: MSVC fires C4996 ("This function or variable may be
 // unsafe") on std::strncpy and with /WX (warnings-as-errors, set
 // unconditionally in CMakeLists.txt for the audio_engine target)
-// that's a hard error. We could use _CRT_SECURE_NO_WARNINGS but
-// that's MSVC-specific and shotgun-suppresses every C4996. Writing
-// the bounded copy ourselves is portable across MSVC/Clang/GCC and
-// makes the intent ("copy up to dstSize-1 chars, always null-term")
-// explicit at the call site.
+// that's a hard error. So we don't use strncpy.
+//
+// v0.24.2: the previous "manual null-terminated copy in a single
+// loop" version tripped cppcheck's arrayIndexOutOfBoundsCond with
+// a false positive: cppcheck saw the call site `CopyBoundedString(
+// b->debugName, 16, "Master")` and inferred "src is 8 bytes, the
+// condition `i+1<dstSize` allows i up to 14, therefore src[i] could
+// be out of bounds." That's only true if the short-circuit
+// `src[i] != '\0'` failed to terminate the loop early, which it
+// always does for null-terminated strings. cppcheck doesn't trace
+// that interaction.
+//
+// The fix is a two-phase implementation: first determine srclen
+// using strnlen (bounded, available via <cstring> on all three
+// platforms — glibc, libc++, MSVC CRT — though not in the std::
+// namespace since it's POSIX, not ISO C), then memcpy + null-
+// terminate. The bound on srclen is visible at the subsequent
+// memcpy and dst[srclen] write, so cppcheck can prove the writes
+// stay in dst[0..dstSize-1].
 //
 // Used for copying BusConfig::debugName into the runtime Bus's
 // debugName field at Build time. Both fields are char[16]; src may
-// be a string literal ("Master") or another char[16].
+// be a string literal ("Master") or another char[16] from BusConfig.
 void CopyBoundedString(char* dst, std::size_t dstSize,
                         const char* src) noexcept {
     if (dstSize == 0) return;
-    std::size_t i = 0;
-    if (src != nullptr) {
-        for (; i + 1 < dstSize && src[i] != '\0'; ++i) {
-            dst[i] = src[i];
-        }
+    if (src == nullptr) {
+        dst[0] = '\0';
+        return;
     }
-    dst[i] = '\0';
+    const std::size_t srclen = strnlen(src, dstSize - 1);
+    std::memcpy(dst, src, srclen);
+    dst[srclen] = '\0';
 }
 
 } // anonymous namespace
@@ -402,8 +416,7 @@ float BusGraph::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
 }
 
 const char* BusGraph::BusName(uint32_t busIndex) const noexcept {
-    static constexpr const char* kEmpty = "";
-    if (busIndex >= buses_.size()) return kEmpty;
+    if (busIndex >= buses_.size()) return "";
     return buses_[busIndex]->debugName;
 }
 

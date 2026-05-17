@@ -14,13 +14,123 @@ Nothing shipping yet. Two work streams remain queued for upcoming
 releases:
 
 - **Phase 5 — Material & acoustic environment authoring**
-  (see `docs/roadmap.md` Phase 5). Three sub-phases targeting v0.25.0+
-  (expose `AudioMaterial` taxonomy + impact sound API), v0.26.0
-  (default Godot geometry query → occlusion just works), and
-  optionally v0.27.0 (source-aware acoustic environment).
+  (see `docs/roadmap.md` Phase 5). Three sub-phases targeting v0.25.0+.
 - **Phase 3.3b/c/d — Mixer dock interactivity** (the rest of the
   mixer beyond the read-only meters that landed in v0.24.0).
-  Faders + S/M/B, effect chain edit, topology + persistence.
+
+## [0.24.2] - 2026-05-17 — Fix cppcheck findings introduced in v0.24.0/0.24.1
+
+### Problem
+
+After v0.24.1 unblocked the Windows builds (by fixing the MSVC
+C4996 / `strncpy` issue), the workflow status remained "Failure"
+because the cppcheck static-analysis job continued to find two
+issues, both in `bus_graph.cpp`. Unlike clang-tidy and lizard,
+the cppcheck job doesn't have `continue-on-error: true`, so any
+finding fails the workflow.
+
+### Finding 1: `arrayIndexOutOfBoundsCond` in `CopyBoundedString`
+
+```
+src/audio_engine/mixer/bus_graph.cpp:36:38: warning: Either the
+condition 'i+1<dstSize' is redundant or the array 'src[7]' is
+accessed at index 14, which is out of bounds.
+[arrayIndexOutOfBoundsCond]
+```
+
+v0.24.1's `CopyBoundedString` was a single-loop bounded copy:
+
+```cpp
+for (; i + 1 < dstSize && src[i] != '\0'; ++i) {
+    dst[i] = src[i];
+}
+```
+
+cppcheck saw the call site `CopyBoundedString(b->debugName, 16,
+"Master")` and computed: "src is 8 bytes (literal `"Master"`),
+dstSize is 16, the condition `i+1<dstSize` allows i up to 14,
+therefore `src[i]` could read past the literal's end."
+
+That's only true if the short-circuit `src[i] != '\0'` failed
+to terminate the loop early. In practice the null terminator at
+`src[6]` stops the loop at i=6, but cppcheck doesn't trace
+short-circuits across string literal bounds. False positive in
+behavior, but real concern in worst-case static analysis.
+
+### Fix for Finding 1
+
+Two-phase implementation: determine `srclen` using `strnlen`
+(bounded by `dstSize - 1`, portable across glibc / libc++ /
+MSVC CRT via `<cstring>`, not in the `std::` namespace since
+it's POSIX, not ISO C). Then `memcpy + null-terminate`:
+
+```cpp
+const std::size_t srclen = strnlen(src, dstSize - 1);
+std::memcpy(dst, src, srclen);
+dst[srclen] = '\0';
+```
+
+The bound on `srclen` is now visible to cppcheck at the
+subsequent memcpy and dst[srclen] write — they're provably
+within `dst[0..dstSize-1]`, so the `arrayIndexOutOfBoundsCond`
+warning doesn't trip.
+
+Why not `std::strnlen`: libstdc++ doesn't expose `strnlen` in
+the `std::` namespace, only via the C namespace. This is a
+common gotcha for non-ISO-C functions. Using the unqualified
+`strnlen` works on all three platforms we ship to.
+
+### Finding 2: `variableScope` on `kEmpty`
+
+```
+src/audio_engine/mixer/bus_graph.cpp:405:34: style: The scope
+of the variable 'kEmpty' can be reduced. [variableScope]
+    static constexpr const char* kEmpty = "";
+```
+
+`BusName` had a `static constexpr const char* kEmpty = "";` at
+function scope, then `return kEmpty;` for the out-of-bounds
+case. The static was unnecessary — `return "";` is equivalent
+and the compiler folds it identically.
+
+### Fix for Finding 2
+
+```cpp
+const char* BusGraph::BusName(uint32_t busIndex) const noexcept {
+    if (busIndex >= buses_.size()) return "";
+    return buses_[busIndex]->debugName;
+}
+```
+
+### Files touched
+
+- `src/audio_engine/mixer/bus_graph.cpp` — rewrote
+  `CopyBoundedString` (anonymous namespace) to use `strnlen +
+  memcpy`; inlined `kEmpty` static.
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.24.2.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.24.2
+  with `-Wall -Wextra -Wpedantic -Werror` under g++
+- `version_test` reports `0.24.2`
+
+### Lesson on cppcheck portability
+
+cppcheck's pessimistic-static-analysis catches real bugs but
+also has known limitations around short-circuit evaluation
+across heterogeneous types (string literals vs. char arrays).
+When a finding is mechanically true but practically a false
+positive, the cleanest fix is restructuring the code so the
+bound becomes visible to the analyzer, not suppressing the
+warning. Two-phase implementations (compute bound, then use
+bound) almost always satisfy cppcheck.
+
+A future improvement: add cppcheck to a pre-push hook locally,
+so findings surface before CI runs. Would have caught both of
+these (plus any future cases) in seconds rather than after a
+push-and-wait cycle. Tracked, not done in this release.
 
 ## [0.24.1] - 2026-05-17 — Fix MSVC C4996 on `std::strncpy` (Windows build red on v0.24.0)
 
@@ -10535,7 +10645,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.24.2...HEAD
+[0.24.2]: https://github.com/siliconight/gool/releases/tag/v0.24.2
 [0.24.1]: https://github.com/siliconight/gool/releases/tag/v0.24.1
 [0.24.0]: https://github.com/siliconight/gool/releases/tag/v0.24.0
 [0.23.17]: https://github.com/siliconight/gool/releases/tag/v0.23.17
