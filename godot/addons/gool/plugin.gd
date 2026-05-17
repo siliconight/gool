@@ -155,6 +155,11 @@ const TOOLS_MENU_NAME := "Gool"
 const MIXER_DOCK_SCRIPT := "res://addons/gool/editor/mixer_dock.gd"
 const MIXER_DOCK_LABEL := "Gool Mixer"
 
+# v0.25.0: cross-process bridge from running game → editor mixer
+# dock. EditorDebuggerPlugin instance is created in _enter_tree,
+# registered via add_debugger_plugin, removed in _exit_tree.
+const DEBUGGER_PLUGIN_SCRIPT := "res://addons/gool/editor/debugger_plugin.gd"
+
 # Held instance of the inspector plugin. Stored so _exit_tree can
 # unregister the same instance we registered (Godot's
 # remove_inspector_plugin requires the original reference, not just
@@ -165,21 +170,27 @@ var _sound_name_inspector: EditorInspectorPlugin = null
 # removal in _exit_tree via remove_control_from_bottom_panel.
 var _mixer_dock: Control = null
 
+# v0.25.0: instance of the EditorDebuggerPlugin that receives
+# bus stats from the running game and feeds them to the mixer dock.
+var _debugger_plugin: EditorDebuggerPlugin = null
+
 func _enter_tree() -> void:
 	_add_autoload()
 	_register_prefabs()
 	_write_default_config_if_missing()
 	_scaffold_sounds_tree_if_missing()   # v0.23.0
 	_register_inspector_plugin()
+	_register_debugger_plugin()          # v0.25.0 (before mixer dock!)
 	_register_mixer_dock()               # v0.24.0
 	_connect_filesystem_watch()
 	_register_tools_menu()               # v0.23.0
-	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, mixer dock, tools menu installed.")
+	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, debugger bridge, mixer dock, tools menu installed.")
 
 func _exit_tree() -> void:
 	_unregister_tools_menu()             # v0.23.0
 	_disconnect_filesystem_watch()
 	_unregister_mixer_dock()             # v0.24.0
+	_unregister_debugger_plugin()        # v0.25.0
 	_unregister_inspector_plugin()
 	_unregister_prefabs()
 	_remove_autoload()
@@ -240,6 +251,12 @@ func _register_mixer_dock() -> void:
 		push_warning("[gool] mixer dock script.new() returned null")
 		return
 	_mixer_dock.name = "GoolMixerDock"
+	# v0.25.0: hand the dock a reference to the debugger plugin so
+	# it can pull cached bus stats from the running game process.
+	# Done BEFORE add_control_to_bottom_panel so the dock's first
+	# _process tick can already see the plugin.
+	if _debugger_plugin != null and _mixer_dock.has_method("set_debugger_plugin"):
+		_mixer_dock.set_debugger_plugin(_debugger_plugin)
 	add_control_to_bottom_panel(_mixer_dock, MIXER_DOCK_LABEL)
 
 func _unregister_mixer_dock() -> void:
@@ -248,6 +265,40 @@ func _unregister_mixer_dock() -> void:
 	remove_control_from_bottom_panel(_mixer_dock)
 	_mixer_dock.queue_free()
 	_mixer_dock = null
+
+# v0.25.0: cross-process bridge for the mixer dock. The
+# EditorDebuggerPlugin lives on the editor side and receives
+# `EngineDebugger.send_message("gool:bus_stats", [...])` calls
+# from the game-side Gool autoload during F5 playback. The
+# mixer dock polls the plugin's cached snapshot at 30 Hz.
+#
+# Why a debugger plugin and not get_tree().root.get_node("Gool"):
+# Godot 4 runs the editor and the running game in separate
+# processes — they don't share a SceneTree. The debugger channel
+# is the supported way to push per-frame data from game to editor.
+# Same channel will carry editor→game commands in 3.3b/c/d
+# (faders, S/M/B buttons, effect param edits).
+func _register_debugger_plugin() -> void:
+	var script := load(DEBUGGER_PLUGIN_SCRIPT)
+	if script == null:
+		push_warning(
+			"[gool] could not load %s; mixer dock will not "
+			% DEBUGGER_PLUGIN_SCRIPT
+			+ "show meters during F5 playback. The audio runtime "
+			+ "still works; only editor-side visibility is affected."
+		)
+		return
+	_debugger_plugin = script.new()
+	if _debugger_plugin == null:
+		push_warning("[gool] debugger plugin script.new() returned null")
+		return
+	add_debugger_plugin(_debugger_plugin)
+
+func _unregister_debugger_plugin() -> void:
+	if _debugger_plugin == null:
+		return
+	remove_debugger_plugin(_debugger_plugin)
+	_debugger_plugin = null
 
 # v0.22.3: live filesystem watching for the sound_name autocomplete.
 #

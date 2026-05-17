@@ -96,6 +96,18 @@ func _ready() -> void:
 	_strip_container.add_child(_empty_label)
 
 
+# v0.25.0: source of bus-stats data. The editor and the running
+# game are separate processes — we can't reach into the game's
+# `Gool` autoload directly. Instead the game sends per-bus stats
+# over the EngineDebugger channel, and the GoolDebuggerPlugin
+# (instantiated in plugin.gd, set here via set_debugger_plugin)
+# caches the latest payload. We poll the plugin every editor frame.
+var _debugger_plugin: EditorDebuggerPlugin = null
+
+func set_debugger_plugin(p: EditorDebuggerPlugin) -> void:
+	_debugger_plugin = p
+
+
 func _process(delta: float) -> void:
 	_accum += delta
 	var poll_period := 1.0 / POLL_HZ
@@ -104,30 +116,18 @@ func _process(delta: float) -> void:
 		_poll()
 
 
-# Poll Gool for current bus stats and refresh strip widgets.
-# Tolerant of:
-#   - Gool autoload not present (Tool scripts in the editor can't
-#     guarantee autoloads exist when the plugin first loads)
-#   - Gool present but runtime not initialized (returns [])
+# Pull the latest cached bus stats from the debugger plugin and
+# refresh strip widgets. Tolerant of:
+#   - Debugger plugin not yet wired (extremely early in editor
+#     startup, before plugin.gd's _enter_tree completes)
+#   - No active F5 session (returns [], dock shows empty state)
 #   - Bus list changed since last poll (rebuild strips)
 func _poll() -> void:
-	# Defensive: in the editor, autoloads exist but Gool's _runtime
-	# may not be created until the project actually plays. has_node
-	# is the safest probe.
-	var tree := get_tree()
-	if tree == null:
-		return
-	var root := tree.root
-	if root == null or not root.has_node("Gool"):
+	if _debugger_plugin == null:
 		_show_empty()
 		return
 
-	var gool: Node = root.get_node("Gool")
-	if not gool.has_method("get_bus_stats"):
-		_show_empty()
-		return
-
-	var stats: Array = gool.get_bus_stats()
+	var stats: Array = _debugger_plugin.get_latest_bus_stats()
 	if stats.is_empty():
 		_show_empty()
 		return

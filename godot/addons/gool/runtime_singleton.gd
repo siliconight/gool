@@ -175,6 +175,18 @@ var _render_stats_accum: float = 0.0
 var _render_stats_last_invocations: int = 0
 var _render_stats_last_frames: int = 0
 
+# v0.25.0: cross-process metering for the editor mixer dock. When
+# the game is launched from F5 (debugger attached), the runtime
+# pushes per-bus stats over Godot's EngineDebugger message channel
+# at 30 Hz. The editor-side EditorDebuggerPlugin
+# (addons/gool/editor/debugger_plugin.gd) receives them and stores
+# the latest snapshot for the mixer dock to render. Cost: one
+# get_bus_stats() call + one EngineDebugger.send_message every
+# ~33ms when running, zero when there's no debugger attached (e.g.
+# exported builds).
+const _DEBUGGER_EMIT_INTERVAL: float = 1.0 / 30.0   # 30 Hz
+var _debugger_emit_accum: float = 0.0
+
 func _process(delta: float) -> void:
 	if _runtime != null and _runtime.is_initialized():
 		_runtime.update(delta)
@@ -184,6 +196,29 @@ func _process(delta: float) -> void:
 		if _render_stats_accum >= _RENDER_STATS_INTERVAL:
 			_render_stats_accum = 0.0
 			_log_render_stats()
+		# v0.25.0: push per-bus stats over the EngineDebugger channel
+		# so the editor's mixer dock can render meters during F5
+		# playback. Only emits when a debugger is attached (so this
+		# is free in exported builds and headless runs).
+		_debugger_emit_accum += delta
+		if _debugger_emit_accum >= _DEBUGGER_EMIT_INTERVAL:
+			_debugger_emit_accum = 0.0
+			_emit_bus_stats_to_debugger()
+
+# Push the current bus-stats array as a debugger message. The
+# editor side (GoolDebuggerPlugin) listens for "gool:bus_stats".
+# Payload format matches Gool.get_bus_stats() directly:
+#   [{name: String, parent: int, peak_linear: float}, ...]
+#
+# Safe to call when no debugger is attached — EngineDebugger.is_active()
+# returns false in exported builds, and we early-out without sending.
+func _emit_bus_stats_to_debugger() -> void:
+	if not EngineDebugger.is_active():
+		return
+	var stats: Array = get_bus_stats()
+	if stats.is_empty():
+		return
+	EngineDebugger.send_message("gool:bus_stats", [stats])
 
 func _log_render_stats() -> void:
 	var stats: Dictionary = _runtime.get_render_stats()

@@ -10,13 +10,176 @@ upgrading.
 
 ## [Unreleased]
 
-Nothing shipping yet. Two work streams remain queued for upcoming
-releases:
+Nothing shipping yet. With the EngineDebugger bridge built in
+v0.25.0, the path to the rest of Phase 3.3 is unblocked:
 
-- **Phase 5 — Material & acoustic environment authoring**
-  (see `docs/roadmap.md` Phase 5). Three sub-phases targeting v0.25.0+.
-- **Phase 3.3b/c/d — Mixer dock interactivity** (the rest of the
-  mixer beyond the read-only meters that landed in v0.24.0).
+- **Phase 3.3b — Volume + S/M/B controls.** Reuse the channel
+  for editor→game commands. Faders push `gool:set_bus_gain`
+  messages; Solo/Mute/Bypass push state changes.
+- **Phase 3.3c — Effect chain edit.** Push effect-param edits
+  through the same channel.
+- **Phase 3.3d — Topology + persistence.** Round-trip config.json.
+- **Phase 5 — Material & acoustic environment authoring**, queued
+  in parallel (see `docs/roadmap.md` Phase 5).
+
+## [0.25.0] - 2026-05-17 — Phase 3.3a redo: EngineDebugger bridge → working mixer dock
+
+### Problem with v0.24.0–v0.24.2
+
+The read-only mixer dock from v0.24.0 was architecturally wrong.
+v0.24.0 polled `get_tree().root.get_node("Gool")` from the
+editor-side `@tool` script. That code path can never see the
+running game's `Gool` autoload, because Godot 4 runs the editor
+and the game in **separate processes**. The dock displayed
+"Gool audio runtime not initialized" forever, even during F5
+playback — confirmed by user screenshot in the v0.24.2 test
+session.
+
+That this didn't surface until empirical testing is a real
+process failure: the smoke tests catch C++ build issues and
+GDScript parse errors, but they don't catch "feature builds
+clean but doesn't actually do what the changelog says."
+
+### The fix: EngineDebugger cross-process channel
+
+Godot 4 provides a debugger message channel that exists for
+every F5 session. The game can call
+`EngineDebugger.send_message("prefix:msg", [payload])` and an
+editor-side `EditorDebuggerPlugin` can subscribe to messages
+matching its claimed prefix via `_capture(message, data, ...)`.
+
+This is the supported pattern for editor↔game data exchange.
+It's also exactly what we'll need for Phase 3.3b/c/d (faders,
+S/M/B, effect editing — all need editor→game commands). Building
+the bridge once now means no rip-and-replace later when those
+features ship.
+
+### What changed (4 files)
+
+**1. `godot/addons/gool/runtime_singleton.gd` — game side**
+
+Added a 30 Hz debug-channel emit alongside the existing render
+stats logging:
+
+```gdscript
+const _DEBUGGER_EMIT_INTERVAL: float = 1.0 / 30.0
+var _debugger_emit_accum: float = 0.0
+
+func _process(delta: float) -> void:
+    # ... existing update + render-stats-log path ...
+    _debugger_emit_accum += delta
+    if _debugger_emit_accum >= _DEBUGGER_EMIT_INTERVAL:
+        _debugger_emit_accum = 0.0
+        _emit_bus_stats_to_debugger()
+
+func _emit_bus_stats_to_debugger() -> void:
+    if not EngineDebugger.is_active():
+        return
+    var stats: Array = get_bus_stats()
+    if stats.is_empty():
+        return
+    EngineDebugger.send_message("gool:bus_stats", [stats])
+```
+
+Cost: one `get_bus_stats()` call + one debugger message per ~33ms
+when a debugger is attached. Zero in exported builds (the
+`is_active()` check early-outs).
+
+**2. `godot/addons/gool/editor/debugger_plugin.gd` — new file (~95 lines)**
+
+`GoolDebuggerPlugin extends EditorDebuggerPlugin`. Three
+overrides:
+
+- `_setup_session(session_id)` — track session lifecycle, hook
+  the session's `stopped` signal so we clear cached stats on F8
+- `_has_capture(prefix)` — claim the `"gool"` prefix
+- `_capture(message, data, session_id)` — accept
+  `gool:bus_stats` messages and cache the payload
+
+Stores per-session stats in a Dictionary keyed by `session_id`
+(future-proof for multi-instance debugging; single-session is
+the common case). Provides `get_latest_bus_stats()` for the
+mixer dock to poll.
+
+**3. `godot/addons/gool/editor/mixer_dock.gd` — rewired polling**
+
+Old polling target:
+
+```gdscript
+var root := get_tree().root
+if root == null or not root.has_node("Gool"):
+    _show_empty()  # always hit this; Gool isn't in editor's tree
+```
+
+New polling target:
+
+```gdscript
+if _debugger_plugin == null:
+    _show_empty()
+    return
+var stats: Array = _debugger_plugin.get_latest_bus_stats()
+```
+
+Added `set_debugger_plugin(p)` setter called by plugin.gd at
+register time, before the dock is added to the bottom panel.
+
+**4. `godot/addons/gool/plugin.gd` — register/wire**
+
+New `_register_debugger_plugin` / `_unregister_debugger_plugin`
+lifecycle methods that mirror the existing inspector/mixer-dock
+pattern. Registered in `_enter_tree` **before** the mixer dock
+so the dock can hold a valid reference on its first frame.
+
+```
+_register_inspector_plugin()
+_register_debugger_plugin()    # v0.25.0 (new, before mixer dock!)
+_register_mixer_dock()
+```
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.25.0
+  with `-Wall -Wextra -Wpedantic` under g++
+- All `.gd` files use tabs only (no space-indent regressions)
+- `version_test` reports `0.25.0`
+- Cross-process bridge mechanically verified by tracing the call
+  path in code: `Gool._process` → `EngineDebugger.send_message`
+  → editor's `_capture` → cached → dock polls → renders. Full
+  empirical verification awaits user F5 test in the sandbox.
+
+### Lesson on cross-process Godot 4 plugin architecture
+
+**Editor `@tool` scripts cannot see the running game's SceneTree.**
+Anything they need from the game has to traverse the
+EngineDebugger channel (game→editor) or the runtime's own
+ClassDB-bound methods called via remote-debugger-RPC
+(editor→game). This is the same lesson at the application level
+that the v0.23.7 fuzz CI fix taught at the toolchain level
+(clang-15 + libstdc++14 incompatibility) and v0.24.1 taught at
+the compiler level (`/W4 /WX` on MSVC vs. permissive g++).
+
+The general principle going forward: **for any editor plugin
+feature that's supposed to react to game state, the first
+design decision is which cross-process channel it uses.** If
+there's no channel for it, that's a prerequisite to build,
+not an oversight to discover empirically.
+
+### What this unlocks for 3.3b/c/d
+
+The bridge is bidirectional. v0.25.0 only uses game→editor for
+displaying meters, but the same `EngineDebugger.send_message`
+mechanism works the other direction via
+`EditorDebuggerSession.send_message`:
+
+- 3.3b fader drag → editor sends `gool:set_bus_gain {bus, db}` →
+  game receives, calls `runtime_->SetBusGainDb`
+- 3.3b solo button → editor sends `gool:set_bus_solo {bus, bool}`
+- 3.3c effect param → editor sends `gool:set_effect_param {bus,
+  effect, param, value}`
+- 3.3d topology save → editor reads cached state, writes
+  config.json on save
+
+All without rebuilding the channel.
 
 ## [0.24.2] - 2026-05-17 — Fix cppcheck findings introduced in v0.24.0/0.24.1
 
@@ -10645,7 +10808,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.24.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/siliconight/gool/releases/tag/v0.25.0
 [0.24.2]: https://github.com/siliconight/gool/releases/tag/v0.24.2
 [0.24.1]: https://github.com/siliconight/gool/releases/tag/v0.24.1
 [0.24.0]: https://github.com/siliconight/gool/releases/tag/v0.24.0
