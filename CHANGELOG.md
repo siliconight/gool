@@ -22,6 +22,92 @@ releases:
   mixer beyond the read-only meters that landed in v0.24.0).
   Faders + S/M/B, effect chain edit, topology + persistence.
 
+## [0.24.1] - 2026-05-17 — Fix MSVC C4996 on `std::strncpy` (Windows build red on v0.24.0)
+
+### Problem
+
+v0.24.0's Windows CI builds (both `engine / windows-latest / Release`
+and `gdextension / windows-x86_64`) failed with exit code 1 after
+godot-cpp completed successfully. Root cause was the three
+`std::strncpy` calls v0.24.0 added to `src/audio_engine/mixer/bus_graph.cpp`
+to copy `BusConfig::debugName` into the runtime `Bus` struct.
+
+MSVC fires C4996 on `std::strncpy`:
+
+> warning C4996: 'strncpy': This function or variable may be unsafe.
+> Consider using strncpy_s instead. To disable deprecation, use
+> _CRT_SECURE_NO_WARNINGS.
+
+The audio_engine target sets `/W4 /WX` unconditionally in
+CMakeLists.txt (line 552), so C4996 becomes a hard error and the
+Windows build fails. Linux + macOS builds passed (g++ doesn't
+deprecate `strncpy`), masking the issue locally. The C++ unit
+build sanity check in my development environment is g++-only.
+
+### Fix
+
+Replaced the three `std::strncpy` calls with a small portable
+helper at the top of `bus_graph.cpp`:
+
+```cpp
+void CopyBoundedString(char* dst, std::size_t dstSize,
+                        const char* src) noexcept {
+    if (dstSize == 0) return;
+    std::size_t i = 0;
+    if (src != nullptr) {
+        for (; i + 1 < dstSize && src[i] != '\0'; ++i) {
+            dst[i] = src[i];
+        }
+    }
+    dst[i] = '\0';
+}
+```
+
+Same semantics as `strncpy` with an explicit null-terminator
+guarantee, but in our own code so MSVC doesn't deprecation-warn.
+Portable across MSVC, Clang, and GCC.
+
+Alternative considered: `#define _CRT_SECURE_NO_WARNINGS` —
+rejected because it shotgun-suppresses every C4996 warning in
+the TU, hiding any future unsafe-string-handling issues that
+should be flagged.
+
+### Files touched
+
+- `src/audio_engine/mixer/bus_graph.cpp` — added
+  `CopyBoundedString` helper in an anonymous namespace at file
+  top; replaced 3 `std::strncpy` call sites.
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.24.1.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.24.1
+  with `-Wall -Wextra -Wpedantic` under g++
+- The new helper is exercised at every bus graph build (called
+  three times per `ValidateAndBuildBuses` for any config with
+  named buses)
+- `version_test` reports `0.24.1`
+
+### Lesson on cross-compiler portability
+
+This is the second time MSVC's stricter `/W4 /WX` posture has
+caught something g++ accepts — the first was the v0.23.7
+clang-15/libstdc++14 incompatibility that pinned the fuzz job
+to ubuntu-22.04. The general principle for future work:
+
+**MSVC's deprecation warnings on legacy C library functions
+(strncpy, sprintf, fopen, sscanf, etc.) all fire C4996 and all
+become hard errors with /WX.** When introducing new code that
+needs C-style string operations, default to writing the bounded
+copy inline (as `CopyBoundedString` does) rather than reaching
+for the C library function.
+
+A future improvement would be to add a CI matrix entry that
+runs g++ with `-Werror` on the same code MSVC builds with /WX,
+so portability slip-ups surface in the Ubuntu jobs before
+hitting Windows. Tracked but not done in this release.
+
 ## [0.24.0] - 2026-05-17 — Read-only mixer dock (Phase 3.3a)
 
 ### What's new
@@ -10449,7 +10535,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/siliconight/gool/releases/tag/v0.24.1
 [0.24.0]: https://github.com/siliconight/gool/releases/tag/v0.24.0
 [0.23.17]: https://github.com/siliconight/gool/releases/tag/v0.23.17
 [0.23.16]: https://github.com/siliconight/gool/releases/tag/v0.23.16

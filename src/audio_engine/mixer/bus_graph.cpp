@@ -14,6 +14,34 @@
 #include <unordered_set>
 #include <vector>
 
+namespace {
+
+// v0.24.1: MSVC fires C4996 ("This function or variable may be
+// unsafe") on std::strncpy and with /WX (warnings-as-errors, set
+// unconditionally in CMakeLists.txt for the audio_engine target)
+// that's a hard error. We could use _CRT_SECURE_NO_WARNINGS but
+// that's MSVC-specific and shotgun-suppresses every C4996. Writing
+// the bounded copy ourselves is portable across MSVC/Clang/GCC and
+// makes the intent ("copy up to dstSize-1 chars, always null-term")
+// explicit at the call site.
+//
+// Used for copying BusConfig::debugName into the runtime Bus's
+// debugName field at Build time. Both fields are char[16]; src may
+// be a string literal ("Master") or another char[16].
+void CopyBoundedString(char* dst, std::size_t dstSize,
+                        const char* src) noexcept {
+    if (dstSize == 0) return;
+    std::size_t i = 0;
+    if (src != nullptr) {
+        for (; i + 1 < dstSize && src[i] != '\0'; ++i) {
+            dst[i] = src[i];
+        }
+    }
+    dst[i] = '\0';
+}
+
+} // anonymous namespace
+
 namespace audio {
 
 namespace {
@@ -82,7 +110,7 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
         // v0.24.0: synthetic master gets the canonical "Master" name so
         // the mixer dock has something to display even when no config
         // was loaded.
-        std::strncpy(b->debugName, "Master", sizeof(b->debugName) - 1);
+        CopyBoundedString(b->debugName, sizeof(b->debugName), "Master");
         buses_.push_back(std::move(b));
         masterIndex_ = 0;
         return AudioResult::Success;
@@ -113,7 +141,7 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
                                    std::memory_order_relaxed);
         // v0.24.0: carry the human-readable name through to the runtime
         // Bus so the mixer dock can display it without a config lookup.
-        std::strncpy(b->debugName, bcfg.debugName, sizeof(b->debugName) - 1);
+        CopyBoundedString(b->debugName, sizeof(b->debugName), bcfg.debugName);
         masterIndex_ = static_cast<uint32_t>(buses_.size());
         buses_.push_back(std::move(b));
         break;
@@ -127,7 +155,7 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
         b->proximityCurve = bcfg.proximityCurve;
         b->outputGainLinear.store(DbToLinearLocal(bcfg.outputGainDb),
                                    std::memory_order_relaxed);
-        std::strncpy(b->debugName, bcfg.debugName, sizeof(b->debugName) - 1);
+        CopyBoundedString(b->debugName, sizeof(b->debugName), bcfg.debugName);
         buses_.push_back(std::move(b));
     }
 
