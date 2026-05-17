@@ -335,6 +335,19 @@ func get_render_stats() -> Dictionary:
 		return {}
 	return _runtime.get_render_stats()
 
+# v0.24.0: per-bus metering for the editor mixer dock. Returns
+# Array of Dictionaries: [{name: String, parent: int, peak_linear: float}, ...]
+# with one entry per bus (master always present, others in graph order).
+# parent is -1 for the master bus. Peak is read-and-reset on every call
+# so consecutive calls cover the audio samples between them — poll at
+# a steady cadence (~30 Hz) for meter behavior.
+#
+# Returns [] if the runtime isn't initialized or no bus graph is built.
+func get_bus_stats() -> Array:
+	if _runtime == null:
+		return []
+	return _runtime.get_bus_stats()
+
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
 						 sr: int = 48000, ch: int = 1) -> int:
 	return _runtime.register_pcm_sound(name, samples, sr, ch)

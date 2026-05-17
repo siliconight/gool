@@ -151,11 +151,19 @@ const BANK_LOADER_SCRIPT := "res://addons/gool/prefabs/gool_sound_bank_loader.gd
 # Submenu label under Project → Tools.
 const TOOLS_MENU_NAME := "Gool"
 
+# v0.24.0: read-only mixer dock script path + bottom-panel label.
+const MIXER_DOCK_SCRIPT := "res://addons/gool/editor/mixer_dock.gd"
+const MIXER_DOCK_LABEL := "Gool Mixer"
+
 # Held instance of the inspector plugin. Stored so _exit_tree can
 # unregister the same instance we registered (Godot's
 # remove_inspector_plugin requires the original reference, not just
 # a script path).
 var _sound_name_inspector: EditorInspectorPlugin = null
+
+# v0.24.0: instance of the mixer dock Control, stored for symmetric
+# removal in _exit_tree via remove_control_from_bottom_panel.
+var _mixer_dock: Control = null
 
 func _enter_tree() -> void:
 	_add_autoload()
@@ -163,13 +171,15 @@ func _enter_tree() -> void:
 	_write_default_config_if_missing()
 	_scaffold_sounds_tree_if_missing()   # v0.23.0
 	_register_inspector_plugin()
+	_register_mixer_dock()               # v0.24.0
 	_connect_filesystem_watch()
 	_register_tools_menu()               # v0.23.0
-	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, tools menu installed.")
+	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, mixer dock, tools menu installed.")
 
 func _exit_tree() -> void:
 	_unregister_tools_menu()             # v0.23.0
 	_disconnect_filesystem_watch()
+	_unregister_mixer_dock()             # v0.24.0
 	_unregister_inspector_plugin()
 	_unregister_prefabs()
 	_remove_autoload()
@@ -200,6 +210,44 @@ func _unregister_inspector_plugin() -> void:
 		return
 	remove_inspector_plugin(_sound_name_inspector)
 	_sound_name_inspector = null
+
+# v0.24.0: read-only mixer dock — bottom-panel Control that polls
+# Gool.get_bus_stats() at 30 Hz and renders per-bus peak meters.
+# Lifecycle is symmetric with the inspector plugin: instantiated in
+# _enter_tree, freed in _exit_tree.
+#
+# Why the bottom panel (vs. a sidebar dock): meters are something
+# you glance at while debugging audio, not a permanent reference
+# panel competing for screen space with the inspector. The bottom
+# panel collapses out of the way when not in use, like Output and
+# Debugger. Same convention DAWs use for their meter views.
+#
+# The dock script is loaded as a script (not preloaded as a class)
+# so plugin disable / re-enable doesn't keep a stale class_name
+# registered. The freshly loaded script is instantiated each time.
+func _register_mixer_dock() -> void:
+	var script := load(MIXER_DOCK_SCRIPT)
+	if script == null:
+		push_warning(
+			"[gool] could not load %s; mixer dock unavailable. "
+			% MIXER_DOCK_SCRIPT
+			+ "The audio runtime still works without it; you just "
+			+ "won't have visual bus-level metering in the editor."
+		)
+		return
+	_mixer_dock = script.new()
+	if _mixer_dock == null:
+		push_warning("[gool] mixer dock script.new() returned null")
+		return
+	_mixer_dock.name = "GoolMixerDock"
+	add_control_to_bottom_panel(_mixer_dock, MIXER_DOCK_LABEL)
+
+func _unregister_mixer_dock() -> void:
+	if _mixer_dock == null:
+		return
+	remove_control_from_bottom_panel(_mixer_dock)
+	_mixer_dock.queue_free()
+	_mixer_dock = null
 
 # v0.22.3: live filesystem watching for the sound_name autocomplete.
 #

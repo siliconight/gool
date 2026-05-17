@@ -10,7 +10,169 @@ upgrading.
 
 ## [Unreleased]
 
-Nothing yet — open the next release section here when a feature lands.
+Nothing shipping yet. Two work streams remain queued for upcoming
+releases:
+
+- **Phase 5 — Material & acoustic environment authoring**
+  (see `docs/roadmap.md` Phase 5). Three sub-phases targeting v0.25.0+
+  (expose `AudioMaterial` taxonomy + impact sound API), v0.26.0
+  (default Godot geometry query → occlusion just works), and
+  optionally v0.27.0 (source-aware acoustic environment).
+- **Phase 3.3b/c/d — Mixer dock interactivity** (the rest of the
+  mixer beyond the read-only meters that landed in v0.24.0).
+  Faders + S/M/B, effect chain edit, topology + persistence.
+
+## [0.24.0] - 2026-05-17 — Read-only mixer dock (Phase 3.3a)
+
+### What's new
+
+A bottom-panel dock for Godot's editor that visualizes gool's
+live bus graph with one strip per bus and DAW-style peak meters.
+Polls `Gool.get_bus_stats()` at 30 Hz; renders segmented vertical
+bars colored by level (green / yellow / red), tick marks at
+0 / -6 / -12 / -24 dBFS, peak-hold markers with 1.5s hold +
+0.5/s linear drop, and numeric dB readouts. No interactivity in
+this release — that's queued for 3.3b/c/d.
+
+Why this matters: until now there's been no way to see what
+gool is doing audio-wise except by trusting your ears. The
+mixer dock turns gool from a black box into a visible audio
+engine, which makes every future debug session (and every
+future Phase 5 / occlusion / acoustic-environment workstream)
+dramatically faster.
+
+### What this required in the engine
+
+`get_render_stats()` previously returned master-bus-only data.
+Per-bus level info didn't exist anywhere. This release adds the
+plumbing top to bottom:
+
+1. **`Bus` struct** (`bus_graph.h`) — new `debugName[16]` field
+   (copy of `BusConfig::debugName`) and `peakSinceLastReadLinear`
+   atomic for the peak captured per render callback.
+2. **`audio_mixer.cpp`** — after each bus's effect chain runs in
+   `RunBusGraph`, one pass over `output` computes max abs and
+   `CapturePeakLinear` CAS-updates the atomic. Cost is negligible
+   (one reduction pass per bus per callback, no allocations).
+3. **`BusGraph` public API** — `CapturePeakLinear` (render-thread
+   writer), `ReadAndResetBusPeakLinear` (control-thread reader
+   with atomic exchange semantics), `BusName` (immutable read).
+4. **`AudioRuntime` + `AudioRuntimeImpl`** — `GetBusCount`,
+   `GetBusName`, `GetBusParentIndex`, `ReadAndResetBusPeakLinear`
+   forwarders. Same lifetime contract as the existing
+   `GetMasterPreGainPeak`: zero/empty before Initialize, valid
+   between Initialize and Shutdown.
+5. **`GoolAudioRuntime` binding** — new `get_bus_stats()` method
+   returning `Array[Dictionary]` with shape
+   `[{name: String, parent: int, peak_linear: float}, ...]`.
+6. **`runtime_singleton.gd`** — `Gool.get_bus_stats()` thin wrapper.
+
+### Editor plugin
+
+- New file `godot/addons/gool/editor/mixer_dock.gd` (~280 lines):
+  - `@tool class_name GoolMixerDock extends Control`
+  - Root contains `HBoxContainer` inside a `ScrollContainer` for
+    horizontal scroll when there are many buses
+  - Inner `_BusStrip` class draws each strip via custom `_draw()`
+    with tick marks, segmented colored fill, peak-hold line, and
+    numeric dB text
+  - 30 Hz polling via `_process` delta accumulator (cheaper than
+    a Timer; consistent across editor frame-rate variability)
+  - Visual smoothing: `_peak_smoothed` rises instantly with the
+    new value (attack), decays at 0.85 per poll (release).
+    Peak-hold marker holds for 1.5s then linearly drops
+  - Tolerant of Gool autoload missing or runtime not initialized
+    (shows "Gool audio runtime not initialized. Press Play to
+    start metering."), gracefully rebuilds strips when the bus
+    topology changes mid-session
+
+- `plugin.gd` integration:
+  - New `_register_mixer_dock` / `_unregister_mixer_dock` methods
+    that mirror the existing inspector plugin pattern
+  - `add_control_to_bottom_panel(_mixer_dock, "Gool Mixer")`
+  - Symmetric removal in `_exit_tree`
+  - Script loaded each enable (not preloaded as class) so plugin
+    disable / re-enable doesn't keep a stale class_name registered
+
+### Why the bottom panel (not a sidebar dock)
+
+Meters are something you glance at while debugging audio, not a
+permanent reference panel competing for screen space with the
+inspector. Bottom panel collapses out of the way when not in
+use (like Output, Debugger, AnimationPlayer). Same convention
+DAWs use for their meter views.
+
+### Files touched
+
+- `include/audio_engine/audio_runtime.h` — 4 new public methods
+- `src/audio_engine/runtime/audio_runtime_impl.h` + `.cpp` — impl
+  forwarders
+- `src/audio_engine/runtime/audio_runtime.cpp` — pImpl wrappers
+- `src/audio_engine/mixer/bus_graph.h` + `.cpp` — Bus struct
+  extension + 3 new public methods (~70 lines new in `.cpp`)
+- `src/audio_engine/mixer/audio_mixer.cpp` — one new
+  `CapturePeakLinear` call inside `RunBusGraph`
+- `godot/src/gool_godot.cpp` — `get_bus_stats()` binding (~25
+  lines)
+- `godot/addons/gool/runtime_singleton.gd` — `get_bus_stats()`
+  wrapper (~12 lines)
+- `godot/addons/gool/plugin.gd` — register/unregister + state
+  (~50 lines)
+- `godot/addons/gool/editor/mixer_dock.gd` — new file (~280
+  lines)
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.24.0
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.24.0
+- `version_test` reports `0.24.0`
+- No remaining space-indented lines in any `.gd` file under
+  `godot/addons/gool/`, `examples/multiplayer_audio_sandbox/`,
+  or `tests/godot/smoke/` (tab convention preserved from v0.23.14)
+- No new patterns triggered in CI's KNOWN_REAL_ERRORS list
+
+### Not included in this release (queued for 3.3b/c/d)
+
+- No interactivity: faders, S/M/B buttons, effect chain editing,
+  bus topology editing all deferred
+- No persistence: the dock reads bus state but can't write back
+  to `config.json`
+- No multi-listener handling: only the runtime's primary listener
+  contributes to the meters
+- No RMS / LUFS / loudness modes: only the simple "peak abs
+  sample with envelope-smoothed decay" used here. Acceptable for
+  Phase 3.3a's "see what gool is doing" mission; a future minor
+  release could add RMS for music-mix verification
+
+### How to use
+
+After installing v0.24.0 and enabling the gool plugin:
+
+1. Open any project that uses gool (e.g., the multiplayer audio
+   sandbox)
+2. Look at the bottom of the editor — there's a new **"Gool
+   Mixer"** tab next to Output, Debugger, etc.
+3. Click it to expand the dock
+4. Press F5 to run the project
+5. Each bus from your `gool/config.json` appears as a strip
+6. Watch the meters move in real-time as audio flows through
+   the bus graph
+
+If the dock shows "Gool audio runtime not initialized" while the
+project is running, that means either (a) the gool plugin isn't
+enabled in Project Settings → Plugins, or (b) `Gool.initialize()`
+hasn't been called yet (the autoload should handle this
+automatically, but custom integrations may differ).
+
+### Roadmap implication
+
+After v0.24.0 lands, the next decision point (per the roadmap
+note at the end of v0.23.17's CHANGELOG) is whether to continue
+with **3.3b/c/d** (mixer interactivity) or pivot to **Phase 5.1**
+(`AudioMaterial` taxonomy + impact sound API). Both queues are
+still active; the mixer dock just got us the visualization
+muscle that makes Phase 5 debugging easier.
 
 ## [0.23.17] - 2026-05-16 — Fix bus config (invalid categories) + fuzz CI YAML scalar
 
@@ -10287,7 +10449,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.23.17...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/siliconight/gool/releases/tag/v0.24.0
 [0.23.17]: https://github.com/siliconight/gool/releases/tag/v0.23.17
 [0.23.16]: https://github.com/siliconight/gool/releases/tag/v0.23.16
 [0.23.15]: https://github.com/siliconight/gool/releases/tag/v0.23.15

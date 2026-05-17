@@ -242,6 +242,22 @@ public:
     float    GetMasterGainLinear() const noexcept;
     void     ResetMasterPreGainPeak() noexcept;
 
+    // ---- v0.24.0: per-bus metering for the editor mixer dock --------------
+    //
+    // Light enumeration + read-and-reset accessors over the bus graph so a
+    // visualization host (Godot editor plugin) can poll per-bus level
+    // without reaching past the AudioRuntime opaque seam.
+    //
+    // Same lifetime contract: zero/empty before Initialize, after Shutdown.
+    // Thread-safety: BusName / BusCount are control-thread safe (immutable
+    // after Build). ReadAndResetBusPeakLinear is also control-thread safe
+    // (atomic exchange; the render thread is the only other accessor).
+
+    uint32_t    GetBusCount() const noexcept;
+    const char* GetBusName(uint32_t busIndex) const noexcept;
+    uint32_t    GetBusParentIndex(uint32_t busIndex) const noexcept;
+    float       ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
+
     // Per-frame tick. Drains event queues, advances simulation, recomputes
     // spatial state, publishes the next mixer snapshot for the render thread.
     // Called on the audio control thread (often the game thread for simple

@@ -504,6 +504,102 @@ drop a configured emitter into a scene with one drag.
 
 ### 3.3 Mixer / bus graph UI — **L**
 
+**Decomposed into four shippable sub-items** so each can land
+independently without committing to the full L-effort up front.
+3.3a alone is the highest-leverage single chunk: it turns gool
+from "black box you trust your ears about" into "live-visualized
+audio engine you can debug."
+
+The C++ engine APIs needed for all four sub-items already exist
+(`get_render_stats`, `SetBusGain`, solo/mute/bypass on `BusGraph`,
+`SetBusParameter`, live effect add/remove, bus config JSON
+round-trip). This is editor-plugin work, not engine work.
+
+#### 3.3a Read-only meters dock — **S** (1-2 days)
+
+Vertical strip per bus showing live peak meters polled from
+`Gool.get_render_stats()` each editor tick. No interactivity.
+Validates the visual + polling architecture and immediately
+makes gool's internals visible during play. Build order:
+
+- Editor plugin scaffolding (`addons/gool/editor/mixer_dock.gd`)
+- Dock registration via existing `plugin.gd` add_control flow
+- Per-bus strip widget with peak meter (Control + Custom Draw)
+- Polling loop reading `get_render_stats()` every ~30 Hz
+- Bus topology read from active config (Master + children)
+
+Done when: with the sandbox running, you can see Music dipping
+during gunshots and Sfx spiking on each fire, in real time.
+
+#### 3.3b Volume + S/M/B controls — **M** (3-7 days)
+
+Fader per strip + Solo/Mute/Bypass buttons. Edits go through
+`SetBusGain` / mute / solo APIs. Live during Play; on stop,
+prompt: discard changes vs. write back to `config.json`. Build:
+
+- Drag-to-set fader Control with dB-mapped value
+- S/M/B buttons with mutually-exclusive solo semantics
+- Bridge to gool's existing bus operations
+- Dirty-state tracking + save dialog on play-mode exit
+- Undo/redo integration with Godot's EditorUndoRedoManager
+
+Done when: you can mix the sandbox by ear with two clients
+running, save the mix back to config.json, and the saved values
+restore on next run.
+
+#### 3.3c Effect chain edit — **M** (3-7 days)
+
+"Add Effect ▾" dropdown listing gool's effect kinds (Compressor,
+EQ, Reverb, Limiter, Saturation, others). Per-effect parameter
+panel using Godot's inspector pattern for typed exports.
+
+- Effect-kind dropdown populated from `bus.h::EffectKind` enum
+- Parameter widgets per effect type (sliders, dropdowns,
+  threshold/ratio/etc. for compressor; bands for EQ; room/damp
+  for reverb)
+- Live preview during Play via `SetBusParameter`
+- Add/remove/reorder effects in chain
+- Persist to `config.json` `effects` array per bus
+
+Done when: you can tune the Music bus's sidechain compressor in
+real-time during play, hear the result, save it, and restart
+with the saved parameters applied.
+
+#### 3.3d Topology + persistence — **M** (3-7 days)
+
+Bus hierarchy visualization (lines or indentation showing parent
+→ child). Add/remove buses. Round-trip `config.json` cleanly,
+preserving `_comment` fields and the human-friendly structure of
+hand-edited configs.
+
+- Topology renderer (parent → child arrows or indented strips)
+- "Add Bus" / "Remove Bus" affordances with parent picker
+- JSON serializer that preserves _comment, member ordering, and
+  significant whitespace (use a comment-preserving parser, not
+  raw `JSON.stringify`)
+- Validation: bus names unique, no cycles, references resolvable
+- Migration path: if existing config has unknown fields, preserve
+  them on save
+
+Done when: a config.json edited via the dock is byte-equivalent
+(modulo intended changes) to the same file edited by hand,
+including comments.
+
+### Rationale for 3.3a-first ordering
+
+The four sub-items are roughly independent — you can do any
+single one and ship it. Recommended order is 3.3a → 3.3b → 3.3c
+→ 3.3d because:
+
+- 3.3a's polling loop is a prerequisite for 3.3b/c (same data
+  pipeline)
+- 3.3b's fader UI patterns inform 3.3c's parameter editors
+- 3.3d (topology + persistence) is the heaviest lift and benefits
+  from all three predecessors being in place to test against
+
+But there's no hard dependency between them — if your priorities
+change mid-stream, ship what's done and defer the rest.
+
 **Outcome:** designers see the bus graph as a graph (not JSON),
 adjust gain, mute/solo, see live meters, and snapshot/restore
 named mixer states.
@@ -812,7 +908,163 @@ category and level with the expected structured fields.
 
 ---
 
-## What this roadmap deliberately doesn't include
+## Phase 5: Material & acoustic environment authoring
+
+**Queued behind:** multiplayer audio sandbox proving the basic
+networked audio chain works end-to-end (in progress as of v0.23.17).
+Once 2-client co-op with music + gunshots + ducking is empirically
+verified, this becomes the next priority.
+
+**Motivation.** The C++ engine already has substantial material-
+aware acoustic infrastructure that isn't reachable from GDScript:
+the `AudioMaterial` enum (Glass / Wood / Drywall / Concrete /
+Metal / Curtain / Foliage) with tuned absorption + damping
+coefficients, the `IAudioGeometryQuery` host hook, the
+`OcclusionSystem` with per-frame budgeted raycasts and smoothed
+LPF + gain targets, and the reverb DSP that `ReverbZone` exercises
+at a coarse zone level. What's missing is the bridge: a default
+Godot adapter for the geometry query, a GDScript-visible material
+taxonomy, and an impact-sound API that uses it.
+
+Industry alignment: this is the "Switch" (Wwise) / "Parameter"
+(FMOD) pattern for content lookup, plus standard occlusion +
+transmission DSP. Audio designers from those backgrounds expect
+this surface — gool has the engine for it but hides it.
+
+### 5.1 Expose `AudioMaterial` taxonomy + impact sound API — **M** [v0.24.0]
+
+User-facing outcome: a game dev can write
+
+```gdscript
+var hit := raycast(...)
+if hit:
+    var material := Gool.material_from_collider(hit.collider)
+    Gool.play_impact_sound("bullet_impact", hit.position, material)
+```
+
+…and get the metal trash can clang vs. grass thump distinction
+working in their game, without hand-rolling a Dictionary lookup
+per call site.
+
+Work breakdown:
+- Expose `AudioMaterial` enum in GDScript as `Gool.MATERIAL_*`
+  constants (Default = 0 .. Foliage = 8), plus `Gool.material_name(int)`
+  reverse lookup
+- New `GoolAudioMaterial` resource (`Resource` subclass with one
+  `@export var material: int` field) so material tags are
+  inspector-assignable on `PhysicsBody3D`/`Area3D` via metadata
+- `Gool.material_from_collider(Node) -> int` helper checking
+  `gool_audio_material` metadata first, falling back to legacy
+  group membership for backward compat with `FootstepSurfacePlayer`
+- `Gool.play_impact_sound(event_name, position, material)` API
+- Sound bank `.tres` format extended with `by_material` variant
+  set (parsing change in `src/audio_engine/assets/sound_bank.cpp`)
+- Sandbox demo addition: a wall with 3 sub-segments of different
+  material (concrete, wood, foliage); demonstrate raycast-and-
+  impact pattern from `fps_player.gd`'s `_try_fire`
+
+Refactor concern: `FootstepSurfacePlayer` currently uses a
+freeform `Dictionary[group_name → Array[String]]` pattern. Keep
+that working but document the new typed material API as
+preferred. Deprecation deferred to v0.25 at earliest.
+
+Done when: sandbox demo plays distinct impact sounds for hits
+against three different surfaces, with the variant selection
+visible in the gool debug overlay.
+
+### 5.2 Default Godot geometry query — **L** [v0.25.0]
+
+User-facing outcome: occlusion + material-aware HF rolloff
+"just works" once bodies are tagged. A gunshot through a concrete
+wall sounds different from a gunshot through a curtain, with
+zero engine code changes by the game dev.
+
+Work breakdown:
+- New C++ class `audio::godot_integration::GodotGeometryQuery`
+  implementing `IAudioGeometryQuery` via Godot's `PhysicsServer3D`
+- Maps `CollisionObject3D` material metadata → `AudioMaterial`
+  using the helper from 5.1
+- Set as the default during gool runtime init unless the host
+  provides a custom geometry query
+- Project settings: `addons/gool/occlusion/enabled` (default true),
+  `addons/gool/occlusion/max_raycasts_per_tick` (default 16)
+- New prefab `GoolMaterialVolume` (Area3D variant) for tagging
+  geometry that doesn't have a `CollisionObject3D` (e.g.,
+  visual-only walls that should still occlude audio)
+- Integration test: sandbox box_level gets a "behind wall"
+  configuration where firing through a wall produces audibly
+  muffled remote-peer audio
+
+Decision the user needs to make before this ships:
+- Default occlusion to ON (auto-magical, ~16 raycasts/tick cost)
+  or OFF (explicit opt-in, zero default cost)?
+- Default vote: ON, but configurable via project setting.
+
+Done when: in the sandbox, two players on opposite sides of a
+concrete wall hear each other's gunshots low-pass filtered ~10dB
+HF rolloff + 3-6dB level reduction, with smooth transitions as
+players move out from cover.
+
+### 5.3 Source-aware acoustic environment — **L** [v0.26.0, optional polish]
+
+User-facing outcome: a gunshot fired *inside* a building
+reverberates differently than one fired *outside*, regardless of
+where the listener is positioned. Helldivers 2 / Hunt: Showdown /
+Halo Infinite level fidelity.
+
+Work breakdown:
+- New prefab `GoolAcousticSpace` (extends or supersedes
+  `ReverbZone`) with named environment tag
+- Emitters auto-inherit their containing space's tag at create
+  time via Area3D-style detection
+- Each listener maintains a set of "audible spaces" — their own
+  plus any whose emitters they can currently hear
+- Per-audible-space rendering: route source through that space's
+  reverb send when its tag differs from the listener's space
+- Networking: emitter creation RPCs carry environment tag
+- Cap concurrent audible spaces per listener (default 4) to
+  bound DSP cost
+
+Defer-or-skip rationale: for a 4-player co-op shooter on a 20Hz
+tick budget and RTX 2060-class hardware, listener-based reverb
+(what `ReverbZone` does today) is probably good enough. Build
+5.3 only if playtest feedback says "the audio outside a building
+should reveal what's happening inside it."
+
+Done when: in the sandbox, a player firing in a small reverb-
+tagged room is audible to a listener outside the room with the
+room's reverb tail mixed in, not the listener's open-air
+environment.
+
+### Phase 5 risks and open questions
+
+- **`FootstepSurfacePlayer` divergence.** Should the existing
+  prefab be refactored in 5.1 to use the new typed API, or kept
+  as a freeform Dictionary alternative? Refactoring is cleaner
+  but risks breaking existing user content. Default: keep both,
+  document the typed API as preferred for new content.
+
+- **AudioMaterial coefficient tunability.** The hardcoded
+  defaults in `geometry_query.h::AudioMaterialDefaults` are
+  reasonable but game-specific. Should hosts override globally
+  (preset table) or per-call (pass absorption/damping directly)?
+  Both paths exist in `AudioOcclusionHit` already; just need
+  GDScript wrappers.
+
+- **Audio designer onboarding.** If gool adopts the typed
+  taxonomy in 5.1, designers coming from Wwise will recognize
+  "Switch on Material" semantics immediately. Document this in
+  `docs/terminology.md` and `migration_from_wwise.md`.
+
+- **Phase 5.3 ordering.** If the multiplayer game playtests show
+  listener-based reverb is sufficient, 5.3 can be skipped or
+  deferred indefinitely. The phase's "done when" criterion
+  should be tested with a prototype before committing to the
+  full L-effort.
+
+---
+
+
 
 These came up in feedback but are out-of-scope, at least for now.
 Calling them out explicitly so the priorities stay defensible:

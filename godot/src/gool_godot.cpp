@@ -114,6 +114,15 @@ public:
                               &GoolAudioRuntime::get_render_stats);
         ClassDB::bind_method(D_METHOD("reset_render_peak"),
                               &GoolAudioRuntime::reset_render_peak);
+        // v0.24.0: per-bus metering for the editor mixer dock. Returns
+        // an Array of Dictionaries with shape:
+        //   [ { "name": "Master", "parent": -1, "peak_linear": 0.13 },
+        //     { "name": "Music",  "parent":  0, "peak_linear": 0.05 }, ... ]
+        // Read-and-reset semantics: peaks reflect samples since the
+        // last call (so polling at 30 Hz gives 33ms windows). Cheap;
+        // mixer dock can call every editor tick.
+        ClassDB::bind_method(D_METHOD("get_bus_stats"),
+                              &GoolAudioRuntime::get_bus_stats);
 
         ClassDB::bind_method(D_METHOD("set_listener_transform",
                                        "position", "forward", "velocity"),
@@ -505,6 +514,36 @@ public:
         d["mixer_peak"]    = runtime_->GetMasterPreGainPeak();
         d["master_gain"]   = runtime_->GetMasterGainLinear();
         return d;
+    }
+
+    // v0.24.0: enumerate buses with their current peak levels. Returns
+    // an Array of Dictionaries, one per bus, in BusGraph internal order
+    // (master is always present; topology order depends on the config).
+    // The dock smooths the linear peak in GDScript for display.
+    //
+    // Read-and-reset semantics on the peak field: the atomic exchange
+    // means each poll covers samples since the last poll, not since
+    // Initialize. Callers should poll at a steady cadence (~30 Hz) to
+    // get sensible meter behavior.
+    Array get_bus_stats() {
+        Array out;
+        if (!runtime_) return out;
+        const uint32_t n = runtime_->GetBusCount();
+        // Sentinel for "no parent" matches BusGraph::kInvalidIndex
+        // (UINT32_MAX). Hard-coded here so this binding TU stays
+        // free of internal mixer headers.
+        constexpr uint32_t kNoParent = 0xFFFFFFFFu;
+        for (uint32_t i = 0; i < n; ++i) {
+            Dictionary d;
+            d["name"]        = String::utf8(runtime_->GetBusName(i));
+            const uint32_t parent = runtime_->GetBusParentIndex(i);
+            d["parent"]      = (parent == kNoParent)
+                                ? int64_t{-1}
+                                : static_cast<int64_t>(parent);
+            d["peak_linear"] = runtime_->ReadAndResetBusPeakLinear(i);
+            out.push_back(d);
+        }
+        return out;
     }
 
     // v0.22.7: zero the running-peak atomic so the next read of

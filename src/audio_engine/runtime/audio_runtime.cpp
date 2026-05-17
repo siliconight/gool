@@ -64,6 +64,20 @@ void AudioRuntime::ResetMasterPreGainPeak() noexcept {
     impl_->ResetMasterPreGainPeak();
 }
 
+// v0.24.0: per-bus metering wrappers.
+uint32_t AudioRuntime::GetBusCount() const noexcept {
+    return impl_->GetBusCount();
+}
+const char* AudioRuntime::GetBusName(uint32_t busIndex) const noexcept {
+    return impl_->GetBusName(busIndex);
+}
+uint32_t AudioRuntime::GetBusParentIndex(uint32_t busIndex) const noexcept {
+    return impl_->GetBusParentIndex(busIndex);
+}
+float AudioRuntime::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
+    return impl_->ReadAndResetBusPeakLinear(busIndex);
+}
+
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
     return impl_->RegisterSoundDefinition(d);
 }
@@ -279,6 +293,23 @@ float AudioRuntimeImpl::GetMasterGainLinear() const noexcept {
 }
 void AudioRuntimeImpl::ResetMasterPreGainPeak() noexcept {
     if (mixer_) mixer_->ResetMasterPreGainPeak();
+}
+
+// v0.24.0: per-bus metering forwarders. busGraph_ ownership matches
+// mixer_ — both alive between Initialize and Shutdown.
+uint32_t AudioRuntimeImpl::GetBusCount() const noexcept {
+    return busGraph_ ? busGraph_->BusCount() : 0u;
+}
+const char* AudioRuntimeImpl::GetBusName(uint32_t busIndex) const noexcept {
+    return busGraph_ ? busGraph_->BusName(busIndex) : "";
+}
+uint32_t AudioRuntimeImpl::GetBusParentIndex(uint32_t busIndex) const noexcept {
+    if (!busGraph_) return BusGraph::kInvalidIndex;
+    if (busIndex >= busGraph_->BusCount()) return BusGraph::kInvalidIndex;
+    return busGraph_->ParentIndex(busIndex);
+}
+float AudioRuntimeImpl::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
+    return busGraph_ ? busGraph_->ReadAndResetBusPeakLinear(busIndex) : 0.0f;
 }
 
 AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,

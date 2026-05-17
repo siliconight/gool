@@ -729,6 +729,12 @@ void AudioMixer::RunBusGraph(uint32_t frames, uint32_t channels) noexcept {
             fx->Process(output, frames, channels, scBuf, scCh);
         }
 
+        // v0.24.0: capture per-bus peak AFTER effects run. This is the
+        // signal the mixer dock displays — post-effect output level, the
+        // same thing the parent bus actually receives. Cheap: single
+        // pass over `output` with a max reduction, then one atomic CAS.
+        busGraph_->CapturePeakLinear(busIdx, output, frames, channels);
+
         // Stage 3: route to parent. Silent buses keep their output for
         // sidechain consumers but do not contribute to the audible mix.
         if (busGraph_->IsSilent(busIdx)) continue;

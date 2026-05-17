@@ -79,6 +79,10 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
         b->parentIndex   = kInvalidIndex;
         b->silent        = false;
         b->outputGainLinear.store(1.0f, std::memory_order_relaxed);
+        // v0.24.0: synthetic master gets the canonical "Master" name so
+        // the mixer dock has something to display even when no config
+        // was loaded.
+        std::strncpy(b->debugName, "Master", sizeof(b->debugName) - 1);
         buses_.push_back(std::move(b));
         masterIndex_ = 0;
         return AudioResult::Success;
@@ -107,6 +111,9 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
         b->proximityCurve = bcfg.proximityCurve;
         b->outputGainLinear.store(DbToLinearLocal(bcfg.outputGainDb),
                                    std::memory_order_relaxed);
+        // v0.24.0: carry the human-readable name through to the runtime
+        // Bus so the mixer dock can display it without a config lookup.
+        std::strncpy(b->debugName, bcfg.debugName, sizeof(b->debugName) - 1);
         masterIndex_ = static_cast<uint32_t>(buses_.size());
         buses_.push_back(std::move(b));
         break;
@@ -120,6 +127,7 @@ AudioResult BusGraph::ValidateAndBuildBuses(const BusGraphConfig& cfg) {
         b->proximityCurve = bcfg.proximityCurve;
         b->outputGainLinear.store(DbToLinearLocal(bcfg.outputGainDb),
                                    std::memory_order_relaxed);
+        std::strncpy(b->debugName, bcfg.debugName, sizeof(b->debugName) - 1);
         buses_.push_back(std::move(b));
     }
 
@@ -311,6 +319,64 @@ const ProximityCurve* BusGraph::ProximityCurveFor(BusId id) const noexcept {
     if (idx == kInvalidIndex) return nullptr;
     const auto& pc = buses_[idx]->proximityCurve;
     return pc.enabled ? &pc : nullptr;
+}
+
+// v0.24.0: per-bus metering. Render thread writes via CapturePeakLinear
+// after each bus's effect chain runs; control thread reads via
+// ReadAndResetBusPeakLinear from the editor's mixer dock at ~30 Hz.
+//
+// Atomicity model: peakSinceLastReadLinear is updated with a CAS loop
+// that keeps the maximum value. With the current single-audio-thread
+// design the CAS loop is overkill (only one writer), but we use it
+// anyway so future multi-threaded mixers don't need to revisit this.
+//
+// Floating-point note: comparisons assume IEEE 754 ordering. Audio
+// samples are bounded |x| ≤ ~16 (post-effect dynamic range), well
+// within the comparable range — no NaN/Inf paths to worry about
+// (effects sanitize their own outputs upstream).
+
+void BusGraph::CapturePeakLinear(uint32_t busIndex,
+                                  const float* output,
+                                  uint32_t     frames,
+                                  uint32_t     channels) noexcept {
+    if (busIndex >= buses_.size() || output == nullptr) return;
+    const uint32_t total = frames * channels;
+    if (total == 0) return;
+
+    float observed = 0.0f;
+    for (uint32_t i = 0; i < total; ++i) {
+        const float a = std::fabs(output[i]);
+        if (a > observed) observed = a;
+    }
+
+    // CAS-update: peak = max(peak, observed). With a single writer this
+    // collapses to a load+store, but the loop is correct under contention
+    // and the cost is negligible (rare contention, no allocations).
+    std::atomic<float>& slot = buses_[busIndex]->peakSinceLastReadLinear;
+    float prev = slot.load(std::memory_order_relaxed);
+    while (observed > prev) {
+        if (slot.compare_exchange_weak(prev, observed,
+                                        std::memory_order_relaxed)) {
+            break;
+        }
+        // prev was reloaded by compare_exchange_weak; loop checks again.
+    }
+}
+
+float BusGraph::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
+    if (busIndex >= buses_.size()) return 0.0f;
+    // exchange returns the prior value AND atomically writes 0.0f, so
+    // the reader observes peak-since-last-read and the writer's next
+    // observation starts a fresh window. memory_order_acquire on the
+    // exchange ensures we see all samples that wrote into that peak.
+    return buses_[busIndex]->peakSinceLastReadLinear.exchange(
+        0.0f, std::memory_order_acq_rel);
+}
+
+const char* BusGraph::BusName(uint32_t busIndex) const noexcept {
+    static constexpr const char* kEmpty = "";
+    if (busIndex >= buses_.size()) return kEmpty;
+    return buses_[busIndex]->debugName;
 }
 
 } // namespace audio

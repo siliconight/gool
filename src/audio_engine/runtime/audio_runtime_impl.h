@@ -104,6 +104,15 @@ public:
     float    GetMasterGainLinear() const noexcept;
     void     ResetMasterPreGainPeak() noexcept;
 
+    // v0.24.0: per-bus metering for the editor mixer dock. Forwarders
+    // to BusGraph (which actually owns the bus list and atomic peaks).
+    // Same lifetime semantics as the master-peak accessors above: zero
+    // / empty when no bus graph has been built yet.
+    uint32_t    GetBusCount() const noexcept;
+    const char* GetBusName(uint32_t busIndex) const noexcept;
+    uint32_t    GetBusParentIndex(uint32_t busIndex) const noexcept;
+    float       ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
+
     void Update(float deltaSeconds) noexcept;
 
     // v0.15.0: the actual Update body, kept separate from the public

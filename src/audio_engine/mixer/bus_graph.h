@@ -101,6 +101,26 @@ public:
     uint32_t MaxFrames()   const noexcept { return maxFrames_; }
     uint32_t SampleRate()  const noexcept { return sampleRate_; }
 
+    // ---- v0.24.0: per-bus metering ---------------------------------------
+    //
+    // Render-thread side (called from audio_mixer.cpp::RunBusGraph after
+    // each bus's effect chain has run). Scans `output` for max abs and
+    // CAS-updates the bus's atomic peak. Cheap (one pass, no allocations).
+    void CapturePeakLinear(uint32_t busIndex,
+                            const float* output,
+                            uint32_t     frames,
+                            uint32_t     channels) noexcept;
+
+    // Control-thread side. Reads the current peak and atomically resets
+    // it to 0.0f so the next read covers samples since this call.
+    // Returns the linear (not dB) peak abs sample observed.
+    float ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
+
+    // Read-only access to a bus's debug name (copied from BusConfig at
+    // Build time). Empty string if busIndex out of range. The pointer
+    // is stable for the lifetime of the BusGraph; never null.
+    const char* BusName(uint32_t busIndex) const noexcept;
+
     // Look up a bus's proximity curve. Returns nullptr if the bus has no
     // proximity curve enabled.
     const ProximityCurve* ProximityCurveFor(BusId id) const noexcept;
@@ -112,6 +132,20 @@ private:
         bool     silent        = false;
         ProximityCurve proximityCurve;
         std::atomic<float>     outputGainLinear{1.0f};
+
+        // v0.24.0: copy of BusConfig::debugName (16 chars + NUL) so the
+        // mixer dock can show human-readable names without a config
+        // round-trip. Set once at Build time, read-only thereafter.
+        char     debugName[16] = {0};
+
+        // v0.24.0: peak abs sample observed in this bus's output buffer
+        // since the last ReadAndResetBusPeakLinear call. Render-thread
+        // writer (CapturePeakLinear), control-thread reader. The CAS
+        // loop in CapturePeakLinear ensures max-wins under contention
+        // (rare but possible if multiple render callbacks fire between
+        // reader polls — won't happen with a single audio thread but
+        // we play it safe). 0.0f when no audio has flowed yet.
+        std::atomic<float>     peakSinceLastReadLinear{0.0f};
 
         // Hot-path mixing buffers. 64-byte aligned so cache-line-straddle
         // costs and AVX/AVX-512 unaligned-load penalties don't apply when
