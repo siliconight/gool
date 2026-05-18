@@ -120,4 +120,17 @@ void ReverbEffect::OnParameter(uint16_t paramId, float value) noexcept {
     }
 }
 
+// v0.28.0: introspection — mirror of OnParameter. Returns the stored
+// target values; the derived feedback_/dampVal_/wetLinear_ scalars are
+// recomputed from these on each OnParameter call so the raw targets
+// are the authoritative read source.
+float ReverbEffect::GetParameter(uint16_t paramId) const noexcept {
+    switch (paramId) {
+        case EffectParameter::Reverb_RoomSize:  return roomSize_;
+        case EffectParameter::Reverb_Damping:   return damping_;
+        case EffectParameter::Reverb_WetGainDb: return wetGainDb_;
+        default:                                return 0.0f;
+    }
+}
+
 } // namespace audio

@@ -65,6 +65,78 @@ static audio::AudioParameterId HashParam(const String& name) {
                                                        utf8.length()));
 }
 
+// v0.28.0 (Phase 3.3c-1): helpers for the get_bus_effects introspection
+// API. Kept at file scope (not inside GoolAudioRuntime) so the class
+// definition reads cleanly and these helpers are reusable if a future
+// editor-side binding wants them.
+
+static const char* _gool_effect_kind_name(audio::EffectKind k) {
+    switch (k) {
+        case audio::EffectKind::Gain:         return "Gain";
+        case audio::EffectKind::BiquadFilter: return "BiquadFilter";
+        case audio::EffectKind::Compressor:   return "Compressor";
+        case audio::EffectKind::Reverb:       return "Reverb";
+        case audio::EffectKind::Saturation:   return "Saturation";
+        case audio::EffectKind::None:
+        default:                              return "None";
+    }
+}
+
+// For an effect of the given kind, read every parameter the kind
+// recognizes and stuff them into `out` as paramId → value. The set
+// of params per kind is defined here (single source of truth on the
+// binding side); the engine's GetParameter just serves the values.
+// Keep in sync with EffectParameter:: in bus.h.
+static void _gool_fill_params_for_kind(audio::AudioRuntime* rt,
+                                        uint32_t busIdx,
+                                        uint32_t effectIdx,
+                                        audio::EffectKind kind,
+                                        Dictionary& out) {
+    if (rt == nullptr) return;
+    using EP = audio::EffectParameter;
+    auto put = [&](uint16_t paramId) {
+        out[static_cast<int>(paramId)] =
+            rt->GetEffectParameter(busIdx, effectIdx, paramId);
+    };
+    switch (kind) {
+        case audio::EffectKind::Gain:
+            put(EP::Gain_GainDb);
+            break;
+        case audio::EffectKind::BiquadFilter:
+            put(EP::Biquad_CutoffHz);
+            put(EP::Biquad_Q);
+            put(EP::Biquad_GainDb);
+            break;
+        case audio::EffectKind::Compressor:
+            put(EP::Compressor_ThresholdDb);
+            put(EP::Compressor_Ratio);
+            put(EP::Compressor_AttackMs);
+            put(EP::Compressor_ReleaseMs);
+            put(EP::Compressor_MakeupDb);
+            put(EP::Compressor_KneeWidthDb);
+            put(EP::Compressor_MixRatio);
+            put(EP::Compressor_MaxReductionDb);
+            put(EP::Compressor_SidechainHpfHz);
+            put(EP::Compressor_HoldMs);
+            put(EP::Compressor_DetectionMode);
+            break;
+        case audio::EffectKind::Reverb:
+            put(EP::Reverb_RoomSize);
+            put(EP::Reverb_Damping);
+            put(EP::Reverb_WetGainDb);
+            break;
+        case audio::EffectKind::Saturation:
+            put(EP::Saturation_Drive);
+            put(EP::Saturation_Mix);
+            put(EP::Saturation_OutputGain);
+            put(EP::Saturation_Bias);
+            break;
+        case audio::EffectKind::None:
+        default:
+            break;
+    }
+}
+
 // =====================================================================
 // GoolAudioRuntime
 // =====================================================================
@@ -194,6 +266,16 @@ public:
         ClassDB::bind_method(D_METHOD("set_bus_effects_bypassed",
                                        "bus_name", "bypassed"),
                               &GoolAudioRuntime::set_bus_effects_bypassed);
+        // v0.28.0 (Phase 3.3c-1): effect-chain live edit + introspection.
+        // set_effect_parameter mirrors set_bus_gain_db's name-resolution
+        // pattern; get_bus_effects returns the structured Array-of-Dicts
+        // described in the method docstring.
+        ClassDB::bind_method(D_METHOD("set_effect_parameter",
+                                       "bus_name", "effect_index",
+                                       "param_id", "value"),
+                              &GoolAudioRuntime::set_effect_parameter);
+        ClassDB::bind_method(D_METHOD("get_bus_effects", "bus_name"),
+                              &GoolAudioRuntime::get_bus_effects);
         ClassDB::bind_method(D_METHOD("register_sound_definition",
                                        "name", "spatialized", "looping",
                                        "min_distance", "max_distance",
@@ -943,6 +1025,92 @@ public:
             return false;
         }
         return runtime_->SetBusEffectsBypassed(id, bypassed) == audio::AudioResult::Success;
+    }
+
+    // v0.28.0 (Phase 3.3c-1): live effect parameter set / read.
+    //
+    // set_effect_parameter routes through the existing AudioRuntime
+    // command queue (5 ms ramp for gain-style params, immediate for
+    // others). Same name → BusId resolution as set_bus_gain_db.
+    // Param IDs are in EffectParameter::* (bus.h); GDScript-side
+    // hosts should mirror those constants or pass the raw integers.
+    bool set_effect_parameter(const String& bus_name,
+                               int effect_index,
+                               int param_id,
+                               double value) {
+        if (!runtime_) return false;
+        if (effect_index < 0 || param_id < 0) return false;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(),
+                              static_cast<size_t>(utf8.length())));
+        if (id == audio::kInvalidBusId) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: set_effect_parameter unknown bus '")
+                + bus_name + String("'. Check bus name in res://gool/config.json."));
+            return false;
+        }
+        const auto rc = runtime_->SetEffectParameter(
+            id,
+            static_cast<uint32_t>(effect_index),
+            static_cast<uint16_t>(param_id),
+            static_cast<float>(value));
+        return rc == audio::AudioResult::Success;
+    }
+
+    // get_bus_effects returns the full effect chain for a bus as an
+    // Array of Dictionaries. Each entry:
+    //   {
+    //     "kind":      int    // EffectKind enum value (1..5)
+    //     "kind_name": String // human-readable: "Gain", "Compressor", etc.
+    //     "params":    Dict   // {param_id (int): current_value (float)}
+    //   }
+    //
+    // The params dictionary contains only the parameter IDs the effect
+    // type recognizes (e.g. a Compressor entry lists ThresholdDb,
+    // Ratio, AttackMs, etc. but not Reverb_RoomSize). This means a
+    // host (the upcoming 3.3c-2 dock UI) can iterate the keys without
+    // a separate "what params does this effect type expose" call.
+    //
+    // Unknown bus → empty array + push_warning. Empty effect chain →
+    // empty array (no warning).
+    Array get_bus_effects(const String& bus_name) {
+        Array out;
+        if (!runtime_) return out;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(),
+                              static_cast<size_t>(utf8.length())));
+        if (id == audio::kInvalidBusId) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: get_bus_effects unknown bus '")
+                + bus_name + String("'. Check bus name in res://gool/config.json."));
+            return out;
+        }
+        // FindBusIdByName returns BusId; we need the runtime-side index
+        // to call the index-taking introspection APIs. Walk the bus
+        // list to find the matching name. O(N), N ~= 16, called rarely.
+        const uint32_t n = runtime_->GetBusCount();
+        uint32_t busIdx = 0xFFFFFFFFu;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (bus_name == String::utf8(runtime_->GetBusName(i))) {
+                busIdx = i;
+                break;
+            }
+        }
+        if (busIdx == 0xFFFFFFFFu) return out;
+        const uint32_t effectCount = runtime_->GetEffectCount(busIdx);
+        for (uint32_t e = 0; e < effectCount; ++e) {
+            const audio::EffectKind kind = runtime_->GetEffectKind(busIdx, e);
+            Dictionary d;
+            d["kind"]      = static_cast<int>(kind);
+            d["kind_name"] = _gool_effect_kind_name(kind);
+            Dictionary params;
+            _gool_fill_params_for_kind(runtime_, busIdx, e, kind, params);
+            d["params"] = params;
+            out.push_back(d);
+        }
+        return out;
     }
 
     void register_sound_definition(const String& name,

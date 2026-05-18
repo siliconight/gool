@@ -43,6 +43,9 @@ public:
                  const float* sidechain, uint32_t sidechainChannels) noexcept override;
     void OnParameter(uint16_t paramId, float value) noexcept override;
     uint16_t SidechainBusId() const noexcept override { return kInvalidBusId; }
+    // v0.28.0: introspection.
+    EffectKind Kind() const noexcept override { return EffectKind::Reverb; }
+    float GetParameter(uint16_t paramId) const noexcept override;
 
 private:
     static constexpr uint32_t kCombs    = 8;

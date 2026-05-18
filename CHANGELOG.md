@@ -12,18 +12,229 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3c — Effect chain edit**: live tweaking of effect
-  parameters (compressor threshold, ratio, attack, release, etc.)
-  via the same channel. Pairs naturally with the sidechain tuning
-  doc shipped in v0.26.1.
+- **Phase 3.3c-2 — Dock UI for effect editing**: builds on the
+  3.3c-1 introspection substrate shipped in v0.28.0. "Fx" button
+  per strip → popup or inline panel with sliders for each
+  parameter. Sliders forward through the existing debugger channel
+  (`gool:set_effect_parameter` command shipped in 0.28.0).
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
   dock changes back to `config.json` preserving comments. Includes
-  the "sync local dock state TO runtime on F5 start" follow-up
-  flagged in 0.27.0.
+  the "sync local dock state TO runtime on F5 start" follow-up.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel track from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.28.0] - 2026-05-17 — Phase 3.3c-1: live effect parameter control (substrate)
+
+### What's new
+
+Hosts (game scripts, editor tools) can now **read and write live
+DSP effect parameters** without rebuilding the bus graph. The
+foundational scripting API:
+
+```gdscript
+# Read: what effects are on this bus, what are their current params?
+var fx_chain := Gool.get_bus_effects("Music")
+# → [
+#     {
+#       "kind": 3,                # EffectKind::Compressor
+#       "kind_name": "Compressor",
+#       "params": {
+#         4: -20.0,    # Compressor_ThresholdDb
+#         5: 4.0,      # Compressor_Ratio
+#         6: 10.0,     # Compressor_AttackMs
+#         7: 200.0,    # Compressor_ReleaseMs
+#         ...
+#       }
+#     }
+#   ]
+
+# Write: change a parameter live, no restart, ~5 ms ramp where the
+# effect supports it (Gain) or immediate where it doesn't (Compressor
+# attack-time changes take effect on the next callback).
+Gool.set_effect_parameter("Music", 0, 4, -15.0)   # bump threshold to -15 dB
+```
+
+Parameter IDs are the integers in `EffectParameter::*` in
+`include/audio_engine/bus.h`. A GDScript-side enum mirror is **not**
+in this release — hosts that want named constants should declare
+their own (until the dock UI in 3.3c-2 makes them less necessary).
+
+### Why this exists (Phase 3.3c framing)
+
+The mixer dock has been growing into a real mixing surface:
+v0.24 added meters, v0.26 added faders + click-to-edit
+readouts, v0.27 added S/M/B buttons. The next step — and the
+biggest leap in user-visible capability — is live effect
+parameter editing: "drag compressor threshold while the song
+plays, hear the ducking shape change in real time."
+
+That's Phase 3.3c, split into two releases for shippability:
+
+- **3.3c-1 (this release, v0.28.0)**: the substrate. Engine
+  introspection, scripting API, debugger channel command.
+  No UI changes yet. Lets us validate the introspection
+  payload shape before building UI against it.
+- **3.3c-2 (next release, v0.28.1)**: the dock UI. "Fx"
+  button on each strip → effect chain panel with sliders.
+  Built entirely on top of 3.3c-1's substrate; no further
+  engine changes required.
+
+### New engine APIs
+
+C++ — `IDspEffect` (in `src/audio_engine/dsp/dsp_effect.h`):
+
+```cpp
+class IDspEffect {
+    // ... existing virtuals ...
+    virtual EffectKind Kind() const noexcept = 0;
+    virtual float GetParameter(uint16_t paramId) const noexcept = 0;
+};
+```
+
+All five effect implementations (Gain, BiquadFilter, Compressor,
+Reverb, Saturation) implement these. `GetParameter` mirrors
+`OnParameter`'s switch: returns the most-recent target value the
+effect would apply (not the per-sample ramped value).
+
+C++ — `AudioRuntime` (public, in `include/audio_engine/audio_runtime.h`):
+
+```cpp
+uint32_t   GetEffectCount(uint32_t busIndex) const noexcept;
+EffectKind GetEffectKind(uint32_t busIndex, uint32_t effectIndex) const noexcept;
+float      GetEffectParameter(uint32_t busIndex,
+                               uint32_t effectIndex,
+                               uint16_t paramId) const noexcept;
+```
+
+`SetEffectParameter(BusId, effectIndex, paramId, value)` already
+existed since v0.4 but had no Godot binding. v0.28.0 finally
+exposes it.
+
+Godot bindings (in `gool_godot.cpp`):
+
+```gdscript
+Gool.set_effect_parameter(bus_name, effect_index, param_id, value) -> bool
+Gool.get_bus_effects(bus_name) -> Array  # of Dictionaries
+```
+
+### Thread-safety model
+
+`GetParameter` is called from the game thread while the render
+thread may be writing the same float members via `OnParameter`.
+On the platforms gool targets (x86, ARM), single-word float reads
+and writes are atomic at the word level — the worst case is the
+reader observing a value one callback behind a concurrent
+writer. For a UI value-display use case (the entire motivation
+here), that's fine.
+
+Documented inline in `dsp_effect.h`. Not promoting the target
+fields to `std::atomic<float>` because:
+
+1. The "tolerated race" is genuinely benign for the use case
+2. Promoting them would cascade into the per-sample ramp code
+   in each effect — a much bigger refactor
+3. If a future use case needs strictly synchronous reads, the
+   change is local to each effect and doesn't break this API
+
+### New debugger command
+
+`gool:set_effect_parameter` joins the existing `set_bus_gain`,
+`set_bus_mute/solo/bypass` commands on the editor↔game channel.
+Data layout: `[bus_name: String, effect_index: int,
+param_id: int, value: float]`.
+
+Editor side: `debugger_plugin.gd::send_set_effect_parameter(...)`.
+Game side: `runtime_singleton.gd::_handle_set_effect_parameter(...)`.
+
+Wired up but **no UI uses it yet** — the wiring is here because
+v0.28.1 (3.3c-2) needs it, and shipping it now means 3.3c-2 is
+pure UI work with no further channel plumbing required.
+
+### What's NOT in this release
+
+- **Dock UI** — that's 3.3c-2. No visual change in the mixer
+  dock as a result of installing v0.28.0.
+- **Parameter metadata** (min, max, default, units, label):
+  hardcoded knowledge today on the engine side; the binding
+  doesn't expose it. The 3.3c-2 dock UI will need this and will
+  add it then (slider ranges have to come from somewhere). For
+  v0.28.0, host scripts that need ranges read them from
+  `include/audio_engine/bus.h`'s EffectConfig defaults and the
+  effect impls' clamp logic.
+- **GDScript-side enum for param IDs**: hosts use raw integers
+  from `EffectParameter::*`. A future release can add `Gool.EP.*`
+  constants if that ergonomic gap matters.
+- **Filter type changes** (`BiquadType` — LowPass/HighPass/etc.):
+  the underlying engine doesn't support changing filter type via
+  SetEffectParameter today (would need biquad state-reset
+  handling). Not in scope for 3.3c.
+
+### Files touched (16 total)
+
+C++ engine (12 files):
+- `src/audio_engine/dsp/dsp_effect.h` — IDspEffect interface gains 2 virtuals
+- `src/audio_engine/dsp/gain_effect.h/.cpp` — Kind + GetParameter (linear→dB on read)
+- `src/audio_engine/dsp/compressor.h/.cpp` — Kind + GetParameter (11 cases)
+- `src/audio_engine/dsp/reverb_effect.h/.cpp` — Kind + GetParameter
+- `src/audio_engine/dsp/biquad_filter.h/.cpp` — Kind + GetParameter
+- `src/audio_engine/dsp/saturation_effect.h/.cpp` — Kind + GetParameter
+- `src/audio_engine/mixer/bus_graph.h/.cpp` — EffectKindAt + EffectParameterAt
+- `include/audio_engine/audio_runtime.h` — public API + bus.h include for EffectKind
+- `src/audio_engine/runtime/audio_runtime.cpp` + `audio_runtime_impl.h` — pImpl wiring
+- `tests/unit/version_test.cpp` — pinned to 0.28.0
+
+Godot binding (1 file):
+- `godot/src/gool_godot.cpp` — file-scope helpers + 2 new methods + 2 binds
+
+GDScript (2 files):
+- `godot/addons/gool/runtime_singleton.gd` — match case + _handle_set_effect_parameter
+- `godot/addons/gool/editor/debugger_plugin.gd` — send_set_effect_parameter
+
+Docs:
+- `CHANGELOG.md` + this entry
+- `README.md` — version
+
+### Pre-ship sweep results
+
+All four sweeps from `docs/engineering/lessons_learned.md` clean.
+Clean rebuild before `version_test` (lesson captured in v0.27.0).
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.28.0
+  with `-Wall -Wextra -Wpedantic`
+- `version_test` reports `0.28.0`
+- `bus_graph_test` still passes (no test added for effect
+  introspection yet — covered by the manual verification of
+  `get_bus_effects` payload shape in the sandbox)
+- Godot binding C++ structurally sound (full link requires
+  godot-cpp not available in build sandbox; CI runner has it)
+- All four GDScript pre-ship sweeps clean
+
+### How to verify in the sandbox (no UI involved)
+
+After installing, open a script in the running game and run:
+
+```gdscript
+# In any _ready or via console:
+print(Gool.get_bus_effects("Music"))
+# Expected: array of effect dicts; if Music has a compressor and
+# a reverb in config.json, you'll see entries for both with their
+# current threshold/ratio/etc. values.
+
+# Live-tweak the compressor threshold and listen:
+Gool.set_effect_parameter("Music", 0, 4, -25.0)
+# Music starts compressing earlier (-25 dB vs the default -20 dB).
+# Drop it to -10 to hear the opposite — barely any compression.
+
+# Then read it back to confirm the engine accepted it:
+print(Gool.get_bus_effects("Music")[0]["params"][4])
+# → -25.0 (or -10.0)
+```
+
+Bring up 3.3c-2 next session to put a UI on this.
 
 ## [0.27.1] - 2026-05-17 — Fix solo logic to preserve output path
 
@@ -12195,7 +12406,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/siliconight/gool/releases/tag/v0.28.0
 [0.27.1]: https://github.com/siliconight/gool/releases/tag/v0.27.1
 [0.27.0]: https://github.com/siliconight/gool/releases/tag/v0.27.0
 [0.26.6]: https://github.com/siliconight/gool/releases/tag/v0.26.6

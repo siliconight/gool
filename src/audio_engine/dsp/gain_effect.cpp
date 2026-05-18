@@ -62,4 +62,19 @@ void GainEffect::OnParameter(uint16_t paramId, float value) noexcept {
     }
 }
 
+// v0.28.0: GetParameter returns the current target value (the value
+// OnParameter would set). Internally GainEffect stores its target as a
+// linear scalar; we convert back to dB so callers get the same unit
+// they would pass to OnParameter. 20*log10(x) is the standard linear→dB
+// conversion. We clamp at a floor (-INF would be -120 dB ≈ silence) to
+// avoid log(0).
+float GainEffect::GetParameter(uint16_t paramId) const noexcept {
+    if (paramId == EffectParameter::Gain_GainDb) {
+        const float lin = target_;
+        if (lin <= 1e-6f) return -120.0f;
+        return 20.0f * std::log10(lin);
+    }
+    return 0.0f;
+}
+
 } // namespace audio

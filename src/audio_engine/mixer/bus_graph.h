@@ -91,6 +91,18 @@ public:
     // kInvalidIndex when the effect has no sidechain).
     uint32_t SidechainSourceIndex(uint32_t busIndex, uint32_t effectIndex) const noexcept;
 
+    // v0.28.0: effect-chain introspection for the mixer dock's
+    // upcoming effect-edit UI (Phase 3.3c-2). Both are thin
+    // forwarders to the underlying IDspEffect implementation.
+    // Out-of-range indices return EffectKind::None and 0.0f
+    // respectively — symmetric with the SetEffectParameter
+    // "ignored if invalid" pattern.
+    EffectKind EffectKindAt(uint32_t busIndex,
+                             uint32_t effectIndex) const noexcept;
+    float      EffectParameterAt(uint32_t busIndex,
+                                  uint32_t effectIndex,
+                                  uint16_t paramId) const noexcept;
+
     // ---- Control-thread parameter writes ---------------------------------
 
     AudioResult SetBusOutputGainDb(BusId id, float gainDb) noexcept;

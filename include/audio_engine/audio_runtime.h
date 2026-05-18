@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "audio_engine/audio_file_format.h"
+#include "audio_engine/bus.h"           // EffectKind (for GetEffectKind)
 #include "audio_engine/export.h"
 #include "audio_engine/types.h"
 #include "audio_engine/handles.h"
@@ -267,6 +268,40 @@ public:
     bool        IsBusMuted(uint32_t busIndex) const noexcept;
     bool        IsBusSoloed(uint32_t busIndex) const noexcept;
     bool        IsBusEffectsBypassed(uint32_t busIndex) const noexcept;
+
+    // v0.28.0: effect-chain introspection (Phase 3.3c-1). Lets a host
+    // enumerate the effects on a bus and read each effect's current
+    // parameter values. Paired with SetEffectParameter (already public,
+    // below) this gives full read/write access to live DSP state — the
+    // substrate for the mixer dock's effect-edit UI shipping in 3.3c-2.
+    //
+    // GetEffectCount(busIndex): number of effects in this bus's chain.
+    //   Returns 0 for out-of-range bus.
+    //
+    // GetEffectKind(busIndex, effectIndex): the EffectKind of the
+    //   effect at this position. Returns EffectKind::None when either
+    //   index is out of range.
+    //
+    // GetEffectParameter(busIndex, effectIndex, paramId): current
+    //   target value of the named parameter. The paramId values are
+    //   in EffectParameter::* (see bus.h). Returns 0.0f when the
+    //   effect doesn't recognize the paramId, or when indices are
+    //   out of range — caller must validate via GetEffectKind first
+    //   if the distinction between "unrecognized" and "zero value"
+    //   matters.
+    //
+    // Thread safety: reads happen on the game thread while OnParameter
+    // writes happen on the render thread. Reads of single-word float
+    // members are word-atomic on x86/ARM (the platforms gool targets),
+    // so a concurrent set may briefly lag the read by one callback —
+    // fine for the UI-display use case. See dsp_effect.h for the full
+    // discussion.
+    uint32_t   GetEffectCount(uint32_t busIndex) const noexcept;
+    EffectKind GetEffectKind(uint32_t busIndex,
+                              uint32_t effectIndex) const noexcept;
+    float      GetEffectParameter(uint32_t busIndex,
+                                   uint32_t effectIndex,
+                                   uint16_t paramId) const noexcept;
 
     // v0.25.2: look up a registered SoundDefinition by sound id.
     // Returns nullptr if no definition has been registered. Used by

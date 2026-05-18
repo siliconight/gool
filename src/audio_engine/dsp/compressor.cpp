@@ -330,4 +330,28 @@ void CompressorEffect::OnParameter(uint16_t paramId, float value) noexcept {
     }
 }
 
+// v0.28.0: introspection — mirror of OnParameter. Each case returns
+// the target value stored from the most recent OnParameter call (or
+// the value from the initial CompressorConfig). DetectionMode is
+// returned as 0.0 = Peak, 1.0 = Rms, matching the encoding used by
+// OnParameter.
+float CompressorEffect::GetParameter(uint16_t paramId) const noexcept {
+    switch (paramId) {
+        case EffectParameter::Compressor_ThresholdDb:    return thresholdDb_;
+        case EffectParameter::Compressor_Ratio:          return ratio_;
+        case EffectParameter::Compressor_AttackMs:       return attackMs_;
+        case EffectParameter::Compressor_ReleaseMs:      return releaseMs_;
+        case EffectParameter::Compressor_MakeupDb:       return makeupDb_;
+        case EffectParameter::Compressor_KneeWidthDb:    return kneeWidthDb_;
+        case EffectParameter::Compressor_MixRatio:       return mixRatio_;
+        case EffectParameter::Compressor_MaxReductionDb: return maxReductionDb_;
+        case EffectParameter::Compressor_SidechainHpfHz: return sidechainHpfHz_;
+        case EffectParameter::Compressor_HoldMs:         return holdMs_;
+        case EffectParameter::Compressor_DetectionMode:
+            return (detectionMode_ == DetectionMode::Rms) ? 1.0f : 0.0f;
+        default:
+            return 0.0f;
+    }
+}
+
 } // namespace audio

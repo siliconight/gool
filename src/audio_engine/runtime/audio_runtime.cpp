@@ -89,6 +89,20 @@ bool AudioRuntime::IsBusEffectsBypassed(uint32_t busIndex) const noexcept {
     return impl_->IsBusEffectsBypassed(busIndex);
 }
 
+// v0.28.0: effect-chain introspection forwarders.
+uint32_t AudioRuntime::GetEffectCount(uint32_t busIndex) const noexcept {
+    return impl_->GetEffectCount(busIndex);
+}
+EffectKind AudioRuntime::GetEffectKind(uint32_t busIndex,
+                                        uint32_t effectIndex) const noexcept {
+    return impl_->GetEffectKind(busIndex, effectIndex);
+}
+float AudioRuntime::GetEffectParameter(uint32_t busIndex,
+                                        uint32_t effectIndex,
+                                        uint16_t paramId) const noexcept {
+    return impl_->GetEffectParameter(busIndex, effectIndex, paramId);
+}
+
 // v0.25.2: SoundDefinition lookup wrapper.
 const SoundDefinition* AudioRuntime::GetSoundDefinition(
         AudioSoundId id) const noexcept {
@@ -350,6 +364,25 @@ bool AudioRuntimeImpl::IsBusSoloed(uint32_t busIndex) const noexcept {
 }
 bool AudioRuntimeImpl::IsBusEffectsBypassed(uint32_t busIndex) const noexcept {
     return busGraph_ ? busGraph_->IsBusEffectsBypassed(busIndex) : false;
+}
+
+// v0.28.0: effect-chain introspection forwarders. Same null-busGraph
+// pattern as the v0.27.0 entries above. Empty / 0 / None on no graph.
+uint32_t AudioRuntimeImpl::GetEffectCount(uint32_t busIndex) const noexcept {
+    return busGraph_ ? busGraph_->EffectCount(busIndex) : 0u;
+}
+EffectKind AudioRuntimeImpl::GetEffectKind(uint32_t busIndex,
+                                            uint32_t effectIndex) const noexcept {
+    return busGraph_
+        ? busGraph_->EffectKindAt(busIndex, effectIndex)
+        : EffectKind::None;
+}
+float AudioRuntimeImpl::GetEffectParameter(uint32_t busIndex,
+                                            uint32_t effectIndex,
+                                            uint16_t paramId) const noexcept {
+    return busGraph_
+        ? busGraph_->EffectParameterAt(busIndex, effectIndex, paramId)
+        : 0.0f;
 }
 
 // v0.25.2: SoundDefinition lookup. assets_ is the AudioAssetRegistry

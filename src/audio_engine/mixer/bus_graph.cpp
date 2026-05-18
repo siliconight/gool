@@ -348,6 +348,29 @@ uint32_t BusGraph::SidechainSourceIndex(uint32_t busIndex, uint32_t effectIndex)
     return v[effectIndex];
 }
 
+// v0.28.0: effect-chain introspection. Both are thin forwarders to the
+// underlying IDspEffect impl, with the same out-of-range bookkeeping
+// as EffectAt above. Const-correct because the underlying virtual
+// methods (Kind, GetParameter) are const noexcept on IDspEffect.
+EffectKind BusGraph::EffectKindAt(uint32_t busIndex,
+                                    uint32_t effectIndex) const noexcept {
+    if (busIndex >= buses_.size()) return EffectKind::None;
+    const auto& effs = buses_[busIndex]->effects;
+    if (effectIndex >= effs.size()) return EffectKind::None;
+    const IDspEffect* fx = effs[effectIndex].get();
+    return fx ? fx->Kind() : EffectKind::None;
+}
+
+float BusGraph::EffectParameterAt(uint32_t busIndex,
+                                    uint32_t effectIndex,
+                                    uint16_t paramId) const noexcept {
+    if (busIndex >= buses_.size()) return 0.0f;
+    const auto& effs = buses_[busIndex]->effects;
+    if (effectIndex >= effs.size()) return 0.0f;
+    const IDspEffect* fx = effs[effectIndex].get();
+    return fx ? fx->GetParameter(paramId) : 0.0f;
+}
+
 AudioResult BusGraph::SetBusOutputGainDb(BusId id, float gainDb) noexcept {
     const uint32_t idx = IndexOf(id);
     if (idx == kInvalidIndex) return AudioResult::InvalidArgument;

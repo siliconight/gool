@@ -79,4 +79,15 @@ void SaturationEffect::OnParameter(uint16_t paramId, float value) noexcept {
     }
 }
 
+// v0.28.0: introspection — mirror of OnParameter.
+float SaturationEffect::GetParameter(uint16_t paramId) const noexcept {
+    switch (paramId) {
+        case EffectParameter::Saturation_Drive:      return drive_;
+        case EffectParameter::Saturation_Mix:        return mix_;
+        case EffectParameter::Saturation_OutputGain: return outputGain_;
+        case EffectParameter::Saturation_Bias:       return bias_;
+        default:                                     return 0.0f;
+    }
+}
+
 } // namespace audio

@@ -55,6 +55,9 @@ public:
     uint16_t SidechainBusId() const noexcept override {
         return static_cast<uint16_t>(sidechainBus_);
     }
+    // v0.28.0: introspection.
+    EffectKind Kind() const noexcept override { return EffectKind::Compressor; }
+    float GetParameter(uint16_t paramId) const noexcept override;
 
     // For diagnostics / unit tests.
     float CurrentEnvelopeDb()  const noexcept { return envelopeDb_; }

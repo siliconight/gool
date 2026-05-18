@@ -15,6 +15,8 @@
 #ifndef AUDIO_ENGINE_DSP_DSP_EFFECT_H
 #define AUDIO_ENGINE_DSP_DSP_EFFECT_H
 
+#include "audio_engine/bus.h"  // EffectKind
+
 #include <cstdint>
 
 namespace audio {
@@ -42,6 +44,29 @@ public:
 
     // Returns the sidechain bus this effect reads from, or kInvalidBusId.
     virtual uint16_t SidechainBusId() const noexcept = 0;
+
+    // v0.28.0: introspection for live effect-chain editing.
+    //
+    // Kind(): returns this effect's EffectKind enum value so a host
+    // (the mixer dock, an editor script) knows what kind of effect
+    // sits at each effect-chain position without having to track it
+    // out-of-band. Stable for the effect's lifetime.
+    //
+    // GetParameter(paramId): returns the current target value of the
+    // named parameter (the value that OnParameter would set, NOT
+    // necessarily the current per-sample ramped value). Returns 0.0f
+    // for unrecognized parameter IDs — symmetric with OnParameter's
+    // "ignored if not recognized" behavior.
+    //
+    // Thread safety: GetParameter is called from the control thread
+    // while the render thread may be writing the same fields via
+    // OnParameter. Reads of single-word float members are atomic on
+    // x86 and ARM (the platforms gool targets), so the worst case is
+    // observing a value that's one callback behind a concurrent set
+    // — fine for the UI-display use case. No formal atomic<float>
+    // upgrade is required.
+    virtual EffectKind Kind() const noexcept = 0;
+    virtual float GetParameter(uint16_t paramId) const noexcept = 0;
 };
 
 } // namespace audio

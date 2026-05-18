@@ -144,4 +144,17 @@ void BiquadFilterEffect::OnParameter(uint16_t paramId, float value) noexcept {
     }
 }
 
+// v0.28.0: introspection — returns the most-recent target for cutoff
+// / Q / gain. Filter type is not exposed via SetEffectParameter today
+// (changing topology mid-stream would need biquad state reset
+// handling), so there's no GetParameter case for type either.
+float BiquadFilterEffect::GetParameter(uint16_t paramId) const noexcept {
+    switch (paramId) {
+        case EffectParameter::Biquad_CutoffHz: return cutoffHz_;
+        case EffectParameter::Biquad_Q:        return Q_;
+        case EffectParameter::Biquad_GainDb:   return gainDb_;
+        default:                               return 0.0f;
+    }
+}
+
 } // namespace audio

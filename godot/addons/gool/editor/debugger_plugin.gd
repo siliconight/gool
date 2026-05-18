@@ -125,6 +125,17 @@ func send_set_bus_bypass(bus_name: String, bypassed: bool) -> bool:
 	return _send_to_current_session("gool:set_bus_bypass", [bus_name, bypassed])
 
 
+# v0.28.0 (Phase 3.3c-1): live effect parameter edit. Mirrors the
+# v0.27.0 send_set_bus_* helpers. The 3.3c-2 dock UI (effect-edit
+# panel) will call this when a slider value changes. Data layout
+# matches the game-side _handle_set_effect_parameter expects.
+func send_set_effect_parameter(bus_name: String, effect_index: int,
+		param_id: int, value: float) -> bool:
+	return _send_to_current_session(
+			"gool:set_effect_parameter",
+			[bus_name, effect_index, param_id, value])
+
+
 # Common helper. Looks up the current session, sends the message.
 # Defensive against session lifecycle races: if _current_session_id
 # was set but the session is gone, get_session returns null and we

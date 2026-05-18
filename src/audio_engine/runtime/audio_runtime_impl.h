@@ -118,6 +118,14 @@ public:
     bool        IsBusSoloed(uint32_t busIndex) const noexcept;
     bool        IsBusEffectsBypassed(uint32_t busIndex) const noexcept;
 
+    // v0.28.0: effect-chain introspection.
+    uint32_t    GetEffectCount(uint32_t busIndex) const noexcept;
+    EffectKind  GetEffectKind(uint32_t busIndex,
+                               uint32_t effectIndex) const noexcept;
+    float       GetEffectParameter(uint32_t busIndex,
+                                    uint32_t effectIndex,
+                                    uint16_t paramId) const noexcept;
+
     // v0.25.2: SoundDefinition lookup, forwarded to AudioAssetRegistry.
     const SoundDefinition* GetSoundDefinition(AudioSoundId id) const noexcept;
 

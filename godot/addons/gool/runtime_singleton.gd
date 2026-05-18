@@ -264,6 +264,20 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 				var bypassed: bool = bool(data[1])
 				_handle_set_bus_bypass(bus_name, bypassed)
 			return true
+		"set_effect_parameter":
+			# v0.28.0 (Phase 3.3c-1): live effect chain edit. Data is
+			# [bus_name: String, effect_index: int, param_id: int,
+			#  value: float]. Out-of-range / unknown bus / unknown
+			# param all silent-no-op at the engine layer (matches
+			# OnParameter's "ignored if unrecognized").
+			if data.size() >= 4:
+				var bus_name: String = String(data[0])
+				var effect_index: int = int(data[1])
+				var param_id: int = int(data[2])
+				var value: float = float(data[3])
+				_handle_set_effect_parameter(
+						bus_name, effect_index, param_id, value)
+			return true
 		_:
 			push_warning("[gool] unrecognized debugger command: %s" % message)
 			return true   # still "handled" — don't let editor complain
@@ -314,6 +328,23 @@ func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
 	var ok: bool = _runtime.set_bus_effects_bypassed(bus_name, bypassed)
 	if not ok:
 		push_warning("[gool] set_bus_bypass('%s', %s) failed" % [bus_name, bypassed])
+
+
+# v0.28.0 (Phase 3.3c-1): live effect parameter set. Same direct-call
+# discipline as the v0.27.0 S/M/B handlers — go through _runtime.X
+# rather than any autoload-level wrapper. The engine validates
+# effect_index and param_id internally (out-of-range → silent no-op
+# at the OnParameter layer).
+func _handle_set_effect_parameter(bus_name: String, effect_index: int,
+		param_id: int, value: float) -> void:
+	if not is_initialized():
+		return
+	var ok: bool = _runtime.set_effect_parameter(
+			bus_name, effect_index, param_id, value)
+	if not ok:
+		push_warning(
+				"[gool] set_effect_parameter('%s', %d, %d, %.4f) failed"
+				% [bus_name, effect_index, param_id, value])
 
 func _process(delta: float) -> void:
 	if _runtime != null and _runtime.is_initialized():
