@@ -19,11 +19,138 @@ Nothing shipping yet. Next-up candidates:
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
   dock changes back to `config.json` preserving comments. Includes
   the "sync local dock state TO runtime on F5 start" follow-up
-  flagged in 0.27.0 below.
+  flagged in 0.27.0.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel track from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.27.1] - 2026-05-17 — Fix solo logic to preserve output path
+
+### What was broken
+
+In v0.27.0, soloing any child bus produced silence at the device.
+You'd click S on SFX, see the SFX strip light up yellow, hear
+nothing.
+
+Root cause: my gating logic silenced every bus where
+`anySoloed && !soloed`. That includes the **master bus** —
+which is the destination every child bus routes into. Master's
+input got the soloed child's audio, but then master's own
+output was zeroed before reaching the device. Total silence,
+even though the meter showed SFX writing into master's input.
+
+### The right mental model
+
+The master bus is not "another track" — it's the final summing
+stage of the routing graph. Same goes for any intermediate
+group bus (think a hypothetical "All SFX" parent feeding into
+Master). These are part of the **output topology**, not
+competing audio sources.
+
+Solo should **isolate sources without breaking the output
+path**. Soloing a track means "mute every unrelated source,
+preserve the complete signal chain from this track to the
+device." That signal chain includes the master and every
+intermediate group along the way.
+
+### The fix
+
+New `BusGraph::ComputeSoloChainMask()` returns a bitmask of
+buses that are either soloed themselves OR are ancestors of
+a soloed bus. The mixer uses this to decide silencing:
+
+```cpp
+const uint64_t soloChainMask = busGraph_->ComputeSoloChainMask();
+const bool     anySoloed     = (soloChainMask != 0);
+
+// per bus:
+const bool inSoloChain = ((soloChainMask >> busIdx) & 1ULL) != 0;
+const bool silenceForMute = muted && !soloed;
+const bool silenceForSolo = anySoloed && !inSoloChain;
+if (silenceForMute || silenceForSolo) {
+    std::memset(output, 0, sizeof(float) * total);
+}
+```
+
+Mask computation walks each soloed bus up its parent chain
+to the master, setting bits along the way. With kMaxBuses=32
+a `uint64_t` has plenty of headroom; a `static_assert` guards
+against future growth.
+
+### Mute interaction (unchanged but worth restating)
+
+- A bus's own **solo wins over its own mute** (DAW convention)
+- Mute on an **ancestor** still kills the downstream — muting
+  the master silences everything regardless of child solo
+  state, because the master's own output is zeroed before
+  reaching the device. This is the right behavior: muting
+  master means "shut off the output." Solo on a child can't
+  override that.
+
+### Worked example (matches your topology)
+
+Topology: `Master ← {Music, Sfx, Ambience, Voice, UI, Dialogue}`.
+
+User solos Sfx:
+
+| Bus       | soloed | in chain | silenceForSolo | Plays? |
+|-----------|--------|----------|----------------|--------|
+| Master    | no     | yes (ancestor of Sfx) | false   | ✓ yes  |
+| Music     | no     | no       | true           | silent |
+| Sfx       | YES    | yes      | false          | ✓ yes  |
+| Ambience  | no     | no       | true           | silent |
+| Voice     | no     | no       | true           | silent |
+| UI        | no     | no       | true           | silent |
+| Dialogue  | no     | no       | true           | silent |
+
+Solo Sfx + Music together: both are in the chain plus Master.
+All four other strips silent. Master plays the soloed pair
+mixed.
+
+### New test
+
+`tests/unit/bus_graph_test.cpp` gains
+`TestSoloChainMaskIncludesAncestors` which builds a 4-bus
+graph `Master ← {SFX ← Footsteps, Music}` and verifies:
+
+- No solo → mask is zero, AnyBusSoloed false
+- Solo Footsteps → mask contains Footsteps, SFX, Master, NOT Music
+- Clear solo → mask back to zero
+- Solo Footsteps + Music → mask contains all four
+
+This locks in the "ancestors are in the chain" invariant so a
+future refactor can't silently re-break it.
+
+### Files touched (5 total)
+
+- `src/audio_engine/mixer/bus_graph.h` — declare ComputeSoloChainMask
+- `src/audio_engine/mixer/bus_graph.cpp` — implement it
+- `src/audio_engine/mixer/audio_mixer.cpp` — use the mask in RunBusGraph
+- `tests/unit/bus_graph_test.cpp` — new test
+- Version triple, CHANGELOG, README → 0.27.1
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.27.1
+- `version_test` PASSES at 0.27.1 (clean rebuild — per the
+  hygiene rule added to lessons_learned.md in 0.27.0)
+- `bus_graph_test` PASSES including the new
+  `TestSoloChainMaskIncludesAncestors`
+- All four GDScript pre-ship sweeps clean (no .gd changes
+  in this release, but ran the sweeps anyway)
+- Mute and bypass logic unchanged — the v0.27.0 work for those
+  still applies. Only solo gating was wrong.
+
+### Lesson
+
+Captured in the CHANGELOG above and worth restating: when
+designing routing-graph behavior, the master bus isn't a peer
+of the child buses — it's the implicit output destination,
+and gating rules need to treat it that way. Generalizable
+form: "Solo should isolate what you want to hear, not require
+users to manually reconstruct the output path." Holds for any
+ancestor on the routing path.
 
 ## [0.27.0] - 2026-05-17 — Phase 3.3b-2: per-bus Solo / Mute / Bypass
 
@@ -12068,7 +12195,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/siliconight/gool/releases/tag/v0.27.1
 [0.27.0]: https://github.com/siliconight/gool/releases/tag/v0.27.0
 [0.26.6]: https://github.com/siliconight/gool/releases/tag/v0.26.6
 [0.26.5]: https://github.com/siliconight/gool/releases/tag/v0.26.5

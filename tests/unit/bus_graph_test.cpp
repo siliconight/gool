@@ -155,6 +155,62 @@ void TestSetBusGain() {
     EXPECT(g.SetBusOutputGainDb(/*unknown*/99, 0.0f) == AudioResult::InvalidArgument);
 }
 
+// v0.27.1: verify ComputeSoloChainMask returns the correct "audible
+// under solo mode" set. The set must include each soloed bus and
+// every ancestor along the path to the master — that's what keeps
+// the master (and intermediate groups) audible when a child is
+// soloed.
+void TestSoloChainMaskIncludesAncestors() {
+    // Topology:   Master(0) ← SFX(1) ← Footsteps(2)
+    //                       ← Music(3)
+    BusGraphConfig cfg;
+    cfg.busCount = 4;
+    cfg.buses[0].id = kBusMaster;
+    cfg.buses[0].parent = kBusMaster;
+    cfg.buses[1].id = 1;  // SFX
+    cfg.buses[1].parent = kBusMaster;
+    cfg.buses[2].id = 2;  // Footsteps (child of SFX)
+    cfg.buses[2].parent = 1;
+    cfg.buses[3].id = 3;  // Music
+    cfg.buses[3].parent = kBusMaster;
+
+    BusGraph g;
+    EXPECT(g.Build(cfg, 48000, 2, 256) == AudioResult::Success);
+
+    const uint32_t masterIdx     = g.IndexOf(kBusMaster);
+    const uint32_t sfxIdx        = g.IndexOf(1);
+    const uint32_t footstepsIdx  = g.IndexOf(2);
+    const uint32_t musicIdx      = g.IndexOf(3);
+
+    // No solo → empty mask, no gating active.
+    EXPECT(g.ComputeSoloChainMask() == 0);
+    EXPECT(!g.AnyBusSoloed());
+
+    // Solo Footsteps → chain is {Footsteps, SFX, Master}.
+    // Music is not in the chain. The mask should reflect this.
+    g.SetBusSoloed(footstepsIdx, true);
+    EXPECT(g.AnyBusSoloed());
+    const uint64_t mask = g.ComputeSoloChainMask();
+    EXPECT(((mask >> footstepsIdx) & 1ULL) != 0);   // soloed bus itself
+    EXPECT(((mask >> sfxIdx)       & 1ULL) != 0);   // intermediate parent
+    EXPECT(((mask >> masterIdx)    & 1ULL) != 0);   // root output bus
+    EXPECT(((mask >> musicIdx)     & 1ULL) == 0);   // unrelated sibling
+
+    // Clear solo → mask back to zero.
+    g.SetBusSoloed(footstepsIdx, false);
+    EXPECT(g.ComputeSoloChainMask() == 0);
+
+    // Two soloed buses on different branches → both branches' chains
+    // are in the mask. Master is included once (idempotent OR).
+    g.SetBusSoloed(footstepsIdx, true);
+    g.SetBusSoloed(musicIdx,     true);
+    const uint64_t mask2 = g.ComputeSoloChainMask();
+    EXPECT(((mask2 >> footstepsIdx) & 1ULL) != 0);
+    EXPECT(((mask2 >> sfxIdx)       & 1ULL) != 0);
+    EXPECT(((mask2 >> musicIdx)     & 1ULL) != 0);
+    EXPECT(((mask2 >> masterIdx)    & 1ULL) != 0);
+}
+
 } // namespace
 
 int main() {
@@ -165,6 +221,7 @@ int main() {
     TestMissingMasterRejected();
     TestDuplicateIdRejected();
     TestSetBusGain();
+    TestSoloChainMaskIncludesAncestors();    // v0.27.1
     std::printf(gFails == 0 ? "OK\n" : "FAILED (%d)\n", gFails);
     return gFails == 0 ? 0 : 1;
 }

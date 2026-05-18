@@ -472,4 +472,36 @@ bool BusGraph::AnyBusSoloed() const noexcept {
     return false;
 }
 
+uint64_t BusGraph::ComputeSoloChainMask() const noexcept {
+    // For each soloed bus, walk up the parent chain (via parentIndex)
+    // and mark every bus along the way in the result mask. The bit
+    // for an ancestor is set whenever any of its descendants is
+    // soloed, so the bit pattern represents "buses on the audible
+    // path under current solo state."
+    //
+    // Complexity: O(S * D) where S = # of soloed buses and D = graph
+    // depth. With typical configs (≤2 soloed, depth ≤3), this is a
+    // handful of ops per callback — well below any concern threshold.
+    //
+    // Future optimization: cache the mask, invalidate on solo toggle
+    // (cheap; toggles are rare relative to callbacks). Skipped for
+    // now since the per-callback cost is already negligible.
+    static_assert(audio::kMaxBuses <= 64,
+            "ComputeSoloChainMask uses uint64_t; widen to a bigger "
+            "integer or std::array<bool, kMaxBuses> if buses exceed 64.");
+    uint64_t mask = 0;
+    for (uint32_t i = 0; i < buses_.size(); ++i) {
+        if (!buses_[i]->soloed.load(std::memory_order_relaxed)) continue;
+        // Walk up via parentIndex until we hit the master (parent =
+        // kInvalidIndex). The master itself gets marked because the
+        // soloed bus's own iteration sets its own bit, then walks up.
+        uint32_t cur = i;
+        while (cur != kInvalidIndex && cur < 64) {
+            mask |= (uint64_t{1} << cur);
+            cur = buses_[cur]->parentIndex;
+        }
+    }
+    return mask;
+}
+
 } // namespace audio

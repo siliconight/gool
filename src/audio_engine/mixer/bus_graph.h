@@ -145,6 +145,28 @@ public:
     // atomic load per bus. Called once per audio callback.
     bool AnyBusSoloed() const noexcept;
 
+    // v0.27.1: compute a bitmask of buses that are EITHER soloed OR
+    // ancestors of soloed buses (i.e., on the audible path from a
+    // soloed bus to the device output). Used by the mixer to decide
+    // which buses should be silenced in solo mode.
+    //
+    // Why: when a child bus is soloed, the master bus (and any
+    // intermediate group bus along the routing path) must stay
+    // audible — they're part of the output topology, not competing
+    // sources. The original v0.27.0 logic silenced every non-soloed
+    // bus, which zeroed the master's output and produced total
+    // silence even though the soloed child had written audio into
+    // the master's input. This mask carves out the "stays audible"
+    // set so the gating logic can leave the output path intact.
+    //
+    // Bit i is set iff buses_[i] is soloed OR has a descendant that
+    // is soloed. When no bus is soloed, the mask is zero (== "no
+    // solo mode active").
+    //
+    // kMaxBuses is 32 (include/audio_engine/bus.h); 64-bit mask has
+    // headroom. If kMaxBuses ever exceeds 64, swap for an array.
+    uint64_t ComputeSoloChainMask() const noexcept;
+
     // Look up a bus's proximity curve. Returns nullptr if the bus has no
     // proximity curve enabled.
     const ProximityCurve* ProximityCurveFor(BusId id) const noexcept;

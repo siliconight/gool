@@ -707,11 +707,18 @@ void AudioMixer::RunBusGraph(uint32_t frames, uint32_t channels) noexcept {
     const auto& order = busGraph_->RenderOrder();
     const uint32_t total = frames * channels;
 
-    // v0.27.0: compute "any bus soloed" once per callback. Used inside
-    // the per-bus loop to decide whether non-soloed buses should be
-    // silenced ("solo mode"). One pass over kMaxBuses with relaxed
-    // atomic loads — well under 100 ns.
-    const bool anySoloed = busGraph_->AnyBusSoloed();
+    // v0.27.1: compute the "solo chain mask" — buses that are either
+    // soloed OR on the audible path from a soloed bus to the output.
+    // Used below to keep the master bus (and any intermediate group
+    // bus) audible when one of its descendants is soloed. The v0.27.0
+    // initial logic silenced every non-soloed bus including the
+    // master, which broke the output path and produced silence —
+    // see the v0.27.1 CHANGELOG entry for the design discussion.
+    //
+    // anySoloed derives from the mask (nonzero = at least one bus
+    // is soloed). Replaces the v0.27.0 separate AnyBusSoloed() walk.
+    const uint64_t soloChainMask = busGraph_->ComputeSoloChainMask();
+    const bool     anySoloed     = (soloChainMask != 0);
 
     for (uint32_t busIdx : order) {
         float*       output = busGraph_->OutputBuffer(busIdx);
@@ -741,22 +748,35 @@ void AudioMixer::RunBusGraph(uint32_t frames, uint32_t channels) noexcept {
             }
         }
 
-        // v0.27.0: apply mute/solo gating BEFORE peak capture and routing.
-        // Order matters:
+        // v0.27.0 + v0.27.1: apply mute/solo gating BEFORE peak capture
+        // and routing. Order matters:
         //   - Capturing peak BEFORE gating would make the meter show pre-
         //     mute audio (confusing UX — "I muted it but the meter still
         //     moves").
         //   - Capturing peak AFTER gating means the meter shows what's
         //     actually heard (silent when muted/solo-silenced).
         //
-        // Solo wins over mute: a bus that's both muted AND soloed plays.
-        // This matches Logic Pro / Pro Tools / Ableton convention.
-        // Sidechains downstream see the gated (post-mute) signal — if a
-        // muted SFX bus is the sidechain source for Music's compressor,
-        // Music won't duck. This is consistent with the gating model.
-        const bool muted  = busGraph_->IsBusMuted(busIdx);
-        const bool soloed = busGraph_->IsBusSoloed(busIdx);
-        if (!soloed && (muted || anySoloed)) {
+        // Solo wins over mute (for the soloed bus itself only): a bus
+        // that's both muted AND soloed plays. This matches Logic Pro
+        // / Pro Tools / Ableton convention. Mute on an ANCESTOR bus
+        // still kills the downstream — muting the master silences
+        // everything regardless of any child's solo state, because
+        // the master's own output is zeroed before reaching the device.
+        //
+        // v0.27.1: solo mode silences only buses NOT in the solo chain.
+        // The master bus and any intermediate group bus on the path
+        // from a soloed child to the output stay audible — they're
+        // part of the output topology, not competing sources. This
+        // fixes the v0.27.0 bug where soloing any child produced
+        // silence at the device because the master was being zeroed.
+        const bool muted       = busGraph_->IsBusMuted(busIdx);
+        const bool soloed      = busGraph_->IsBusSoloed(busIdx);
+        const bool inSoloChain = (busIdx < 64)
+                ? ((soloChainMask >> busIdx) & uint64_t{1}) != 0
+                : false;
+        const bool silenceForMute = muted && !soloed;
+        const bool silenceForSolo = anySoloed && !inSoloChain;
+        if (silenceForMute || silenceForSolo) {
             std::memset(output, 0, sizeof(float) * total);
         }
 
