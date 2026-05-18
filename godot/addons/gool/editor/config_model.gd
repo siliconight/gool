@@ -767,16 +767,26 @@ func _patch_string_in_range(text: String, block_range: Vector2i,
 			+ text.substr(value_range.y)
 
 
-# Format a float as a JSON-acceptable number string. Trims
-# trailing zeros for readability but always emits a decimal
-# point for non-integer-valued floats so the engine's parser
-# (which round-trips through double) keeps the type tag.
+# Format a float as a JSON-acceptable number string. The integer-
+# valued case uses "%0.1f" so we always emit a decimal point (e.g.
+# 6.0 → "6.0" not "6") — keeps the type tag consistent with the
+# rest of the config and round-trips cleanly through JSON parsers.
+#
+# v0.28.7: the non-integer branch was "%g" % value, which Python's
+# % operator supports but GDScript's DOES NOT. GDScript supports
+# %s %d %f %c %o %x %X %v — no %g. When the user dragged a fader
+# to a non-integer value like -21.1, this would fire two errors:
+#   "String formatting error: unsupported format character"
+# and the expression would return garbage, which got inserted into
+# the JSON and failed parse-verify. The .bak restore covered for
+# it but every save with a non-integer value silently failed.
+# Fix: String.num(value) uses Godot's default float-to-string
+# conversion which handles arbitrary precision and trims trailing
+# zeros (-21.1 → "-21.1", 0.707 → "0.707").
 func _format_number(value: float) -> String:
-	# Special-case integer-valued floats for cleaner output:
-	# 0.0 → "0.0", 6.0 → "6.0", -20.0 → "-20.0".
 	if value == floor(value) and absf(value) < 1.0e15:
 		return "%0.1f" % value
-	return "%g" % value
+	return String.num(value)
 
 
 # Locate `key` (a JSON string field name) inside `block_range`.

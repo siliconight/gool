@@ -945,9 +945,13 @@ class _BusStrip extends Control:
 		if _db_editor == null:
 			return
 		_db_editor.visible = false
-		# Release focus back to the strip so subsequent fader drags
-		# work without an extra click.
-		grab_focus()
+		# v0.28.7: removed grab_focus() on self — the strip's
+		# focus_mode is FOCUS_NONE (intentional, so click-and-drag
+		# on the fader doesn't take keyboard focus), so the call was
+		# always producing a "This control can't grab focus" warning.
+		# Setting _db_editor.visible = false auto-releases its focus,
+		# which is sufficient — subsequent fader drags hit _gui_input
+		# regardless of focus state.
 		queue_redraw()
 
 	func _on_db_edit_submitted(text: String) -> void:

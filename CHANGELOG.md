@@ -12,20 +12,111 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **v0.28.7 / Phase 3.3d — Topology editing**: add/remove/reorder
-  effects from the dock + add/remove buses. Builds on v0.28.4's
-  persistence layer with a richer write strategy (bus-block
-  re-serialization rather than just value patching).
-- **Phase 4 — Runtime player audio preferences**: API for the
-  shipped game to layer player volume settings on top of the
-  dev-authored bus mix. Player-side persistence via `user://`
-  ConfigFile (player appdata), kept separate from `gool/config.json`
-  (project files, dev-authored). See `docs/audio_design/player_audio_preferences.md`
-  for the design sketch.
+- **v0.28.8 / Phase 3.3d — Topology editing**: add/remove/reorder
+  effects from the dock + add/remove buses.
+- **Phase 4 — Runtime player audio preferences**: see
+  `docs/audio_design/player_audio_preferences.md` for the
+  5-release plan (v0.29.0–v0.29.4).
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel from
-  `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
-  lookahead on music bus, per-emitter ducking intensity.
+  `docs/audio_design/sidechain_tuning.md`).
+
+## [0.28.7] - 2026-05-18 — Critical fix: %g not supported in GDScript
+
+THE bug from v0.28.4 persistence: every save with a non-integer
+fader value silently failed parse-verify and got reverted via the
+.bak restore. Diagnostic dump from v0.28.6 made it visible. This
+release fixes the actual cause.
+
+### What was broken
+
+`config_model.gd._format_number` had this logic:
+
+```gdscript
+if value == floor(value) and absf(value) < 1.0e15:
+    return "%0.1f" % value   # integer-valued floats
+return "%g" % value           # non-integer floats
+```
+
+The intent was: integer-valued floats like -3.0, 6.0 → "%0.1f"
+gives "-3.0", "6.0". Non-integer floats like -21.1, 0.707 →
+"%g" gives "-21.1", "0.707".
+
+**Python's % operator supports %g. GDScript's does NOT.** GDScript
+only supports: %s %d %f %c %o %x %X %v. Hitting %g produces:
+
+```
+ERROR: String formatting error: unsupported format character.
+```
+
+…and the expression returns garbage that gets inserted into the
+JSON. Parse-verify fails, .bak gets restored. Every fader drag to
+a non-integer value (anything you'd actually mix with) silently
+failed to persist.
+
+**Why the v0.28.4 → v0.28.6 testing didn't catch this**: my Python
+port of the patcher uses Python's % operator, where %g works fine.
+The round-trip tests passed because the GDScript code path was
+never exercised. My fault for not catching this at v0.28.4 review.
+
+### Fix
+
+```gdscript
+return String.num(value)
+```
+
+`String.num()` is Godot's native float-to-string conversion. It
+handles arbitrary precision, trims trailing zeros, and produces
+JSON-parseable output for every float value the engine can
+represent: -21.1 → "-21.1", 0.707 → "0.707", 200.5 → "200.5".
+
+### Also fixed: focus warning on every dB-edit dismiss
+
+```
+WARNING: This control can't grab focus. Use set_focus_mode()...
+```
+
+`_BusStrip._hide_db_editor` called `grab_focus()` on `self`, but
+the strip's `focus_mode` is `FOCUS_NONE` (intentional — the
+fader uses click-drag, not keyboard focus). The call was a
+no-op that printed a warning every time. Removed; setting
+`_db_editor.visible = false` auto-releases its focus, which is
+sufficient.
+
+### Test coverage added
+
+`tests/python/test_config_patcher.py` now exercises the
+non-integer-value path explicitly: patch UI.gain_db with -21.1,
+patch Music compressor ratio with 3.7, verify the result still
+parses as JSON. The test runs against the actual example
+configs, so future patcher regressions on non-integer values
+fail loudly.
+
+### Files touched
+
+- `godot/addons/gool/editor/config_model.gd` — `_format_number`
+  uses `String.num` for the non-integer branch
+- `godot/addons/gool/editor/mixer_dock.gd` —
+  `_BusStrip._hide_db_editor` no longer calls grab_focus
+- `tests/python/test_config_patcher.py` — non-integer value
+  regression test
+- `CHANGELOG.md`, `README.md`, version pins
+
+### Verified
+
+- Engine: all 35 audio_engine C++ files compile clean at v0.28.7
+- Python patcher tests pass including the new non-integer test
+- 3 pre-ship sweeps clean (tabs, brace balance, inner-class scope)
+
+### CI risk
+
+GDScript-only release. The patcher's non-integer branch was
+effectively broken in v0.28.4-v0.28.6 (always failed, always
+reverted via .bak), so this change is the first time it actually
+runs successfully. The .bak restore safety net is still in
+place; the failure-dump diagnostic from v0.28.6 is still in
+place. If any other latent bug exists in this path, both
+mechanisms will surface it.
 
 ## [0.28.6] - 2026-05-18 — Fix release: mtime false-positive + diagnostic dump on save failure
 
@@ -13181,7 +13272,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.6...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.28.7]: https://github.com/siliconight/gool/releases/tag/v0.28.7
 [0.28.6]: https://github.com/siliconight/gool/releases/tag/v0.28.6
 [0.28.5]: https://github.com/siliconight/gool/releases/tag/v0.28.5
 [0.28.4]: https://github.com/siliconight/gool/releases/tag/v0.28.4

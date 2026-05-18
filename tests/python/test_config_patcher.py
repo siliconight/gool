@@ -384,6 +384,76 @@ def test_round_trip(config_path):
     return all_passed
 
 
+def test_non_integer_values_produce_valid_json(config_path):
+    """v0.28.7 regression: GDScript's `%g` is unsupported, so non-
+    integer drag values (e.g. -21.1, -42.3, 0.707) used to produce
+    garbage that failed parse-verify. This test exercises the
+    insert+patch path with non-integer values to make sure the
+    output still parses as JSON.
+    
+    The Python port uses Python's %g (which works), so this test
+    verifies the output SHAPE, not the formatting code path. If
+    we ever change the patcher to do something semantically
+    different on non-integer values (e.g. quantize, round, or
+    reject), this test catches it.
+    """
+    print(f"\n=== non-integer values: {config_path} ===")
+    src = Path(config_path).read_text()
+    parsed = json.loads(src)
+    all_passed = True
+    
+    bus_names_in_config = {b["name"] for b in parsed.get("buses", [])}
+    if "Music" not in bus_names_in_config:
+        print("  SKIP: Music not in this config"); return True
+    
+    # 1. Replace existing gain_db with a non-integer value.
+    r = find_bus_block_range(src, "Music")
+    p1 = patch_number(src, r, "gain_db", -21.1)
+    if p1 is None:
+        print("  FAIL: patch returned None"); return False
+    try:
+        np1 = json.loads(p1)
+        music_p1 = next(b for b in np1["buses"] if b["name"] == "Music")
+        if not assert_eq(music_p1["gain_db"], -21.1, "patched non-integer gain_db parses"):
+            all_passed = False
+    except Exception as e:
+        print(f"  FAIL: post-patch JSON invalid — {e}"); return False
+    
+    # 2. Patch a non-integer effect param if there's a compressor.
+    if music_p1.get("effects") and music_p1["effects"][0].get("kind") == "compressor":
+        r2 = find_bus_block_range(p1, "Music")
+        effects_at = p1.find('"effects"', r2[0])
+        bracket_open = p1.find('[', effects_at)
+        i = bracket_open + 1
+        in_str = False
+        first_brace = -1
+        while i < r2[1]:
+            c = p1[i]
+            if in_str:
+                if c == '\\': i += 2; continue
+                if c == '"': in_str = False
+                i += 1; continue
+            if c == '"': in_str = True
+            elif c == '{':
+                first_brace = i; break
+            i += 1
+        effect_close = find_matching_brace_close(p1, first_brace)
+        eff_range = (first_brace, effect_close + 1)
+        p2 = patch_number(p1, eff_range, "ratio", 3.7)  # non-integer ratio
+        if p2 is None:
+            print("  SKIP: ratio key not found"); return all_passed
+        try:
+            np2 = json.loads(p2)
+            ratio = next(b for b in np2["buses"] if b["name"] == "Music")["effects"][0]["ratio"]
+            if not assert_eq(ratio, 3.7, "patched non-integer ratio parses"):
+                all_passed = False
+        except Exception as e:
+            print(f"  FAIL: post-patch ratio JSON invalid — {e}")
+            all_passed = False
+    
+    return all_passed
+
+
 def main():
     configs = [
         "examples/coop_shooter_template/gool/config.json",
@@ -395,6 +465,8 @@ def main():
             print(f"missing: {c}")
             continue
         if not test_round_trip(c):
+            all_ok = False
+        if not test_non_integer_values_produce_valid_json(c):
             all_ok = False
     print()
     print("=" * 50)
