@@ -12,14 +12,187 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3d — Topology + persistence**: bus add/remove + save
-  dock changes back to `config.json` preserving comments. Also
-  the "sync local dock state TO runtime on F5 start" follow-up so
-  S/M/B and Fx panel state survives F5.
+- **v0.28.5 / Phase 3.3d — Topology editing**: add/remove/reorder
+  effects from the dock. Builds on v0.28.4's persistence layer.
+  Adding an effect needs a richer write strategy (bus-block
+  re-serialization rather than just value patching), since
+  insertion requires shaping new JSON content into the existing
+  document.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.28.4] - 2026-05-18 — Phase 3.3c-3: persistence + view-at-rest
+
+GDScript-only release. Adds the persistence layer the dock has
+needed since v0.26.0: edits to fader values and effect
+parameters now write back to `gool/config.json` and survive
+editor restarts, F5 cycles, and Godot version bumps. View-at-rest
+(seeing effect chains without F5) comes free from the same model.
+
+### What it does
+
+A new `GoolConfigModel` class (`addons/gool/editor/config_model.gd`)
+owns the editor-side view of `gool/config.json`:
+
+- Reads the file at dock startup, holds parsed tree + raw source
+  text in memory.
+- Every fader drag and every effect-slider drag in the dock now
+  ALSO updates the model. The model marks the affected bus dirty
+  and schedules a debounced save (500ms after last edit).
+- The save is **targeted byte patching**: only the bytes
+  representing the changed value are rewritten. Comments,
+  whitespace, key order, and unrelated values are bit-for-bit
+  preserved. Your `_comment` field at the top of config.json is
+  untouched even after a long slider-tweaking session.
+- After every write, the new file is re-parsed. If parsing fails
+  (a patcher bug somehow produced invalid JSON), a backup at
+  `gool/config.json.gool-backup` is restored automatically and
+  the failure is surfaced via `push_warning`.
+- mtime conflict detection: if the on-disk file changed between
+  our last read and our next attempted save, a
+  ConfirmationDialog prompts the user with "Reload from disk"
+  vs "Overwrite with dock state". No silent clobbers.
+
+### View-at-rest
+
+When no F5 session is running, the dock now sources effect chain
+data from the config model instead of forcing all `effect_count`
+to 0. So the Fx buttons stay populated, clicking them opens
+panels with values from config.json, and the sliders work — they
+just write through to the model only (no engine to send to).
+
+Open a project, open the dock, no F5, click Fx on the Music bus
+— and you get the compressor's threshold/ratio/attack/etc.,
+ready to edit. Hit F5 and the same panel keeps working, now
+also pushing to the running engine.
+
+### Dirty indicator
+
+Each bus strip gets a small yellow dot to the left of the bus
+name when that bus has unsaved local edits. Dot appears the
+instant the user moves a slider; disappears 500ms after the
+last edit when the debounced save lands. Same yellow as Solo —
+intentionally reusing the existing visual vocabulary ("yellow =
+this needs your attention").
+
+### Design rationale (UX brief)
+
+- **Obvious action**: faders and sliders behave exactly as
+  before — there's no new "save" workflow to learn. Edits just
+  persist now.
+- **Visible state**: dirty dot per strip shows what's not yet
+  saved. mtime conflict dialog is loud, not silent.
+- **Predictable outcome**: at-rest edit + F5 = engine starts
+  with your edits. Runtime edit + F8 = config.json on disk
+  reflects what you heard.
+- **Easy recovery**: backup at `gool/config.json.gool-backup` is
+  written before every save; restored automatically if our patcher
+  somehow corrupted the file. The user can also just discard
+  pending dock edits via the mtime conflict dialog's "Reload from
+  disk" button.
+- **Reduced cognitive load**: debounced auto-save means no
+  manual Save action to remember. The user makes edits, they get
+  written. The dock owns the "when to write" decision so the
+  user doesn't have to.
+
+### Out of scope (deferred to v0.28.5)
+
+- **Topology editing**: add/remove/reorder effects, add/remove
+  buses. Targeted-byte patching can't INSERT effect entries
+  cleanly — that needs bus-block re-serialization. v0.28.5
+  builds the write side for topology on top of this release's
+  model.
+- **Mute/Solo/Bypass persistence**: intentionally NOT saved.
+  These are session-transient like in any DAW — soloing while
+  debugging should not survive editor restart. Also no
+  config.json field exists for them today.
+- **True engine-default reset** (vs. v0.28.3's open-time
+  snapshot reset): would need a binding addition or hardcoded
+  defaults in the dock. Still deferred.
+
+### Targeted-byte patching: how it works
+
+The model holds the original `config.json` text in `_raw_text`.
+Every save:
+
+1. Locate the bus block in the raw text by walking char-by-char
+   and tracking string state, finding `"name": "X"` tokens at the
+   right brace depth. Returns the `{...}` byte range.
+2. Within the bus block, find the target key (e.g. `gain_db`)
+   and the byte range of its value. Replace those bytes with the
+   new value text. Insert if the key doesn't exist (for buses
+   whose block has no `gain_db` declaration but the user just
+   dragged the fader).
+3. For effect param edits, the same approach scoped to the Nth
+   effect's `{}` block within the bus's `effects` array.
+4. After all patches, write the new text. Re-parse to verify;
+   restore from `.gool-backup` if invalid.
+
+Key correctness property: only the bytes representing the
+changed VALUE are replaced. Even `gain_db: -3.0` → `gain_db:
+-3.5` only changes 4 bytes (`-3.0` → `-3.5`). Comments, key
+order, indentation style, line endings — all untouched.
+
+### Testing
+
+The patcher logic is verified against two real configs via a
+Python port (`tests/python/test_config_patcher.py`). Tests
+include:
+- Find each bus by name in `multiplayer_audio_sandbox` and
+  `coop_shooter_template` configs
+- Locate `gain_db` and effect params (e.g. `threshold_db`) by
+  byte range
+- Round-trip patch: change a value, re-parse, verify the new
+  value is correct AND every other byte in the file is
+  unchanged
+- Combined patches: patch `gain_db` then patch effect param in
+  the same effect block (the actual save path)
+
+GDScript port mirrors the Python logic exactly — same algorithm,
+same string-skipping for `"name"` tokens inside JSON string
+values.
+
+### Files touched
+
+- `godot/addons/gool/editor/config_model.gd` — NEW. ~600 lines:
+  load, in-memory tree, patcher, debounced save, backup+verify,
+  mtime conflict detection, dirty tracking. Six tables of
+  per-paramId metadata (JSON key names, kind mapping, engine
+  defaults) — these mirror `audio::EffectParameter::` in
+  `bus.h` and `bus_config_loader.cpp` and must stay in sync.
+- `godot/addons/gool/editor/mixer_dock.gd` — instantiate model
+  in `_ready`, route `_on_strip_db_changed` and
+  `_on_effect_param_changed` through the model, view-at-rest
+  fallback for `_lookup_effects_for_bus`, mtime conflict dialog,
+  dirty indicator rendering on each strip
+- `tests/python/test_config_patcher.py` — NEW. Python port of
+  the patcher with round-trip tests against real config files.
+  Run from the pre-ship verify pass; if its assertions ever
+  fail it's a signal of patcher regression.
+- `CHANGELOG.md`, `README.md`, version pins
+
+### Verified
+
+- Engine: all 35 audio_engine C++ files compile clean at v0.28.4
+  (no engine code changed)
+- 4 pre-ship sweeps clean: tab discipline, const expression
+  validity, inner-class scope, autoload method existence
+- Structural sanity on the new files: balanced braces/brackets/
+  parens
+- Model API contract: every `_config_model.<method>` call in the
+  dock matches a method declared in the model. Same for signal
+  connections.
+- Python patcher round-trip tests pass against both
+  `multiplayer_audio_sandbox` and `coop_shooter_template`
+  configs.
+
+### CI risk
+
+GDScript-only release. Binding and engine paths from v0.28.2 are
+untouched. The risk surface is entirely the new patcher logic,
+which is exercised by the Python test against real configs.
 
 ## [0.28.3] - 2026-05-18 — Phase 3.3c-2: dock UI for effect editing
 
@@ -12858,7 +13031,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.3...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.4...HEAD
+[0.28.4]: https://github.com/siliconight/gool/releases/tag/v0.28.4
 [0.28.3]: https://github.com/siliconight/gool/releases/tag/v0.28.3
 [0.28.2]: https://github.com/siliconight/gool/releases/tag/v0.28.2
 [0.28.1]: https://github.com/siliconight/gool/releases/tag/v0.28.1

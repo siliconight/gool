@@ -111,6 +111,21 @@ var _last_bus_names: PackedStringArray = PackedStringArray()
 var _accum: float = 0.0
 var _debugger_plugin: EditorDebuggerPlugin = null
 
+# v0.28.4 (Phase 3.3c-3): persistence layer. The model owns
+# gool/config.json — reads on _ready, patches+writes on every
+# fader / slider edit (debounced). The dock uses it for:
+#   - view-at-rest: when no F5 session is running, _lookup_effects_for_bus
+#     falls through to model.get_effects() so the Fx panel still works
+#   - persistence: _on_strip_db_changed and _on_effect_param_changed
+#     now ALSO write through to the model in addition to the runtime
+#   - dirty indicator: a small dot rendered on a strip's name band
+#     when that bus has unsaved local edits
+#   - conflict prompt: if config.json was modified externally
+#     between our last load and our next save, the dock shows a
+#     ConfirmationDialog with Reload / Overwrite / Cancel
+var _config_model: GoolConfigModel = null
+var _mtime_conflict_dialog: ConfirmationDialog = null
+
 
 # ---- Plugin lifecycle ------------------------------------------------
 
@@ -140,10 +155,37 @@ func _ready() -> void:
 	_empty_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
 	_strip_container.add_child(_empty_label)
 
+	# v0.28.4 (Phase 3.3c-3): instantiate the persistence model and
+	# load gool/config.json. This is BEFORE strips are built so
+	# _load_static_layout_from_config can read from the model rather
+	# than parsing config.json a second time. Model failure (missing
+	# file, bad JSON) leaves it empty — dock falls back to the
+	# "No gool/config.json found" empty-label as before.
+	_config_model = GoolConfigModel.new()
+	_config_model.set_owner_node(self)
+	_config_model.model_saved.connect(_on_model_saved)
+	_config_model.save_failed.connect(_on_model_save_failed)
+	_config_model.external_change_detected.connect(
+			_on_model_external_change_detected)
+	var load_err: int = _config_model.load_from_disk()
+	if load_err != OK and load_err != ERR_FILE_NOT_FOUND:
+		push_warning("[gool] config_model load_from_disk: error %d" % load_err)
+
 	# v0.26.0: build static layout from config.json IMMEDIATELY.
 	# Strips are visible at editor time; live data comes later
 	# when F5 starts (via debugger plugin).
 	_load_static_layout_from_config()
+
+	# v0.28.4: pre-build (but hide) the mtime conflict dialog so it's
+	# ready to pop the instant the model emits external_change_detected.
+	_mtime_conflict_dialog = ConfirmationDialog.new()
+	_mtime_conflict_dialog.title = "gool: config.json changed on disk"
+	_mtime_conflict_dialog.ok_button_text = "Reload from disk"
+	_mtime_conflict_dialog.add_button("Overwrite with dock state", true,
+			"overwrite_disk_action")
+	_mtime_conflict_dialog.confirmed.connect(_on_mtime_dialog_reload)
+	_mtime_conflict_dialog.custom_action.connect(_on_mtime_dialog_custom_action)
+	add_child(_mtime_conflict_dialog)
 
 
 func _process(delta: float) -> void:
@@ -259,9 +301,17 @@ func _poll() -> void:
 		# Same UX rationale as muting the meters: with no game running,
 		# stale effect parameters from a previous session shouldn't
 		# stay clickable.
+		# v0.28.4 (Phase 3.3c-3): when at rest, effect_count is sourced
+		# from the config model rather than forced to 0 — so view-at-rest
+		# shows Fx buttons populated from gool/config.json without
+		# requiring an F5. The button click → panel open path then uses
+		# the model too via _lookup_effects_for_bus's fallback.
 		for s in _strips:
 			s.push_peak(0.0)
-			s.set_effect_count(0)
+			var count_at_rest: int = 0
+			if _config_model != null:
+				count_at_rest = _config_model.get_effects(s.bus_name).size()
+			s.set_effect_count(count_at_rest)
 		return
 
 	# If the runtime's reported bus list differs from our config-based
@@ -341,6 +391,13 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 # debugger plugin's send helper. Silently dropped if no game
 # running (correct behavior — fader still moves in the UI).
 func _on_strip_db_changed(bus_name: String, db: float) -> void:
+	# v0.28.4: persist the edit to config.json via the model. Done
+	# unconditionally — runtime forwarding only happens when a session
+	# is attached, but the config write should happen either way so
+	# the edit survives F5 cycles and editor restarts.
+	if _config_model != null:
+		_config_model.set_bus_gain_db(bus_name, db)
+		_refresh_dirty_indicators()
 	if _debugger_plugin == null:
 		return
 	if _debugger_plugin.has_method("send_set_bus_gain"):
@@ -428,8 +485,17 @@ func _on_strip_fx_toggled(bus_name: String, expanded: bool) -> void:
 # Effect slider was dragged. Forward to the running game via the
 # debugger plugin. Silently dropped if no game running — same
 # convention as fader/SMB forwarders.
+#
+# v0.28.4: also writes the edit through to GoolConfigModel so the
+# value persists to config.json. The runtime forwarding only fires
+# during F5; the model write fires either way (at-rest edits land
+# in config.json without a game running, runtime edits both ramp
+# the engine value AND get persisted).
 func _on_effect_param_changed(bus_name: String, effect_index: int,
 		param_id: int, value: float) -> void:
+	if _config_model != null:
+		_config_model.set_effect_param(bus_name, effect_index, param_id, value)
+		_refresh_dirty_indicators()
 	if _debugger_plugin == null:
 		return
 	if _debugger_plugin.has_method("send_set_effect_parameter"):
@@ -449,12 +515,87 @@ func _index_of_bus(bus_name: String) -> int:
 # Look up the effects array for a bus from the most recent poll.
 # Returns [] if the bus isn't in stats (game not running, or the
 # bus exists in static config but not in the runtime topology).
+#
+# v0.28.4: if the runtime stats cache is empty (no F5 running),
+# fall back to GoolConfigModel.get_effects() which serves the same
+# shape from gool/config.json. This is what makes view-at-rest work:
+# the user can open Fx panels and see param values populated from
+# config without needing to F5.
 func _lookup_effects_for_bus(bus_name: String) -> Array:
 	for d in _last_stats:
 		if String(d.get("name", "")) == bus_name:
 			var effects_v: Variant = d.get("effects", [])
 			return effects_v if effects_v is Array else []
+	if _config_model != null:
+		return _config_model.get_effects(bus_name)
 	return []
+
+
+# v0.28.4: model save signals → dock visual response.
+#
+# _on_model_saved fires after a successful disk write. Strips that
+# were previously dirty (showing the modified dot) now refresh to
+# clear their indicators.
+func _on_model_saved(_bus_names_saved: Array) -> void:
+	_refresh_dirty_indicators()
+
+
+# Save failures are logged loudly. The dock keeps running; the model
+# preserves its in-memory state, so the next edit + save attempt will
+# include the unsaved edits. The user sees the failure in Godot's
+# Output panel and can investigate.
+func _on_model_save_failed(reason: String) -> void:
+	push_warning("[gool] mixer dock: config save failed — " + reason)
+
+
+# External-change conflict (disk mtime advanced since last load).
+# Show the prompt: Reload from disk (discards dock edits) or
+# Overwrite (clobbers external edits with dock state).
+func _on_model_external_change_detected(pending_dirty_buses: Array) -> void:
+	if _mtime_conflict_dialog == null:
+		return
+	var bus_list: String = ", ".join(pending_dirty_buses)
+	if bus_list.is_empty():
+		bus_list = "(none)"
+	_mtime_conflict_dialog.dialog_text = (
+		"gool/config.json was modified outside the editor while you had "
+		+ "unsaved changes to: " + bus_list + ".\n\n"
+		+ "  Reload from disk: discard the dock's in-memory edits, "
+		+ "reread config.json from disk.\n"
+		+ "  Overwrite with dock state: clobber the external changes "
+		+ "with the dock's current state."
+	)
+	_mtime_conflict_dialog.popup_centered()
+
+
+func _on_mtime_dialog_reload() -> void:
+	# ConfirmationDialog's "OK" button = our "Reload" action.
+	if _config_model == null:
+		return
+	var err: int = _config_model.reload_from_disk_discarding_edits()
+	if err == OK:
+		_load_static_layout_from_config()
+		_refresh_dirty_indicators()
+
+
+func _on_mtime_dialog_custom_action(action: StringName) -> void:
+	if String(action) != "overwrite_disk_action":
+		return
+	if _config_model == null:
+		return
+	_config_model.overwrite_disk()
+	_mtime_conflict_dialog.hide()
+
+
+# Walk strips and push their bus's dirty state. Called whenever the
+# model emits a change that affects any bus's dirty status (an edit,
+# a save, a reload). Strip rendering decides what the dot looks like.
+func _refresh_dirty_indicators() -> void:
+	if _config_model == null:
+		return
+	for s in _strips:
+		var strip: _BusStrip = s as _BusStrip
+		strip.set_dirty(_config_model.is_bus_dirty(strip.bus_name))
 
 
 # Remove the _EffectsPanel child from a column, if any. The strip
@@ -537,6 +678,14 @@ class _BusStrip extends Control:
 	# kept in sync with the parent column's panel presence.
 	var _effect_count: int = 0
 	var _is_fx_expanded: bool = false
+
+	# v0.28.4 (Phase 3.3c-3): dirty indicator state. Set by the outer
+	# dock via set_dirty() whenever the config model reports this bus
+	# has unsaved edits. Drawn as a small pip to the left of the bus
+	# name in _draw. Uses the same yellow as Solo so the visual
+	# vocabulary stays compact — yellow = "this needs your attention".
+	var _is_dirty: bool = false
+	const COLOR_DIRTY_DOT := Color(0.95, 0.82, 0.32)
 
 	const PEAK_HOLD_TIME: float = 1.5
 	const PEAK_DROP_RATE: float = 0.5
@@ -677,6 +826,16 @@ class _BusStrip extends Control:
 		queue_redraw()
 		if emit:
 			fx_toggled.emit(bus_name, _is_fx_expanded)
+
+	# v0.28.4 (Phase 3.3c-3): dirty-indicator setter. Outer dock
+	# calls this from _refresh_dirty_indicators when the model
+	# reports a change. No-op if state is unchanged so we don't
+	# trigger redundant queue_redraw calls.
+	func set_dirty(dirty: bool) -> void:
+		if _is_dirty == dirty:
+			return
+		_is_dirty = dirty
+		queue_redraw()
 
 	# Button rect helpers. Compute once, used by both _draw and
 	# _gui_input — keeping these in one place prevents the
@@ -877,6 +1036,17 @@ class _BusStrip extends Control:
 					HORIZONTAL_ALIGNMENT_CENTER,
 					-1, fs,
 					COLOR_TEXT)
+			# v0.28.4: dirty indicator. Small filled circle to the LEFT
+			# of the bus name when this bus has unsaved local edits in
+			# GoolConfigModel. Disappears once the debounced save lands.
+			# Position deliberately compact — 4px diameter, 2px inside
+			# the strip's left margin — so it reads as a status pip
+			# rather than a separate UI element.
+			if _is_dirty:
+				var dot_x: float = max(2.0, (w - name_size.x) * 0.5 - 8.0)
+				var dot_y: float = NAME_BAND * 0.5 - 1.0
+				draw_circle(Vector2(dot_x, dot_y), 3.0,
+						COLOR_DIRTY_DOT)
 
 		# --- v0.27.0: S/M/B buttons (between name and fader region) ---
 		# Each button is a filled rect with a single-letter label
