@@ -275,6 +275,17 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		strip.bypass_changed.connect(_on_strip_bypass_changed)
 		# v0.28.3: Fx toggle.
 		strip.fx_toggled.connect(_on_strip_fx_toggled)
+		# v0.28.5: populate Fx button count IMMEDIATELY from the
+		# config model rather than waiting for the first _poll tick.
+		# v0.28.4 had this gated on _poll firing the empty-stats branch,
+		# but if the very first _poll happened before _debugger_plugin
+		# was wired, or if the timing didn't line up, the strip would
+		# stay at effect_count=0 until F5 brought stats in. Setting
+		# the count here at build time makes the Fx button appearance
+		# deterministic — it's there immediately when the dock opens,
+		# regardless of poll timing or debugger-plugin readiness.
+		if _config_model != null:
+			strip.set_effect_count(_config_model.get_effects(bus_name).size())
 		# Wrap in a column so the effects panel can stack below.
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 4)
@@ -959,6 +970,45 @@ class _BusStrip extends Control:
 			if k.pressed and k.keycode == KEY_ESCAPE:
 				_cancel_db_edit()
 				_db_editor.accept_event()
+
+	# v0.28.5: click-anywhere-outside dismisses the dB editor.
+	#
+	# Why this exists: focus_exited only fires when focus transfers
+	# to another focusable Control. Clicking on the strip background,
+	# the dock empty space, or another non-focusable Control doesn't
+	# transfer focus — so the LineEdit stays open with no obvious
+	# way to dismiss it short of pressing Enter or Escape.
+	#
+	# Fix: listen for unhandled mouse clicks at the input layer.
+	# If the LineEdit is visible and the click position falls
+	# OUTSIDE its global rect, commit the current text (matching
+	# the focus_exited behavior — clicks-outside = commit, Escape
+	# = cancel). Inside-rect clicks fall through to the LineEdit
+	# itself for normal text-cursor positioning.
+	#
+	# Using _input (not _unhandled_input) so we see the event even
+	# if some other Control will eventually claim it. We don't
+	# accept_event — we just observe and react.
+	func _input(event: InputEvent) -> void:
+		if _db_editor == null or not _db_editor.visible:
+			return
+		if not (event is InputEventMouseButton):
+			return
+		var mb := event as InputEventMouseButton
+		if not mb.pressed:
+			return
+		if mb.button_index != MOUSE_BUTTON_LEFT \
+				and mb.button_index != MOUSE_BUTTON_RIGHT \
+				and mb.button_index != MOUSE_BUTTON_MIDDLE:
+			return
+		# Use the LineEdit's GLOBAL rect (its position is relative
+		# to this strip, but we compare against the event's GLOBAL
+		# mouse position).
+		var lr: Rect2 = _db_editor.get_global_rect()
+		if lr.has_point(mb.global_position):
+			return  # click inside the editor: let LineEdit handle it
+		# Click outside — commit current text and hide.
+		_commit_db_edit(_db_editor.text)
 
 	# Push a new peak value from the runtime. Snappy attack (peak
 	# wins immediately on rise), exponential decay on fall.

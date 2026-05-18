@@ -12,16 +12,101 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **v0.28.5 / Phase 3.3d — Topology editing**: add/remove/reorder
+- **v0.28.6 / Phase 3.3d — Topology editing**: add/remove/reorder
   effects from the dock. Builds on v0.28.4's persistence layer.
   Adding an effect needs a richer write strategy (bus-block
   re-serialization rather than just value patching), since
   insertion requires shaping new JSON content into the existing
-  document.
+  document. Was queued as v0.28.5 but v0.28.5 became a fix
+  release for two real bugs from sandbox testing of v0.28.4.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.28.5] - 2026-05-18 — Fix release: dB input dismissal + Fx-button view-at-rest
+
+Two real bugs from sandbox testing of v0.28.4. GDScript-only.
+No engine, no protocol, no schema changes.
+
+### Bug 1: clicking outside the dB readout LineEdit didn't dismiss it
+
+Repro: click the "+0.0 dB" readout under any bus strip to open
+the inline edit field. Click anywhere else (a different strip,
+empty dock space, the rest of the editor). The LineEdit stayed
+open — only Enter or Escape would close it.
+
+Root cause: `focus_exited` (which committed-and-hid the editor)
+only fires when focus transfers to another focusable Control.
+Clicking on the dock strip background or empty dock area doesn't
+take focus, so `focus_exited` never fired.
+
+Fix: `_BusStrip._input` now observes every mouse-click input
+event. If the LineEdit is visible and the click landed OUTSIDE
+its global rect, the strip commits the current text and hides
+the editor. Inside-rect clicks fall through to the LineEdit
+itself for normal text-cursor positioning. Same UX contract
+as before:
+
+- Click readout → editor opens, text selected
+- Type a new value → numeric chars accepted
+- Click anywhere else → commits the value
+- Press Enter → commits the value
+- Press Escape → cancels (value unchanged)
+
+### Bug 2: Fx buttons only appeared after pressing F5
+
+Repro: open the dock at editor time (no F5). On buses with
+effects in `gool/config.json` (e.g. Music with a compressor),
+the Fx button should be visible from the v0.28.4 view-at-rest
+work — but it wasn't appearing until F5 brought in runtime
+stats.
+
+Root cause: v0.28.4 set `effect_count` lazily, from `_poll`'s
+empty-stats branch. The first `_poll` tick after dock open
+SHOULD have populated counts from the config model, but the
+timing wasn't reliable. Outside the empty-stats branch, builds
+left strips at `effect_count = 0`.
+
+Fix: `_rebuild_strips_from_config` now sets `set_effect_count(...)`
+on every strip IMMEDIATELY at build time, sourcing from the
+config model. The Fx button appearance is now deterministic —
+visible the instant the dock opens, regardless of poll timing,
+debugger plugin readiness, or whether F5 has ever run. The
+existing `_poll`-based update path is retained for runtime
+topology changes during a session.
+
+### What this means for the user
+
+After installing v0.28.5:
+
+1. Open the dock. Fx buttons appear immediately on any bus
+   that has effects declared in `config.json` — no F5 needed.
+2. Click "+0.0 dB" on any strip. Type a new value. Click
+   elsewhere. Editor closes, value commits, persistence layer
+   writes the change to `config.json` (v0.28.4 behavior).
+
+### Files touched
+
+- `godot/addons/gool/editor/mixer_dock.gd` — `_BusStrip._input`
+  added (mouse click outside dismisses the LineEdit);
+  `_rebuild_strips_from_config` calls `set_effect_count` from
+  the model at build time
+- `CHANGELOG.md`, `README.md`, version pins
+
+### Verified
+
+- Engine: all 35 audio_engine C++ files compile clean at v0.28.5
+  (no engine changed)
+- 3 pre-ship sweeps clean (tabs, brace balance, inner-class scope)
+- Python patcher round-trip tests still pass against both example
+  configs (no patcher code changed)
+
+### CI risk
+
+GDScript-only release. All v0.28.4 persistence work is intact.
+The only new logic is the `_input` override and the early
+`set_effect_count` call — both narrow, additive changes.
 
 ## [0.28.4] - 2026-05-18 — Phase 3.3c-3: persistence + view-at-rest
 
@@ -13031,7 +13116,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.4...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.5...HEAD
+[0.28.5]: https://github.com/siliconight/gool/releases/tag/v0.28.5
 [0.28.4]: https://github.com/siliconight/gool/releases/tag/v0.28.4
 [0.28.3]: https://github.com/siliconight/gool/releases/tag/v0.28.3
 [0.28.2]: https://github.com/siliconight/gool/releases/tag/v0.28.2
