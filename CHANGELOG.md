@@ -27,6 +27,122 @@ Nothing shipping yet. Next-up candidates:
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
 
+## [0.26.5] - 2026-05-17 — Click-to-edit dB readout
+
+### What's new
+
+The dB readout text at the bottom of each mixer strip
+(e.g. `+0.0 dB`, `-3.5 dB`) is now **clickable**. Left-click
+the readout, type a value like `-8.5`, and press Enter (or
+click anywhere else on the strip / dock) to commit. The bus
+gain updates immediately and routes through the same
+`gool:set_bus_gain` debugger-bridge command as a fader drag —
+so if the game is running, the audio responds in real time.
+
+Escape cancels the edit without applying. Empty or
+non-numeric input is silently discarded (the prior fader
+value stays put).
+
+### Why this exists
+
+Fader drags are good for coarse tuning ("ballpark this around
+-6 dB") but bad for landing on a specific value (try hitting
+exactly `-8.5` with a mouse). This is a standard DAW pattern
+— Logic, Pro Tools, Ableton, and Reaper all let you click a
+dB readout and type a value. The mixer dock now has parity
+with that workflow.
+
+### Implementation
+
+A hidden `LineEdit` child lives in each `_BusStrip`. The
+strip's `_gui_input` method now checks the bottom 18-pixel
+readout band before the fader band; a left-click in the
+readout band shows the LineEdit positioned over that area,
+pre-fills the current value (as a plain number — no `+`
+prefix, no ` dB` suffix), focuses it, and selects all so
+typing replaces cleanly.
+
+The LineEdit's signals do the rest:
+
+- `text_submitted` (Enter pressed) → parse, clamp, apply
+- `focus_exited` (click outside) → same as Enter
+- `gui_input` → handles Escape key for cancel
+
+Commit goes through `set_fader_db(value, emit=true)` which
+already does the clamping (`[-72, +6]`) and emits
+`db_changed`, which the dock forwards to the running game.
+So out-of-range typed values (e.g. `-100`) clamp to `-72`
+identically to fader-drag behavior.
+
+The `_draw` method skips rendering the static readout text
+while the LineEdit is visible, avoiding a doubled
+appearance.
+
+### What's NOT in this release
+
+- **Scroll-to-adjust on the readout**: mouse-wheel over the
+  readout to nudge by 0.5 dB increments. Easy to add later if
+  useful — same activation gesture as click-to-edit, different
+  input handler.
+- **Up/down arrow keys** for incrementing while editing: deferred.
+  Could use a `SpinBox` instead of `LineEdit` to get this for
+  free, at the cost of theme alignment work.
+- **Persisting changes to `config.json`**: still 3.3d's domain.
+  Typed values during a session are live but ephemeral, same
+  as fader drags. Reopen the project and values reset to
+  whatever's in config.json.
+
+### Pre-ship sweep results
+
+All four checks from `docs/engineering/lessons_learned.md`
+ran clean:
+
+1. **Tab discipline**: ✓ clean (no mixed tabs/spaces in any
+   `.gd` file)
+2. **Const-expression discipline**: ✓ clean (no `Packed*Array(...)`
+   constructors in const declarations)
+3. **Inner-class scope discipline**: ✓ clean (zero outer
+   `class_name.X` references inside inner class bodies)
+4. **Autoload method existence**: ✓ clean (every bare
+   `set_X(...)` call has a matching `func set_X(` declaration
+   in the same file)
+
+Check #4 initially produced a false positive on a `push_warning(
+"set_bus_gain('%s'...")` log message — the heuristic matched
+the method name inside the string literal. Refined the
+heuristic to strip string literals before matching (regex
+`r'"[^"\n]*"'` and `r"'[^'\n]*'"` substitution), re-ran, clean.
+The refinement is now reflected in the
+`docs/engineering/lessons_learned.md` pre-ship checklist.
+
+This is the first release where the lessons-doc checklist
+caught an issue in the heuristic itself (not in the addon
+code) before shipping. The discipline of running all four
+sweeps and inspecting hits worked as intended.
+
+### Files touched
+
+- `godot/addons/gool/editor/mixer_dock.gd` — `_BusStrip` gains
+  a `LineEdit` child + 5 new methods (`_start_db_edit`,
+  `_commit_db_edit`, `_cancel_db_edit`, `_hide_db_editor`,
+  and 3 signal handlers); `_draw` conditionally skips readout
+  text while editing; `_gui_input` checks readout-band click
+  before fader-band drag. ~70 lines added.
+- `docs/engineering/lessons_learned.md` — refined check #4 to
+  note string-literal stripping.
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.26.5.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.5
+  (no C++ changes; this is a GDScript-only feature)
+- `version_test` reports `0.26.5`
+- All four pre-ship `.gd` sweeps clean
+- Mixer dock UI changes confined to `_BusStrip` inner class;
+  outer `GoolMixerDock` topology and debugger-bridge logic
+  unchanged
+
 ## [0.26.4] - 2026-05-17 — Engineering lessons-learned doc
 
 ### What's in this release
@@ -11612,7 +11728,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.4...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.5...HEAD
+[0.26.5]: https://github.com/siliconight/gool/releases/tag/v0.26.5
 [0.26.4]: https://github.com/siliconight/gool/releases/tag/v0.26.4
 [0.26.3]: https://github.com/siliconight/gool/releases/tag/v0.26.3
 [0.26.2]: https://github.com/siliconight/gool/releases/tag/v0.26.2

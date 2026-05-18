@@ -68,6 +68,13 @@ your change spans multiple file types, run multiple sections.
       grep for `^func <method_name>` in the same file. No match
       = the call will fail at runtime even though it parses.
 
+      Heuristic: build the set of bare `name(...)` calls in the
+      file, build the set of `func name(...)` declarations, take
+      the difference. **Strip string literals before matching**
+      so that log messages like `push_warning("set_foo failed")`
+      don't false-positive. The lazy regex `r'"[^"\n]*"'` followed
+      by `r"'[^'\n]*'"` is good enough for single-line strings.
+
 ### For `.cpp` / `.h` file changes
 
 - [ ] **All 35 audio-engine source files compile clean** with

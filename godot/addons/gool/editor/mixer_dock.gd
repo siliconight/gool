@@ -323,9 +323,30 @@ class _BusStrip extends Control:
 	const METER_W: float = 14.0
 	const SCALE_LABEL_W: float = 30.0
 
+	# v0.26.5: LineEdit child for click-to-type dB entry. Hidden by
+	# default; shown when the user clicks the dB readout at the
+	# bottom of the strip. Lifecycle: see _start_db_edit /
+	# _commit_db_edit / _cancel_db_edit below.
+	var _db_editor: LineEdit = null
+
 	func _ready() -> void:
 		set_process(true)
 		mouse_filter = Control.MOUSE_FILTER_STOP
+		# v0.26.5: build the LineEdit overlay for click-to-edit dB
+		# entry. Lives in the bottom 18px (READOUT_BAND), normally
+		# hidden, shown on click of the readout text. Connected
+		# signals: text_submitted (Enter) → commit, focus_exited
+		# (click elsewhere) → commit, gui_input → check for Escape.
+		_db_editor = LineEdit.new()
+		_db_editor.visible = false
+		_db_editor.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_db_editor.placeholder_text = "dB"
+		# Reasonable text size; LineEdit's defaults are fine for the
+		# rest of styling — we don't override the theme.
+		_db_editor.text_submitted.connect(_on_db_edit_submitted)
+		_db_editor.focus_exited.connect(_on_db_edit_focus_exited)
+		_db_editor.gui_input.connect(_on_db_edit_gui_input)
+		add_child(_db_editor)
 
 	# Set the fader value programmatically. emit_signal=false used at
 	# init time to avoid feedback before the parent has connected.
@@ -334,6 +355,91 @@ class _BusStrip extends Control:
 		queue_redraw()
 		if emit:
 			db_changed.emit(bus_name, _fader_db)
+
+	# ---- v0.26.5: click-to-edit dB readout ----
+
+	# Activate the inline LineEdit over the readout band. Pre-fills
+	# with the current dB as a plain number (no "+" prefix, no
+	# " dB" suffix — those are display, not input) so typing
+	# replaces cleanly.
+	func _start_db_edit() -> void:
+		if _db_editor == null:
+			return
+		if _db_editor.visible:
+			return  # already editing
+		# Position over the readout band. Some horizontal margin so
+		# the editor doesn't run flush to the strip edges.
+		var pad: float = 4.0
+		_db_editor.position = Vector2(pad, size.y - READOUT_BAND)
+		_db_editor.size = Vector2(size.x - pad * 2.0, READOUT_BAND)
+		_db_editor.text = "%.1f" % _fader_db
+		_db_editor.visible = true
+		_db_editor.grab_focus()
+		_db_editor.select_all()
+		# Hide the drawn readout (drawn in _draw) while editing.
+		queue_redraw()
+
+	# Parse the text as a float, clamp to the fader range, apply.
+	# Invalid input (non-numeric, empty) is silently discarded —
+	# the fader value stays at its prior position.
+	func _commit_db_edit(text: String) -> void:
+		var stripped: String = text.strip_edges()
+		if stripped.is_empty():
+			_hide_db_editor()
+			return
+		# String.to_float() returns 0.0 for unparseable input, which
+		# would be a dangerous silent default. Use is_valid_float()
+		# to distinguish "0.0 explicitly typed" from "garbage".
+		if not stripped.is_valid_float():
+			# Could be "+5.5" with explicit plus; to_float handles
+			# this but is_valid_float rejects it on some Godot
+			# versions. Strip a leading + and retry once.
+			if stripped.begins_with("+") and stripped.substr(1).is_valid_float():
+				stripped = stripped.substr(1)
+			else:
+				_hide_db_editor()
+				return
+		var value: float = stripped.to_float()
+		# set_fader_db clamps to [FADER_MIN_DB, FADER_MAX_DB] and
+		# emits db_changed, which the parent dock forwards to the
+		# running game via the debugger bridge. So out-of-range
+		# values like "-100" become -72 (the floor) silently —
+		# matches the fader's drag behavior.
+		set_fader_db(value, true)
+		_hide_db_editor()
+
+	func _cancel_db_edit() -> void:
+		_hide_db_editor()
+
+	func _hide_db_editor() -> void:
+		if _db_editor == null:
+			return
+		_db_editor.visible = false
+		# Release focus back to the strip so subsequent fader drags
+		# work without an extra click.
+		grab_focus()
+		queue_redraw()
+
+	func _on_db_edit_submitted(text: String) -> void:
+		_commit_db_edit(text)
+
+	func _on_db_edit_focus_exited() -> void:
+		# focus_exited fires on Escape too in some Godot versions,
+		# but Escape is also handled in _on_db_edit_gui_input below
+		# (which cancels before focus_exited would commit). Safe to
+		# treat focus_exited as "commit current text".
+		if _db_editor != null and _db_editor.visible:
+			_commit_db_edit(_db_editor.text)
+
+	func _on_db_edit_gui_input(event: InputEvent) -> void:
+		# Escape cancels without committing. Without this, Escape
+		# would just lose focus and the focus_exited handler would
+		# commit whatever's in the box — wrong UX.
+		if event is InputEventKey:
+			var k := event as InputEventKey
+			if k.pressed and k.keycode == KEY_ESCAPE:
+				_cancel_db_edit()
+				_db_editor.accept_event()
 
 	# Push a new peak value from the runtime. Snappy attack (peak
 	# wins immediately on rise), exponential decay on fall.
@@ -479,7 +585,11 @@ class _BusStrip extends Control:
 						COLOR_TEXT_DIM)
 
 		# --- dB readout (bottom band) ---
-		if f != null:
+		# --- dB readout (bottom band) ---
+		# v0.26.5: skip drawing the text while the LineEdit overlay
+		# is visible (otherwise the static text would render behind
+		# the LineEdit and produce a doubled appearance).
+		if f != null and (_db_editor == null or not _db_editor.visible):
 			var db_text: String = "%+.1f dB" % _fader_db
 			var readout_size := f.get_string_size(
 					db_text, HORIZONTAL_ALIGNMENT_CENTER, -1, fs)
@@ -502,10 +612,23 @@ class _BusStrip extends Control:
 		var fader_full_rect := Rect2(
 				fader_x, fader_region_y,
 				FADER_HANDLE_W, fader_region_h)
+		# v0.26.5: readout band is the bottom READOUT_BAND pixels.
+		# A click here activates the LineEdit overlay for type-to-set
+		# dB entry. Checked BEFORE the fader rect because the regions
+		# don't overlap (readout is below fader_region) but the
+		# explicit ordering documents intent.
+		var readout_rect := Rect2(
+				0.0, h - READOUT_BAND,
+				w, READOUT_BAND)
 
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
 			if mb.button_index == MOUSE_BUTTON_LEFT:
+				# Readout click → start editing.
+				if mb.pressed and readout_rect.has_point(mb.position):
+					_start_db_edit()
+					accept_event()
+					return
 				if mb.pressed and fader_full_rect.has_point(mb.position):
 					_fader_dragging = true
 					_update_fader_from_y(
