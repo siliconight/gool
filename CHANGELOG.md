@@ -12,17 +12,222 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3c-2 — Dock UI for effect editing** (now v0.28.3): builds
-  on the 3.3c-1 introspection substrate. "Fx" button per strip →
-  inline panel with sliders for each parameter. Sliders forward
-  through the existing debugger channel
-  (`gool:set_effect_parameter`).
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
-  dock changes back to `config.json` preserving comments.
+  dock changes back to `config.json` preserving comments. Also
+  the "sync local dock state TO runtime on F5 start" follow-up so
+  S/M/B and Fx panel state survives F5.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.28.3] - 2026-05-18 — Phase 3.3c-2: dock UI for effect editing
+
+GDScript-only release: the v0.28.0 engine and binding substrate
+(introspection + `set_effect_parameter`) didn't change. What's new
+is the dock UI that puts those capabilities in front of the user.
+
+### What it does
+
+Each bus strip now has a **Fx button** at the bottom that shows
+the number of effects on that bus (e.g. `Fx (3)`). Clicking it
+expands an **effects panel** below the strip with one section per
+effect, in signal-flow order. Each section is a header (kind name
+like "Compressor") plus one row per parameter:
+
+```
+[ Param label  ] [ slider ────●──── ] [ value + unit ]
+```
+
+Drag the slider, the effect updates live in the running game via
+the existing `gool:set_effect_parameter` debugger command. Discrete
+parameters (currently just Compressor's DetectionMode Peak/RMS)
+render as OptionButtons instead of sliders.
+
+### Design rationale (UX brief from request)
+
+The user's brief asked for: obvious action, visible state,
+predictable outcome, easy recovery, clear hierarchy, consistent
+language, visible feedback, reduced cognitive load. Decisions
+mapping back:
+
+- **Obvious action**: Fx button is only drawn when the bus has
+  effects. No orphan clicks on a button that does nothing.
+- **Visible state**: button label shows the count (`Fx (3)`),
+  so the user knows what to expect before clicking. Active fill
+  color (blue, distinct from S/M/B's yellow/red/purple) when the
+  panel is open, so the relationship between button and panel is
+  unambiguous.
+- **Predictable outcome**: drag slider, sound changes. Value
+  display updates while dragging so the user always knows what
+  the engine sees. Sliders for continuous params, OptionButton
+  for discrete — control type matches data type.
+- **Easy recovery**: drag the slider back, or right-click any
+  slider to reset it to the value it had when the panel was
+  opened. Discrete params (Mode) reset via the OptionButton
+  itself. Closing and reopening the panel also re-syncs from
+  engine state, so a panicked user can always recover by
+  reopening.
+- **Clear hierarchy**: one bus strip per column; effects panel
+  stacks BELOW its owning strip in the same column so the
+  parent-child relationship is spatial. Only one panel open at a
+  time — auto-collapses any previously-expanded strip on click.
+  Stops the dock from turning into a wall of scrollbars and forces
+  the user to commit attention to the effect they're editing.
+- **Consistent language**: header text matches what the engine
+  reports (`kind_name`), so "Compressor" in the panel is the same
+  word as "Compressor" in the config.json `kind` field. Unit
+  suffixes (dB, Hz, ms, %, :1) match Logic Pro / Ableton
+  conventions Brannen already knows.
+- **Visible feedback**: slider step is 0.001 (smooth drag), value
+  label updates on every drag event, not just on release.
+- **Reduced cognitive load**: log curves for Hz and ms parameters
+  (where users think logarithmically), linear for everything
+  else. Param order within each effect is ergonomic (most-touched
+  on top: Threshold/Ratio first for Compressor, not whatever
+  internal field order the C++ struct happens to use). And the
+  dry/wet **Mix** control (where the effect has one — Compressor,
+  Saturation) and Reverb's **Wet** level are always rendered as
+  the LAST row of their section. So once the user learns "scan
+  to the bottom for the dry/wet balance", that knowledge
+  transfers across every effect type that has one. Gain and
+  BiquadFilter don't have engine-level Mix params, so they get
+  no Mix slider — labeling something "Mix" that doesn't actually
+  mix would lie to the user.
+
+### Engine-units fix (Saturation)
+
+The PARAM_META draft from the previous session had Saturation
+Drive and Output labeled in dB. Reading the engine code
+(`saturation_effect.cpp::OnParameter`), both are stored as
+**linear factors**, not dB — `drive_` is the pre-tanh gain
+factor, `outputGain_` is the post-effect linear scale. Labeling
+them "dB" in the dock would have shipped a wrong unit on the
+value display: a slider that read "+12.0 dB" would actually be
+sending the literal value 12.0 into a field that means "12x
+linear gain into tanh" (~21.6 dB of pre-distortion drive).
+Fixed before ship:
+
+- `Saturation_Drive` (19): unit "x", range 1.0..10.0, log curve.
+  Default 1.0 = unity (no extra drive before tanh).
+- `Saturation_OutputGain` (21): unit "x", range 0.0..2.0, linear.
+  Default 1.0 = unity post-effect gain.
+
+The other 20 parameters were already correct — these two were
+the only ones where my draft conflicted with the engine's
+SetParameter clamps.
+
+### Dynamic dock height
+
+When an effects panel opens, the dock's `custom_minimum_size.y`
+grows from `STRIP_HEIGHT + 24` (= 386) to `STRIP_HEIGHT + 24 +
+_PANEL_MIN_EXTRA` (= 666) so the panel is visible without the
+user having to drag the bottom dock taller. When the panel
+closes, the minimum returns to 386 — note this is the FLOOR, not
+the actual size: if the user has manually dragged the dock
+taller, that manual size is preserved. Long effect chains beyond
+the 280px reserve scroll inside the existing ScrollContainer.
+
+### Layout numbers (new)
+
+- `STRIP_HEIGHT`: 340 → 362 (+22 for FX_BAND)
+- `FX_BAND`: 22px tall, holds the Fx button
+- `FX_BUTTON_H`: 18px, `FX_BUTTON_INSET_X`: 6px
+- `COLOR_FX_BUTTON_ACTIVE`: blue (0.45, 0.60, 0.85) — distinct from
+  S (yellow), M (red), B (purple)
+- Effects panel: 240px wide, full strip height (variable per
+  effect count and param count)
+- Strip stays 96px wide, anchored left in its column. Column
+  expands sideways to 240px ONLY when its panel is open. Other
+  columns are unaffected.
+
+### Data flow
+
+The 30 Hz `gool:bus_stats` debugger emit now carries an `effects`
+array per bus alongside peak/muted/soloed/bypassed. Each effect
+entry has `{kind, kind_name, params}` where `params` is a Dict
+keyed by paramId. ~5 KB/s extra bandwidth across the four-bus test
+project — negligible.
+
+On Fx-button click:
+1. Auto-collapse any previously-expanded strip's panel.
+2. Look up the latest cached effects for this bus from the most
+   recent stats poll.
+3. Build a new `_EffectsPanel`, attach to the strip's column,
+   call `build_from_effects` once.
+4. Wire `param_changed` signal → outer dock forwards via
+   `debugger_plugin.send_set_effect_parameter`.
+
+While the panel is open, slider values are **local truth**. The
+30 Hz stats poll does NOT overwrite sliders — otherwise dragging
+would fight the refresh. Same convention as S/M/B. Recovery:
+close and reopen to re-sync.
+
+When the game stops (stats becomes empty), effect_count is reset
+to 0 on every strip, which force-collapses any open panel via
+the existing setter logic — stale effect parameters from a
+previous session shouldn't stay clickable.
+
+### Param metadata table
+
+22 parameters defined across 5 effect kinds (Gain, BiquadFilter,
+Compressor, Reverb, Saturation). Lives in `_EffectsPanel.PARAM_META`
+as a single Dictionary keyed by paramId. Each entry specifies
+label, unit, min, max, curve (linear/log/discrete), printf format,
+and optional choices (discrete) / scale (display-only multiplier
+for e.g. mix shown as % but stored 0..1). Must mirror
+`audio::EffectParameter::` IDs in `bus.h` — if the engine adds a
+parameter, add it to PARAM_META and PARAM_ORDER_BY_KIND too.
+
+### Files touched
+
+- `godot/addons/gool/editor/mixer_dock.gd` — new `_EffectsPanel`
+  inner class, `_BusStrip` extended with Fx state/rendering/hit
+  detection, outer dock wired with column wrapping + toggle
+  handler + cached stats + effect_count polling
+- `godot/addons/gool/runtime_singleton.gd` — effects array
+  attached to `gool:bus_stats` emit (already shipped in working
+  tree before v0.28.3 release; called out here for completeness)
+- `CHANGELOG.md`, `README.md`, version pins
+
+### What it doesn't do (yet)
+
+- Right-click resets to the **value at panel-open time**, not to
+  the engine's compile-time default. The user can effectively
+  "reset to defaults" by closing the panel, then re-opening it
+  before touching anything — but a true compile-time-default
+  reset would need either a binding addition (`get_default_value`)
+  or hardcoded defaults in the dock that mirror `StaticBusConfig`.
+  Deferred — most editing sessions want "undo this drag" not
+  "wipe to factory state".
+- No save: changes don't write back to config.json on session
+  end. That's Phase 3.3d.
+- No per-effect bypass within the chain (only per-bus bypass,
+  which is the existing B button)
+- No reorder / add / remove effects (also 3.3d territory)
+- No keyboard nudge or text entry on individual params (faders
+  have click-to-type from v0.26.5; sliders here don't yet)
+- BiquadFilter has no Mix slider because the engine doesn't have
+  a Biquad_Mix param. Adding one (parallel-filter mix) is a real
+  musical feature; ~30 lines of engine + 1 line of binding + 1
+  PARAM_META entry. Flagged as a candidate for v0.29.
+
+### Verified
+
+- Engine: all 35 audio_engine C++ files still compile clean at
+  v0.28.3 (no engine code changed)
+- All 4 GDScript pre-ship sweeps clean: tab discipline, const
+  expression validity, inner-class scope (no `OuterClass.X` from
+  inner class), autoload method existence
+- Balanced parens/braces/brackets in the edited file
+- All 6 signals declared with valid parameter lists
+- `_EffectsPanel` indentation verified — 300 lines all properly
+  inside the class with single-tab top-level members
+
+CI risk: GDScript-only changes don't touch the binding path that
+broke v0.28.0–v0.28.1, so this should sail through. The
+binding/engine substrate that v0.28.2 finally got working is
+unchanged.
 
 ## [0.28.2] - 2026-05-18 — Actual CI fix (v0.28.1 was wrong about the bug)
 
@@ -12653,7 +12858,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.3...HEAD
+[0.28.3]: https://github.com/siliconight/gool/releases/tag/v0.28.3
 [0.28.2]: https://github.com/siliconight/gool/releases/tag/v0.28.2
 [0.28.1]: https://github.com/siliconight/gool/releases/tag/v0.28.1
 [0.28.0]: https://github.com/siliconight/gool/releases/tag/v0.28.0

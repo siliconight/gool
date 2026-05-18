@@ -38,8 +38,15 @@ const PEAK_DECAY: float = 0.85
 
 # Strip dimensions.
 const STRIP_WIDTH: float = 96.0
-const STRIP_HEIGHT: float = 340.0
+const STRIP_HEIGHT: float = 362.0  # v0.28.3: +22 for FX_BAND below readout
 const STRIP_GAP: float = 4.0
+
+# v0.28.3: extra vertical room reserved when an effects panel is
+# open. Sized for a typical 2–3 effect bus (e.g. Compressor + Reverb
+# at ~280px combined including the panel header and stylebox
+# margins). Compressor alone fits comfortably; longer chains scroll
+# inside the existing ScrollContainer.
+const _PANEL_MIN_EXTRA: float = 280.0
 
 # Fader range (matches Godot's built-in audio bus mixer convention).
 const FADER_MAX_DB: float = 6.0
@@ -82,6 +89,24 @@ const CONFIG_PATH: String = "res://gool/config.json"
 var _strip_container: HBoxContainer = null
 var _empty_label: Label = null
 var _strips: Array = []  # of _BusStrip
+# v0.28.3: each strip lives inside a VBoxContainer column so the
+# effects panel can stack below the strip without disturbing
+# siblings. _columns[i] is the column holding _strips[i]; the
+# two arrays stay index-synchronized through every rebuild and
+# free cycle. Freeing the column frees the strip recursively.
+var _columns: Array = []  # of VBoxContainer, parallel to _strips
+# Name of the bus whose Fx panel is currently expanded, or "" if
+# none. One panel at a time keeps the dock from turning into a
+# wall of scrollbars and forces the user to commit attention to
+# the effect they're editing.
+var _expanded_bus: String = ""
+# Cache of the latest get_latest_bus_stats() payload so the
+# Fx-toggle handler can look up effects without re-polling.
+# Updated on every successful _poll; never null but may be empty
+# (game not running). Index-aligned with _strips at the moment of
+# the most recent poll — though _strips may rebuild between polls,
+# so always look up by bus_name not by index.
+var _last_stats: Array = []
 var _last_bus_names: PackedStringArray = PackedStringArray()
 var _accum: float = 0.0
 var _debugger_plugin: EditorDebuggerPlugin = null
@@ -186,9 +211,14 @@ func _strip_names_packed(buses: Array) -> PackedStringArray:
 
 func _rebuild_strips_from_config(buses: Array) -> void:
 	_empty_label.visible = false
-	for s in _strips:
-		s.queue_free()
+	# v0.28.3: freeing the column also frees the strip (and any
+	# attached effects panel) recursively. Reset _expanded_bus
+	# because any prior panel is now gone.
+	for c in _columns:
+		c.queue_free()
 	_strips.clear()
+	_columns.clear()
+	_expanded_bus = ""
 	for d in buses:
 		var bus_name: String = String(d.get("name", "(unnamed)"))
 		var initial_db: float = float(d.get("gain_db", 0.0))
@@ -201,8 +231,15 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		strip.mute_changed.connect(_on_strip_mute_changed)
 		strip.solo_changed.connect(_on_strip_solo_changed)
 		strip.bypass_changed.connect(_on_strip_bypass_changed)
-		_strip_container.add_child(strip)
+		# v0.28.3: Fx toggle.
+		strip.fx_toggled.connect(_on_strip_fx_toggled)
+		# Wrap in a column so the effects panel can stack below.
+		var col := VBoxContainer.new()
+		col.add_theme_constant_override("separation", 4)
+		col.add_child(strip)
+		_strip_container.add_child(col)
 		_strips.append(strip)
+		_columns.append(col)
 
 
 # ---- Live data polling (during F5) -----------------------------------
@@ -213,11 +250,18 @@ func _poll() -> void:
 		# Keep showing the static config layout.
 		return
 	var stats: Array = _debugger_plugin.get_latest_bus_stats()
+	_last_stats = stats  # cache for fx_toggled handler
 	if stats.is_empty():
 		# Game not running. Reset all meters to floor; faders keep
 		# whatever the user has set them to.
+		# v0.28.3: also reset effect counts to 0 — this force-collapses
+		# any open Fx panel via set_effect_count's internal logic.
+		# Same UX rationale as muting the meters: with no game running,
+		# stale effect parameters from a previous session shouldn't
+		# stay clickable.
 		for s in _strips:
 			s.push_peak(0.0)
+			s.set_effect_count(0)
 		return
 
 	# If the runtime's reported bus list differs from our config-based
@@ -244,12 +288,22 @@ func _poll() -> void:
 	# can diverge from runtime state if some other code path changes
 	# the runtime state mid-session (unusual). Future improvement:
 	# push dock state TO runtime on F5 start so initial state matches.
+	#
+	# v0.28.3: effects payload IS pushed (as effect_count), since
+	# the count drives Fx button visibility and the user can't have
+	# diverging local truth for "does this bus have effects" — either
+	# they're there or they aren't. Param values are still local
+	# truth while a panel is open; build_from_effects is only called
+	# on panel open.
 	for i in stats.size():
 		if i >= _strips.size():
 			break
 		var d: Dictionary = stats[i]
 		var peak: float = float(d.get("peak_linear", 0.0))
 		_strips[i].push_peak(peak)
+		var effects_v: Variant = d.get("effects", [])
+		var effects_arr: Array = effects_v if effects_v is Array else []
+		_strips[i].set_effect_count(effects_arr.size())
 
 
 # Runtime topology differs from config — build strips from runtime
@@ -257,9 +311,12 @@ func _poll() -> void:
 # currently include them (a future addition could).
 func _rebuild_strips_from_runtime(stats: Array) -> void:
 	_empty_label.visible = false
-	for s in _strips:
-		s.queue_free()
+	# v0.28.3: see _rebuild_strips_from_config for free semantics.
+	for c in _columns:
+		c.queue_free()
 	_strips.clear()
+	_columns.clear()
+	_expanded_bus = ""
 	for d in stats:
 		var strip := _BusStrip.new()
 		strip.bus_name = String(d.get("name", "(unnamed)"))
@@ -270,8 +327,14 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 		strip.mute_changed.connect(_on_strip_mute_changed)
 		strip.solo_changed.connect(_on_strip_solo_changed)
 		strip.bypass_changed.connect(_on_strip_bypass_changed)
-		_strip_container.add_child(strip)
+		# v0.28.3: Fx toggle.
+		strip.fx_toggled.connect(_on_strip_fx_toggled)
+		var col := VBoxContainer.new()
+		col.add_theme_constant_override("separation", 4)
+		col.add_child(strip)
+		_strip_container.add_child(col)
 		_strips.append(strip)
+		_columns.append(col)
 
 
 # Strip fader was dragged. Forward to the running game via the
@@ -306,6 +369,101 @@ func _on_strip_bypass_changed(bus_name: String, bypassed: bool) -> void:
 		return
 	if _debugger_plugin.has_method("send_set_bus_bypass"):
 		_debugger_plugin.send_set_bus_bypass(bus_name, bypassed)
+
+
+# v0.28.3: Fx button toggled on a strip.
+#
+# On expand:
+#   - Auto-collapse any previously-expanded strip (one panel at a time).
+#   - Look up the latest effects payload for this bus.
+#   - Build a new _EffectsPanel, attach to the strip's column.
+#
+# On collapse:
+#   - Find and free the panel from the strip's column.
+#
+# Defensive: if the bus name isn't found in _strips (shouldn't happen
+# since the signal is emitted by an _BusStrip we own), silently no-op.
+func _on_strip_fx_toggled(bus_name: String, expanded: bool) -> void:
+	var idx: int = _index_of_bus(bus_name)
+	if idx < 0:
+		return
+	var col: VBoxContainer = _columns[idx] as VBoxContainer
+
+	if expanded:
+		# Collapse previous if there is one (and it's not this same strip).
+		if _expanded_bus != "" and _expanded_bus != bus_name:
+			var prev_idx: int = _index_of_bus(_expanded_bus)
+			if prev_idx >= 0:
+				# Silent set so we don't reentrantly fire the signal.
+				(_strips[prev_idx] as _BusStrip).set_fx_expanded(false, false)
+				_remove_panel_from_column(_columns[prev_idx] as VBoxContainer)
+		# Now build the new panel.
+		var effects: Array = _lookup_effects_for_bus(bus_name)
+		var panel := _EffectsPanel.new()
+		panel.bus_name = bus_name
+		panel.param_changed.connect(_on_effect_param_changed)
+		col.add_child(panel)
+		# build_from_effects must happen AFTER add_child so child
+		# Controls have a tree parent before any internal init paths
+		# query the tree (some Godot Controls latch theme/style values
+		# at _enter_tree).
+		panel.build_from_effects(effects)
+		_expanded_bus = bus_name
+		# v0.28.3: grow the dock's minimum height so the bottom panel
+		# expands to show the effects panel without the user having to
+		# drag the bottom panel taller. _PANEL_MIN_EXTRA covers a
+		# typical 2–3 effect bus; very tall chains (e.g. 3 compressors)
+		# will scroll inside the existing ScrollContainer.
+		custom_minimum_size = Vector2(0, STRIP_HEIGHT + 24 + _PANEL_MIN_EXTRA)
+	else:
+		_remove_panel_from_column(col)
+		if _expanded_bus == bus_name:
+			_expanded_bus = ""
+		# Restore the strips-only minimum height. The user keeps any
+		# manual height they dragged (custom_minimum_size is a floor,
+		# not a forced height).
+		custom_minimum_size = Vector2(0, STRIP_HEIGHT + 24)
+
+
+# Effect slider was dragged. Forward to the running game via the
+# debugger plugin. Silently dropped if no game running — same
+# convention as fader/SMB forwarders.
+func _on_effect_param_changed(bus_name: String, effect_index: int,
+		param_id: int, value: float) -> void:
+	if _debugger_plugin == null:
+		return
+	if _debugger_plugin.has_method("send_set_effect_parameter"):
+		_debugger_plugin.send_set_effect_parameter(
+				bus_name, effect_index, param_id, value)
+
+
+# Linear search _strips for a bus name. O(n) but n is tiny (max 32
+# buses) and this is called on user click, not in a hot loop.
+func _index_of_bus(bus_name: String) -> int:
+	for i in _strips.size():
+		if (_strips[i] as _BusStrip).bus_name == bus_name:
+			return i
+	return -1
+
+
+# Look up the effects array for a bus from the most recent poll.
+# Returns [] if the bus isn't in stats (game not running, or the
+# bus exists in static config but not in the runtime topology).
+func _lookup_effects_for_bus(bus_name: String) -> Array:
+	for d in _last_stats:
+		if String(d.get("name", "")) == bus_name:
+			var effects_v: Variant = d.get("effects", [])
+			return effects_v if effects_v is Array else []
+	return []
+
+
+# Remove the _EffectsPanel child from a column, if any. The strip
+# itself stays. Safe to call on a column without a panel (no-op).
+func _remove_panel_from_column(col: VBoxContainer) -> void:
+	for child in col.get_children():
+		if child is _EffectsPanel:
+			child.queue_free()
+			return
 
 
 # ---- _BusStrip widget ------------------------------------------------
@@ -373,6 +531,12 @@ class _BusStrip extends Control:
 	var _is_muted: bool = false
 	var _is_soloed: bool = false
 	var _is_bypassed: bool = false
+	# v0.28.3 (Phase 3.3c-2): Fx button state. _effect_count drives
+	# button visibility (no effects → no button, avoids click-leads-
+	# nowhere UX). _is_fx_expanded drives the toggle visual and is
+	# kept in sync with the parent column's panel presence.
+	var _effect_count: int = 0
+	var _is_fx_expanded: bool = false
 
 	const PEAK_HOLD_TIME: float = 1.5
 	const PEAK_DROP_RATE: float = 0.5
@@ -398,6 +562,18 @@ class _BusStrip extends Control:
 	const BUTTON_W: float = 26.0
 	const BUTTON_H: float = 16.0
 	const BUTTON_GAP: float = 4.0
+	# v0.28.3 (Phase 3.3c-2): Fx button lives in its own band below
+	# the readout, full-width minus a small margin. Spatial choice:
+	# placing it at the bottom of the strip puts it adjacent to where
+	# the effects panel expands BELOW the strip, so the click target
+	# and the result are visually contiguous. Not crammed into the
+	# S/M/B band because Fx is a different kind of action (reveal,
+	# not toggle) and visually grouping it with the modal S/M/B
+	# buttons would confuse the hierarchy.
+	const FX_BAND: float = 22.0
+	const FX_BUTTON_H: float = 18.0
+	const FX_BUTTON_INSET_X: float = 6.0
+	const COLOR_FX_BUTTON_ACTIVE := Color(0.45, 0.60, 0.85)
 
 	# v0.27.0: S/M/B change signals. Emitted when the user clicks the
 	# corresponding button. The outer GoolMixerDock forwards these to
@@ -406,6 +582,10 @@ class _BusStrip extends Control:
 	signal mute_changed(bus_name: String, muted: bool)
 	signal solo_changed(bus_name: String, soloed: bool)
 	signal bypass_changed(bus_name: String, bypassed: bool)
+	# v0.28.3 (Phase 3.3c-2): Fx button click. Emitted with the NEW
+	# expansion state. Outer dock catches this and builds / removes
+	# the effects panel below the strip in the column wrapper.
+	signal fx_toggled(bus_name: String, expanded: bool)
 
 	# v0.26.5: LineEdit child for click-to-type dB entry. Hidden by
 	# default; shown when the user clicks the dB readout at the
@@ -470,6 +650,34 @@ class _BusStrip extends Control:
 		if emit:
 			bypass_changed.emit(bus_name, _is_bypassed)
 
+	# v0.28.3 (Phase 3.3c-2): set the effect count for this bus.
+	# Drives the Fx button visibility (count > 0 → button shown
+	# with "Fx (N)" label) and its label refresh on count change.
+	# Called from the outer dock during _poll from each stats[i].effects
+	# array size.
+	func set_effect_count(n: int) -> void:
+		if _effect_count == n:
+			return
+		_effect_count = n
+		# If the bus dropped to 0 effects while expanded, force
+		# collapse — there's nothing to show.
+		if _effect_count == 0 and _is_fx_expanded:
+			set_fx_expanded(false, true)
+			return
+		queue_redraw()
+
+	# v0.28.3 (Phase 3.3c-2): programmatic Fx expansion setter. The
+	# outer dock uses emit=false when forcing a collapse (e.g. to
+	# auto-collapse a previously-expanded strip when the user opens
+	# a different one) to avoid a signal echo.
+	func set_fx_expanded(expanded: bool, emit: bool = true) -> void:
+		if _is_fx_expanded == expanded:
+			return
+		_is_fx_expanded = expanded
+		queue_redraw()
+		if emit:
+			fx_toggled.emit(bus_name, _is_fx_expanded)
+
 	# Button rect helpers. Compute once, used by both _draw and
 	# _gui_input — keeping these in one place prevents the
 	# rendered-vs-hittable mismatch the lessons doc warns about
@@ -495,6 +703,17 @@ class _BusStrip extends Control:
 				_button_row_y(),
 				BUTTON_W, BUTTON_H)
 
+	# v0.28.3: Fx button rect (bottom of strip). Geometry mirrors the
+	# FX_BAND constants — FX_BUTTON_INSET_X of margin on each side,
+	# FX_BUTTON_H tall with 2px of breathing room above. Both _draw
+	# and _gui_input call this so the visual and the hit region are
+	# guaranteed to match.
+	func _fx_button_rect() -> Rect2:
+		return Rect2(FX_BUTTON_INSET_X,
+				size.y - FX_BAND + 2.0,
+				size.x - FX_BUTTON_INSET_X * 2.0,
+				FX_BUTTON_H)
+
 	# ---- v0.26.5: click-to-edit dB readout ----
 
 	# Activate the inline LineEdit over the readout band. Pre-fills
@@ -508,8 +727,10 @@ class _BusStrip extends Control:
 			return  # already editing
 		# Position over the readout band. Some horizontal margin so
 		# the editor doesn't run flush to the strip edges.
+		# v0.28.3: y shifted by FX_BAND since the readout is no
+		# longer bottom-anchored — FX_BAND sits below it.
 		var pad: float = 4.0
-		_db_editor.position = Vector2(pad, size.y - READOUT_BAND)
+		_db_editor.position = Vector2(pad, size.y - FX_BAND - READOUT_BAND)
 		_db_editor.size = Vector2(size.x - pad * 2.0, READOUT_BAND)
 		_db_editor.text = "%.1f" % _fader_db
 		_db_editor.visible = true
@@ -640,8 +861,11 @@ class _BusStrip extends Control:
 		# BUTTON_BAND (S/M/B buttons sit between the bus name and the
 		# fader). Both _draw and _gui_input compute the region the
 		# same way — if you change one, change the other.
+		# v0.28.3: FX_BAND eats 22px from the bottom (below READOUT_BAND)
+		# to host the Fx toggle button. Same math change here AND in
+		# _gui_input — both compute the region identically.
 		var fader_region_y: float = NAME_BAND + BUTTON_BAND + 4.0
-		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - 8.0
+		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - FX_BAND - 8.0
 
 		# --- Bus name (top) ---
 		if f != null:
@@ -741,22 +965,39 @@ class _BusStrip extends Control:
 						-1, fs_small,
 						COLOR_TEXT_DIM)
 
-		# --- dB readout (bottom band) ---
-		# --- dB readout (bottom band) ---
+		# --- dB readout (just above FX_BAND) ---
 		# v0.26.5: skip drawing the text while the LineEdit overlay
 		# is visible (otherwise the static text would render behind
 		# the LineEdit and produce a doubled appearance).
+		# v0.28.3: y shifted by FX_BAND so the readout sits above the
+		# Fx button row.
 		if f != null and (_db_editor == null or not _db_editor.visible):
 			var db_text: String = "%+.1f dB" % _fader_db
 			var readout_size := f.get_string_size(
 					db_text, HORIZONTAL_ALIGNMENT_CENTER, -1, fs)
 			draw_string(f,
 					Vector2((w - readout_size.x) * 0.5,
-					h - 4),
+					h - FX_BAND - 4),
 					db_text,
 					HORIZONTAL_ALIGNMENT_CENTER,
 					-1, fs,
 					COLOR_TEXT)
+
+		# --- v0.28.3: Fx toggle button (bottom band) ---
+		# Drawn only when the bus actually has effects. The button
+		# is the user's entry point into the effect editor: clicking
+		# expands a side-panel in this strip's column showing one
+		# section per effect with sliders per parameter.
+		#
+		# UX rationale:
+		# - Visible only when relevant (no orphan clicks)
+		# - Label "Fx (N)" shows count so the user knows what to
+		#   expect before clicking
+		# - Active color when expanded so the relationship between
+		#   button state and panel visibility is obvious
+		if _effect_count > 0 and f != null:
+			_draw_fx_button(_fx_button_rect(), _effect_count,
+					_is_fx_expanded, f, fs_small)
 
 	# ---- Input handling for fader drag ----
 
@@ -765,20 +1006,25 @@ class _BusStrip extends Control:
 		var h: float = size.y
 		# v0.27.0: fader region accounts for BUTTON_BAND between the
 		# name and the fader. Must match the _draw math exactly.
+		# v0.28.3: FX_BAND also subtracted (eats from the bottom).
 		var fader_region_y: float = NAME_BAND + BUTTON_BAND + 4.0
-		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - 8.0
+		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - FX_BAND - 8.0
 		var fader_x: float = 6.0 + METER_W + 14.0
 		var fader_full_rect := Rect2(
 				fader_x, fader_region_y,
 				FADER_HANDLE_W, fader_region_h)
-		# v0.26.5: readout band is the bottom READOUT_BAND pixels.
-		# A click here activates the LineEdit overlay for type-to-set
-		# dB entry. Checked BEFORE the fader rect because the regions
-		# don't overlap (readout is below fader_region) but the
-		# explicit ordering documents intent.
+		# v0.26.5: readout band is now READOUT_BAND pixels just above
+		# the FX_BAND (was bottom-anchored pre-v0.28.3). Click here
+		# activates the LineEdit overlay for type-to-set dB entry.
+		# Checked BEFORE the fader rect because the regions don't
+		# overlap but the explicit ordering documents intent.
 		var readout_rect := Rect2(
-				0.0, h - READOUT_BAND,
+				0.0, h - FX_BAND - READOUT_BAND,
 				w, READOUT_BAND)
+		# v0.28.3: Fx button rect (bottom FX_BAND of the strip). Only
+		# active when the bus actually has effects — _effect_count==0
+		# hides the button entirely so there's no orphan click.
+		var fx_rect := _fx_button_rect()
 
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
@@ -803,6 +1049,16 @@ class _BusStrip extends Control:
 					_is_bypassed = not _is_bypassed
 					queue_redraw()
 					bypass_changed.emit(bus_name, _is_bypassed)
+					accept_event()
+					return
+				# v0.28.3: Fx toggle. Only honored when the bus actually
+				# has effects — _effect_count==0 means the button isn't
+				# drawn and clicking that region falls through to the
+				# fader (which won't be hit anyway since FX_BAND is
+				# below fader_region_h). One panel open at a time is
+				# enforced at the outer-dock level via fx_toggled.
+				if mb.pressed and _effect_count > 0 and fx_rect.has_point(mb.position):
+					set_fx_expanded(not _is_fx_expanded, true)
 					accept_event()
 					return
 				# Readout click → start editing (v0.26.5).
@@ -865,3 +1121,411 @@ class _BusStrip extends Control:
 				HORIZONTAL_ALIGNMENT_CENTER,
 				-1, font_size,
 				COLOR_BUTTON_LABEL)
+
+	# v0.28.3: render the Fx toggle button. Distinct from S/M/B in
+	# two ways:
+	# - Label is multi-character: "Fx (N)" where N is _effect_count.
+	#   The count is part of the label (not a badge) because at 84px
+	#   wide there's plenty of room and "Fx (3)" is more scannable
+	#   than a numeric badge in a corner.
+	# - Active fill uses COLOR_FX_BUTTON_ACTIVE (blue), distinct from
+	#   the S/M/B active colors (yellow/red/purple). Blue was chosen
+	#   to avoid collision with the other button colors while still
+	#   reading as an action-ready state. Logic Pro / Ableton both
+	#   use blue for their effect/insert UI elements — familiar.
+	#
+	# The button uses the same outline style as _draw_smb_button so
+	# the strip's bottom edge reads as a continuation of the S/M/B
+	# row's visual language.
+	func _draw_fx_button(rect: Rect2, count: int, active: bool,
+			font: Font, font_size: int) -> void:
+		var fill_color: Color = COLOR_FX_BUTTON_ACTIVE if active else COLOR_BUTTON_INACTIVE
+		draw_rect(rect, fill_color, true)
+		draw_rect(rect, COLOR_BUTTON_OUTLINE, false, 1.0)
+		if font == null:
+			return
+		var label: String = "Fx (%d)" % count
+		var label_size := font.get_string_size(
+				label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+		var ascent: float = float(font_size) * 0.75
+		var text_x: float = rect.position.x + (rect.size.x - label_size.x) * 0.5
+		var text_y: float = rect.position.y + (rect.size.y + ascent) * 0.5
+		draw_string(font,
+				Vector2(text_x, text_y),
+				label,
+				HORIZONTAL_ALIGNMENT_CENTER,
+				-1, font_size,
+				COLOR_BUTTON_LABEL)
+
+
+# ===================================================================
+# v0.28.3 Phase 3.3c-2: inline effects panel
+# ===================================================================
+#
+# Displayed below a strip when its Fx button is toggled on. Built
+# from the latest stats poll's effects payload — see runtime_singleton
+# _emit_bus_stats_to_debugger.
+#
+# Layout: VBoxContainer of effect sections, top-to-bottom = audio
+# signal flow (first effect at top is the first to process samples).
+# Each section is a header label (kind name, e.g. "Compressor") plus
+# one row per parameter:
+#
+#     [ Label  ] [ Slider ──●──────────── ] [ Value+unit ]
+#
+# Data flow:
+# - Outer dock receives stats. On Fx-toggle-open, looks up effects
+#   for that bus from latest stats and calls build_from_effects.
+# - User drags slider → param_changed signal → outer dock forwards
+#   via _debugger_plugin.send_set_effect_parameter.
+# - While panel is open, slider is local truth. The 30 Hz stats
+#   poll does NOT overwrite slider values — otherwise dragging
+#   would fight the refresh. Same convention as S/M/B which also
+#   don't auto-sync from poll (set once at open, then locally
+#   driven). Recovery: close and reopen to re-sync from engine.
+#
+# Per-param metadata (label, range, curve, units, format) lives in
+# PARAM_META below, keyed by paramId (which matches
+# audio::EffectParameter:: in bus.h — keep these tables in sync if
+# the engine adds parameters).
+class _EffectsPanel extends PanelContainer:
+
+	# Visual constants for the panel itself
+	const COLOR_HEADER_BG := Color(0.20, 0.22, 0.26)
+	const COLOR_HEADER_TEXT := Color(0.92, 0.92, 0.92)
+	const COLOR_PANEL_BG := Color(0.13, 0.14, 0.16)
+	const PANEL_WIDTH: float = 240.0
+	const LABEL_WIDTH: float = 70.0
+	const VALUE_WIDTH: float = 64.0
+	const ROW_MIN_H: float = 22.0
+
+	# Per-param display metadata, keyed by paramId.
+	# Fields:
+	#   label  - visible param name (≤ ~12 chars to fit LABEL_WIDTH)
+	#   unit   - unit suffix appended to the value display
+	#   min    - minimum allowed value (engine units)
+	#   max    - maximum allowed value
+	#   curve  - "linear", "log", or "discrete"
+	#   fmt    - printf-style format string for the value display
+	#   choices - (discrete only) Array of String labels for OptionButton
+	#   scale   - (optional) display-only multiplier (e.g. 100 for %)
+	#
+	# Range choices: matched to the conservative bounds enforced in
+	# audio::Compressor::SetParameter / audio::BiquadFilter::SetParameter
+	# / etc. so the engine clamp never silently moves the slider value.
+	# Log curves are used for parameters that span multiple orders of
+	# magnitude where users think logarithmically: Hz frequencies, ms
+	# times. Linear is used for everything else.
+	const PARAM_META: Dictionary = {
+		# Gain
+		1:  {"label": "Gain", "unit": "dB", "min": -60.0, "max": 12.0,
+			"curve": "linear", "fmt": "%+0.1f"},
+		# BiquadFilter
+		2:  {"label": "Cutoff", "unit": "Hz", "min": 20.0, "max": 20000.0,
+			"curve": "log", "fmt": "%0.0f"},
+		3:  {"label": "Q", "unit": "", "min": 0.1, "max": 10.0,
+			"curve": "log", "fmt": "%0.2f"},
+		12: {"label": "Filter Gain", "unit": "dB", "min": -24.0, "max": 24.0,
+			"curve": "linear", "fmt": "%+0.1f"},
+		# Compressor
+		4:  {"label": "Threshold", "unit": "dB", "min": -60.0, "max": 0.0,
+			"curve": "linear", "fmt": "%0.1f"},
+		5:  {"label": "Ratio", "unit": ":1", "min": 1.0, "max": 20.0,
+			"curve": "linear", "fmt": "%0.1f"},
+		6:  {"label": "Attack", "unit": "ms", "min": 0.1, "max": 100.0,
+			"curve": "log", "fmt": "%0.1f"},
+		7:  {"label": "Release", "unit": "ms", "min": 10.0, "max": 2000.0,
+			"curve": "log", "fmt": "%0.0f"},
+		8:  {"label": "Makeup", "unit": "dB", "min": 0.0, "max": 24.0,
+			"curve": "linear", "fmt": "%+0.1f"},
+		13: {"label": "Knee", "unit": "dB", "min": 0.0, "max": 18.0,
+			"curve": "linear", "fmt": "%0.1f"},
+		14: {"label": "Mix", "unit": "%", "min": 0.0, "max": 1.0,
+			"curve": "linear", "fmt": "%0.0f", "scale": 100.0},
+		15: {"label": "Max GR", "unit": "dB", "min": 0.0, "max": 60.0,
+			"curve": "linear", "fmt": "%0.1f"},
+		16: {"label": "SC HPF", "unit": "Hz", "min": 20.0, "max": 1000.0,
+			"curve": "log", "fmt": "%0.0f"},
+		17: {"label": "Hold", "unit": "ms", "min": 0.0, "max": 1000.0,
+			"curve": "linear", "fmt": "%0.0f"},
+		# DetectionMode is binary Peak/RMS — OptionButton, not slider.
+		18: {"label": "Mode", "unit": "", "min": 0.0, "max": 1.0,
+			"curve": "discrete", "choices": ["Peak", "RMS"]},
+		# Reverb
+		9:  {"label": "Size", "unit": "", "min": 0.0, "max": 1.0,
+			"curve": "linear", "fmt": "%0.2f"},
+		10: {"label": "Damping", "unit": "", "min": 0.0, "max": 1.0,
+			"curve": "linear", "fmt": "%0.2f"},
+		11: {"label": "Wet", "unit": "dB", "min": -60.0, "max": 6.0,
+			"curve": "linear", "fmt": "%+0.1f"},
+		# Saturation. Engine takes linear factors here, NOT dB —
+		# verified against SaturationEffect::OnParameter
+		# (saturation_effect.cpp). Drive is the pre-tanh gain factor;
+		# OutputGain is the post-effect linear scale; both default to
+		# 1.0 = unity. Unit "x" is shown so engineers don't confuse
+		# these with dB controls elsewhere in the panel.
+		19: {"label": "Drive", "unit": "x", "min": 1.0, "max": 10.0,
+			"curve": "log", "fmt": "%0.1f"},
+		20: {"label": "Mix", "unit": "%", "min": 0.0, "max": 1.0,
+			"curve": "linear", "fmt": "%0.0f", "scale": 100.0},
+		21: {"label": "Output", "unit": "x", "min": 0.0, "max": 2.0,
+			"curve": "linear", "fmt": "%0.2f"},
+		22: {"label": "Bias", "unit": "", "min": -1.0, "max": 1.0,
+			"curve": "linear", "fmt": "%+0.2f"},
+	}
+
+	# Per-kind display order (top-to-bottom within an effect section).
+	# Ordering is ergonomic — most-touched parameters at the top —
+	# rather than internal field order in the engine. The Mix
+	# parameter (where present) is always the LAST row in its
+	# section, so the user can scan to the bottom of any effect for
+	# the dry/wet balance without learning where each effect parks
+	# it. Compressor.MixRatio (14), Saturation.Mix (20), and
+	# Reverb.WetGainDb (11, labeled "Wet" — closest engine control
+	# to a wet/dry blend for reverb) all live in the trailing slot.
+	# Keys are audio::EffectKind values:
+	#   1 = Gain, 2 = BiquadFilter, 3 = Compressor,
+	#   4 = Reverb, 5 = Saturation
+	const PARAM_ORDER_BY_KIND: Dictionary = {
+		1: [1],
+		2: [2, 3, 12],
+		3: [4, 5, 6, 7, 8, 13, 15, 16, 17, 18, 14],
+		4: [9, 10, 11],
+		5: [19, 21, 22, 20],
+	}
+
+	# Emitted on slider/option change. Outer dock forwards via
+	# _debugger_plugin.send_set_effect_parameter.
+	signal param_changed(bus_name: String, effect_index: int,
+			param_id: int, value: float)
+
+	var bus_name: String = ""
+
+	# Map (effect_idx:param_id) String → HSlider or OptionButton, so
+	# we can update controls if needed (currently unused since panel
+	# is local-truth, but cheap to maintain and useful for future
+	# "refresh from poll" if we ever want that).
+	var _control_map: Dictionary = {}
+	# Map (effect_idx:param_id) String → value display Label, so
+	# slider drags update the displayed value live.
+	var _value_label_map: Dictionary = {}
+	var _vbox: VBoxContainer = null
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(PANEL_WIDTH, 0)
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = COLOR_PANEL_BG
+		sb.content_margin_left = 4.0
+		sb.content_margin_right = 4.0
+		sb.content_margin_top = 4.0
+		sb.content_margin_bottom = 4.0
+		add_theme_stylebox_override("panel", sb)
+		_vbox = VBoxContainer.new()
+		_vbox.add_theme_constant_override("separation", 6)
+		add_child(_vbox)
+
+	# Build the panel from a list of effect dicts as returned by
+	# get_bus_effects: [{kind: int, kind_name: String, params: {paramId: value, ...}}, ...].
+	# Clears any previous content first.
+	func build_from_effects(effects: Array) -> void:
+		_control_map.clear()
+		_value_label_map.clear()
+		for child in _vbox.get_children():
+			child.queue_free()
+		for i in range(effects.size()):
+			var e: Dictionary = effects[i]
+			var kind: int = int(e.get("kind", 0))
+			var kind_name: String = String(e.get("kind_name", "Effect"))
+			var params: Dictionary = e.get("params", {})
+			_vbox.add_child(_build_effect_section(i, kind, kind_name, params))
+
+	func _build_effect_section(effect_idx: int, kind: int,
+			kind_name: String, params: Dictionary) -> Control:
+		var section := VBoxContainer.new()
+		section.add_theme_constant_override("separation", 2)
+
+		# Header band: distinct background so the section boundary is
+		# visually clear when multiple effects are stacked.
+		var header := PanelContainer.new()
+		var header_sb := StyleBoxFlat.new()
+		header_sb.bg_color = COLOR_HEADER_BG
+		header_sb.content_margin_left = 6.0
+		header_sb.content_margin_right = 6.0
+		header_sb.content_margin_top = 2.0
+		header_sb.content_margin_bottom = 2.0
+		header.add_theme_stylebox_override("panel", header_sb)
+		var header_label := Label.new()
+		header_label.text = kind_name
+		header_label.add_theme_color_override("font_color", COLOR_HEADER_TEXT)
+		header.add_child(header_label)
+		section.add_child(header)
+
+		# Param rows in the configured order
+		var order_v: Variant = PARAM_ORDER_BY_KIND.get(kind, [])
+		var order: Array = order_v if order_v is Array else []
+		for param_id in order:
+			if not PARAM_META.has(param_id):
+				continue
+			# Engine sends params dict with int keys, but the
+			# debugger transport sometimes stringifies. Check both.
+			var current_value: float = 0.0
+			if params.has(param_id):
+				current_value = float(params[param_id])
+			elif params.has(str(param_id)):
+				current_value = float(params[str(param_id)])
+			section.add_child(_build_param_row(
+					effect_idx, int(param_id), current_value))
+
+		return section
+
+	func _build_param_row(effect_idx: int, param_id: int,
+			current_value: float) -> Control:
+		var meta: Dictionary = PARAM_META[param_id]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.custom_minimum_size = Vector2(0, ROW_MIN_H)
+
+		# Param name label (left)
+		var label := Label.new()
+		label.text = String(meta["label"])
+		label.custom_minimum_size = Vector2(LABEL_WIDTH, 0)
+		label.clip_text = true
+		row.add_child(label)
+
+		# Control (middle, expand-fill): HSlider or OptionButton
+		var curve: String = String(meta["curve"])
+		var key: String = _key(effect_idx, param_id)
+
+		if curve == "discrete":
+			var opt := OptionButton.new()
+			var choices_v: Variant = meta.get("choices", [])
+			var choices: Array = choices_v if choices_v is Array else []
+			for c in choices:
+				opt.add_item(String(c))
+			opt.selected = clampi(int(current_value), 0, choices.size() - 1)
+			opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			opt.item_selected.connect(
+					_on_option_selected.bind(effect_idx, param_id))
+			row.add_child(opt)
+			# No value label for discrete (the OptionButton text IS the value).
+			# Spacer reserves VALUE_WIDTH so rows align across kinds.
+			var spacer := Control.new()
+			spacer.custom_minimum_size = Vector2(VALUE_WIDTH, 0)
+			row.add_child(spacer)
+			_control_map[key] = opt
+		else:
+			var slider := HSlider.new()
+			slider.min_value = 0.0
+			slider.max_value = 1.0
+			slider.step = 0.001
+			slider.value = _real_to_slider(current_value, meta)
+			slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			slider.custom_minimum_size = Vector2(0, 18)
+			slider.value_changed.connect(
+					_on_slider_changed.bind(effect_idx, param_id))
+			# v0.28.3: right-click → reset to the value at panel-open
+			# time. Cheap "recover from mistakes" affordance. Note
+			# we reset to current_value (the engine's value when the
+			# panel was opened), NOT to the engine's compile-time
+			# default. This is intentional: the user opened the
+			# panel to tweak from a known-good state, so right-click
+			# returns to *that* state rather than wiping any prior
+			# session work. Future v0.28.4 may add Shift+right-click
+			# for a true compile-time default reset if needed.
+			slider.gui_input.connect(_on_slider_gui_input.bind(
+					slider, current_value, meta))
+			row.add_child(slider)
+			# Value display (right)
+			var value_label := Label.new()
+			value_label.text = _format_value(current_value, meta)
+			value_label.custom_minimum_size = Vector2(VALUE_WIDTH, 0)
+			value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+			value_label.clip_text = true
+			row.add_child(value_label)
+			_control_map[key] = slider
+			_value_label_map[key] = value_label
+
+		return row
+
+	# HSlider.value_changed(value) → bind(effect_idx, param_id)
+	# means the call is _on_slider_changed(value, effect_idx, param_id).
+	# The bind args come AFTER the signal args (Godot 4 convention).
+	func _on_slider_changed(t: float, effect_idx: int, param_id: int) -> void:
+		var meta: Dictionary = PARAM_META[param_id]
+		var real_value: float = _slider_to_real(t, meta)
+		var k: String = _key(effect_idx, param_id)
+		if _value_label_map.has(k):
+			var lbl: Label = _value_label_map[k] as Label
+			if lbl != null:
+				lbl.text = _format_value(real_value, meta)
+		param_changed.emit(bus_name, effect_idx, param_id, real_value)
+
+	func _on_option_selected(selected_idx: int, effect_idx: int,
+			param_id: int) -> void:
+		param_changed.emit(bus_name, effect_idx, param_id, float(selected_idx))
+
+	# v0.28.3: right-click handler for the slider. Resets to the
+	# value the slider had when the panel was opened. Left-click
+	# drag goes through HSlider's built-in handler → value_changed
+	# → _on_slider_changed, untouched by this. Other input events
+	# (middle button, scroll wheel) fall through to HSlider too.
+	#
+	# bind args (slider, initial_value, meta) come AFTER the
+	# signal's event arg per Godot 4 convention.
+	func _on_slider_gui_input(event: InputEvent, slider: HSlider,
+			initial_value: float, meta: Dictionary) -> void:
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+				# Assigning to slider.value triggers value_changed,
+				# which formats the value label and emits param_changed
+				# back through the normal path — engine gets the reset
+				# value via the same channel as any drag.
+				slider.value = _real_to_slider(initial_value, meta)
+
+	# ---- value <-> slider position conversion ----
+
+	# Map slider position 0..1 to engine value, per curve.
+	# Log curve: value = min * (max/min)^t  (geometric)
+	#   Requires min > 0; param table guarantees that for "log" entries.
+	# Linear curve: value = min + t*(max-min)
+	func _slider_to_real(t: float, meta: Dictionary) -> float:
+		var min_v: float = float(meta["min"])
+		var max_v: float = float(meta["max"])
+		var curve: String = String(meta["curve"])
+		if curve == "log":
+			return min_v * pow(max_v / min_v, t)
+		return min_v + t * (max_v - min_v)
+
+	# Inverse: real engine value → slider position 0..1.
+	# Clamps to range first so out-of-range values from the engine
+	# don't produce NaN/negative slider positions.
+	func _real_to_slider(value: float, meta: Dictionary) -> float:
+		var min_v: float = float(meta["min"])
+		var max_v: float = float(meta["max"])
+		var curve: String = String(meta["curve"])
+		var clamped: float = clampf(value, min_v, max_v)
+		if curve == "log":
+			if clamped <= 0.0 or min_v <= 0.0:
+				return 0.0
+			return log(clamped / min_v) / log(max_v / min_v)
+		if max_v == min_v:
+			return 0.0
+		return (clamped - min_v) / (max_v - min_v)
+
+	# Format value for display with unit suffix.
+	# meta["scale"] (optional) multiplies the displayed value, used
+	# for mix params stored 0..1 in the engine but shown as 0..100%.
+	func _format_value(value: float, meta: Dictionary) -> String:
+		var display_value: float = value
+		if meta.has("scale"):
+			display_value = value * float(meta["scale"])
+		var fmt: String = String(meta["fmt"])
+		var unit: String = String(meta["unit"])
+		if unit == "":
+			return fmt % display_value
+		return (fmt % display_value) + " " + unit
+
+	# Stable composite key for the control/label maps.
+	func _key(effect_idx: int, param_id: int) -> String:
+		return str(effect_idx) + ":" + str(param_id)

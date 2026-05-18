@@ -385,6 +385,23 @@ func _emit_bus_stats_to_debugger() -> void:
 	var stats: Array = get_bus_stats()
 	if stats.is_empty():
 		return
+	# v0.28.3 (Phase 3.3c-2): augment each per-bus dict with its
+	# effect chain so the mixer dock can show an "Fx (N)" badge
+	# and populate the effect-edit panel without a separate
+	# editor→game request/response round-trip. Effects rarely
+	# change at runtime; the added bandwidth (~5 KB/s for a 4-bus
+	# config with ~2 effects per bus) is negligible at the 30 Hz
+	# emit rate. has_method() guard so an older binding without
+	# get_bus_effects (pre-v0.28.0) just sends a stats payload
+	# without an `effects` field, which the dock treats as 0
+	# effects per bus and hides the Fx button.
+	if _runtime != null and _runtime.has_method("get_bus_effects"):
+		for s in stats:
+			var bn := String(s.get("name", ""))
+			if bn.is_empty():
+				s["effects"] = []
+			else:
+				s["effects"] = _runtime.get_bus_effects(bn)
 	EngineDebugger.send_message("gool:bus_stats", [stats])
 
 func _log_render_stats() -> void:
