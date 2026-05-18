@@ -19,13 +19,73 @@ Nothing shipping yet. Next-up candidates:
 - **Phase 3.3c — Effect chain edit**: live tweaking of effect
   parameters (compressor threshold, ratio, attack, release, etc.)
   via the same channel. Pairs naturally with the sidechain tuning
-  doc shipped alongside v0.25.2.
+  doc shipped in v0.26.1.
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
   dock changes back to `config.json` preserving comments.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel track from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.26.1] - 2026-05-17 — Ship the sidechain tuning doc (missed from v0.26.0)
+
+### What's in this release
+
+A single new file: `docs/audio_design/sidechain_tuning.md`,
+authored alongside the v0.26.0 mixer-dock work but omitted from
+the tagged v0.26.0 tarball through a procedural slip on the
+authoring side (doc was saved to a scratchpad path rather than
+committed into the repo tree at write time). v0.26.0's
+CHANGELOG entry mentioned the doc as "files touched"; this
+release makes that statement true.
+
+### Contents of the doc (~470 lines)
+
+- **Producer-to-game-audio philosophical translation**: a table
+  contrasting the music-production sidechain use case (Daft
+  Punk pumping, audible-by-design) with the game-audio use
+  case (SFX intelligibility, invisible-by-design). Same DSP,
+  opposite goals, different parameter ranges.
+- **Preset cookbook** (5 concrete `compressor` config blocks
+  for `gool/config.json`): Action-shooter default,
+  Cinematic explosion, Stealth / single-shot dramatic,
+  Constant-action / horde mode, Transparent mode.
+- **Step-by-step tuning methodology**: set ceiling
+  (threshold) → set depth (ratio + max_reduction) → set
+  timing (attack + release) → smooth edges (knee), using the
+  v0.24+ mixer dock as the diagnostic surface.
+- **Common mistake patterns** with symptom → cause → fix
+  tables: over-compression, pumping, lazy duck, music doesn't
+  duck at all (including the v0.25.1→2 SoundDefinition
+  routing bug as a debug-ladder reference).
+- **Multi-compressor chains** for layered fast-comp-for-
+  gunshots + slow-comp-for-explosions setups.
+- **Future engine work** queued: multiband sidechain
+  (frequency-selective ducking — duck only 500Hz-4kHz, leave
+  bass and air alone), lookahead (music-side only since 0ms
+  latency requirement on SFX makes it incompatible there),
+  per-emitter ducking intensity, sidechain HPF on the
+  detector path.
+- **Mix philosophy for game audio**: four principles drawn
+  from cinematic mixing practice that apply at the gool bus
+  level.
+
+### Procedural change going forward
+
+Doc-style work (reference guides, tuning notes, design rationale)
+will be committed directly into `docs/` as it's authored,
+not saved to a separate scratchpad. The
+`scripts/make_source_archive.sh` build already picks up
+everything in the repo tree, so this single discipline change
+prevents the v0.26.0 oversight from recurring.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.1
+  with `-Wall -Wextra -Wpedantic` under g++
+- `version_test` reports `0.26.1`
+- `docs/audio_design/sidechain_tuning.md` present in the
+  tagged tarball (verified by tarball inspection)
 
 ## [0.26.0] - 2026-05-17 — Phase 3.3b-1: interactive faders + static config-driven mixer dock
 
@@ -151,6 +211,11 @@ Honest scope: ship what fully works, not half-finished UI.
   with command router for `set_bus_gain` (~70 lines)
 - Version triple, top-level CHANGELOG, top-level README bumped
   to 0.26.0.
+
+Note: this release intended to ship a sidechain tuning
+reference doc (`docs/audio_design/sidechain_tuning.md`)
+authored alongside the dock work, but it didn't make it into
+the tagged v0.26.0 tarball. Added in v0.26.1.
 
 ### Verified
 
@@ -11249,7 +11314,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/siliconight/gool/releases/tag/v0.26.1
 [0.26.0]: https://github.com/siliconight/gool/releases/tag/v0.26.0
 [0.25.2]: https://github.com/siliconight/gool/releases/tag/v0.25.2
 [0.25.1]: https://github.com/siliconight/gool/releases/tag/v0.25.1
