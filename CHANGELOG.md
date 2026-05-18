@@ -10,14 +10,178 @@ upgrading.
 
 ## [Unreleased]
 
-Nothing shipping yet. With the EngineDebugger bridge built in
-v0.25.0/0.25.1 and the create_emitter routing fix in v0.25.2,
-the path to the rest of Phase 3.3 is unblocked:
+Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3b — Volume + S/M/B controls.**
-- **Phase 3.3c — Effect chain edit.**
-- **Phase 3.3d — Topology + persistence.**
+- **Phase 3.3b-2 — S/M/B buttons**: new engine APIs
+  (`SetBusMuted`, `SetBusSoloed`, `SetBusBypass`) + UI buttons on
+  each strip, wired via the editor↔game debugger channel from
+  v0.26.0.
+- **Phase 3.3c — Effect chain edit**: live tweaking of effect
+  parameters (compressor threshold, ratio, attack, release, etc.)
+  via the same channel. Pairs naturally with the sidechain tuning
+  doc shipped alongside v0.25.2.
+- **Phase 3.3d — Topology + persistence**: bus add/remove + save
+  dock changes back to `config.json` preserving comments.
 - **Phase 5 — Material & acoustic environment authoring.**
+- **Sidechain feature work** (parallel track from
+  `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
+  lookahead on music bus, per-emitter ducking intensity.
+
+## [0.26.0] - 2026-05-17 — Phase 3.3b-1: interactive faders + static config-driven mixer dock
+
+### What's new
+
+The Gool Mixer bottom panel is now usable at **all times**, not
+just during F5 playback. It reads `res://gool/config.json` at
+editor startup and builds one strip per declared bus, complete
+with:
+
+- **Bus name** at the top of each strip
+- **Live peak meter** (left, color-graded green/yellow/red, with
+  peak-hold marker) — moves during F5, sits at -∞ otherwise
+- **Interactive gain fader** (center) — drag to set bus gain.
+  When the game is running, drags push live `gool:set_bus_gain`
+  commands to the running runtime via the EngineDebugger
+  bridge from v0.25.x; when stopped, the fader still moves but
+  no engine effect occurs (changes apply next time you drag
+  during F5).
+- **dB scale markers** at +6, 0, -6, -24, -72 dB matching
+  Godot's built-in audio bus mixer convention
+- **Persistent dB readout** at the bottom of each strip
+  (e.g. `-3.0 dB`, `+0.0 dB`) showing the fader's current value
+  numerically
+
+Reference target: Godot's built-in Audio bus mixer panel
+(visible by clicking the Audio tab in the editor's bottom panel).
+Same DAW-style strip layout, scale, and readout convention,
+but driven from gool's bus graph instead of Godot's AudioServer.
+
+### Why "now visible at editor time" matters
+
+v0.24.0–v0.25.2 only populated the dock when F5 was running.
+Before today, the dock was empty between sessions — the user
+couldn't see what buses they had configured, couldn't tune
+gains, couldn't even verify config.json was parseable until
+they actually ran the game.
+
+This release decouples **bus topology display** (read from
+config.json at editor time) from **live peak data** (read from
+running game via EngineDebugger). The dock is now part of the
+authoring experience, not just the runtime debug experience.
+
+### What this required
+
+**1. Bidirectional debugger channel (new direction):**
+
+Through v0.25.x, the EngineDebugger bridge only carried game→
+editor traffic (peak stats). v0.26.0 adds editor→game by
+registering an `EngineDebugger.register_message_capture("gool",
+callback)` on the game side. The editor side calls
+`EditorDebuggerSession.send_message("gool:set_bus_gain",
+[bus_name, db])` whenever a fader is dragged. The game's
+`_on_debugger_capture` routes commands to the runtime.
+
+This same channel will carry future commands (mute, solo,
+bypass, effect param edits) in 3.3b-2 / 3.3c.
+
+**2. Editor-time config reader:**
+
+The dock now reads `res://gool/config.json` at `_ready` time
+via `FileAccess.open` + `JSON.parse_string`. Extracts bus
+names, parent topology, and initial `gain_db` values. Failure
+modes are non-fatal: malformed JSON → empty state with a
+warning; missing file → empty state. Recovery is automatic
+when a valid config appears.
+
+**3. Hybrid topology source:**
+
+The dock has two topology sources:
+
+- **Static (editor time)**: config.json contents. Used when
+  no F5 session is active.
+- **Live (during F5)**: runtime-reported bus list via the
+  existing `gool:bus_stats` channel. Wins if it differs from
+  static (handles the case where the user edited config.json
+  but didn't reload the editor — the running game has the
+  newer config).
+
+Strips rebuild seamlessly when topology changes between sources.
+
+**4. Custom fader widget:**
+
+Instead of using Godot's `VSlider` (whose default theme clashes
+with the segmented meter look), the strip implements its own
+fader via custom `_draw` + `_gui_input`:
+
+- Vertical track + draggable horizontal handle
+- Linear-in-dB scale (each pixel = same dB delta)
+- Snaps to 0.1 dB increments while dragging
+- Emits `db_changed` signal on every motion; parent dock
+  forwards to the debugger plugin's `send_set_bus_gain` helper
+
+### What's NOT in this release (scoped to 3.3b-2)
+
+Honest scope: ship what fully works, not half-finished UI.
+
+- **No S/M/B buttons.** Solo/Mute/Bypass need new engine APIs
+  (`SetBusMuted`, `SetBusSoloed`, `SetBusBypass`) plus per-bus
+  state tracking and solo logic ("if any bus is soloed, mute
+  all non-soloed"). Tracked for 3.3b-2.
+- **No save-to-config.json.** Fader changes during a session
+  are live but ephemeral — reopen the project and the values
+  reset to config.json. Persistence is 3.3d's domain.
+- **No auto-sync from running game.** When F5 starts, the
+  dock keeps whatever fader values were last set at editor
+  time. If config.json has Music at -3 dB but the user moved
+  the fader to 0 dB, the game starts at -3 (per config) but
+  the fader visually shows 0. As soon as the user drags, the
+  fader value overrides the game. A future improvement
+  could push fader values to the game on session start.
+
+### Files touched
+
+- `godot/addons/gool/editor/mixer_dock.gd` — full rewrite
+  (~360 lines): config reader, hybrid topology, new strip
+  layout with meter+fader+scale+readout, custom drag input
+- `godot/addons/gool/editor/debugger_plugin.gd` — added
+  `send_set_bus_gain` + generic `_send_to_current_session`
+  helper (~30 lines)
+- `godot/addons/gool/runtime_singleton.gd` — game-side
+  `register_message_capture("gool", _on_debugger_capture)`
+  with command router for `set_bus_gain` (~70 lines)
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.26.0.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.0
+  with `-Wall -Wextra -Wpedantic` under g++
+- All `.gd` files tab-indented (no space-indent regressions)
+- `version_test` reports `0.26.0`
+- Empirical fader behavior to be confirmed by user via F5 in
+  the sandbox: drag Music fader from 0 to -10 dB during
+  playback → music volume should audibly drop within a few
+  ms; drag back to 0 → recovers. Without F5: faders move but
+  no audio effect (no session to send to).
+
+### Lesson on architectural payoff
+
+The EngineDebugger bridge from v0.25.0 was scoped as "the
+read-only mixer dock infrastructure," and the v0.25.0 CHANGELOG
+predicted it would serve future editor→game flows. v0.26.0 is
+the first redemption of that prediction:
+
+- ~30 new lines on the editor side (`send_set_bus_gain`,
+  `_send_to_current_session` helper) — both reusable for every
+  future command type
+- ~70 new lines on the game side (capture registration + router)
+  — the router will fan out to any new `gool:*` command we add
+- The 360-line mixer dock rewrite is mostly UI/UX work, not
+  cross-process plumbing
+
+3.3b-2 (S/M/B), 3.3c (effect editing), and 3.3d (topology/save)
+will all reuse this scaffolding — no further channel work
+needed. **Bridges pay compound interest.**
 
 ## [0.25.2] - 2026-05-17 — Fix create_emitter ignoring registered SoundDefinition (drone routed to Sfx)
 
@@ -11085,7 +11249,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.25.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/siliconight/gool/releases/tag/v0.26.0
 [0.25.2]: https://github.com/siliconight/gool/releases/tag/v0.25.2
 [0.25.1]: https://github.com/siliconight/gool/releases/tag/v0.25.1
 [0.25.0]: https://github.com/siliconight/gool/releases/tag/v0.25.0

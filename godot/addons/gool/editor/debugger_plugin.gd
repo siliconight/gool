@@ -94,3 +94,32 @@ func _on_session_stopped(session_id: int) -> void:
 		_latest_stats = []
 		_current_session_id = -1
 		_capture_count = 0
+
+
+# v0.26.0: editor → game command channel. The mixer dock calls these
+# helpers when the user interacts with a fader / button. We push the
+# command over the current session's send_message channel; the game-
+# side `Gool._on_debugger_capture` handler routes it to the runtime.
+#
+# All commands are best-effort: if no session is active, the call is
+# silently dropped (faders work in editor mode too, just without
+# affecting any running game). If multiple sessions are active —
+# rare but possible — we send to the most recently active one.
+#
+# Returns true if a session was available and the message was sent.
+func send_set_bus_gain(bus_name: String, db: float) -> bool:
+	return _send_to_current_session("gool:set_bus_gain", [bus_name, db])
+
+
+# Common helper. Looks up the current session, sends the message.
+# Defensive against session lifecycle races: if _current_session_id
+# was set but the session is gone, get_session returns null and we
+# silently drop.
+func _send_to_current_session(msg: String, data: Array) -> bool:
+	if _current_session_id < 0:
+		return false
+	var session := get_session(_current_session_id)
+	if session == null:
+		return false
+	session.send_message(msg, data)
+	return true

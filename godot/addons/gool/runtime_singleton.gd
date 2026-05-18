@@ -184,8 +184,79 @@ var _render_stats_last_frames: int = 0
 # get_bus_stats() call + one EngineDebugger.send_message every
 # ~33ms when running, zero when there's no debugger attached (e.g.
 # exported builds).
+#
+# v0.26.0: this channel is now bidirectional. The dock's faders
+# send `gool:set_bus_gain` commands back to the running game,
+# which we receive via the EngineDebugger capture registered in
+# _ready. The "gool" prefix routes any message starting with
+# "gool:" to our _on_debugger_capture callback below.
 const _DEBUGGER_EMIT_INTERVAL: float = 1.0 / 30.0   # 30 Hz
 var _debugger_emit_accum: float = 0.0
+var _debugger_capture_registered: bool = false
+
+
+# v0.26.0: register the EngineDebugger capture handler so the
+# editor's mixer dock can send commands (currently set_bus_gain,
+# more in 3.3b-2). Idempotent — safe to call multiple times.
+# Only registers when a debugger is attached (i.e. running from
+# F5); in exported builds this is a no-op.
+func _register_debugger_capture_if_needed() -> void:
+	if _debugger_capture_registered:
+		return
+	if not EngineDebugger.is_active():
+		return
+	# register_message_capture takes the *prefix* (no colon). Messages
+	# starting with "gool:" route to _on_debugger_capture, which
+	# receives the part AFTER the colon as the `message` arg.
+	EngineDebugger.register_message_capture(
+			"gool", _on_debugger_capture)
+	_debugger_capture_registered = true
+	print("[gool] debugger message capture registered (gool:* routes to runtime)")
+
+
+# Receive a command from the editor's mixer dock via the
+# EngineDebugger channel. Return true if handled, false to let
+# the editor see "Invalid message received" (we don't want that
+# for unknown messages — return true on anything starting with
+# "gool:" even if we don't recognize it, with a warning print).
+#
+# Message format (Godot strips the "gool:" prefix before delivery,
+# so we match against the bare suffix):
+#   "set_bus_gain"  data=[bus_name: String, db: float]
+#                   → forwards to set_bus_gain_db
+#
+# Future (3.3b-2):
+#   "set_bus_mute"  data=[bus_name: String, muted: bool]
+#   "set_bus_solo"  data=[bus_name: String, solo: bool]
+#   "set_bus_bypass" data=[bus_name: String, bypass: bool]
+func _on_debugger_capture(message: String, data: Array) -> bool:
+	# Defensive: Godot's docs are inconsistent about whether the
+	# prefix is stripped. Strip it ourselves if present so we
+	# work regardless of Godot version's exact behavior.
+	var cmd := message
+	if cmd.begins_with("gool:"):
+		cmd = cmd.substr(5)
+	match cmd:
+		"set_bus_gain":
+			if data.size() >= 2:
+				var bus_name: String = String(data[0])
+				var db: float = float(data[1])
+				_handle_set_bus_gain(bus_name, db)
+			return true
+		_:
+			push_warning("[gool] unrecognized debugger command: %s" % message)
+			return true   # still "handled" — don't let editor complain
+
+
+func _handle_set_bus_gain(bus_name: String, db: float) -> void:
+	if not is_initialized():
+		return
+	# Clamp to a sensible range matching the mixer dock's fader.
+	# Out-of-range values shouldn't crash the runtime, just clamp.
+	db = clampf(db, -72.0, 6.0)
+	var ok: bool = set_bus_gain_db(bus_name, db)
+	if not ok:
+		push_warning("[gool] set_bus_gain('%s', %.2fdB) failed" % [bus_name, db])
 
 func _process(delta: float) -> void:
 	if _runtime != null and _runtime.is_initialized():
@@ -212,9 +283,17 @@ func _process(delta: float) -> void:
 #
 # Safe to call when no debugger is attached — EngineDebugger.is_active()
 # returns false in exported builds, and we early-out without sending.
+#
+# v0.26.0: this is also where we lazily register the inbound
+# capture handler so the editor can send us commands back.
+# Lazy-registration (vs. registering in _ready) avoids the case
+# where _ready runs before the debugger is fully attached.
 func _emit_bus_stats_to_debugger() -> void:
 	if not EngineDebugger.is_active():
 		return
+	# v0.26.0: lazily register the inbound capture on first emit
+	# tick (by which time the debugger is definitely up). Idempotent.
+	_register_debugger_capture_if_needed()
 	var stats: Array = get_bus_stats()
 	if stats.is_empty():
 		return
