@@ -113,6 +113,9 @@ public:
     uint32_t    GetBusParentIndex(uint32_t busIndex) const noexcept;
     float       ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
 
+    // v0.25.2: SoundDefinition lookup, forwarded to AudioAssetRegistry.
+    const SoundDefinition* GetSoundDefinition(AudioSoundId id) const noexcept;
+
     void Update(float deltaSeconds) noexcept;
 
     // v0.15.0: the actual Update body, kept separate from the public

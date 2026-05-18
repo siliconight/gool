@@ -980,9 +980,49 @@ public:
         if (!runtime_) return 0;
         audio::EmitterDescriptor desc;
         desc.soundId       = HashName(name);
+
+        // v0.25.2: look up the registered SoundDefinition for this
+        // sound (if any) and inherit routing metadata from it:
+        // - category    → drives which bus the emitter routes to
+        //                 via AudioConfig::categoryBusMap (the
+        //                 "category_routing" section of config.json)
+        // - targetBus   → explicit bus override; non-Invalid wins
+        //                 over category routing
+        // - spatialized → whether the engine applies 3D
+        //                 position-based gain/pan. False for global
+        //                 sounds like music drones.
+        // - attenuation → minDistance / maxDistance / falloff curve
+        //
+        // Hosts that don't call register_sound_definition fall through
+        // to the EmitterDescriptor struct defaults (category=SFX,
+        // spatialized=true). This matches the pre-v0.25.2 behavior
+        // for those hosts. The change is: hosts that DO call
+        // register_sound_definition now get their metadata applied,
+        // instead of being silently ignored (the bug that misrouted
+        // the sandbox drone to Sfx through v0.25.1).
+        //
+        // The `looping` and `fade_in_ms` call-site parameters still
+        // win over any SoundDefinition values — explicit args from
+        // the caller have priority. SoundDefinition only fills in
+        // routing/spatial metadata that create_emitter doesn't expose
+        // as parameters.
+        const audio::SoundDefinition* def =
+            runtime_->GetSoundDefinition(desc.soundId);
+        if (def != nullptr) {
+            desc.category      = def->category;
+            desc.targetBus     = def->targetBus;
+            desc.isSpatialized = def->spatialized;
+            desc.attenuation   = def->attenuation;
+        } else {
+            // No SoundDefinition registered; preserve pre-v0.25.2
+            // behavior. The struct defaults already give SFX
+            // category, so we only need to set the things the
+            // old code set explicitly.
+            desc.isSpatialized = true;
+        }
+
         desc.position      = V3(position);
         desc.isLooping     = looping;
-        desc.isSpatialized = true;
         desc.fadeInMs      = static_cast<float>(fade_in_ms);
         auto h = runtime_->CreateEmitter(desc);
         if (!h) return 0;

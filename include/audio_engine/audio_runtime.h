@@ -258,6 +258,18 @@ public:
     uint32_t    GetBusParentIndex(uint32_t busIndex) const noexcept;
     float       ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
 
+    // v0.25.2: look up a registered SoundDefinition by sound id.
+    // Returns nullptr if no definition has been registered. Used by
+    // bindings (and other code paths) to inherit routing metadata
+    // — category, target bus, spatialization, attenuation — at
+    // emitter-create time so the registered metadata actually drives
+    // behavior. Without this lookup, create_emitter was using the
+    // EmitterDescriptor struct defaults (category=SFX), making the
+    // register_sound_definition API silently useless for hosts that
+    // create emitters via the C++ API. The pointer is stable for
+    // the lifetime of the runtime; lookups are thread-safe.
+    const SoundDefinition* GetSoundDefinition(AudioSoundId id) const noexcept;
+
     // Per-frame tick. Drains event queues, advances simulation, recomputes
     // spatial state, publishes the next mixer snapshot for the render thread.
     // Called on the audio control thread (often the game thread for simple

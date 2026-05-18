@@ -78,6 +78,12 @@ float AudioRuntime::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
     return impl_->ReadAndResetBusPeakLinear(busIndex);
 }
 
+// v0.25.2: SoundDefinition lookup wrapper.
+const SoundDefinition* AudioRuntime::GetSoundDefinition(
+        AudioSoundId id) const noexcept {
+    return impl_->GetSoundDefinition(id);
+}
+
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
     return impl_->RegisterSoundDefinition(d);
 }
@@ -310,6 +316,15 @@ uint32_t AudioRuntimeImpl::GetBusParentIndex(uint32_t busIndex) const noexcept {
 }
 float AudioRuntimeImpl::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
     return busGraph_ ? busGraph_->ReadAndResetBusPeakLinear(busIndex) : 0.0f;
+}
+
+// v0.25.2: SoundDefinition lookup. assets_ is the AudioAssetRegistry
+// which owns the SoundDefinition table. nullptr passthrough when
+// no registry exists yet (pre-Initialize or post-Shutdown).
+const SoundDefinition* AudioRuntimeImpl::GetSoundDefinition(
+        AudioSoundId id) const noexcept {
+    if (!assets_) return nullptr;
+    return assets_->GetDefinition(id);
 }
 
 AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,

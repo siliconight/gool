@@ -11,12 +11,196 @@ upgrading.
 ## [Unreleased]
 
 Nothing shipping yet. With the EngineDebugger bridge built in
-v0.25.0/0.25.1, the path to the rest of Phase 3.3 is unblocked:
+v0.25.0/0.25.1 and the create_emitter routing fix in v0.25.2,
+the path to the rest of Phase 3.3 is unblocked:
 
 - **Phase 3.3b — Volume + S/M/B controls.**
 - **Phase 3.3c — Effect chain edit.**
 - **Phase 3.3d — Topology + persistence.**
 - **Phase 5 — Material & acoustic environment authoring.**
+
+## [0.25.2] - 2026-05-17 — Fix create_emitter ignoring registered SoundDefinition (drone routed to Sfx)
+
+### Problem
+
+The empirical Phase 3.3a test revealed a real gool bug: the
+sandbox's drone (registered via `Gool.register_pcm_sound` +
+`Gool.register_sound_definition("music", ..., CATEGORY_MUSIC)`
+and then played via `Gool.create_emitter("music", ...)`) was
+audibly and visibly routing to the **Sfx bus**, not the Music
+bus. The mixer dock showed this immediately — the Sfx meter
+moved with the drone's LFO while the Music meter sat at -∞.
+
+This was the first time the dock surfaced an audio routing
+issue that was previously invisible. v0.23.17 worked "well
+enough" because both Music and Sfx were going through similar
+paths (and the sidechain we thought we were proving was
+actually a single bus contracting against itself).
+
+### Root cause
+
+`create_emitter` in the binding layer hardcoded the
+`EmitterDescriptor` fields:
+
+```cpp
+audio::EmitterDescriptor desc;
+desc.soundId       = HashName(name);
+desc.position      = V3(position);
+desc.isLooping     = looping;
+desc.isSpatialized = true;
+desc.fadeInMs      = static_cast<float>(fade_in_ms);
+// desc.category NEVER SET — uses struct default AudioCategory::SFX
+auto h = runtime_->CreateEmitter(desc);
+```
+
+`desc.category` stayed at the C++ struct default of
+`AudioCategory::SFX`, so every emitter created via this API
+routed to the Sfx bus regardless of what `register_sound_definition`
+said about the sound.
+
+The `EmitterManager::Create` it forwards to just memcpys the
+descriptor into a slot — no SoundDefinition lookup. The
+registered metadata was orphaned: stored, but never consulted
+at emitter-creation time.
+
+This made the entire `register_sound_definition` GDScript API
+silently useless for hosts that use `create_emitter`. The
+sandbox's call site:
+
+```gdscript
+Gool.register_sound_definition("music", false, true, 0, 0, 0, Gool.CATEGORY_MUSIC)
+Gool.create_emitter("music", Vector3.ZERO, true, 250.0)
+```
+
+…did nothing to influence routing. The category metadata was
+written and forgotten.
+
+### Why it took until now to find
+
+Three contributing factors:
+
+1. **Audible vs. invisible**: without the mixer dock,
+   "everything sounded right enough" — the music played, the
+   gunshots fired, the user could hear something happening.
+   The actual bus routing was invisible.
+2. **Pre-3.3a sandbox config**: the v0.23.17 config had only
+   two non-Master buses (Music + Sfx) and a single Sfx-on-Music
+   sidechain. With the drone misrouted to Sfx, it ducked
+   itself (silently), making the compressor barely audible.
+3. **The api ergonomics gap was new**: `register_sound_definition`
+   was added in v0.20.x but most early sandbox tests used
+   `play_sound_at_location` (which DOES properly look up the
+   definition via the event path). `create_emitter` was a less-
+   tested code path until the v0.23.x music drone work.
+
+### Fix
+
+Three new methods + one binding patch.
+
+**Engine side — new public lookup:**
+
+- `AudioRuntime::GetSoundDefinition(AudioSoundId)` returns
+  `const SoundDefinition*` or nullptr if not registered.
+- `AudioRuntimeImpl::GetSoundDefinition` forwards to
+  `assets_->GetDefinition(id)`.
+- `AudioAssetRegistry::GetDefinition` already existed
+  internally (line 118 of its header); we just hadn't surfaced
+  it through the AudioRuntime pImpl seam.
+
+**Binding side — actually use the lookup:**
+
+```cpp
+int64_t create_emitter(...) {
+    audio::EmitterDescriptor desc;
+    desc.soundId = HashName(name);
+
+    const audio::SoundDefinition* def =
+        runtime_->GetSoundDefinition(desc.soundId);
+    if (def != nullptr) {
+        desc.category      = def->category;        // ← the fix
+        desc.targetBus     = def->targetBus;
+        desc.isSpatialized = def->spatialized;
+        desc.attenuation   = def->attenuation;
+    } else {
+        desc.isSpatialized = true;  // preserve pre-v0.25.2 default
+    }
+
+    desc.position  = V3(position);
+    desc.isLooping = looping;
+    desc.fadeInMs  = static_cast<float>(fade_in_ms);
+    return PackHandle(runtime_->CreateEmitter(desc).value());
+}
+```
+
+Hosts that don't call `register_sound_definition` keep the
+pre-v0.25.2 behavior (SFX category, spatialized=true). Hosts
+that do call it now get their registered metadata applied —
+which is what the API's name and documentation always
+implied.
+
+### Preserved semantics
+
+Call-site explicit params (`looping`, `fade_in_ms`) still
+win — the SoundDefinition only fills in routing/spatial
+metadata that `create_emitter` doesn't expose as parameters.
+This avoids surprising current users whose `create_emitter`
+calls were already correct in those dimensions.
+
+### Files touched
+
+- `include/audio_engine/audio_runtime.h` — new
+  `GetSoundDefinition` method
+- `src/audio_engine/runtime/audio_runtime_impl.h` — same
+- `src/audio_engine/runtime/audio_runtime.cpp` — impl + wrapper
+- `godot/src/gool_godot.cpp` — `create_emitter` now consults
+  SoundDefinition before creating the descriptor
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.25.2.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.25.2
+  with `-Wall -Wextra -Wpedantic` under g++
+- `version_test` reports `0.25.2`
+- Empirical verification: user will F5 the sandbox; drone
+  should now route to Music, Music meter should pulse with
+  LFO, Sfx-fire-driven sidechain should be visible as Music
+  dipping when gunshots fire.
+
+### Audit: are there other code paths with the same bug?
+
+`play_sound_at_location` flows through `AudioEvent::MakePlay
+SoundAtLocation` → event queue → engine event handler. The
+event handler DOES look up SoundDefinition for category. So
+play_sound_at_location is unaffected.
+
+`AudioEmitter3D` prefab (the GDScript node) ultimately calls
+`Gool.create_emitter`, so it inherits this fix automatically
+once v0.25.2 ships.
+
+Networked replication code paths use `EmitterDescriptor`
+directly and are the host's responsibility to populate
+correctly. Not a binding issue.
+
+### Lesson on API ergonomics
+
+`register_sound_definition` looked like a complete, working
+API. Its docs said "this sets the category." It registered
+metadata into a registry. Documents matched declarations
+matched call signatures matched intent. Everything compiled,
+ran, and stored data correctly. **But the metadata was never
+read.** The path from "register" to "use" was severed in one
+specific code path (the one new users would hit first).
+
+The mixer dock from Phase 3.3a is what made this visible. If
+3.3a had been a low-leverage feature, this bug could have
+sat in gool for months. **One important argument for shipping
+3.3a first**: it's a free audit tool that surfaces every
+routing bug in every host that uses gool.
+
+Add to roadmap as a future cleanup: review every emitter-
+creation path for missed metadata inheritance. There may be
+others.
 
 ## [0.25.1] - 2026-05-17 — Fix mixer dock blanking on second F5
 
@@ -10901,7 +11085,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.25.2...HEAD
+[0.25.2]: https://github.com/siliconight/gool/releases/tag/v0.25.2
 [0.25.1]: https://github.com/siliconight/gool/releases/tag/v0.25.1
 [0.25.0]: https://github.com/siliconight/gool/releases/tag/v0.25.0
 [0.24.2]: https://github.com/siliconight/gool/releases/tag/v0.24.2
