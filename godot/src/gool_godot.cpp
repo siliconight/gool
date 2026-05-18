@@ -94,8 +94,12 @@ static void _gool_fill_params_for_kind(audio::AudioRuntime* rt,
                                         Dictionary& out) {
     if (rt == nullptr) return;
     using EP = audio::EffectParameter;
+    // v0.28.1: int64_t key (not int) — godot-cpp's Variant doesn't
+    // have an int32-from-int constructor that's exact-match enough for
+    // overload resolution to pick a single candidate, hence the link
+    // failure in v0.28.0.
     auto put = [&](uint16_t paramId) {
-        out[static_cast<int>(paramId)] =
+        out[static_cast<int64_t>(paramId)] =
             rt->GetEffectParameter(busIdx, effectIdx, paramId);
     };
     switch (kind) {
@@ -1103,8 +1107,14 @@ public:
         for (uint32_t e = 0; e < effectCount; ++e) {
             const audio::EffectKind kind = runtime_->GetEffectKind(busIdx, e);
             Dictionary d;
-            d["kind"]      = static_cast<int>(kind);
-            d["kind_name"] = _gool_effect_kind_name(kind);
+            // v0.28.1: explicit int64_t cast + String wrap. godot-cpp's
+            // Variant doesn't construct from `int` or `const char*` (only
+            // int64_t and String), so the implicit conversions used in
+            // v0.28.0 failed at the GDExtension link step. Match the
+            // pattern of `d["parent"]` and `d["name"]` in get_bus_stats
+            // above.
+            d["kind"]      = static_cast<int64_t>(kind);
+            d["kind_name"] = String(_gool_effect_kind_name(kind));
             Dictionary params;
             _gool_fill_params_for_kind(runtime_, busIdx, e, kind, params);
             d["params"] = params;

@@ -12,11 +12,11 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3c-2 — Dock UI for effect editing**: builds on the
-  3.3c-1 introspection substrate shipped in v0.28.0. "Fx" button
-  per strip → popup or inline panel with sliders for each
-  parameter. Sliders forward through the existing debugger channel
-  (`gool:set_effect_parameter` command shipped in 0.28.0).
+- **Phase 3.3c-2 — Dock UI for effect editing** (now v0.28.2): builds
+  on the 3.3c-1 introspection substrate. "Fx" button per strip →
+  popup or inline panel with sliders for each parameter. Sliders
+  forward through the existing debugger channel
+  (`gool:set_effect_parameter`).
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
   dock changes back to `config.json` preserving comments. Includes
   the "sync local dock state TO runtime on F5 start" follow-up.
@@ -24,6 +24,92 @@ Nothing shipping yet. Next-up candidates:
 - **Sidechain feature work** (parallel track from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.28.1] - 2026-05-18 — Fix v0.28.0 CI failure (godot-cpp Variant)
+
+### What went wrong
+
+v0.28.0 shipped Phase 3.3c-1 (effect chain introspection +
+scripting API). The `audio_engine` C++ side compiled cleanly in
+the local sandbox at v0.28.0. The GDExtension build — which
+links `gool_godot.cpp` against godot-cpp — failed at the same
+step on all three platforms in CI (Linux, macOS, Windows;
+job #76 of the nightly workflow). Identical failure pattern is
+a strong tell of a binding-side bug rather than a flaky test or
+a platform-specific issue.
+
+### Root cause
+
+godot-cpp's `Variant` doesn't have constructors for `int` or
+`const char*`. v0.28.0's `get_bus_effects` did:
+
+```cpp
+d["kind"]      = static_cast<int>(kind);                  // ✗ no int ctor
+d["kind_name"] = _gool_effect_kind_name(kind);            // ✗ no const char* ctor
+out[static_cast<int>(paramId)] = rt->GetEffectParameter(...); // ✗ int key
+```
+
+The local sandbox can't catch this — it doesn't link against
+godot-cpp. The engine-only compile of `audio_engine` (which is
+what the sandbox verifies) is necessary but not sufficient.
+
+### Fix
+
+Match the existing pattern from `get_bus_stats` (line 633,
+shipped v0.24.0 and ever since): explicit `int64_t` for integer
+values/keys, explicit `String(...)` wrap for `const char*`.
+
+```cpp
+d["kind"]      = static_cast<int64_t>(kind);
+d["kind_name"] = String(_gool_effect_kind_name(kind));
+out[static_cast<int64_t>(paramId)] = rt->GetEffectParameter(...);
+```
+
+Three lines changed in `godot/src/gool_godot.cpp`. Engine code
+untouched. No API surface change — same `Gool.get_bus_effects`
+return shape, same `Gool.set_effect_parameter` signature.
+
+### Files touched
+
+- `godot/src/gool_godot.cpp` — 3 lines fixed (kind cast,
+  kind_name wrap, paramId cast in the helper lambda)
+- `docs/engineering/lessons_learned.md` — new section "godot-cpp's
+  Variant doesn't construct from `int` or `const char*`" under
+  C++ portability, with before/after examples and a
+  recommendation to add a local godot-cpp build to the pre-ship
+  workflow for binding-touching releases
+- `CHANGELOG.md` — this entry
+- `tests/unit/version_test.cpp` — pinned to 0.28.1
+- `README.md`, `CMakeLists.txt`, `include/audio_engine/version.h`
+  — version bump
+
+### Lessons captured
+
+Added to `docs/engineering/lessons_learned.md`:
+- The specific Variant overload restrictions in godot-cpp
+- Why godot-cpp is strict here (truncation safety for int;
+  explicit UTF-8 vs Latin-1 choice for char*)
+- A recommendation for binding-touching releases: set up a local
+  godot-cpp build and run the GDExtension compile before shipping,
+  not just the engine-only compile
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.28.1
+- `version_test` reports `0.28.1`
+- `bus_graph_test` still passes
+- All four GDScript pre-ship sweeps clean
+- The three offending lines in `gool_godot.cpp` now match the
+  pattern of the existing `get_bus_stats` code that's been
+  building cleanly in CI since v0.24.0
+
+### Why not just retag v0.28.0
+
+The lessons doc rule: never reuse a version number. v0.28.0 was
+pushed to GitHub as a tag, even though it CI-failed. Reusing the
+number means a checkout of "v0.28.0" returns different code
+depending on when you cloned. Patch bump is cleaner — and
+captures the failure trail honestly in CHANGELOG.
 
 ## [0.28.0] - 2026-05-17 — Phase 3.3c-1: live effect parameter control (substrate)
 
@@ -12406,7 +12492,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.1...HEAD
+[0.28.1]: https://github.com/siliconight/gool/releases/tag/v0.28.1
 [0.28.0]: https://github.com/siliconight/gool/releases/tag/v0.28.0
 [0.27.1]: https://github.com/siliconight/gool/releases/tag/v0.27.1
 [0.27.0]: https://github.com/siliconight/gool/releases/tag/v0.27.0

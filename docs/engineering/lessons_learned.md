@@ -448,6 +448,59 @@ which is easy to recognize but easy to misdiagnose as "the header
 got renamed/moved" when actually the header is fine and the build
 config is wrong.
 
+### godot-cpp's Variant doesn't construct from `int` or `const char*`
+*(Surfaced v0.28.0 → fixed in v0.28.1.)*
+
+In Godot 4 / godot-cpp, `Variant` has constructors for `int64_t`,
+`double`, `bool`, `String`, etc., but **not** for plain `int` and
+**not** for `const char*`. The engine-only build of audio_engine
+compiled cleanly in the local sandbox at v0.28.0, but the
+GDExtension build (which actually exercises the `gool_godot.cpp`
+binding against godot-cpp) failed at the same step on all three
+platforms (Linux, macOS, Windows). Symptom: identical CI
+failures at "Build GDExtension" across the matrix, exit code
+2/2/1 depending on the platform's compiler convention.
+
+The patterns that work in Dictionary / Variant assignments:
+
+```cpp
+// ✗ These don't compile against godot-cpp:
+d["kind"]      = static_cast<int>(my_enum_value);
+d["kind_name"] = my_function_returning_const_char_ptr();
+
+// ✓ These do:
+d["kind"]      = static_cast<int64_t>(my_enum_value);
+d["kind_name"] = String(my_function_returning_const_char_ptr());
+// or, if the source string is UTF-8:
+d["kind_name"] = String::utf8(my_function_returning_const_char_ptr());
+```
+
+This applies to:
+- `Dictionary[key] = value` assignments
+- `Array.push_back(value)` calls (Variant conversion)
+- Dictionary KEYS too: `d[static_cast<int>(x)]` fails, `d[static_cast<int64_t>(x)]` works
+
+Why godot-cpp is strict here: the int vs int64_t case is to avoid
+silent truncation (Godot stores integers as 64-bit internally).
+The `const char*` case is to force explicit UTF-8 vs Latin-1
+choices since Godot 4 supports both via `String::utf8(...)` and
+`String(latin1_ptr)`.
+
+How to catch this BEFORE shipping: the `audio_engine` C++ compile
+in the local sandbox is necessary but not sufficient — the binding
+compile against godot-cpp is what catches Variant misuse. CI does
+this on every push, but a local godot-cpp checkout (set
+`GODOT_CPP_PATH` env var) would let the binding build run before
+release. Worth adding to the pre-ship checklist for any release
+that touches `godot/src/gool_godot.cpp`.
+
+Workaround when local godot-cpp isn't available: grep the diff
+against `gool_godot.cpp` for patterns:
+- `d["..."] = static_cast<int>(...)` — wrong
+- `d["..."] = static_cast<int64_t>(...)` — right
+- `d["..."] = some_func()` where return type is `const char*` — wrong
+- `d["..."] = String(some_func())` — right
+
 ---
 
 ## API design
