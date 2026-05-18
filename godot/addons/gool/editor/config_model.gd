@@ -412,17 +412,27 @@ func _on_save_timer_fired(timer_ref: SceneTreeTimer) -> void:
 
 # Returns OK on success, or an Error code on failure. Emits
 # model_saved or save_failed accordingly. Also emits
-# external_change_detected if disk mtime advanced since last read.
+# external_change_detected if disk contents differ from what we
+# last saw.
 func _do_save() -> int:
-	# mtime conflict check — disk newer than our last-read snapshot
-	# means someone else (text editor, git checkout, the user) wrote
-	# the file. We don't overwrite blindly; the dock prompts.
+	# v0.28.6: external-change detection switched from mtime-based
+	# to CONTENT-based. The mtime approach (v0.28.4) was producing
+	# a false positive on every save: Godot's filesystem watcher /
+	# resource cache touches the file's mtime AFTER our write,
+	# bumping it past our cached _last_seen_mtime, so the next
+	# save saw it as "modified externally" and prompted. Comparing
+	# actual byte contents is robust against any mtime weirdness:
+	# if the disk content matches _raw_text, no external edit has
+	# happened regardless of what mtime says.
 	if FileAccess.file_exists(CONFIG_PATH):
-		var current_mtime: int = FileAccess.get_modified_time(CONFIG_PATH)
-		if current_mtime > _last_seen_mtime and _last_seen_mtime > 0:
-			var dirty_list: Array = _dirty_buses.keys()
-			external_change_detected.emit(dirty_list)
-			return ERR_FILE_UNRECOGNIZED  # generic "needs user input"
+		var f_check := FileAccess.open(CONFIG_PATH, FileAccess.READ)
+		if f_check != null:
+			var disk_text: String = f_check.get_as_text()
+			f_check.close()
+			if disk_text != _raw_text and not _raw_text.is_empty():
+				var dirty_list: Array = _dirty_buses.keys()
+				external_change_detected.emit(dirty_list)
+				return ERR_FILE_UNRECOGNIZED  # generic "needs user input"
 
 	# Backup current on-disk contents. If the patcher produces
 	# something the engine can't parse, this is what we restore.
@@ -458,10 +468,24 @@ func _do_save() -> int:
 	# Re-parse to verify the patcher produced valid JSON. If parse
 	# fails, restore from backup — leaves the user's previous good
 	# config intact, surfaces the bug for us to fix.
+	#
+	# v0.28.6: on parse failure, ALSO dump the failed text to
+	# `gool/config.json.failed` so we have ground truth on what the
+	# patcher produced. Without this, all we get is "JSON invalid"
+	# with no way to see what was actually wrong. The file is left
+	# on disk until the next successful save (which doesn't touch
+	# it) or a manual delete — read once, fix the bug, then delete.
 	var verify_v: Variant = JSON.parse_string(new_text)
 	if verify_v == null or not (verify_v is Dictionary):
+		var failed_path: String = "res://gool/config.json.failed"
+		var f_dump := FileAccess.open(failed_path, FileAccess.WRITE)
+		if f_dump != null:
+			f_dump.store_string(new_text)
+			f_dump.close()
 		_copy_file(BACKUP_PATH, CONFIG_PATH)
-		save_failed.emit("post-write JSON invalid; restored from .bak")
+		save_failed.emit(
+				"post-write JSON invalid; restored from .bak. "
+				+ "Failing text dumped to %s for diagnosis." % failed_path)
 		return ERR_INVALID_DATA
 
 	# All good. Commit the new state.

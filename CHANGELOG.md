@@ -12,17 +12,82 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **v0.28.6 / Phase 3.3d — Topology editing**: add/remove/reorder
-  effects from the dock. Builds on v0.28.4's persistence layer.
-  Adding an effect needs a richer write strategy (bus-block
-  re-serialization rather than just value patching), since
-  insertion requires shaping new JSON content into the existing
-  document. Was queued as v0.28.5 but v0.28.5 became a fix
-  release for two real bugs from sandbox testing of v0.28.4.
+- **v0.28.7 / Phase 3.3d — Topology editing**: add/remove/reorder
+  effects from the dock + add/remove buses. Builds on v0.28.4's
+  persistence layer with a richer write strategy (bus-block
+  re-serialization rather than just value patching).
+- **Phase 4 — Runtime player audio preferences**: API for the
+  shipped game to layer player volume settings on top of the
+  dev-authored bus mix. Player-side persistence via `user://`
+  ConfigFile (player appdata), kept separate from `gool/config.json`
+  (project files, dev-authored). See `docs/audio_design/player_audio_preferences.md`
+  for the design sketch.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.28.6] - 2026-05-18 — Fix release: mtime false-positive + diagnostic dump on save failure
+
+Two issues from sandbox testing of v0.28.5. GDScript-only.
+No engine, no protocol, no schema changes.
+
+### Bug: "gool/config.json changed on disk" dialog popped on every save
+
+Repro: drag any fader. Mtime conflict dialog appears. Choose
+"Overwrite with dock state". Drag the fader again. Dialog
+appears AGAIN. Repeat indefinitely.
+
+Root cause: v0.28.4's external-change detection compared the
+on-disk mtime against our cached `_last_seen_mtime`. Godot's
+filesystem watcher / resource cache touches the file's mtime
+AFTER our write completes — bumping it past what we cached,
+even though no external edit happened. Every save triggered
+a false "external change" prompt on the NEXT save attempt.
+
+Fix: switch from mtime comparison to **content comparison**.
+Before writing, read the current on-disk bytes. If they equal
+`_raw_text` (what we believe is on disk), proceed — regardless
+of mtime. If they differ, then someone really edited externally
+and we still prompt. Robust against any filesystem mtime
+weirdness.
+
+### Save-failure diagnostics
+
+A user hit `[gool] mixer dock: config save failed — post-write
+JSON invalid; restored from .bak` with no way to tell what the
+patcher actually produced. The .bak restore is correct
+behavior (the user's previous good config is preserved), but
+debugging the patcher bug without seeing the failing JSON is
+guesswork.
+
+Fix: on parse-after-write failure, the failing text is now also
+dumped to `gool/config.json.failed` before the .bak restore.
+This file is the ground truth of what the patcher produced.
+The user can share it for diagnosis; the file persists until
+manually deleted (we don't touch it on subsequent successful
+saves so it survives long enough to inspect).
+
+### Files touched
+
+- `godot/addons/gool/editor/config_model.gd` — content-compare
+  in `_do_save`; failure-text dump to `gool/config.json.failed`
+- `CHANGELOG.md`, `README.md`, version pins
+
+### Verified
+
+- Engine: all 35 audio_engine C++ files compile clean at v0.28.6
+  (no engine changed)
+- Python patcher round-trip tests still pass against both
+  example configs
+- 3 pre-ship sweeps clean (tabs, brace balance, inner-class scope)
+
+### CI risk
+
+GDScript-only release. All v0.28.4 persistence work intact.
+Changes are narrow and additive: content-compare adds one extra
+file read per save (cheap on the ~few-KB configs gool uses);
+failure dump only fires on the already-failure path.
 
 ## [0.28.5] - 2026-05-18 — Fix release: dB input dismissal + Fx-button view-at-rest
 
@@ -13116,7 +13181,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.5...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.6...HEAD
+[0.28.6]: https://github.com/siliconight/gool/releases/tag/v0.28.6
 [0.28.5]: https://github.com/siliconight/gool/releases/tag/v0.28.5
 [0.28.4]: https://github.com/siliconight/gool/releases/tag/v0.28.4
 [0.28.3]: https://github.com/siliconight/gool/releases/tag/v0.28.3
