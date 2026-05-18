@@ -12,20 +12,181 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3c-2 — Dock UI for effect editing** (now v0.28.2): builds
+- **Phase 3.3c-2 — Dock UI for effect editing** (now v0.28.3): builds
   on the 3.3c-1 introspection substrate. "Fx" button per strip →
-  popup or inline panel with sliders for each parameter. Sliders
-  forward through the existing debugger channel
+  inline panel with sliders for each parameter. Sliders forward
+  through the existing debugger channel
   (`gool:set_effect_parameter`).
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
-  dock changes back to `config.json` preserving comments. Includes
-  the "sync local dock state TO runtime on F5 start" follow-up.
+  dock changes back to `config.json` preserving comments.
 - **Phase 5 — Material & acoustic environment authoring.**
-- **Sidechain feature work** (parallel track from
+- **Sidechain feature work** (parallel from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
 
-## [0.28.1] - 2026-05-18 — Fix v0.28.0 CI failure (godot-cpp Variant)
+## [0.28.2] - 2026-05-18 — Actual CI fix (v0.28.1 was wrong about the bug)
+
+### What v0.28.1 got wrong
+
+v0.28.1 was supposed to be the CI fix for v0.28.0. It wasn't.
+The CHANGELOG entry for v0.28.1 claimed the issue was godot-cpp's
+`Variant` not having `int` or `const char*` constructors. Those
+defensive changes were real (int → int64_t, wrap with String(...))
+and arguably correct as a style fix, but they were **not** what
+CI was actually hitting. MSVC stopped at the first error at line
+96 long before ever reaching the Variant assignment code.
+
+The real errors, surfaced in CI on both v0.28.0 and v0.28.1:
+
+```
+gool_godot.cpp(96,23): error C2061: syntax error: identifier 'EffectParameter'
+gool_godot.cpp(107,17): error C2653: 'EP': is not a class or namespace name
+...
+gool_godot.cpp(1119,13): error C2664: cannot convert argument 1 from
+    'std::unique_ptr<audio::AudioRuntime, std::default_delete<...>>'
+    to 'audio::AudioRuntime *'
+```
+
+Two distinct bugs, both introduced in v0.28.0, both still present
+in v0.28.1 because my "fix" focused on the wrong file regions.
+
+### Root cause #1: namespace alias vs type alias
+
+`audio::EffectParameter` is a **namespace** holding constexpr
+`uint16_t` constants, not a type. The C++11 alias-declaration
+`using X = Y;` is for types only. For namespaces, the syntax is
+the older `namespace X = Y;`. GCC accepts the type-alias form on
+namespaces as an extension and just silently treats it as a
+namespace alias. MSVC correctly rejects it.
+
+```cpp
+// v0.28.0 / v0.28.1, line 96 — invalid C++:
+using EP = audio::EffectParameter;
+
+// v0.28.2 — correct:
+namespace EP = audio::EffectParameter;
+```
+
+Every `EP::Gain_GainDb`, `EP::Compressor_Ratio`, etc. cascaded
+into "undeclared identifier" because `EP` was never actually
+established as a name. ~30 errors from one bad line.
+
+### Root cause #2: unique_ptr → raw pointer conversion
+
+`runtime_` is `std::unique_ptr<audio::AudioRuntime>`. The helper
+`_gool_fill_params_for_kind(audio::AudioRuntime* rt, ...)` takes
+a raw pointer. `unique_ptr` deliberately doesn't provide an
+implicit conversion to its underlying raw pointer — you have to
+call `.get()` explicitly. Pre-existing code in the file accesses
+`runtime_` via `->` (which `unique_ptr` provides) or via
+`.reset()` / `.get()`, all of which work; my new helper-call site
+was the only place that needed an explicit `.get()` and didn't
+have it.
+
+```cpp
+// v0.28.0 / v0.28.1, line 1119:
+_gool_fill_params_for_kind(runtime_, busIdx, e, kind, params);
+
+// v0.28.2:
+_gool_fill_params_for_kind(runtime_.get(), busIdx, e, kind, params);
+```
+
+### Why both versions shipped broken
+
+The audio_engine static lib compiles cleanly with g++ -std=c++20
+-Wall -Wextra -Wpedantic in the local sandbox. It always has.
+What that compile **does not cover**: `godot/src/gool_godot.cpp`.
+The local engine-only compile globs `src/`, not `godot/src/`. The
+binding TU is only ever compiled in CI, which means binding-only
+bugs ship "verified" right up until CI catches them.
+
+Worse: in v0.28.1 I knew this — the v0.28.1 lessons doc entry
+called out exactly this gap and recommended setting up a local
+godot-cpp build. I just didn't do it before re-shipping, and the
+v0.28.1 CHANGELOG happily described "the fix" without ever
+having compile-tested it against godot-cpp.
+
+### What v0.28.2 actually does
+
+Three lines changed in `godot/src/gool_godot.cpp` from the
+v0.28.1 baseline:
+
+- Line 96: `using EP = ...` → `namespace EP = ...`
+- Line ~1129: `runtime_` → `runtime_.get()` in the helper call
+- (kept) the v0.28.1 defensive int64_t / `String(...)` changes
+  from get_bus_effects — these are conventionally correct per
+  the existing `get_bus_stats` pattern even though they weren't
+  actually what was breaking the build
+
+Plus: a new compile-isolation test pattern at
+`/tmp/binding_helper_check.cpp` (documented in
+lessons_learned.md, not shipped in the tarball — it's a
+development workflow artifact, not a release artifact) that stubs
+godot-cpp's `Variant`, `Dictionary`, etc. with just enough plumbing
+to validate the C++ syntax of the binding helpers in isolation.
+Confirmed both the v0.28.0/v0.28.1 bug forms fail this test, and
+the v0.28.2 forms pass.
+
+### Files touched
+
+- `godot/src/gool_godot.cpp` — 2 lines actually fixed (namespace
+  alias, unique_ptr deref); the v0.28.1 Variant changes are kept
+- `docs/engineering/lessons_learned.md` — amended the v0.28.1
+  "godot-cpp Variant" lesson and added a new section on the
+  sandbox-vs-CI gap that v0.28.1's misdiagnosis perfectly
+  illustrates
+- `CHANGELOG.md` — this entry
+- `tests/unit/version_test.cpp`, `README.md`, `CMakeLists.txt`,
+  `include/audio_engine/version.h` — version bump
+
+### Verified
+
+- Compile-isolation test on `_gool_fill_params_for_kind` with the
+  v0.28.2 syntax: compiles clean with g++ -std=c++20 -Wall
+  -Wextra -Wpedantic -Werror
+- Sanity: same test with the v0.28.0/v0.28.1 syntax (`using EP =
+  audio::EffectParameter`) fails with `'EffectParameter' in
+  namespace 'audio' does not name a type` — exactly mirrors MSVC's
+  C2061 from CI
+- All 35 audio_engine C++ files compile clean at 0.28.2
+- `version_test` reports `0.28.2`
+- All four GDScript pre-ship sweeps clean
+
+### What I am NOT claiming this time
+
+I am not claiming this will pass CI. The compile-isolation test
+stubs godot-cpp; it can't cover everything (real `Variant`
+overload resolution, `ClassDB::bind_method` template deduction,
+GDCLASS macro internals, etc.). What I AM claiming: the two
+specific MSVC errors from job #76 (line 96 namespace alias, line
+1119 unique_ptr) cannot still be present, because I've reproduced
+both error categories with g++ and verified the fixes work.
+
+## [0.28.1] - 2026-05-18 — Attempted CI fix (DID NOT WORK)
+
+**This release did not fix CI.** Kept in the changelog for the
+process record. See v0.28.2 for the actual fix and the analysis
+of why this attempt missed.
+
+What v0.28.1 changed: defensive type tweaks in
+`get_bus_effects` (line 1106-1107 area) — `static_cast<int>` →
+`static_cast<int64_t>` and `_gool_effect_kind_name(kind)` →
+`String(_gool_effect_kind_name(kind))`, plus the same int64_t
+cast for the Dictionary key in the `put` lambda.
+
+Why these changes are still in the v0.28.2 tree even though they
+weren't actually what CI was blocking on: they match the
+convention used in the long-shipping `get_bus_stats` (line 633)
+and the `Version` struct serialization (line 526) — explicit
+int64_t for integer Dictionary values, explicit String(...) wrap
+for `const char*`. Probably latent bugs that MSVC would have hit
+once it got past the earlier errors. Cheap defensive fix; keeps
+the file consistent with itself.
+
+What v0.28.1 missed: the actual MSVC errors at line 96 and 1119.
+See v0.28.2 entry above for the post-mortem.
+
+## [0.28.0] - 2026-05-17 — Phase 3.3c-1: live effect parameter control (substrate)
 
 ### What went wrong
 
@@ -12492,7 +12653,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.2...HEAD
+[0.28.2]: https://github.com/siliconight/gool/releases/tag/v0.28.2
 [0.28.1]: https://github.com/siliconight/gool/releases/tag/v0.28.1
 [0.28.0]: https://github.com/siliconight/gool/releases/tag/v0.28.0
 [0.27.1]: https://github.com/siliconight/gool/releases/tag/v0.27.1

@@ -449,57 +449,203 @@ got renamed/moved" when actually the header is fine and the build
 config is wrong.
 
 ### godot-cpp's Variant doesn't construct from `int` or `const char*`
-*(Surfaced v0.28.0 → fixed in v0.28.1.)*
+*(Surfaced v0.28.0 → believed-fixed in v0.28.1 → actually
+documented in v0.28.2 alongside the real bugs.)*
+
+**Update from v0.28.2**: this lesson's *content* is still correct
+(`Variant` really doesn't have `int` or `const char*` constructors;
+the existing `get_bus_stats` pattern of explicit `int64_t` and
+`String(...)` is the right convention), but the *framing* in
+v0.28.1 was wrong. v0.28.1's CHANGELOG claimed this was the bug
+breaking CI. It wasn't — MSVC was hitting earlier compile errors
+on lines 96 and 1119 and stopping there, never reaching the
+Variant assignment code. The Variant fixes were defensively
+correct but didn't address what CI was actually failing on. See
+the next two lessons below for what was actually broken.
+
+The Variant-API truth, restated:
 
 In Godot 4 / godot-cpp, `Variant` has constructors for `int64_t`,
 `double`, `bool`, `String`, etc., but **not** for plain `int` and
-**not** for `const char*`. The engine-only build of audio_engine
-compiled cleanly in the local sandbox at v0.28.0, but the
-GDExtension build (which actually exercises the `gool_godot.cpp`
-binding against godot-cpp) failed at the same step on all three
-platforms (Linux, macOS, Windows). Symptom: identical CI
-failures at "Build GDExtension" across the matrix, exit code
-2/2/1 depending on the platform's compiler convention.
-
-The patterns that work in Dictionary / Variant assignments:
+**not** for `const char*`. Patterns:
 
 ```cpp
-// ✗ These don't compile against godot-cpp:
+// ✗ These may fail to compile, or compile but pick a surprising overload:
 d["kind"]      = static_cast<int>(my_enum_value);
 d["kind_name"] = my_function_returning_const_char_ptr();
 
-// ✓ These do:
+// ✓ These match the existing get_bus_stats convention:
 d["kind"]      = static_cast<int64_t>(my_enum_value);
 d["kind_name"] = String(my_function_returning_const_char_ptr());
-// or, if the source string is UTF-8:
+// or, if the source is UTF-8:
 d["kind_name"] = String::utf8(my_function_returning_const_char_ptr());
 ```
 
-This applies to:
-- `Dictionary[key] = value` assignments
-- `Array.push_back(value)` calls (Variant conversion)
-- Dictionary KEYS too: `d[static_cast<int>(x)]` fails, `d[static_cast<int64_t>(x)]` works
+Applies to `Dictionary[key] = value` assignments, `Array.push_back(value)`,
+and the keys themselves: `d[static_cast<int64_t>(x)]`, not
+`d[static_cast<int>(x)]`.
 
-Why godot-cpp is strict here: the int vs int64_t case is to avoid
-silent truncation (Godot stores integers as 64-bit internally).
-The `const char*` case is to force explicit UTF-8 vs Latin-1
-choices since Godot 4 supports both via `String::utf8(...)` and
-`String(latin1_ptr)`.
+### `using X = Y;` aliases TYPES; `namespace X = Y;` aliases NAMESPACES
+*(Surfaced v0.28.0 → actually fixed in v0.28.2.)*
 
-How to catch this BEFORE shipping: the `audio_engine` C++ compile
-in the local sandbox is necessary but not sufficient — the binding
-compile against godot-cpp is what catches Variant misuse. CI does
-this on every push, but a local godot-cpp checkout (set
-`GODOT_CPP_PATH` env var) would let the binding build run before
-release. Worth adding to the pre-ship checklist for any release
-that touches `godot/src/gool_godot.cpp`.
+C++ has two distinct alias syntaxes with very different meanings:
 
-Workaround when local godot-cpp isn't available: grep the diff
-against `gool_godot.cpp` for patterns:
-- `d["..."] = static_cast<int>(...)` — wrong
-- `d["..."] = static_cast<int64_t>(...)` — right
-- `d["..."] = some_func()` where return type is `const char*` — wrong
-- `d["..."] = String(some_func())` — right
+- `using X = Y;` (alias-declaration, C++11) is for **types**.
+  `Y` must name a type.
+- `namespace X = Y;` (namespace-alias-definition, C++98) is for
+  **namespaces**. `Y` must name a namespace.
+
+They are not interchangeable. The compiler error if you use the
+wrong one varies:
+
+- **MSVC** correctly rejects `using X = some_namespace;` with
+  `error C2061: syntax error: identifier '<name>'`. This cascades
+  into "X is not a class or namespace name" for every subsequent
+  use of `X::member`, which is why a single bad alias produced
+  ~30 errors in the v0.28.0 CI log.
+- **GCC** has historically accepted `using X = some_namespace;`
+  as an extension and silently treats it as if you'd written
+  `namespace X = some_namespace;`. This is why the bug compiled
+  cleanly with my local g++ engine-only test (when I eventually
+  set up a full binding test) but failed on Windows.
+
+In gool, `audio::EffectParameter` is defined in `bus.h` as:
+
+```cpp
+namespace audio::EffectParameter {
+    constexpr uint16_t Gain_GainDb = 1;
+    constexpr uint16_t Compressor_ThresholdDb = 4;
+    // ...
+}
+```
+
+— a namespace holding constexpr uint16_t constants, NOT a type.
+To alias it for local convenience inside a function:
+
+```cpp
+// ✓ Correct:
+namespace EP = audio::EffectParameter;
+auto x = EP::Gain_GainDb;
+
+// ✗ Wrong — GCC accepts as extension, MSVC rejects:
+using EP = audio::EffectParameter;
+auto x = EP::Gain_GainDb;  // "EP is not a class or namespace"
+```
+
+Namespace aliases ARE valid at function/block scope, namespace
+scope, and translation-unit scope. Use them when a long
+namespace path appears 5+ times in a small region.
+
+### `std::unique_ptr` has no implicit conversion to its raw pointer
+*(Surfaced v0.28.0 → actually fixed in v0.28.2.)*
+
+`std::unique_ptr<T>` provides:
+- `operator->` — for member access (`runtime_->Method()`)
+- `operator*` — for dereferencing
+- `.get()` — explicit access to the underlying `T*`
+- `.reset(...)` — replace the managed pointer
+- contextual conversion to `bool`
+
+It does **not** provide an implicit conversion to `T*`. This is
+deliberate — the unique_ptr's value proposition is that ownership
+is explicit, and silently producing raw pointers would undermine
+that. So this fails:
+
+```cpp
+std::unique_ptr<Thing> p = std::make_unique<Thing>();
+void f(Thing*);
+f(p);          // ✗ no conversion from unique_ptr<Thing> to Thing*
+f(p.get());    // ✓ explicit .get() is required
+```
+
+MSVC's error: `C2664: cannot convert argument 1 from
+'std::unique_ptr<T,...>' to 'T *'`.
+
+In gool's binding, `runtime_` is a `unique_ptr`. Pre-existing
+code uses `runtime_->X()` everywhere, which works via
+`operator->`. v0.28.0 added one call site that passed `runtime_`
+as a positional argument to a helper expecting `audio::AudioRuntime*`
+— and forgot the `.get()`. The other places that access the
+underlying pointer directly (e.g. `internal_runtime()` at line
+1640) do use `.get()`, so the pattern was already there to copy.
+
+### The sandbox engine compile is not a binding compile
+*(Surfaced v0.28.0 → re-confirmed in painful detail through v0.28.1 → finally believed in v0.28.2.)*
+
+The local sandbox runs roughly:
+
+```bash
+find src -name "*.cpp" | xargs g++ -std=c++20 -Wall -Wextra -Wpedantic -c ...
+```
+
+That glob hits `src/`, not `godot/src/`. The Godot binding
+(`godot/src/gool_godot.cpp`) is **never compiled by the sandbox**.
+Until v0.28.1, "engine compiles clean locally" was being treated
+as evidence that a release was safe to ship, even when the
+release was specifically about binding-side changes
+(`set_effect_parameter`, `get_bus_effects` — entirely binding
+features).
+
+Consequences observed in v0.28.0 → v0.28.1 → v0.28.2:
+
+- v0.28.0 shipped with two distinct binding compile errors
+  (namespace alias + unique_ptr deref). Engine compiled clean.
+  CI failed across all three platforms at the same step.
+- v0.28.1 was a guessing-game "fix" based on reading the CI
+  summary (which only showed "Build GDExtension failed" without
+  the actual error text, since the full log requires GitHub auth).
+  The "fix" addressed Variant API conventions that MSVC was
+  never reaching. CI failed at the exact same lines as v0.28.0.
+- v0.28.2 was the first version where I read the actual CI
+  errors (user-pasted log) and addressed the actual errors. The
+  v0.28.1 Variant changes were kept because they're conventionally
+  correct, but were never themselves the blocker.
+
+The fix is one of three things, in increasing order of investment:
+
+1. **Compile-isolation test.** For any binding helper that's pure
+   C++ logic (like `_gool_fill_params_for_kind`), write a small
+   `.cpp` with stubbed `godot::Dictionary`, `godot::Variant`, etc.
+   that lets g++ exercise the syntax. Won't catch real Variant
+   overload resolution issues but DOES catch namespace aliases,
+   unique_ptr derefs, basic type plumbing. Pattern lives in
+   `/tmp/binding_helper_check.cpp` during v0.28.2 development;
+   not shipped, but the pattern is reproducible: ~80 lines of
+   stubs + the helper copied verbatim + a trivial `main()`.
+2. **Local godot-cpp checkout.** Clone https://github.com/godotengine/godot-cpp
+   at the version pinned by `GODOT_CPP_REF` in the nightly workflow
+   (currently `4.4`), build it once, then run the full GDExtension
+   build locally: `cmake -S godot -B build-godot -DGODOT_CPP_PATH=...`
+   followed by `cmake --build build-godot --config Release`. This
+   IS the CI build, just locally. Catches everything CI would
+   catch. Slow (full godot-cpp is ~5min from cold), but with
+   ccache + a built godot-cpp it's a few seconds per edit.
+3. **Add a CI smoke job that fails fast on just the binding.**
+   The current workflow compiles the full addon archive after
+   compile. A pre-compile syntax-only job (`-fsyntax-only` for
+   gcc/clang or `/Zs` for MSVC) on just `gool_godot.cpp` would
+   give faster feedback for binding errors. Lower priority — the
+   real CI cycle is acceptable for a one-developer project.
+
+**Don't ship binding changes claiming "tested locally" if you
+only ran the engine compile.** That's the meta-lesson v0.28.1
+should have learned but didn't.
+
+### Three iterations on one feature is a process smell *(extended for v0.28.0–0.28.2)*
+
+The v0.28.x trilogy is the **second** time three iterations have
+been needed in the past month. The first was the solo-button
+work (v0.27.0 → v0.27.1) which only took two. The fader-edit
+work earlier also slipped. The common thread is the same: a
+change that *seems* well-contained gets shipped, CI fails on
+something the local checks didn't cover, and the response is to
+guess + reship rather than reproduce the actual failure first.
+
+The fix is in the previous lesson: read the actual error, don't
+guess. The CI log requires GitHub auth to fully read; ask the
+user to paste it before reshipping if you can't access it
+yourself. Reshipping based on the summary line ("Build
+GDExtension failed") is just guessing dressed up as a fix.
 
 ---
 

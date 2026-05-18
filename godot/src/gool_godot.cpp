@@ -93,11 +93,16 @@ static void _gool_fill_params_for_kind(audio::AudioRuntime* rt,
                                         audio::EffectKind kind,
                                         Dictionary& out) {
     if (rt == nullptr) return;
-    using EP = audio::EffectParameter;
-    // v0.28.1: int64_t key (not int) — godot-cpp's Variant doesn't
-    // have an int32-from-int constructor that's exact-match enough for
-    // overload resolution to pick a single candidate, hence the link
-    // failure in v0.28.0.
+    // v0.28.2: `namespace EP = ...`, NOT `using EP = ...`.
+    // EffectParameter is a namespace (a collection of constexpr
+    // uint16_t members), not a type. C++11's alias-declaration
+    // (`using X = Y;`) is for types only; namespace aliases use the
+    // older `namespace X = Y;` syntax. GCC accepts the wrong form as
+    // an extension; MSVC correctly rejects it, which is why v0.28.0
+    // and v0.28.1 both failed CI at this line on the windows-x86_64
+    // (and linux/macos clang) matrix entries even though the local
+    // g++ engine compile passed cleanly.
+    namespace EP = audio::EffectParameter;
     auto put = [&](uint16_t paramId) {
         out[static_cast<int64_t>(paramId)] =
             rt->GetEffectParameter(busIdx, effectIdx, paramId);
@@ -1116,7 +1121,12 @@ public:
             d["kind"]      = static_cast<int64_t>(kind);
             d["kind_name"] = String(_gool_effect_kind_name(kind));
             Dictionary params;
-            _gool_fill_params_for_kind(runtime_, busIdx, e, kind, params);
+            // v0.28.2: runtime_ is std::unique_ptr<AudioRuntime>; the
+            // helper takes a raw AudioRuntime*. .get() is required —
+            // unique_ptr deliberately doesn't have an implicit
+            // pointer conversion (MSVC C2664), which is the second
+            // CI compile error in the v0.28.0 / v0.28.1 attempts.
+            _gool_fill_params_for_kind(runtime_.get(), busIdx, e, kind, params);
             d["params"] = params;
             out.push_back(d);
         }
