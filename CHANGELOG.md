@@ -27,6 +27,89 @@ Nothing shipping yet. Next-up candidates:
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
 
+## [0.26.4] - 2026-05-17 — Engineering lessons-learned doc
+
+### What's in this release
+
+One new file: `docs/engineering/lessons_learned.md`. A
+consolidated reference for patterns gool has been burned by
+across the v0.23-0.26 development cycle, plus the pre-ship
+checklist that captures the discipline accumulated from those
+episodes.
+
+### Why this exists
+
+Through the v0.23-0.26 cycle, several classes of regression
+surfaced more than once: GDScript tab/space discipline (v0.23.10
+– v0.23.15, five releases), const-expression and inner-class
+issues (v0.26.0 – v0.26.3, four releases), MSVC C4996
+deprecations (v0.24.0 → v0.24.1), cppcheck false-positives
+(v0.24.1 → v0.24.2), editor-vs-game architecture (v0.24.0 →
+v0.25.0), and others. Each release's CHANGELOG entry captured
+the immediate fix and a short process note, but the institutional
+knowledge was scattered across ~15 CHANGELOG entries and existed
+mostly in conversation history that won't survive across
+sessions.
+
+The lessons-learned doc consolidates these into one place,
+organized by:
+
+- **Pre-ship checklist**: actionable steps to run before any
+  release, broken down by what file types are touched (every
+  release, `.gd` changes, `.cpp`/`.h` changes, doc work,
+  reading CI failures)
+- **GDScript / Godot 4 pitfalls**: six specific patterns with
+  symptom, cause, fix, and version pointers (tab discipline,
+  const expressions, inner-class scope, class_name in
+  headless, cyclic dependencies, autoload method existence)
+- **Editor-game plugin architecture**: the editor `@tool` ↔
+  game SceneTree separation lesson and the EngineDebugger
+  bridge pattern that came out of it
+- **C++ portability**: MSVC C4996 + cppcheck patterns + `strnlen`
+  namespace gotcha
+- **API design**: silent no-op risk + wrapper vs direct-call
+  discipline
+- **Documentation workflow**: scratchpad vs repo tree +
+  CHANGELOG honesty
+- **CI signals**: what headless smoke catches and what it
+  doesn't + the "enumerate every error" discipline from
+  v0.26.2 → v0.26.3
+
+### Going forward
+
+The "Going forward" sections of recent CHANGELOG entries
+(v0.26.1, v0.26.2, v0.26.3) all promised process changes. This
+doc is where those changes get codified. Future CHANGELOG
+entries can reference the doc by section rather than
+re-explaining the lesson:
+
+- "Followed pre-ship checklist for `.gd` changes" → checklist
+  exists, can be referenced
+- "Caught this via the class_name self-reference sweep" → the
+  sweep is documented, can be referenced
+- "See `docs/engineering/lessons_learned.md` § Inner class scope"
+  → cross-references replace re-explanation
+
+When a new class of bug bites once, capture it in this doc.
+When it bites twice, add automated checks. When it bites three
+times, the process broke — root-cause that.
+
+### Files touched
+
+- `docs/engineering/lessons_learned.md` — new (~530 lines)
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.26.4
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.4
+  (no C++ changes; this is purely a doc release)
+- `version_test` reports `0.26.4`
+- Pre-ship `.gd` sweeps (const-expr, tabs/spaces, class_name
+  self-references) all clean
+- `docs/engineering/lessons_learned.md` present in the tagged
+  tarball (verified via `tar -tzf`)
+
 ## [0.26.3] - 2026-05-17 — Fix headless smoke (PackedFloat32Array constructor not a constant expression)
 
 ### What broke
@@ -11529,7 +11612,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.3...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.4...HEAD
+[0.26.4]: https://github.com/siliconight/gool/releases/tag/v0.26.4
 [0.26.3]: https://github.com/siliconight/gool/releases/tag/v0.26.3
 [0.26.2]: https://github.com/siliconight/gool/releases/tag/v0.26.2
 [0.26.1]: https://github.com/siliconight/gool/releases/tag/v0.26.1
