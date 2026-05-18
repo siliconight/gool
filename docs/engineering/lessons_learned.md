@@ -402,6 +402,45 @@ libstdc++'s implementation doesn't put it there. Use unqualified
 `strnlen(...)` to avoid namespace lookup failures on Linux/g++
 builds.
 
+### CMake PRIVATE includes don't transit to consumers
+*(Surfaced v0.26.6.)*
+
+The `audio_engine` target declares `src/` as a PRIVATE include
+directory and `include/` as PUBLIC:
+
+```cmake
+target_include_directories(audio_engine
+    PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+```
+
+Consumers that link `target_link_libraries(foo PRIVATE audio_engine)`
+inherit the PUBLIC interface (including its public includes) but
+NOT its PRIVATE includes. So `foo` can `#include
+"audio_engine/audio_file_format.h"` (in `include/`) but NOT
+`#include "audio_engine/decoders/audio_decoder.h"` (in `src/`).
+
+This is the correct default for a library — private headers
+shouldn't leak to all consumers. But for test/fuzz targets that
+need to reach internal API surface, you need to explicitly add
+`src/` to the consumer's include path:
+
+```cmake
+target_include_directories(${test_target} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+```
+
+The fuzz `audio_engine_add_fuzz_harness` function in `CMakeLists.txt`
+does this. New fuzz harnesses or unit tests that need to test
+private APIs (DecoderFactory, internal mixer functions, etc.)
+should follow the same pattern.
+
+Failure mode: the build error is a fatal-error missing header,
+which is easy to recognize but easy to misdiagnose as "the header
+got renamed/moved" when actually the header is fine and the build
+config is wrong.
+
 ---
 
 ## API design

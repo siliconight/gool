@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.26.5
+    VERSION 0.26.6
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -607,6 +607,16 @@ if(AUDIO_ENGINE_FUZZ)
     function(audio_engine_add_fuzz_harness target source)
         add_executable(${target} ${source})
         target_link_libraries(${target} PRIVATE audio_engine)
+        # v0.26.6: fuzz harnesses sometimes need to reach private
+        # implementation headers (e.g. fuzz_audio_decoders pokes at
+        # AudioDecoder + DecoderFactory directly to exercise the
+        # format-sniff path that public APIs hide). audio_engine
+        # declares src/ as a PRIVATE include dir; linking PRIVATE
+        # against the target inherits PUBLIC includes (include/)
+        # but NOT PRIVATE ones (src/), so we add src/ explicitly
+        # here. Mirrors the engine's own self-include configuration.
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_compile_options(${target} PRIVATE
             -fsanitize=fuzzer,address,undefined
             -fno-omit-frame-pointer

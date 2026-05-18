@@ -27,6 +27,97 @@ Nothing shipping yet. Next-up candidates:
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
 
+## [0.26.6] - 2026-05-17 — Fix nightly fuzz job (src/ not on fuzz target include path)
+
+### What broke
+
+The `fuzz_audio_decoders` harness (one of three fuzz targets
+run by the nightly `fuzz.yml` workflow) has been failing to
+build with:
+
+```
+fatal error: 'audio_engine/decoders/audio_decoder.h' file not found
+#include "audio_engine/decoders/audio_decoder.h"
+```
+
+Cause: `audio_engine`'s CMake config declares `src/` as a
+**PRIVATE** include directory (correct — private headers
+shouldn't leak to public consumers) and `include/` as PUBLIC.
+The `audio_engine_add_fuzz_harness` function in `CMakeLists.txt`
+links fuzz targets via `target_link_libraries(${target} PRIVATE
+audio_engine)`, which inherits PUBLIC interface includes only,
+not PRIVATE ones.
+
+So the fuzz cpp could `#include "audio_engine/audio_file_format.h"`
+(in `include/`) but NOT `#include "audio_engine/decoders/audio_decoder.h"`
+(in `src/`). Two of the three fuzz harnesses only use public
+headers and built fine. `fuzz_audio_decoders` reaches into the
+DecoderFactory internals (the whole point — fuzzing the
+internal format-sniff path), so it failed.
+
+### What's in this release
+
+Two-line CMake addition inside `audio_engine_add_fuzz_harness`:
+
+```cmake
+target_include_directories(${target} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+```
+
+This mirrors the engine's own self-include configuration and
+lets fuzz harnesses reach private headers when they legitimately
+need to test internal APIs.
+
+The fix is build-system-only — no C++ code changes, no `.gd`
+changes, no runtime behavior change. Same fuzz cpp source, same
+fuzz coverage; the build now actually completes.
+
+### Why this was broken for a while
+
+The fuzz job is in `fuzz.yml`, not `ci.yml` — it runs nightly
+on cron, not on every push. So the build failure didn't block
+day-to-day work and the nightly's red status was easy to
+ignore. The user surfaced it tonight by sharing the failing
+run URL.
+
+This is a useful failure mode to track: **CI jobs that don't
+gate pushes can rot silently.** A future improvement might add
+fuzz-build (not fuzz-run) as a fast check in `ci.yml` so any
+build regression surfaces immediately on push, not the next
+night. Tracked as a follow-up; not blocking.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.6
+- `version_test` reports `0.26.6`
+- `fuzz_audio_decoders.cpp` compiles with `-I include -I src`
+  via `-fsyntax-only` (full link requires libfuzzer-15 not
+  available in the build sandbox; the CI runner has it and
+  should now succeed)
+- `fuzz_bus_config_json.cpp` and `fuzz_opus_voice.cpp` still
+  compile (they only use public headers; the new include
+  directive is harmless extra access for them)
+- All four pre-ship `.gd` sweeps clean (no `.gd` changes this
+  release, but ran them anyway out of discipline)
+
+### Lessons
+
+Added a new section to `docs/engineering/lessons_learned.md`
+under "C++ portability and warning discipline": "CMake PRIVATE
+includes don't transit to consumers." Captures the pattern so
+future test/fuzz harnesses that need internal API access know
+to add `src/` explicitly.
+
+### Files touched
+
+- `CMakeLists.txt` — `audio_engine_add_fuzz_harness` gains a
+  `target_include_directories(... PRIVATE src/)` directive
+  (~5 lines, with explanatory comment)
+- `docs/engineering/lessons_learned.md` — new "CMake PRIVATE
+  includes" section under C++ portability lessons
+- Version triple, top-level CHANGELOG, top-level README bumped
+  to 0.26.6
+
 ## [0.26.5] - 2026-05-17 — Click-to-edit dB readout
 
 ### What's new
@@ -11728,7 +11819,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.5...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.6...HEAD
+[0.26.6]: https://github.com/siliconight/gool/releases/tag/v0.26.6
 [0.26.5]: https://github.com/siliconight/gool/releases/tag/v0.26.5
 [0.26.4]: https://github.com/siliconight/gool/releases/tag/v0.26.4
 [0.26.3]: https://github.com/siliconight/gool/releases/tag/v0.26.3
