@@ -27,6 +27,112 @@ Nothing shipping yet. Next-up candidates:
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
 
+## [0.26.3] - 2026-05-17 — Fix headless smoke (PackedFloat32Array constructor not a constant expression)
+
+### What broke
+
+The v0.26.0 mixer dock declared a constant:
+
+```gdscript
+const SCALE_MARKS_DB: PackedFloat32Array = PackedFloat32Array(
+        [6.0, 0.0, -6.0, -24.0, -72.0])
+```
+
+GDScript 4 rejects `PackedFloat32Array(...)` (and other
+`Packed*Array(...)` constructor calls) on the right-hand side
+of a `const` declaration: they're not recognized as constant
+expressions, where built-in types like `Color(...)`,
+`Vector2(...)`, `Rect2(...)` are. The fix is to use a plain
+array literal — which IS a valid const expression — and
+declare the type as plain `Array` (or omit the type
+annotation entirely):
+
+```gdscript
+const SCALE_MARKS_DB: Array = [6.0, 0.0, -6.0, -24.0, -72.0]
+```
+
+This same error was present in v0.26.0, v0.26.1, and v0.26.2.
+The CI smoke log for v0.26.0 actually showed it explicitly:
+
+```
+SCRIPT ERROR: Parse Error: Assigned value for constant
+              "SCALE_MARKS_DB" isn't a constant expression.
+              at: mixer_dock.gd:52
+```
+
+It also showed `Function "set_bus_gain_db()" not found in base
+self.` Two distinct errors. v0.26.2 fixed the second one
+plus the inner-class outer-reference issue but didn't address
+the const-expression issue, even though it was visible in the
+same log. **A focus failure on my part** — I traced the
+inner-class issue carefully and missed that there was a
+second, orthogonal error in the same file.
+
+### What's in this release
+
+Two-line fix: both copies of `SCALE_MARKS_DB` (the outer
+class declaration and the v0.26.2 inner-class duplicate)
+changed from `PackedFloat32Array(...)` to `Array = [...]`.
+Iteration semantics (`for db_v in SCALE_MARKS_DB:`) work
+identically; the elements are Variant inside the loop and
+auto-coerce to float in the arithmetic that follows. No
+behavior change.
+
+### Process change going forward
+
+Before shipping any release that touches `.gd` files, do a
+**source-text equivalent of the CI's KNOWN_REAL_ERRORS scan**
+locally, not just the class_name-self-reference sweep added
+in v0.26.2. The patterns CI looks for are:
+
+- `isn't a constant expression` / `is not a constant expression`
+- `Used tab character for indentation`
+- `Mixed use of tabs and spaces`
+- `Cyclic dependency between`
+- `not found in base`
+
+For each, there's a source-text heuristic that catches the
+common cause without needing a real Godot parser:
+
+- Const-expression: regex `^\s*const\s+\w+\s*(:\s*\w+\s*)?=\s*Packed\w*Array\s*\(`
+  catches the `Packed*Array(...)` pitfall this release hit
+- Tabs/spaces: simple grep for space-leading lines in files
+  that also have tab-leading lines (already in the build
+  script)
+- Cyclic dependency: parse class_name declarations and
+  cross-references, build graph, look for cycles (harder
+  but doable)
+- `not found in base`: harder without a real parser; best
+  approach is to grep call sites for known autoload methods
+  and verify the receiver matches a method that actually
+  exists in the file
+
+The first two are cheap. The latter two are more work but
+worth automating if this pattern of misses continues.
+
+For now I'm not building a separate check script — the
+v0.26.2 sweep + this release's regex covers the two patterns
+that actually bit. If a third class of GDScript regression
+surfaces, that's when to invest in tooling.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.3
+- `version_test` reports `0.26.3`
+- Source-text sweep: zero `Packed*Array(...)` constructor calls
+  in any addon `.gd` file's const declaration
+- Tabs-only indentation in all `.gd` files (no space-leading lines)
+
+### Apology
+
+This is the third patch on a single feature (3.3b-1's mixer
+dock interactive faders). v0.26.0 shipped with two GDScript
+issues; v0.26.2 fixed one; v0.26.3 fixes the other. The
+remaining functional code is unchanged across all three —
+the dock has had its full feature set since v0.26.0; only
+the parse-discipline was broken. Brannen's patience through
+this is appreciated.
+
 ## [0.26.2] - 2026-05-17 — Fix headless smoke (parse error in mixer_dock.gd inner class)
 
 ### What broke
@@ -11423,7 +11529,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.3...HEAD
+[0.26.3]: https://github.com/siliconight/gool/releases/tag/v0.26.3
 [0.26.2]: https://github.com/siliconight/gool/releases/tag/v0.26.2
 [0.26.1]: https://github.com/siliconight/gool/releases/tag/v0.26.1
 [0.26.0]: https://github.com/siliconight/gool/releases/tag/v0.26.0

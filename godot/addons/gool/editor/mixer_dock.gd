@@ -49,8 +49,7 @@ const FADER_MIN_DB: float = -72.0
 # from dB → vertical pixel uses non-uniform spacing so the 0 dB
 # region gets more resolution than the deep cut region (matching
 # the visual feel of pro DAW faders).
-const SCALE_MARKS_DB: PackedFloat32Array = PackedFloat32Array(
-		[6.0, 0.0, -6.0, -24.0, -72.0])
+const SCALE_MARKS_DB: Array = [6.0, 0.0, -6.0, -24.0, -72.0]
 
 # Color thresholds (dBFS) — Pro Tools / Logic convention.
 const DB_GREEN_MAX: float = -12.0
@@ -290,8 +289,7 @@ class _BusStrip extends Control:
 	const DB_YELLOW_MAX: float = -6.0
 	const DB_METER_FLOOR: float = -60.0
 	const DB_METER_CEIL: float = 6.0
-	const SCALE_MARKS_DB: PackedFloat32Array = PackedFloat32Array(
-			[6.0, 0.0, -6.0, -24.0, -72.0])
+	const SCALE_MARKS_DB: Array = [6.0, 0.0, -6.0, -24.0, -72.0]
 	const COLOR_GREEN := Color(0.36, 0.83, 0.46)
 	const COLOR_YELLOW := Color(0.95, 0.82, 0.32)
 	const COLOR_RED := Color(0.93, 0.40, 0.32)
