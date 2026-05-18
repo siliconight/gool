@@ -197,6 +197,10 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		strip.set_fader_db(initial_db, false)  # silent (no signal emit)
 		strip.custom_minimum_size = Vector2(STRIP_WIDTH, STRIP_HEIGHT)
 		strip.db_changed.connect(_on_strip_db_changed)
+		# v0.27.0: S/M/B signal forwarding.
+		strip.mute_changed.connect(_on_strip_mute_changed)
+		strip.solo_changed.connect(_on_strip_solo_changed)
+		strip.bypass_changed.connect(_on_strip_bypass_changed)
 		_strip_container.add_child(strip)
 		_strips.append(strip)
 
@@ -229,6 +233,17 @@ func _poll() -> void:
 		_last_bus_names = names
 
 	# Push peak values into the existing strips.
+	#
+	# v0.27.0: stats payload now also carries muted/soloed/bypassed,
+	# but we DO NOT push those into the strips. Rationale: the dock's
+	# S/M/B state is authoritative for what the USER clicked locally.
+	# If we synced runtime → dock here, any local click would visually
+	# flicker (toggle on → next poll says "still off in runtime" →
+	# button un-pops) until the runtime's atomic update lands. Better
+	# UX is "click is instant + sticky." The trade-off is dock state
+	# can diverge from runtime state if some other code path changes
+	# the runtime state mid-session (unusual). Future improvement:
+	# push dock state TO runtime on F5 start so initial state matches.
 	for i in stats.size():
 		if i >= _strips.size():
 			break
@@ -251,6 +266,10 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 		strip.set_fader_db(0.0, false)
 		strip.custom_minimum_size = Vector2(STRIP_WIDTH, STRIP_HEIGHT)
 		strip.db_changed.connect(_on_strip_db_changed)
+		# v0.27.0: S/M/B signal forwarding (matches _rebuild_strips_from_config).
+		strip.mute_changed.connect(_on_strip_mute_changed)
+		strip.solo_changed.connect(_on_strip_solo_changed)
+		strip.bypass_changed.connect(_on_strip_bypass_changed)
 		_strip_container.add_child(strip)
 		_strips.append(strip)
 
@@ -263,6 +282,30 @@ func _on_strip_db_changed(bus_name: String, db: float) -> void:
 		return
 	if _debugger_plugin.has_method("send_set_bus_gain"):
 		_debugger_plugin.send_set_bus_gain(bus_name, db)
+
+
+# v0.27.0: S/M/B click forwarders. Same drop-when-no-session
+# behavior as the fader: editor-mode clicks update the dock visually
+# but go nowhere; F5-mode clicks reach the running game.
+func _on_strip_mute_changed(bus_name: String, muted: bool) -> void:
+	if _debugger_plugin == null:
+		return
+	if _debugger_plugin.has_method("send_set_bus_mute"):
+		_debugger_plugin.send_set_bus_mute(bus_name, muted)
+
+
+func _on_strip_solo_changed(bus_name: String, soloed: bool) -> void:
+	if _debugger_plugin == null:
+		return
+	if _debugger_plugin.has_method("send_set_bus_solo"):
+		_debugger_plugin.send_set_bus_solo(bus_name, soloed)
+
+
+func _on_strip_bypass_changed(bus_name: String, bypassed: bool) -> void:
+	if _debugger_plugin == null:
+		return
+	if _debugger_plugin.has_method("send_set_bus_bypass"):
+		_debugger_plugin.send_set_bus_bypass(bus_name, bypassed)
 
 
 # ---- _BusStrip widget ------------------------------------------------
@@ -301,6 +344,21 @@ class _BusStrip extends Control:
 	const COLOR_FADER_TRACK := Color(0.20, 0.22, 0.26)
 	const COLOR_FADER_HANDLE := Color(0.65, 0.72, 0.85)
 	const COLOR_FADER_HANDLE_ACTIVE := Color(0.78, 0.88, 0.95)
+	# v0.27.0: S/M/B button colors. Inactive uses the same dark grey
+	# as the fader track for visual consistency. Active colors picked
+	# to match DAW convention:
+	#   - Solo: yellow (the existing COLOR_YELLOW from the meter zones,
+	#     repurposed — solo is the "focus / attention" button in most
+	#     DAWs)
+	#   - Mute: red (the existing COLOR_RED — mute kills audio, red is
+	#     the universal "stop / silenced" signal)
+	#   - Bypass: muted purple, distinct from the other two and from
+	#     any meter zone color so an active bypass can't be confused
+	#     with a hot peak or a solo
+	const COLOR_BUTTON_INACTIVE := Color(0.20, 0.22, 0.26)
+	const COLOR_BUTTON_BYPASS_ACTIVE := Color(0.55, 0.55, 0.85)
+	const COLOR_BUTTON_LABEL := Color(0.95, 0.95, 0.95)
+	const COLOR_BUTTON_OUTLINE := Color(0.35, 0.37, 0.42)
 
 	var bus_name: String = ""
 	var _peak_smoothed: float = 0.0
@@ -308,6 +366,13 @@ class _BusStrip extends Control:
 	var _peak_held_age: float = 0.0
 	var _fader_db: float = 0.0
 	var _fader_dragging: bool = false
+	# v0.27.0: S/M/B local state. Authoritative for the dock's visual
+	# state; mirrored to the runtime via the debugger channel on each
+	# user click. Does NOT auto-sync from poll (see notes in
+	# CHANGELOG and the GoolMixerDock-level _poll handler below).
+	var _is_muted: bool = false
+	var _is_soloed: bool = false
+	var _is_bypassed: bool = false
 
 	const PEAK_HOLD_TIME: float = 1.5
 	const PEAK_DROP_RATE: float = 0.5
@@ -322,6 +387,25 @@ class _BusStrip extends Control:
 	const FADER_HANDLE_H: float = 10.0
 	const METER_W: float = 14.0
 	const SCALE_LABEL_W: float = 30.0
+	# v0.27.0: S/M/B button strip between NAME_BAND and the fader
+	# region. 20px tall total: 16px for the buttons + 2px top padding
+	# + 2px bottom padding. Three buttons in a row, BUTTON_W wide each
+	# with BUTTON_GAP between, centered horizontally. Total content
+	# width: BUTTON_W*3 + BUTTON_GAP*2 = 86px (leaves 5px margin on
+	# either side of a 96px-wide strip — see STRIP_WIDTH in the outer
+	# class).
+	const BUTTON_BAND: float = 20.0
+	const BUTTON_W: float = 26.0
+	const BUTTON_H: float = 16.0
+	const BUTTON_GAP: float = 4.0
+
+	# v0.27.0: S/M/B change signals. Emitted when the user clicks the
+	# corresponding button. The outer GoolMixerDock forwards these to
+	# the debugger plugin's send_set_bus_mute / send_set_bus_solo /
+	# send_set_bus_bypass helpers.
+	signal mute_changed(bus_name: String, muted: bool)
+	signal solo_changed(bus_name: String, soloed: bool)
+	signal bypass_changed(bus_name: String, bypassed: bool)
 
 	# v0.26.5: LineEdit child for click-to-type dB entry. Hidden by
 	# default; shown when the user clicks the dB readout at the
@@ -355,6 +439,61 @@ class _BusStrip extends Control:
 		queue_redraw()
 		if emit:
 			db_changed.emit(bus_name, _fader_db)
+
+	# v0.27.0: programmatic setters for S/M/B state. emit=false is the
+	# init-time path (no parent connection yet). The runtime-sync path
+	# (e.g. on F5 start to push editor-state into the game) would use
+	# emit=true to fire the signal and forward through the debugger
+	# channel — currently unused; reserved for the "sync local state
+	# to runtime on F5 start" follow-up flagged in v0.27.0 CHANGELOG.
+	func set_muted(muted: bool, emit: bool = true) -> void:
+		if _is_muted == muted:
+			return
+		_is_muted = muted
+		queue_redraw()
+		if emit:
+			mute_changed.emit(bus_name, _is_muted)
+
+	func set_soloed(soloed: bool, emit: bool = true) -> void:
+		if _is_soloed == soloed:
+			return
+		_is_soloed = soloed
+		queue_redraw()
+		if emit:
+			solo_changed.emit(bus_name, _is_soloed)
+
+	func set_bypassed(bypassed: bool, emit: bool = true) -> void:
+		if _is_bypassed == bypassed:
+			return
+		_is_bypassed = bypassed
+		queue_redraw()
+		if emit:
+			bypass_changed.emit(bus_name, _is_bypassed)
+
+	# Button rect helpers. Compute once, used by both _draw and
+	# _gui_input — keeping these in one place prevents the
+	# rendered-vs-hittable mismatch the lessons doc warns about
+	# under "Hit rect math must match draw rect math".
+	func _button_row_y() -> float:
+		return NAME_BAND + 2.0  # 2px top padding inside BUTTON_BAND
+
+	func _button_row_start_x() -> float:
+		var content_w: float = BUTTON_W * 3.0 + BUTTON_GAP * 2.0
+		return (size.x - content_w) * 0.5
+
+	func _solo_rect() -> Rect2:
+		return Rect2(_button_row_start_x(), _button_row_y(),
+				BUTTON_W, BUTTON_H)
+
+	func _mute_rect() -> Rect2:
+		return Rect2(_button_row_start_x() + (BUTTON_W + BUTTON_GAP),
+				_button_row_y(),
+				BUTTON_W, BUTTON_H)
+
+	func _bypass_rect() -> Rect2:
+		return Rect2(_button_row_start_x() + (BUTTON_W + BUTTON_GAP) * 2.0,
+				_button_row_y(),
+				BUTTON_W, BUTTON_H)
 
 	# ---- v0.26.5: click-to-edit dB readout ----
 
@@ -497,8 +636,12 @@ class _BusStrip extends Control:
 		var fs := get_theme_default_font_size()
 		var fs_small := maxi(fs - 2, 8)
 
-		var fader_region_y: float = NAME_BAND + 4.0
-		var fader_region_h: float = h - NAME_BAND - READOUT_BAND - 8.0
+		# v0.27.0: fader region shifted down to make room for the
+		# BUTTON_BAND (S/M/B buttons sit between the bus name and the
+		# fader). Both _draw and _gui_input compute the region the
+		# same way — if you change one, change the other.
+		var fader_region_y: float = NAME_BAND + BUTTON_BAND + 4.0
+		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - 8.0
 
 		# --- Bus name (top) ---
 		if f != null:
@@ -510,6 +653,20 @@ class _BusStrip extends Control:
 					HORIZONTAL_ALIGNMENT_CENTER,
 					-1, fs,
 					COLOR_TEXT)
+
+		# --- v0.27.0: S/M/B buttons (between name and fader region) ---
+		# Each button is a filled rect with a single-letter label
+		# centered inside. Active state uses a saturated color (yellow
+		# for solo, red for mute, purple for bypass); inactive uses the
+		# dark fader-track grey for visual cohesion with the rest of
+		# the strip. Outline always visible at low contrast so the
+		# button is identifiable even when inactive.
+		_draw_smb_button(_solo_rect(),   "S", _is_soloed,
+				COLOR_YELLOW, f, fs_small)
+		_draw_smb_button(_mute_rect(),   "M", _is_muted,
+				COLOR_RED, f, fs_small)
+		_draw_smb_button(_bypass_rect(), "B", _is_bypassed,
+				COLOR_BUTTON_BYPASS_ACTIVE, f, fs_small)
 
 		# --- Meter (left column) ---
 		var meter_x: float = 6.0
@@ -606,8 +763,10 @@ class _BusStrip extends Control:
 	func _gui_input(event: InputEvent) -> void:
 		var w: float = size.x
 		var h: float = size.y
-		var fader_region_y: float = NAME_BAND + 4.0
-		var fader_region_h: float = h - NAME_BAND - READOUT_BAND - 8.0
+		# v0.27.0: fader region accounts for BUTTON_BAND between the
+		# name and the fader. Must match the _draw math exactly.
+		var fader_region_y: float = NAME_BAND + BUTTON_BAND + 4.0
+		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - 8.0
 		var fader_x: float = 6.0 + METER_W + 14.0
 		var fader_full_rect := Rect2(
 				fader_x, fader_region_y,
@@ -624,7 +783,29 @@ class _BusStrip extends Control:
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
 			if mb.button_index == MOUSE_BUTTON_LEFT:
-				# Readout click → start editing.
+				# v0.27.0: S/M/B buttons. Checked first because they
+				# sit at the top of the strip, above the fader and
+				# readout regions. Click toggles local state and emits
+				# the matching signal; outer dock forwards to runtime.
+				if mb.pressed and _solo_rect().has_point(mb.position):
+					_is_soloed = not _is_soloed
+					queue_redraw()
+					solo_changed.emit(bus_name, _is_soloed)
+					accept_event()
+					return
+				if mb.pressed and _mute_rect().has_point(mb.position):
+					_is_muted = not _is_muted
+					queue_redraw()
+					mute_changed.emit(bus_name, _is_muted)
+					accept_event()
+					return
+				if mb.pressed and _bypass_rect().has_point(mb.position):
+					_is_bypassed = not _is_bypassed
+					queue_redraw()
+					bypass_changed.emit(bus_name, _is_bypassed)
+					accept_event()
+					return
+				# Readout click → start editing (v0.26.5).
 				if mb.pressed and readout_rect.has_point(mb.position):
 					_start_db_edit()
 					accept_event()
@@ -653,3 +834,34 @@ class _BusStrip extends Control:
 			return  # no change, don't spam debugger
 		_fader_db = new_db
 		db_changed.emit(bus_name, _fader_db)
+
+	# v0.27.0: render one S/M/B button. Active state uses the supplied
+	# `active_color` as fill; inactive state uses the dark fader-track
+	# grey. A 1px outline is drawn either way so the button shape is
+	# always identifiable. The label is a single capital letter drawn
+	# centered both horizontally and vertically (using font ascent for
+	# the vertical center — Godot's draw_string takes a baseline, not
+	# a top — see lessons_learned.md §"draw_string baseline vs top").
+	func _draw_smb_button(rect: Rect2, letter: String, active: bool,
+			active_color: Color, font: Font, font_size: int) -> void:
+		var fill_color: Color = active_color if active else COLOR_BUTTON_INACTIVE
+		draw_rect(rect, fill_color, true)
+		draw_rect(rect, COLOR_BUTTON_OUTLINE, false, 1.0)
+		if font == null:
+			return
+		var label_size := font.get_string_size(
+				letter, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+		# Vertical center: rect mid + (ascent - descent)/2 puts the
+		# baseline so the glyph visually sits in the middle. The
+		# approximation ascent ≈ font_size * 0.75 is good enough for
+		# the small button labels; pixel-perfect centering would need
+		# Font.get_ascent which is similar but font-dependent.
+		var ascent: float = float(font_size) * 0.75
+		var text_x: float = rect.position.x + (rect.size.x - label_size.x) * 0.5
+		var text_y: float = rect.position.y + (rect.size.y + ascent) * 0.5
+		draw_string(font,
+				Vector2(text_x, text_y),
+				letter,
+				HORIZONTAL_ALIGNMENT_CENTER,
+				-1, font_size,
+				COLOR_BUTTON_LABEL)

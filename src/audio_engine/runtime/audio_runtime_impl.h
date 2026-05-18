@@ -113,6 +113,11 @@ public:
     uint32_t    GetBusParentIndex(uint32_t busIndex) const noexcept;
     float       ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
 
+    // v0.27.0: per-bus mute / solo / effect-bypass state read-out.
+    bool        IsBusMuted(uint32_t busIndex) const noexcept;
+    bool        IsBusSoloed(uint32_t busIndex) const noexcept;
+    bool        IsBusEffectsBypassed(uint32_t busIndex) const noexcept;
+
     // v0.25.2: SoundDefinition lookup, forwarded to AudioAssetRegistry.
     const SoundDefinition* GetSoundDefinition(AudioSoundId id) const noexcept;
 
@@ -210,6 +215,10 @@ public:
 
     // Bus / effect parameter control
     AudioResult           SetBusGainDb(BusId busId, float gainDb);
+    // v0.27.0: per-bus mute / solo / effect-bypass setters.
+    AudioResult           SetBusMuted(BusId busId, bool muted);
+    AudioResult           SetBusSoloed(BusId busId, bool soloed);
+    AudioResult           SetBusEffectsBypassed(BusId busId, bool bypassed);
     BusId                 FindBusIdByName(std::string_view name) const;
     AudioResult           SetEffectParameter(BusId    busId,
                                               uint32_t effectIndex,

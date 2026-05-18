@@ -111,6 +111,20 @@ func send_set_bus_gain(bus_name: String, db: float) -> bool:
 	return _send_to_current_session("gool:set_bus_gain", [bus_name, db])
 
 
+# v0.27.0: per-bus mute / solo / effect-bypass send helpers.
+# Mirror the send_set_bus_gain pattern.
+func send_set_bus_mute(bus_name: String, muted: bool) -> bool:
+	return _send_to_current_session("gool:set_bus_mute", [bus_name, muted])
+
+
+func send_set_bus_solo(bus_name: String, soloed: bool) -> bool:
+	return _send_to_current_session("gool:set_bus_solo", [bus_name, soloed])
+
+
+func send_set_bus_bypass(bus_name: String, bypassed: bool) -> bool:
+	return _send_to_current_session("gool:set_bus_bypass", [bus_name, bypassed])
+
+
 # Common helper. Looks up the current session, sends the message.
 # Defensive against session lifecycle races: if _current_session_id
 # was set but the session is gone, get_session returns null and we

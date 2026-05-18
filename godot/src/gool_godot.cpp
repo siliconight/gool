@@ -181,6 +181,19 @@ public:
                               &GoolAudioRuntime::set_bus_gain_db);
         ClassDB::bind_method(D_METHOD("set_master_volume_db", "db"),
                               &GoolAudioRuntime::set_master_volume_db);
+        // v0.27.0: per-bus mute / solo / effect-bypass setters. Used
+        // by the mixer dock's S/M/B buttons via the EngineDebugger
+        // editor↔game channel. Same name-resolution path as
+        // set_bus_gain_db (FindBusIdByName + per-state setter).
+        ClassDB::bind_method(D_METHOD("set_bus_muted",
+                                       "bus_name", "muted"),
+                              &GoolAudioRuntime::set_bus_muted);
+        ClassDB::bind_method(D_METHOD("set_bus_soloed",
+                                       "bus_name", "soloed"),
+                              &GoolAudioRuntime::set_bus_soloed);
+        ClassDB::bind_method(D_METHOD("set_bus_effects_bypassed",
+                                       "bus_name", "bypassed"),
+                              &GoolAudioRuntime::set_bus_effects_bypassed);
         ClassDB::bind_method(D_METHOD("register_sound_definition",
                                        "name", "spatialized", "looping",
                                        "min_distance", "max_distance",
@@ -541,6 +554,14 @@ public:
                                 ? int64_t{-1}
                                 : static_cast<int64_t>(parent);
             d["peak_linear"] = runtime_->ReadAndResetBusPeakLinear(i);
+            // v0.27.0: per-bus mute / solo / effect-bypass state. Read
+            // each callback so the mixer dock's S/M/B button visuals
+            // reflect the actual runtime state, even if state was
+            // changed by something other than the dock (e.g. a host
+            // script calling Gool.set_bus_muted directly).
+            d["muted"]    = runtime_->IsBusMuted(i);
+            d["soloed"]   = runtime_->IsBusSoloed(i);
+            d["bypassed"] = runtime_->IsBusEffectsBypassed(i);
             out.push_back(d);
         }
         return out;
@@ -861,6 +882,67 @@ public:
     // master output level. Equivalent to set_bus_gain_db("Master", db).
     bool set_master_volume_db(double db) {
         return set_bus_gain_db(String("Master"), db);
+    }
+
+    // v0.27.0: per-bus mute / solo / effect-bypass setters.
+    //
+    // Same name → BusId resolution pattern as set_bus_gain_db. The
+    // underlying engine APIs take BusId; the binding does the lookup
+    // once per call (O(N) over kMaxBuses, ~16 buses max — negligible).
+    //
+    // Used by the mixer dock's S/M/B buttons via the EngineDebugger
+    // editor↔game channel. The dock sends "gool:set_bus_mute" / "...solo"
+    // / "...bypass" messages; the game-side handler in
+    // addons/gool/runtime_singleton.gd::_on_debugger_capture routes
+    // them to these methods.
+    //
+    // Returns true on success, false if the bus name doesn't exist or
+    // the runtime isn't initialized. Unknown-bus warnings include the
+    // same diagnostic hint as set_bus_gain_db.
+
+    bool set_bus_muted(const String& bus_name, bool muted) {
+        if (!runtime_) return false;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(),
+                              static_cast<size_t>(utf8.length())));
+        if (id == audio::kInvalidBusId) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: set_bus_muted unknown bus '")
+                + bus_name + String("'. Check bus name in res://gool/config.json."));
+            return false;
+        }
+        return runtime_->SetBusMuted(id, muted) == audio::AudioResult::Success;
+    }
+
+    bool set_bus_soloed(const String& bus_name, bool soloed) {
+        if (!runtime_) return false;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(),
+                              static_cast<size_t>(utf8.length())));
+        if (id == audio::kInvalidBusId) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: set_bus_soloed unknown bus '")
+                + bus_name + String("'. Check bus name in res://gool/config.json."));
+            return false;
+        }
+        return runtime_->SetBusSoloed(id, soloed) == audio::AudioResult::Success;
+    }
+
+    bool set_bus_effects_bypassed(const String& bus_name, bool bypassed) {
+        if (!runtime_) return false;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(),
+                              static_cast<size_t>(utf8.length())));
+        if (id == audio::kInvalidBusId) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: set_bus_effects_bypassed unknown bus '")
+                + bus_name + String("'. Check bus name in res://gool/config.json."));
+            return false;
+        }
+        return runtime_->SetBusEffectsBypassed(id, bypassed) == audio::AudioResult::Success;
     }
 
     void register_sound_definition(const String& name,

@@ -12,20 +12,269 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **Phase 3.3b-2 — S/M/B buttons**: new engine APIs
-  (`SetBusMuted`, `SetBusSoloed`, `SetBusBypass`) + UI buttons on
-  each strip, wired via the editor↔game debugger channel from
-  v0.26.0.
 - **Phase 3.3c — Effect chain edit**: live tweaking of effect
   parameters (compressor threshold, ratio, attack, release, etc.)
   via the same channel. Pairs naturally with the sidechain tuning
   doc shipped in v0.26.1.
 - **Phase 3.3d — Topology + persistence**: bus add/remove + save
-  dock changes back to `config.json` preserving comments.
+  dock changes back to `config.json` preserving comments. Includes
+  the "sync local dock state TO runtime on F5 start" follow-up
+  flagged in 0.27.0 below.
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel track from
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
+
+## [0.27.0] - 2026-05-17 — Phase 3.3b-2: per-bus Solo / Mute / Bypass
+
+### What's new
+
+Each strip in the mixer dock now has **three buttons** between
+the bus name and the fader: **S** (solo), **M** (mute), **B**
+(effects bypass). Click to toggle; click again to clear.
+Visual state matches DAW convention — solo is yellow, mute is
+red, bypass is purple. Inactive buttons render as dark grey
+with a thin outline so the layout is identifiable even when
+nothing is toggled.
+
+Toggling a button immediately updates the running game's audio
+via the editor↔game debugger channel (the same pipe carrying
+fader changes since v0.26.0). With the game stopped, the
+buttons still toggle visually but the changes go nowhere —
+matching the fader's editor-mode behavior.
+
+### Semantics (matches Logic Pro / Pro Tools / Ableton)
+
+- **Mute (M)**: bus output is zeroed before peak capture and
+  parent routing. Meter goes to silence; any downstream
+  sidechain consuming this bus sees zero (so a muted SFX bus
+  will NOT duck Music if that ducking is sidechained from SFX).
+- **Solo (S)**: if ANY bus has solo active, all non-soloed
+  buses are silenced. "Solo mode" is enabled bus-graph-wide
+  the moment one bus is soloed.
+- **Solo wins over mute**: a bus that's both muted AND soloed
+  PLAYS. This is standard DAW convention — the solo button is
+  the user saying "I want to hear THIS no matter what other
+  state I previously set."
+- **Bypass (B)**: skips the bus's effect chain entirely. The
+  bus output ends up as a clean copy of input (no compression,
+  filtering, reverb, etc.). Mute and solo still apply after
+  bypass. Useful for A/B comparison of dry vs processed signal
+  — toggle B on Music to hear what the sidechain compression
+  is actually doing.
+
+### New engine APIs
+
+C++ — `BusGraph` (private/internal):
+
+```cpp
+void SetBusMuted(uint32_t busIndex, bool muted);
+void SetBusSoloed(uint32_t busIndex, bool soloed);
+void SetBusEffectsBypassed(uint32_t busIndex, bool bypassed);
+bool IsBusMuted(uint32_t busIndex) const;
+bool IsBusSoloed(uint32_t busIndex) const;
+bool IsBusEffectsBypassed(uint32_t busIndex) const;
+bool AnyBusSoloed() const;  // used by mixer per-callback
+```
+
+C++ — `AudioRuntime` (public, in `include/audio_engine/`):
+
+```cpp
+// Getters by index (paired with ReadAndResetBusPeakLinear etc.):
+bool IsBusMuted(uint32_t busIndex) const noexcept;
+bool IsBusSoloed(uint32_t busIndex) const noexcept;
+bool IsBusEffectsBypassed(uint32_t busIndex) const noexcept;
+
+// Setters by BusId (paired with SetBusGainDb):
+AudioResult SetBusMuted(BusId busId, bool muted);
+AudioResult SetBusSoloed(BusId busId, bool soloed);
+AudioResult SetBusEffectsBypassed(BusId busId, bool bypassed);
+```
+
+Godot binding (name-based, mirroring `set_bus_gain_db`):
+
+```gdscript
+Gool.set_bus_muted("SFX", true)
+Gool.set_bus_soloed("Music", true)
+Gool.set_bus_effects_bypassed("Master", true)
+```
+
+Unknown bus name → false return + `push_warning` (same as
+`set_bus_gain_db`).
+
+### Implementation notes
+
+State lives in **3 `std::atomic<bool>` per bus** inside the
+`Bus` struct in `BusGraph`. Control thread writes them
+directly — no command queue, no smoothing. Unlike gain
+changes (which ramp over ~5ms via the mixer command queue),
+S/M/B toggles are instantaneous at the next audio callback
+boundary. This is the right trade-off for these specific
+controls — a fading mute is rarely what you want, and the
+"instant click → instant silence" feedback loop is much
+crisper for diagnostic work.
+
+Render-loop integration is in `AudioMixer::RunBusGraph`. Once
+per callback, `AnyBusSoloed()` is computed (O(N) over
+`kMaxBuses`, ~16-32 buses, well under 100 ns). Per bus:
+
+1. Copy input → output (existing)
+2. **NEW**: if `effectsBypassed`, skip the effect chain
+   entirely; otherwise run effects as before
+3. **NEW**: if `(!soloed && (muted || anySoloed))`, zero the
+   output buffer
+4. Capture peak from the (possibly-zeroed) output buffer —
+   meter reflects what's actually heard
+5. Route to parent (existing)
+
+The mute is applied **after effects but before peak capture**.
+This is the right ordering: it means the meter shows what the
+user actually hears (silence when muted), and downstream
+sidechain consumers see the gated signal. A future "pre-fader
+metering" mode would be a separate option if anyone wants it.
+
+### Extended `get_bus_stats()` payload
+
+The dictionary per bus now carries three more fields:
+
+```gdscript
+{
+  "name": "Music",
+  "parent": 0,
+  "peak_linear": 0.42,
+  "muted": false,    # NEW in v0.27.0
+  "soloed": false,   # NEW
+  "bypassed": false  # NEW
+}
+```
+
+Host scripts that read `get_bus_stats()` for HUD diagnostics
+can use these to surface bus state. The mixer dock itself
+does NOT read them back into its button state — see "Dock
+state vs runtime state" below.
+
+### New debugger commands
+
+The editor↔game channel (established v0.25.0, bidirectional
+since v0.26.0) gains three more verbs:
+
+```
+gool:set_bus_mute    data=[bus_name: String, muted: bool]
+gool:set_bus_solo    data=[bus_name: String, soloed: bool]
+gool:set_bus_bypass  data=[bus_name: String, bypassed: bool]
+```
+
+All three are handled in `runtime_singleton.gd::_on_debugger_capture`
+and dispatch to local handlers that call
+`_runtime.set_bus_muted/soloed/effects_bypassed` directly. The
+discipline from `docs/engineering/lessons_learned.md`
+("direct member calls, not bare-name autoload-method calls")
+applies — followed throughout.
+
+### Dock state vs runtime state — a design call
+
+The dock's S/M/B state is **local and authoritative for
+display**. When the user clicks a button, the dock updates
+its own state immediately and forwards the change to the
+runtime. The poll cycle does NOT push the runtime's
+state back into the dock buttons.
+
+Why: if poll did sync, a fresh click would briefly toggle the
+visual state, then the next 30ms poll would say "still off
+in runtime" (because the network round-trip hasn't completed)
+and the button would un-pop. Click flicker. Bad UX.
+
+Trade-off: dock state can disagree with runtime state in two
+cases:
+
+1. **At F5 start**: the runtime begins with all flags false,
+   but the dock retains whatever the user clicked in editor
+   mode. Solution: future improvement, sync dock → runtime
+   on F5 start. Tracked under Phase 3.3d.
+2. **External state changes**: if some other code calls
+   `Gool.set_bus_muted(...)` directly, the dock doesn't see
+   it. Realistic only if you're scripting the mixer from
+   game code (unusual; most use cases route through the
+   dock).
+
+This matches the fader's design (v0.26.0 CHANGELOG section
+"No auto-sync from running game"). Both ergonomically the
+right call until persistence (3.3d) closes the loop.
+
+### Files touched (14 total)
+
+C++ engine (8 files):
+- `include/audio_engine/audio_runtime.h` — public API: 3 getters by index, 3 setters by BusId
+- `src/audio_engine/mixer/bus_graph.h` — Bus struct + 7 method decls
+- `src/audio_engine/mixer/bus_graph.cpp` — 7 method impls
+- `src/audio_engine/mixer/audio_mixer.cpp` — gating logic in RunBusGraph
+- `src/audio_engine/runtime/audio_runtime.cpp` — pImpl forwarders + impl methods
+- `src/audio_engine/runtime/audio_runtime_impl.h` — impl method decls
+- `include/audio_engine/version.h` + CMakeLists.txt — version
+- `tests/unit/version_test.cpp` — pinned assertions
+
+Godot binding (1 file):
+- `godot/src/gool_godot.cpp` — 3 method impls + 3 ClassDB binds + extended `get_bus_stats` payload
+
+GDScript (3 files):
+- `godot/addons/gool/runtime_singleton.gd` — 3 debugger-command cases + 3 handler funcs
+- `godot/addons/gool/editor/debugger_plugin.gd` — 3 send helpers
+- `godot/addons/gool/editor/mixer_dock.gd` — `_BusStrip` gains 3 signals, 3 state vars, 3 public setters, button rect helpers, `_draw_smb_button`, drawing in `_draw`, click handling in `_gui_input`, BUTTON_BAND layout. Outer dock: 3 on_strip_X_changed handlers, signal connections in both rebuild paths.
+
+Docs:
+- `CHANGELOG.md` + this entry
+- `README.md` — version
+
+### Pre-ship sweep results
+
+All four checks from `docs/engineering/lessons_learned.md`
+ran clean:
+
+1. **Tab discipline**: ✓
+2. **Const-expression discipline**: ✓
+3. **Inner-class scope discipline**: ✓
+4. **Autoload method existence** (with string-literal
+   stripping from v0.26.5): ✓
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.27.0
+- `version_test` reports `0.27.0`
+- C++ engine compile-checked from scratch (clean rebuild after
+  version bump — caught a stale-build error in version_test
+  the first attempt; lesson captured below)
+- Godot binding C++ syntax-checked (full link requires
+  godot-cpp not available in build sandbox; CI runner has it)
+- All four GDScript pre-ship sweeps clean
+- Mixer dock UI changes confined to `_BusStrip` and the strip-
+  signal-forwarder layer; outer dock topology, debugger-bridge
+  scaffolding, and config-loader code unchanged
+
+### What's NOT in this release
+
+- **Right-click context menu on buttons** (e.g. "solo all
+  except this one", "clear all solos"): nice-to-have, deferred.
+- **Keyboard shortcuts** while a strip is focused (M for mute,
+  S for solo, etc.): deferred until a clear use case surfaces.
+- **Persistence to config.json**: still 3.3d's domain.
+- **Sync dock state TO runtime on F5 start**: noted above.
+  Currently the runtime starts fresh; the dock retains
+  editor-mode state. Cleanest place to fix is when the dock
+  detects a session starting (`get_latest_bus_stats()` going
+  from empty → non-empty); push all local state to the new
+  session's runtime before continuing the normal poll loop.
+
+### Lesson captured
+
+Added a small note to `docs/engineering/lessons_learned.md`
+under "Pre-ship build hygiene": when a version bump is part of
+a release, **always do a clean rebuild** before running
+`version_test`. The first ship attempt of 0.27.0 failed
+`version_test` because the C++ compile had run BEFORE the
+version-bump sed pass, leaving `version.o` with the old
+constants. A clean rebuild fixed it instantly. Easy to miss
+because the test failure is loud and confusing ("v.minor ==
+27 failed" when version.h clearly says 27).
 
 ## [0.26.6] - 2026-05-17 — Fix nightly fuzz job (src/ not on fuzz target include path)
 
@@ -11819,7 +12068,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.6...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/siliconight/gool/releases/tag/v0.27.0
 [0.26.6]: https://github.com/siliconight/gool/releases/tag/v0.26.6
 [0.26.5]: https://github.com/siliconight/gool/releases/tag/v0.26.5
 [0.26.4]: https://github.com/siliconight/gool/releases/tag/v0.26.4

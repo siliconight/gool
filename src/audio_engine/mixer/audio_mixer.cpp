@@ -707,6 +707,12 @@ void AudioMixer::RunBusGraph(uint32_t frames, uint32_t channels) noexcept {
     const auto& order = busGraph_->RenderOrder();
     const uint32_t total = frames * channels;
 
+    // v0.27.0: compute "any bus soloed" once per callback. Used inside
+    // the per-bus loop to decide whether non-soloed buses should be
+    // silenced ("solo mode"). One pass over kMaxBuses with relaxed
+    // atomic loads — well under 100 ns.
+    const bool anySoloed = busGraph_->AnyBusSoloed();
+
     for (uint32_t busIdx : order) {
         float*       output = busGraph_->OutputBuffer(busIdx);
         const float* input  = busGraph_->InputBuffer(busIdx);
@@ -717,16 +723,41 @@ void AudioMixer::RunBusGraph(uint32_t frames, uint32_t channels) noexcept {
         // Stage 2: run the effect chain. Each effect can read its sidechain
         // bus's *output* buffer (which is already filled because of topo
         // ordering).
-        const uint32_t fxCount = busGraph_->EffectCount(busIdx);
-        for (uint32_t e = 0; e < fxCount; ++e) {
-            IDspEffect* fx = busGraph_->EffectAt(busIdx, e);
-            if (!fx) continue;
-            const uint32_t scIdx = busGraph_->SidechainSourceIndex(busIdx, e);
-            const float*   scBuf = (scIdx != BusGraph::kInvalidIndex)
-                ? busGraph_->OutputBufferConst(scIdx)
-                : nullptr;
-            const uint32_t scCh  = (scBuf != nullptr) ? channels : 0;
-            fx->Process(output, frames, channels, scBuf, scCh);
+        //
+        // v0.27.0: skip the entire effect chain when the bus is marked
+        // effects-bypassed. Output stays as a clean copy of input. Useful
+        // for A/B comparison of dry vs processed signal.
+        if (!busGraph_->IsBusEffectsBypassed(busIdx)) {
+            const uint32_t fxCount = busGraph_->EffectCount(busIdx);
+            for (uint32_t e = 0; e < fxCount; ++e) {
+                IDspEffect* fx = busGraph_->EffectAt(busIdx, e);
+                if (!fx) continue;
+                const uint32_t scIdx = busGraph_->SidechainSourceIndex(busIdx, e);
+                const float*   scBuf = (scIdx != BusGraph::kInvalidIndex)
+                    ? busGraph_->OutputBufferConst(scIdx)
+                    : nullptr;
+                const uint32_t scCh  = (scBuf != nullptr) ? channels : 0;
+                fx->Process(output, frames, channels, scBuf, scCh);
+            }
+        }
+
+        // v0.27.0: apply mute/solo gating BEFORE peak capture and routing.
+        // Order matters:
+        //   - Capturing peak BEFORE gating would make the meter show pre-
+        //     mute audio (confusing UX — "I muted it but the meter still
+        //     moves").
+        //   - Capturing peak AFTER gating means the meter shows what's
+        //     actually heard (silent when muted/solo-silenced).
+        //
+        // Solo wins over mute: a bus that's both muted AND soloed plays.
+        // This matches Logic Pro / Pro Tools / Ableton convention.
+        // Sidechains downstream see the gated (post-mute) signal — if a
+        // muted SFX bus is the sidechain source for Music's compressor,
+        // Music won't duck. This is consistent with the gating model.
+        const bool muted  = busGraph_->IsBusMuted(busIdx);
+        const bool soloed = busGraph_->IsBusSoloed(busIdx);
+        if (!soloed && (muted || anySoloed)) {
+            std::memset(output, 0, sizeof(float) * total);
         }
 
         // v0.24.0: capture per-bus peak AFTER effects run. This is the

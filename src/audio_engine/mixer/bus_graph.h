@@ -121,6 +121,30 @@ public:
     // is stable for the lifetime of the BusGraph; never null.
     const char* BusName(uint32_t busIndex) const noexcept;
 
+    // ---- v0.27.0: per-bus mute / solo / effect-bypass ---------------------
+    //
+    // Setters write the atomic bools directly (cheap, no command queue
+    // overhead — these are user toggles, not per-sample parameters that
+    // need smoothing). Getters read with relaxed memory ordering. The
+    // render-thread side of these is inside AudioMixer::RunBusGraph
+    // which reads them once per bus per callback and applies the
+    // gating logic.
+    //
+    // Out-of-range busIndex: setters are no-ops, getters return false.
+
+    void SetBusMuted(uint32_t busIndex, bool muted) noexcept;
+    void SetBusSoloed(uint32_t busIndex, bool soloed) noexcept;
+    void SetBusEffectsBypassed(uint32_t busIndex, bool bypassed) noexcept;
+
+    bool IsBusMuted(uint32_t busIndex) const noexcept;
+    bool IsBusSoloed(uint32_t busIndex) const noexcept;
+    bool IsBusEffectsBypassed(uint32_t busIndex) const noexcept;
+
+    // Helper used by the mixer at the top of each render to decide
+    // whether to apply "solo mode" gating. O(N) over kMaxBuses; one
+    // atomic load per bus. Called once per audio callback.
+    bool AnyBusSoloed() const noexcept;
+
     // Look up a bus's proximity curve. Returns nullptr if the bus has no
     // proximity curve enabled.
     const ProximityCurve* ProximityCurveFor(BusId id) const noexcept;
@@ -146,6 +170,29 @@ private:
         // reader polls — won't happen with a single audio thread but
         // we play it safe). 0.0f when no audio has flowed yet.
         std::atomic<float>     peakSinceLastReadLinear{0.0f};
+
+        // v0.27.0: per-bus runtime state for mute / solo / effect-bypass.
+        // Atomic so the control thread can write directly (no command
+        // queue needed — these are simple toggles with no per-sample
+        // smoothing required). Render thread reads each at the top of
+        // its bus iteration in AudioMixer::RunBusGraph.
+        //
+        // Semantics (matches DAW convention):
+        //   - muted=true → output is zeroed before peak capture and
+        //     parent routing
+        //   - soloed=true → if ANY bus has soloed=true, all buses with
+        //     soloed=false are silenced. Solo wins over mute (a bus
+        //     that's both muted and soloed plays).
+        //   - effectsBypassed=true → skip the effect chain entirely;
+        //     output ends up as a copy of input. Mute/solo still apply
+        //     after bypass.
+        //
+        // All three reset to false at AudioRuntime startup (i.e. F5);
+        // session-only state, not persisted to config.json. Persistence
+        // is the domain of Phase 3.3d.
+        std::atomic<bool>      muted{false};
+        std::atomic<bool>      soloed{false};
+        std::atomic<bool>      effectsBypassed{false};
 
         // Hot-path mixing buffers. 64-byte aligned so cache-line-straddle
         // costs and AVX/AVX-512 unaligned-load penalties don't apply when

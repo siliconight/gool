@@ -243,6 +243,27 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 				var db: float = float(data[1])
 				_handle_set_bus_gain(bus_name, db)
 			return true
+		"set_bus_mute":
+			# v0.27.0
+			if data.size() >= 2:
+				var bus_name: String = String(data[0])
+				var muted: bool = bool(data[1])
+				_handle_set_bus_mute(bus_name, muted)
+			return true
+		"set_bus_solo":
+			# v0.27.0
+			if data.size() >= 2:
+				var bus_name: String = String(data[0])
+				var soloed: bool = bool(data[1])
+				_handle_set_bus_solo(bus_name, soloed)
+			return true
+		"set_bus_bypass":
+			# v0.27.0
+			if data.size() >= 2:
+				var bus_name: String = String(data[0])
+				var bypassed: bool = bool(data[1])
+				_handle_set_bus_bypass(bus_name, bypassed)
+			return true
 		_:
 			push_warning("[gool] unrecognized debugger command: %s" % message)
 			return true   # still "handled" — don't let editor complain
@@ -265,6 +286,34 @@ func _handle_set_bus_gain(bus_name: String, db: float) -> void:
 	var ok: bool = _runtime.set_bus_gain_db(bus_name, db)
 	if not ok:
 		push_warning("[gool] set_bus_gain('%s', %.2fdB) failed" % [bus_name, db])
+
+
+# v0.27.0: per-bus mute / solo / effect-bypass debugger-command handlers.
+# Same pattern as _handle_set_bus_gain — call _runtime.X directly (no
+# autoload-level wrapper, per the discipline in
+# docs/engineering/lessons_learned.md §"Wrappers vs direct member calls").
+func _handle_set_bus_mute(bus_name: String, muted: bool) -> void:
+	if not is_initialized():
+		return
+	var ok: bool = _runtime.set_bus_muted(bus_name, muted)
+	if not ok:
+		push_warning("[gool] set_bus_mute('%s', %s) failed" % [bus_name, muted])
+
+
+func _handle_set_bus_solo(bus_name: String, soloed: bool) -> void:
+	if not is_initialized():
+		return
+	var ok: bool = _runtime.set_bus_soloed(bus_name, soloed)
+	if not ok:
+		push_warning("[gool] set_bus_solo('%s', %s) failed" % [bus_name, soloed])
+
+
+func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
+	if not is_initialized():
+		return
+	var ok: bool = _runtime.set_bus_effects_bypassed(bus_name, bypassed)
+	if not ok:
+		push_warning("[gool] set_bus_bypass('%s', %s) failed" % [bus_name, bypassed])
 
 func _process(delta: float) -> void:
 	if _runtime != null and _runtime.is_initialized():

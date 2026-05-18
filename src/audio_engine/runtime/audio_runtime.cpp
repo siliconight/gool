@@ -78,6 +78,17 @@ float AudioRuntime::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
     return impl_->ReadAndResetBusPeakLinear(busIndex);
 }
 
+// v0.27.0: per-bus mute / solo / effect-bypass state read-out.
+bool AudioRuntime::IsBusMuted(uint32_t busIndex) const noexcept {
+    return impl_->IsBusMuted(busIndex);
+}
+bool AudioRuntime::IsBusSoloed(uint32_t busIndex) const noexcept {
+    return impl_->IsBusSoloed(busIndex);
+}
+bool AudioRuntime::IsBusEffectsBypassed(uint32_t busIndex) const noexcept {
+    return impl_->IsBusEffectsBypassed(busIndex);
+}
+
 // v0.25.2: SoundDefinition lookup wrapper.
 const SoundDefinition* AudioRuntime::GetSoundDefinition(
         AudioSoundId id) const noexcept {
@@ -164,6 +175,17 @@ bool AudioRuntime::GetVoiceNetworkStats(AudioPlayerId playerId,
 
 AudioResult AudioRuntime::SetBusGainDb(BusId busId, float gainDb) {
     return impl_->SetBusGainDb(busId, gainDb);
+}
+
+// v0.27.0: per-bus mute / solo / effect-bypass setters.
+AudioResult AudioRuntime::SetBusMuted(BusId busId, bool muted) {
+    return impl_->SetBusMuted(busId, muted);
+}
+AudioResult AudioRuntime::SetBusSoloed(BusId busId, bool soloed) {
+    return impl_->SetBusSoloed(busId, soloed);
+}
+AudioResult AudioRuntime::SetBusEffectsBypassed(BusId busId, bool bypassed) {
+    return impl_->SetBusEffectsBypassed(busId, bypassed);
 }
 BusId AudioRuntime::FindBusIdByName(std::string_view name) const {
     return impl_->FindBusIdByName(name);
@@ -316,6 +338,18 @@ uint32_t AudioRuntimeImpl::GetBusParentIndex(uint32_t busIndex) const noexcept {
 }
 float AudioRuntimeImpl::ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept {
     return busGraph_ ? busGraph_->ReadAndResetBusPeakLinear(busIndex) : 0.0f;
+}
+
+// v0.27.0: per-bus mute / solo / effect-bypass state read-out. Forwards
+// to BusGraph (which holds the atomics). False when no bus graph exists.
+bool AudioRuntimeImpl::IsBusMuted(uint32_t busIndex) const noexcept {
+    return busGraph_ ? busGraph_->IsBusMuted(busIndex) : false;
+}
+bool AudioRuntimeImpl::IsBusSoloed(uint32_t busIndex) const noexcept {
+    return busGraph_ ? busGraph_->IsBusSoloed(busIndex) : false;
+}
+bool AudioRuntimeImpl::IsBusEffectsBypassed(uint32_t busIndex) const noexcept {
+    return busGraph_ ? busGraph_->IsBusEffectsBypassed(busIndex) : false;
 }
 
 // v0.25.2: SoundDefinition lookup. assets_ is the AudioAssetRegistry
@@ -954,6 +988,36 @@ AudioResult AudioRuntimeImpl::SetBusGainDb(BusId busId, float gainDb) {
     cmd.busId      = busId;
     cmd.paramValue = gainDb;
     return mixer_->PostCommand(cmd) ? AudioResult::Success : AudioResult::QueueFull;
+}
+
+// v0.27.0: per-bus mute / solo / effect-bypass setters.
+// Unlike SetBusGainDb (which goes through the mixer command queue so
+// the gain change ramps over ~5 ms), these are simple atomic-bool
+// toggles. No command queue, no ramping. The render thread reads the
+// atomics each callback in AudioMixer::RunBusGraph.
+AudioResult AudioRuntimeImpl::SetBusMuted(BusId busId, bool muted) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    if (!busGraph_)    return AudioResult::NotInitialized;
+    const uint32_t idx = busGraph_->IndexOf(busId);
+    if (idx == BusGraph::kInvalidIndex) return AudioResult::InvalidArgument;
+    busGraph_->SetBusMuted(idx, muted);
+    return AudioResult::Success;
+}
+AudioResult AudioRuntimeImpl::SetBusSoloed(BusId busId, bool soloed) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    if (!busGraph_)    return AudioResult::NotInitialized;
+    const uint32_t idx = busGraph_->IndexOf(busId);
+    if (idx == BusGraph::kInvalidIndex) return AudioResult::InvalidArgument;
+    busGraph_->SetBusSoloed(idx, soloed);
+    return AudioResult::Success;
+}
+AudioResult AudioRuntimeImpl::SetBusEffectsBypassed(BusId busId, bool bypassed) {
+    if (!initialized_) return AudioResult::NotInitialized;
+    if (!busGraph_)    return AudioResult::NotInitialized;
+    const uint32_t idx = busGraph_->IndexOf(busId);
+    if (idx == BusGraph::kInvalidIndex) return AudioResult::InvalidArgument;
+    busGraph_->SetBusEffectsBypassed(idx, bypassed);
+    return AudioResult::Success;
 }
 
 BusId AudioRuntimeImpl::FindBusIdByName(std::string_view name) const {

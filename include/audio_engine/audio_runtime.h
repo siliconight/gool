@@ -258,6 +258,16 @@ public:
     uint32_t    GetBusParentIndex(uint32_t busIndex) const noexcept;
     float       ReadAndResetBusPeakLinear(uint32_t busIndex) noexcept;
 
+    // v0.27.0: per-bus mute / solo / effect-bypass state read-out for
+    // hosts that want to populate a mixer UI (e.g. the gool mixer dock's
+    // S/M/B buttons). All three return false for out-of-range indices.
+    // Read-only — set the state via SetBusMuted / SetBusSoloed /
+    // SetBusEffectsBypassed below, which take BusId (use
+    // FindBusIdByName to translate from string).
+    bool        IsBusMuted(uint32_t busIndex) const noexcept;
+    bool        IsBusSoloed(uint32_t busIndex) const noexcept;
+    bool        IsBusEffectsBypassed(uint32_t busIndex) const noexcept;
+
     // v0.25.2: look up a registered SoundDefinition by sound id.
     // Returns nullptr if no definition has been registered. Used by
     // bindings (and other code paths) to inherit routing metadata
@@ -490,6 +500,34 @@ public:
     // gain-applying stage on the render thread (~5 ms ramp); abrupt changes
     // do not click.
     AudioResult SetBusGainDb(BusId busId, float gainDb)
+        AUDIO_REQUIRES(GameThread);
+
+    // v0.27.0: per-bus mute / solo / effect-bypass setters.
+    //
+    // These map onto the engine's per-bus atomic bools (see BusGraph
+    // internals). They are NOT smoothed — flipping mute mid-playback
+    // produces an instantaneous transition (typically inaudible because
+    // the buffer boundary is at most ~21 ms). If clickless mute is
+    // needed for a specific UX, the host should fade gain to -∞ before
+    // toggling mute. For the mixer-dock and debug-UI use case, abrupt
+    // mute is the expected behavior.
+    //
+    // Semantics:
+    //   - muted=true: bus output is zeroed before peak capture and
+    //     parent routing (every callback)
+    //   - soloed=true: if ANY bus is soloed, all non-soloed buses are
+    //     silenced. Solo wins over mute (a muted+soloed bus plays).
+    //   - effectsBypassed=true: skip the bus's effect chain entirely;
+    //     output is a clean copy of input. Mute/solo still apply.
+    //
+    // All three return InvalidArgument for unknown BusId, Success
+    // otherwise. Direct atomic write — no command queue involvement,
+    // takes effect on the next audio callback.
+    AudioResult SetBusMuted(BusId busId, bool muted)
+        AUDIO_REQUIRES(GameThread);
+    AudioResult SetBusSoloed(BusId busId, bool soloed)
+        AUDIO_REQUIRES(GameThread);
+    AudioResult SetBusEffectsBypassed(BusId busId, bool bypassed)
         AUDIO_REQUIRES(GameThread);
 
     // Sets a parameter on the effect at `effectIndex` within `busId`'s

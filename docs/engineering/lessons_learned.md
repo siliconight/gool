@@ -92,7 +92,14 @@ your change spans multiple file types, run multiple sections.
 - [ ] **`strnlen` is NOT in `std::`** — use the unqualified
       `strnlen(...)`. libstdc++ doesn't put it in `std` despite
       cppreference suggesting otherwise.
-- [ ] `version_test` passes after version bump
+- [ ] `version_test` passes after version bump. **Clean rebuild
+      required.** The version constants live in
+      `include/audio_engine/version.h` and are baked into
+      `version.o` at compile time; running `version_test` against
+      a stale `.o` file produces a confusing assertion failure
+      ("v.minor == 27 failed" even though the header says 27).
+      Always `rm -f /tmp/lib_*.o` (or equivalent) between version
+      bumps and the test build. Surfaced v0.27.0.
 
 ### For doc work
 

@@ -420,4 +420,56 @@ const char* BusGraph::BusName(uint32_t busIndex) const noexcept {
     return buses_[busIndex]->debugName;
 }
 
+// ---- v0.27.0: per-bus mute / solo / effect-bypass --------------------------
+//
+// Direct atomic writes with relaxed memory ordering. These are user-toggled
+// flags read once per audio callback in AudioMixer::RunBusGraph; the relaxed
+// ordering is correct because:
+//   1. The render thread re-reads each callback (no stale-value risk beyond
+//      one buffer's worth of audio, ~21 ms at 1024 frames / 48 kHz)
+//   2. There's no other shared state these reads need to be ordered against
+// Out-of-range busIndex is a silent no-op for setters and returns false for
+// getters — caller is responsible for validating the index.
+
+void BusGraph::SetBusMuted(uint32_t busIndex, bool muted) noexcept {
+    if (busIndex >= buses_.size()) return;
+    buses_[busIndex]->muted.store(muted, std::memory_order_relaxed);
+}
+
+void BusGraph::SetBusSoloed(uint32_t busIndex, bool soloed) noexcept {
+    if (busIndex >= buses_.size()) return;
+    buses_[busIndex]->soloed.store(soloed, std::memory_order_relaxed);
+}
+
+void BusGraph::SetBusEffectsBypassed(uint32_t busIndex, bool bypassed) noexcept {
+    if (busIndex >= buses_.size()) return;
+    buses_[busIndex]->effectsBypassed.store(bypassed, std::memory_order_relaxed);
+}
+
+bool BusGraph::IsBusMuted(uint32_t busIndex) const noexcept {
+    if (busIndex >= buses_.size()) return false;
+    return buses_[busIndex]->muted.load(std::memory_order_relaxed);
+}
+
+bool BusGraph::IsBusSoloed(uint32_t busIndex) const noexcept {
+    if (busIndex >= buses_.size()) return false;
+    return buses_[busIndex]->soloed.load(std::memory_order_relaxed);
+}
+
+bool BusGraph::IsBusEffectsBypassed(uint32_t busIndex) const noexcept {
+    if (busIndex >= buses_.size()) return false;
+    return buses_[busIndex]->effectsBypassed.load(std::memory_order_relaxed);
+}
+
+bool BusGraph::AnyBusSoloed() const noexcept {
+    // O(N) over kMaxBuses, called once per audio callback. With kMaxBuses
+    // typically 16-32, this is well under 100 ns total — no need for a
+    // cached "any soloed" counter (which would itself need atomic updates
+    // on every solo toggle).
+    for (const auto& bus : buses_) {
+        if (bus->soloed.load(std::memory_order_relaxed)) return true;
+    }
+    return false;
+}
+
 } // namespace audio
