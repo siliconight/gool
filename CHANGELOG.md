@@ -27,6 +27,115 @@ Nothing shipping yet. Next-up candidates:
   `docs/audio_design/sidechain_tuning.md`): multiband sidechain,
   lookahead on music bus, per-emitter ducking intensity.
 
+## [0.26.2] - 2026-05-17 — Fix headless smoke (parse error in mixer_dock.gd inner class)
+
+### What broke
+
+The v0.26.0 mixer dock rewrite defined an inner class
+`_BusStrip extends Control` inside `mixer_dock.gd`, and the
+inner class referenced 22 outer-class constants via
+`GoolMixerDock.FADER_MIN_DB`, `GoolMixerDock.PEAK_DECAY`,
+`GoolMixerDock.COLOR_GREEN`, etc.
+
+This parsed fine in the editor (where Godot's global class_name
+registry is populated), but **failed in headless mode** —
+which is exactly what the CI `godot-headless-smoke` job runs.
+The CI workflow already documents the underlying constraint:
+
+> in `--headless` mode, Godot doesn't populate the global
+> class registry the way `--editor` does. References like
+> `GoolMixerDock.FADER_MIN_DB` then fail type resolution.
+
+When `main.gd` in the smoke project called
+`load("res://addons/gool/editor/mixer_dock.gd")`, the inner
+class's outer-class references couldn't resolve, `load()`
+returned null, and `main.gd` reported `SMOKE FAIL`.
+
+### What's in this release
+
+Two fixes, both in addon scripts only (no C++ changes):
+
+**1. `mixer_dock.gd` inner class made self-contained.** Moved
+the 12 constants `_BusStrip` actually uses (FADER_MIN_DB /
+FADER_MAX_DB / PEAK_DECAY / SCALE_MARKS_DB / DB_METER_FLOOR /
+DB_METER_CEIL / DB_YELLOW_MAX / DB_GREEN_MAX / all COLOR_*)
+into `_BusStrip` itself as local consts. Replaced all
+`GoolMixerDock.X` references inside `_BusStrip` with bare `X`
+references. The inner class now has zero references to its
+outer's class_name and parses cleanly in headless mode.
+
+Outer-only constants (CONFIG_PATH, POLL_HZ, STRIP_WIDTH,
+STRIP_HEIGHT, STRIP_GAP) remain at the top of the file as
+before. There's some duplication (e.g. FADER_MIN_DB lives in
+both scopes if the outer ever needs it — currently it doesn't)
+but the duplication cost is ~12 constants and it eliminates
+the whole class of load-order parse error.
+
+**2. `runtime_singleton.gd::_handle_set_bus_gain` actually
+calls the right method.** The v0.26.0 implementation called
+`set_bus_gain_db(bus_name, db)` on `self` — but no such
+public wrapper exists on the autoload (only direct
+`_runtime.set_bus_gain_db` call sites in two other places).
+The call would have failed the first time a user dragged a
+fader during F5. Fixed to call `_runtime.set_bus_gain_db`
+directly, matching the established pattern elsewhere in the
+file.
+
+This was orthogonal to the smoke failure — `_handle_set_bus_gain`
+is never reached during smoke (no editor↔game channel runs),
+so it parsed fine and the bug only would have surfaced at
+first fader drag. Caught while in the file fixing #1.
+
+### What this doesn't change
+
+- **Behavior in the editor.** v0.26.0's mixer dock UI works
+  identically — same layout, same fader interaction, same dB
+  scale/readout. The fixes are purely scope/parse-discipline.
+- **Engine code.** All 35 audio-engine C++ source files
+  unchanged from v0.26.1. Version test still passes.
+- **Sidechain tuning doc.** Still at
+  `docs/audio_design/sidechain_tuning.md` as shipped in v0.26.1.
+
+### Procedural lesson
+
+The headless-smoke check exists *exactly* to catch the
+"works in my editor, breaks in headless" class of bug —
+v0.21.5–v0.23.12 spent several iterations tuning what counts
+as a real failure vs. benign noise, and the conclusion was:
+trust `main.gd`'s SMOKE OK / SMOKE FAIL signal from doing
+`load()` on every addon script.
+
+I'd built v0.26.0 with C++ compile + version_test as my pre-
+ship gate, but **didn't run the headless smoke locally** —
+in part because gdtoolkit/gdparse install requires network
+access that the build sandbox doesn't have. Going forward,
+for any release that touches `.gd` files I'll:
+
+1. Do the broader sweep for class_name self-references
+   (the `awk '/class_name X/ {...}'` check this release added)
+   before shipping
+2. Be extra suspicious of inner classes referencing outer
+   constants — that's now a known regression pattern
+3. Where possible, build inner classes to be self-contained
+   (constants inline, no outer scope dependencies)
+
+The CI smoke catching this in 60 seconds is what it's
+supposed to do — the regression cycle worked. But there's
+no reason to push this kind of error to CI when a 30-second
+local check could catch it; that's the workflow improvement.
+
+### Verified
+
+- All 35 audio-engine C++ source files compile clean at 0.26.2
+- `version_test` reports `0.26.2`
+- Defensive sweep: zero outer-class `GoolMixerDock.X`
+  references remain in `_BusStrip` body
+- Defensive sweep: `GoolDebuggerPlugin` (the other class_name'd
+  file in the editor/ directory) has zero self-references —
+  was never at risk
+- `runtime_singleton.gd` carries no class_name and was never
+  at risk for this pattern
+
 ## [0.26.1] - 2026-05-17 — Ship the sidechain tuning doc (missed from v0.26.0)
 
 ### What's in this release
@@ -11314,7 +11423,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.26.2...HEAD
+[0.26.2]: https://github.com/siliconight/gool/releases/tag/v0.26.2
 [0.26.1]: https://github.com/siliconight/gool/releases/tag/v0.26.1
 [0.26.0]: https://github.com/siliconight/gool/releases/tag/v0.26.0
 [0.25.2]: https://github.com/siliconight/gool/releases/tag/v0.25.2

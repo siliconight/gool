@@ -254,7 +254,15 @@ func _handle_set_bus_gain(bus_name: String, db: float) -> void:
 	# Clamp to a sensible range matching the mixer dock's fader.
 	# Out-of-range values shouldn't crash the runtime, just clamp.
 	db = clampf(db, -72.0, 6.0)
-	var ok: bool = set_bus_gain_db(bus_name, db)
+	# v0.26.2: call _runtime.set_bus_gain_db directly. The autoload
+	# doesn't expose a public set_bus_gain_db wrapper (only the
+	# Godot-bus-mirror variants sync_volume_from_godot_bus and the
+	# bind_*_to_godot_bus pollers), so the prior `set_bus_gain_db(...)`
+	# call on self was a runtime-error-only-when-reached bug — never
+	# triggered in headless smoke (which only parses, doesn't run
+	# the editor↔game channel), but would surface the first time a
+	# user dragged a fader during F5.
+	var ok: bool = _runtime.set_bus_gain_db(bus_name, db)
 	if not ok:
 		push_warning("[gool] set_bus_gain('%s', %.2fdB) failed" % [bus_name, db])
 

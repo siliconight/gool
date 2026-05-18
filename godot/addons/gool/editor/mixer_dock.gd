@@ -271,6 +271,39 @@ func _on_strip_db_changed(bus_name: String, db: float) -> void:
 class _BusStrip extends Control:
 	signal db_changed(bus_name: String, new_db: float)
 
+	# v0.26.2: constants duplicated from the outer GoolMixerDock
+	# rather than referenced via `GoolMixerDock.X`. This is required
+	# because Godot's --headless mode (used by the headless-smoke CI
+	# job) does NOT populate the global class_name registry — so
+	# `GoolMixerDock.FADER_MIN_DB` from inside this inner class fails
+	# to resolve at parse time, load() returns null, SMOKE FAIL.
+	#
+	# The fix is small (a few duplicated values) and keeps this inner
+	# class self-contained. The outer-class copies (mixer_dock.gd
+	# top-level) drive layout sizing for the outer code; these
+	# inner-class copies drive the strip's own drawing/input math.
+	# Keep them in sync if either side needs to change.
+	const FADER_MAX_DB: float = 6.0
+	const FADER_MIN_DB: float = -72.0
+	const PEAK_DECAY: float = 0.85
+	const DB_GREEN_MAX: float = -12.0
+	const DB_YELLOW_MAX: float = -6.0
+	const DB_METER_FLOOR: float = -60.0
+	const DB_METER_CEIL: float = 6.0
+	const SCALE_MARKS_DB: PackedFloat32Array = PackedFloat32Array(
+			[6.0, 0.0, -6.0, -24.0, -72.0])
+	const COLOR_GREEN := Color(0.36, 0.83, 0.46)
+	const COLOR_YELLOW := Color(0.95, 0.82, 0.32)
+	const COLOR_RED := Color(0.93, 0.40, 0.32)
+	const COLOR_BG := Color(0.10, 0.10, 0.12)
+	const COLOR_BG_OUTLINE := Color(0.20, 0.20, 0.22)
+	const COLOR_TEXT := Color(0.85, 0.88, 0.92)
+	const COLOR_TEXT_DIM := Color(0.55, 0.58, 0.62)
+	const COLOR_TICK := Color(0.45, 0.45, 0.48)
+	const COLOR_FADER_TRACK := Color(0.20, 0.22, 0.26)
+	const COLOR_FADER_HANDLE := Color(0.65, 0.72, 0.85)
+	const COLOR_FADER_HANDLE_ACTIVE := Color(0.78, 0.88, 0.95)
+
 	var bus_name: String = ""
 	var _peak_smoothed: float = 0.0
 	var _peak_held: float = 0.0
@@ -299,7 +332,7 @@ class _BusStrip extends Control:
 	# Set the fader value programmatically. emit_signal=false used at
 	# init time to avoid feedback before the parent has connected.
 	func set_fader_db(db: float, emit: bool = true) -> void:
-		_fader_db = clampf(db, GoolMixerDock.FADER_MIN_DB, GoolMixerDock.FADER_MAX_DB)
+		_fader_db = clampf(db, FADER_MIN_DB, FADER_MAX_DB)
 		queue_redraw()
 		if emit:
 			db_changed.emit(bus_name, _fader_db)
@@ -310,8 +343,8 @@ class _BusStrip extends Control:
 		if peak_linear > _peak_smoothed:
 			_peak_smoothed = peak_linear
 		else:
-			_peak_smoothed = _peak_smoothed * GoolMixerDock.PEAK_DECAY \
-					+ peak_linear * (1.0 - GoolMixerDock.PEAK_DECAY)
+			_peak_smoothed = _peak_smoothed * PEAK_DECAY \
+					+ peak_linear * (1.0 - PEAK_DECAY)
 		if peak_linear >= _peak_held:
 			_peak_held = peak_linear
 			_peak_held_age = 0.0
@@ -329,8 +362,8 @@ class _BusStrip extends Control:
 	# top and READOUT_BAND bottom) for a given dB value. Linear in
 	# dB across the visible fader range.
 	func _db_to_y(db: float, top: float, height: float) -> float:
-		var t: float = (GoolMixerDock.FADER_MAX_DB - db) \
-				/ (GoolMixerDock.FADER_MAX_DB - GoolMixerDock.FADER_MIN_DB)
+		var t: float = (FADER_MAX_DB - db) \
+				/ (FADER_MAX_DB - FADER_MIN_DB)
 		t = clampf(t, 0.0, 1.0)
 		return top + t * height
 
@@ -338,8 +371,7 @@ class _BusStrip extends Control:
 		if height <= 0.0:
 			return 0.0
 		var t: float = clampf((y - top) / height, 0.0, 1.0)
-		return GoolMixerDock.FADER_MAX_DB \
-				- t * (GoolMixerDock.FADER_MAX_DB - GoolMixerDock.FADER_MIN_DB)
+		return FADER_MAX_DB - t * (FADER_MAX_DB - FADER_MIN_DB)
 
 	# Linear-peak → meter Y (different range from fader: meter
 	# bottoms out at DB_METER_FLOOR not -72).
@@ -347,8 +379,8 @@ class _BusStrip extends Control:
 		if peak <= 0.0:
 			return top + height
 		var db: float = 20.0 * (log(peak) / log(10.0))
-		var t: float = (db - GoolMixerDock.DB_METER_FLOOR) \
-				/ (GoolMixerDock.DB_METER_CEIL - GoolMixerDock.DB_METER_FLOOR)
+		var t: float = (db - DB_METER_FLOOR) \
+				/ (DB_METER_CEIL - DB_METER_FLOOR)
 		t = clampf(t, 0.0, 1.0)
 		return top + (1.0 - t) * height
 
@@ -373,28 +405,28 @@ class _BusStrip extends Control:
 					bus_name,
 					HORIZONTAL_ALIGNMENT_CENTER,
 					-1, fs,
-					GoolMixerDock.COLOR_TEXT)
+					COLOR_TEXT)
 
 		# --- Meter (left column) ---
 		var meter_x: float = 6.0
 		var meter_rect := Rect2(meter_x, fader_region_y,
 				METER_W, fader_region_h)
-		draw_rect(meter_rect, GoolMixerDock.COLOR_BG, true)
-		draw_rect(meter_rect, GoolMixerDock.COLOR_BG_OUTLINE, false, 1.0)
+		draw_rect(meter_rect, COLOR_BG, true)
+		draw_rect(meter_rect, COLOR_BG_OUTLINE, false, 1.0)
 
 		# Meter fill from bottom up, colored by current peak zone.
 		var peak_y: float = _peak_linear_to_meter_y(
 				_peak_smoothed, fader_region_y, fader_region_h)
 		var fill_h: float = (fader_region_y + fader_region_h) - peak_y
 		if fill_h > 0.0:
-			var color := GoolMixerDock.COLOR_GREEN
+			var color := COLOR_GREEN
 			var peak_db: float = -INF
 			if _peak_smoothed > 0.0:
 				peak_db = 20.0 * (log(_peak_smoothed) / log(10.0))
-			if peak_db >= GoolMixerDock.DB_YELLOW_MAX:
-				color = GoolMixerDock.COLOR_RED
-			elif peak_db >= GoolMixerDock.DB_GREEN_MAX:
-				color = GoolMixerDock.COLOR_YELLOW
+			if peak_db >= DB_YELLOW_MAX:
+				color = COLOR_RED
+			elif peak_db >= DB_GREEN_MAX:
+				color = COLOR_YELLOW
 			draw_rect(Rect2(meter_x, peak_y, METER_W, fill_h), color, true)
 
 		# Peak-hold marker.
@@ -403,7 +435,7 @@ class _BusStrip extends Control:
 					_peak_held, fader_region_y, fader_region_h)
 			draw_line(Vector2(meter_x, held_y),
 					Vector2(meter_x + METER_W, held_y),
-					GoolMixerDock.COLOR_TICK, 1.5)
+					COLOR_TICK, 1.5)
 
 		# --- Fader track (middle column) ---
 		var fader_x: float = meter_x + METER_W + 14.0
@@ -411,15 +443,15 @@ class _BusStrip extends Control:
 		var fader_track_rect := Rect2(
 				fader_track_x, fader_region_y,
 				FADER_TRACK_W, fader_region_h)
-		draw_rect(fader_track_rect, GoolMixerDock.COLOR_FADER_TRACK, true)
+		draw_rect(fader_track_rect, COLOR_FADER_TRACK, true)
 
 		# Tick marks at the scale dB values, across the FULL strip
 		# width so they read as horizontal "zone" lines.
-		for db_v in GoolMixerDock.SCALE_MARKS_DB:
+		for db_v in SCALE_MARKS_DB:
 			var y_t: float = _db_to_y(db_v, fader_region_y, fader_region_h)
 			draw_line(Vector2(fader_x - 2.0, y_t),
 					Vector2(fader_x + FADER_HANDLE_W + 2.0, y_t),
-					GoolMixerDock.COLOR_TICK, 1.0)
+					COLOR_TICK, 1.0)
 
 		# Fader handle, positioned at current dB.
 		var handle_y: float = _db_to_y(_fader_db,
@@ -427,16 +459,16 @@ class _BusStrip extends Control:
 		var handle_rect := Rect2(
 				fader_x, handle_y - FADER_HANDLE_H * 0.5,
 				FADER_HANDLE_W, FADER_HANDLE_H)
-		var handle_color := GoolMixerDock.COLOR_FADER_HANDLE_ACTIVE \
+		var handle_color := COLOR_FADER_HANDLE_ACTIVE \
 				if _fader_dragging \
-				else GoolMixerDock.COLOR_FADER_HANDLE
+				else COLOR_FADER_HANDLE
 		draw_rect(handle_rect, handle_color, true)
-		draw_rect(handle_rect, GoolMixerDock.COLOR_BG_OUTLINE, false, 1.0)
+		draw_rect(handle_rect, COLOR_BG_OUTLINE, false, 1.0)
 
 		# --- Scale labels (right column) ---
 		if f != null:
 			var label_x: float = fader_x + FADER_HANDLE_W + 4.0
-			for db_v in GoolMixerDock.SCALE_MARKS_DB:
+			for db_v in SCALE_MARKS_DB:
 				var y_l: float = _db_to_y(
 						db_v, fader_region_y, fader_region_h)
 				var label_text: String = ("%+d" % int(db_v)) if db_v != 0.0 \
@@ -446,7 +478,7 @@ class _BusStrip extends Control:
 						label_text,
 						HORIZONTAL_ALIGNMENT_LEFT,
 						-1, fs_small,
-						GoolMixerDock.COLOR_TEXT_DIM)
+						COLOR_TEXT_DIM)
 
 		# --- dB readout (bottom band) ---
 		if f != null:
@@ -459,7 +491,7 @@ class _BusStrip extends Control:
 					db_text,
 					HORIZONTAL_ALIGNMENT_CENTER,
 					-1, fs,
-					GoolMixerDock.COLOR_TEXT)
+					COLOR_TEXT)
 
 	# ---- Input handling for fader drag ----
 
