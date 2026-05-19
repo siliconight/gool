@@ -185,8 +185,58 @@ The downside of `Array` over `Packed*Array` is variant boxing per
 element (slightly more memory). For typical const arrays of
 small size this is negligible.
 
-### GDScript `%` operator format specifiers don't match printf
-*(Surfaced v0.28.4 – v0.28.7. Four releases for one character.)*
+### `Callable.bind()` appends — it doesn't prepend
+*(Surfaced v0.28.8 → v0.28.9. Got the rule right initially, "fixed" it wrong during an audit, user found the bug at runtime.)*
+
+In Godot 4, when you `.connect()` a signal with `Callable.bind(...)`:
+
+```gdscript
+menu.id_pressed.connect(handler.bind(bus_name))   # id_pressed(id: int)
+```
+
+…the slot is called as `handler(id, bus_name)` — **signal's own
+args first, bound args appended after**.
+
+This is opposite to Python's `functools.partial(f, x)`, which
+*prepends*. The Godot docs are clear about this (Callable.bind:
+"the bound arguments are passed after the arguments supplied by
+the caller"), but the muscle memory from Python or from Godot 3
+patterns can mislead.
+
+The runtime error when you get it wrong:
+
+```
+Error calling from signal 'id_pressed' to callable
+'…::_on_strip_context_menu_id_pressed':
+Cannot convert argument 1 from int to String.
+```
+
+…meaning the int signal arg got fed to your first String param,
+which means the signal arg arrived first and you have the
+declaration backwards.
+
+**The painful version of this lesson**: the v0.28.8 release shipped
+with the handler *originally* declared correctly. During a
+pre-tarball "audit" I convinced myself the rule was the other way
+and "fixed" the signature, regressing it. The bug surfaced as soon
+as the user tried right-clicking a strip. Two rules-of-thumb fell
+out of this:
+
+1. **An audit that changes correct code is worse than no audit.**
+   When asserting code is wrong without testing it, the burden of
+   proof goes way up. Particularly for binding conventions that
+   differ between languages — look up the docs cold, don't reason
+   from memory.
+
+2. **Mixed-args bind sites are the rare case.** The vast majority
+   of `.connect(...bind(x, y))` sites in this codebase are paired
+   with signals that have *no args of their own* (`pressed`,
+   `confirmed`, `canceled`, `popup_hide`). For those, slot
+   ordering is unambiguous — bound args fill the only slots there
+   are. Only mixed-args bind sites can fail this way; audit them
+   carefully but leave the trivial cases alone.
+
+
 
 GDScript's `%` operator (e.g. `"%0.1f" % value`) implements its own
 format specifiers — NOT printf-compatible. The supported set is:

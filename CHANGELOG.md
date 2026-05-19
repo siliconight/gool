@@ -22,6 +22,71 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.28.9] - 2026-05-19 — Bugfix: three v0.28.8 regressions
+
+Three bugs in v0.28.8's topology release, all surfaced in
+sandbox testing on the day v0.28.8 shipped:
+
+### Fixed: right-click → Remove bus crashed with type error
+
+```
+ERROR: Error calling from signal 'id_pressed' to callable
+'_on_strip_context_menu_id_pressed':
+Cannot convert argument 1 from int to String.
+```
+
+`Callable.bind()` in Godot 4 appends bound args **after** the
+signal's own args, not before. The PopupMenu's `id_pressed(id)`
+signal with `.bind(bus_name)` is called as `(id, bus_name)`, but
+the handler had been declared as `(bus_name, id)`. Signature
+order corrected. See `docs/engineering/lessons_learned.md` for
+the full retrospective on this one — the v0.28.8 code originally
+had it right; a pre-tarball "audit" introduced the regression.
+
+### Fixed: "+ Add Bus" columns multiplied on every rebuild
+
+Each call to `_rebuild_strips_from_config` was supposed to free
+all per-bus columns and rebuild the strip row. It only freed the
+columns tracked in `_columns` — but the trailing "+ Add Bus"
+column is added by the rebuild but intentionally not tracked
+(it's a UI affordance, not a real bus), so each rebuild leaked
+one of them. Three rebuilds → three Add Bus columns piled up
+visually.
+
+Both rebuild paths (`_rebuild_strips_from_config` and
+`_rebuild_strips_from_runtime`) now clear *every* child of
+`_strip_container`, not just the tracked subset.
+
+### Fixed: no way to add the first effect to an empty bus
+
+A newly-added bus has zero effects. v0.28.8 hid the Fx button on
+empty buses ("there's nothing to show"), so the user had no way
+to reach the "+ Add Effect" panel for buses that didn't already
+have at least one effect. Catch-22 for every bus you'd add via
+the dock.
+
+Three behavior changes resolve this:
+
+- Fx button is now drawn on every strip regardless of effect count
+  (the label "Fx (0)" is self-explanatory).
+- Clicking the Fx button always opens the panel, even at count 0.
+- When the last effect is removed from a bus, the panel stays
+  open (showing just the "+ Add Effect" button) instead of
+  auto-collapsing. The user can manually collapse via the Fx
+  toggle if they want.
+
+### Lessons doc updated
+
+`docs/engineering/lessons_learned.md` extended with a new entry
+on `Callable.bind` argument ordering. Two takeaways:
+
+1. An audit that changes correct code is worse than no audit —
+   when about to "fix" something, check the docs cold instead of
+   reasoning from memory across language ecosystems.
+2. Mixed-args bind sites (where the signal has its own args AND
+   you're binding extras) are the only ones where ordering can
+   bite. Audit those carefully; leave the trivial cases alone.
+
 ## [0.28.8] - 2026-05-19 — Phase 3.3d: topology editing
 
 The mixer dock can now author the bus graph end-to-end. Previous
@@ -13375,6 +13440,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.28.9]: https://github.com/siliconight/gool/releases/tag/v0.28.9
 [0.28.8]: https://github.com/siliconight/gool/releases/tag/v0.28.8
 [0.28.7]: https://github.com/siliconight/gool/releases/tag/v0.28.7
 [0.28.6]: https://github.com/siliconight/gool/releases/tag/v0.28.6

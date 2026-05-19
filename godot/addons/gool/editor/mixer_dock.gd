@@ -257,11 +257,12 @@ func _strip_names_packed(buses: Array) -> PackedStringArray:
 
 func _rebuild_strips_from_config(buses: Array) -> void:
 	_empty_label.visible = false
-	# v0.28.3: freeing the column also frees the strip (and any
-	# attached effects panel) recursively. Reset _expanded_bus
-	# because any prior panel is now gone.
-	for c in _columns:
-		c.queue_free()
+	# v0.28.9: clear EVERY child of _strip_container, not just the
+	# tracked _columns. The "+ Add Bus" trailing column is added by
+	# this function but intentionally not tracked in _columns, so
+	# freeing only _columns leaked one Add Bus column per rebuild.
+	for child in _strip_container.get_children():
+		child.queue_free()
 	_strips.clear()
 	_columns.clear()
 	_expanded_bus = ""
@@ -381,9 +382,9 @@ func _poll() -> void:
 # currently include them (a future addition could).
 func _rebuild_strips_from_runtime(stats: Array) -> void:
 	_empty_label.visible = false
-	# v0.28.3: see _rebuild_strips_from_config for free semantics.
-	for c in _columns:
-		c.queue_free()
+	# v0.28.9: clear EVERY child (see _rebuild_strips_from_config).
+	for child in _strip_container.get_children():
+		child.queue_free()
 	_strips.clear()
 	_columns.clear()
 	_expanded_bus = ""
@@ -642,14 +643,9 @@ func _on_model_topology_changed(bus_name: String) -> void:
 		if _config_model != null:
 			n = _config_model.get_effects(bus_name).size()
 		(_strips[idx] as _BusStrip).set_effect_count(n)
-		# If the strip is in the open-fx state but the bus now has zero
-		# effects, collapse the panel.
-		if _expanded_bus == bus_name and n == 0:
-			(_strips[idx] as _BusStrip).set_fx_expanded(false, false)
-			_remove_panel_from_column(_columns[idx] as VBoxContainer)
-			_expanded_bus = ""
-			return
 	# Rebuild the open panel if this is the one being viewed.
+	# v0.28.9: rebuild even when n==0 so the "+ Add Effect" button
+	# stays reachable after removing the last effect.
 	if _expanded_bus == bus_name and idx >= 0 and idx < _columns.size():
 		var col: VBoxContainer = _columns[idx] as VBoxContainer
 		_remove_panel_from_column(col)
@@ -689,10 +685,11 @@ func _on_strip_context_menu_requested(bus_name: String,
 	menu.popup(Rect2i(Vector2i(global_pos), Vector2i(0, 0)))
 
 
-# Signature note: GDScript's Callable.bind puts bound args BEFORE
-# signal args in the slot's parameter list. So `id_pressed(id)`
-# + `.bind(bus_name)` → slot called as `(bus_name, id)`.
-func _on_strip_context_menu_id_pressed(bus_name: String, id: int) -> void:
+# Signature note: in Godot 4, Callable.bind appends bound args AFTER
+# the signal's own args. So `id_pressed(id)` connected with
+# `.bind(bus_name)` is called as `(id, bus_name)` — signal first,
+# bound last. (Got this backwards in v0.28.8; see lessons_learned.)
+func _on_strip_context_menu_id_pressed(id: int, bus_name: String) -> void:
 	if id == 0:
 		_attempt_remove_bus(bus_name)
 
@@ -1073,11 +1070,11 @@ class _BusStrip extends Control:
 		if _effect_count == n:
 			return
 		_effect_count = n
-		# If the bus dropped to 0 effects while expanded, force
-		# collapse — there's nothing to show.
-		if _effect_count == 0 and _is_fx_expanded:
-			set_fx_expanded(false, true)
-			return
+		# v0.28.9: do NOT auto-collapse when count drops to 0.
+		# Pre-v0.28.9 collapsed here, but keeping the panel open
+		# lets the user immediately add a new effect after
+		# removing the last one. Manual collapse via the Fx button
+		# is always available.
 		queue_redraw()
 
 	# v0.28.3 (Phase 3.3c-2): programmatic Fx expansion setter. The
@@ -1473,7 +1470,12 @@ class _BusStrip extends Control:
 		#   expect before clicking
 		# - Active color when expanded so the relationship between
 		#   button state and panel visibility is obvious
-		if _effect_count > 0 and f != null:
+		# v0.28.9: always draw the Fx button, even when count==0,
+		# so empty buses still have an entry point to the
+		# "+ Add Effect" affordance. Pre-v0.28.9 hid the button
+		# for empty buses, which meant a newly-added bus had no
+		# way to ever get its first effect from the dock.
+		if f != null:
 			_draw_fx_button(_fx_button_rect(), _effect_count,
 					_is_fx_expanded, f, fs_small)
 
@@ -1537,13 +1539,13 @@ class _BusStrip extends Control:
 					bypass_changed.emit(bus_name, _is_bypassed)
 					accept_event()
 					return
-				# v0.28.3: Fx toggle. Only honored when the bus actually
-				# has effects — _effect_count==0 means the button isn't
-				# drawn and clicking that region falls through to the
-				# fader (which won't be hit anyway since FX_BAND is
-				# below fader_region_h). One panel open at a time is
-				# enforced at the outer-dock level via fx_toggled.
-				if mb.pressed and _effect_count > 0 and fx_rect.has_point(mb.position):
+				# v0.28.3 Fx toggle, v0.28.9: also valid when the
+				# bus has zero effects — the panel opens with just
+				# the "+ Add Effect" button visible, which is how
+				# a freshly-added empty bus gets its first effect.
+				# One panel open at a time is enforced at the outer
+				# dock level via fx_toggled.
+				if mb.pressed and fx_rect.has_point(mb.position):
 					set_fx_expanded(not _is_fx_expanded, true)
 					accept_event()
 					return
