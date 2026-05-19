@@ -22,6 +22,130 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.30.0] - 2026-05-19 — Phase 5.1: AudioMaterial taxonomy + impact sounds
+
+The first user-visible piece of Phase 5 (Material & acoustic
+environment authoring) from the roadmap. The C++ engine has
+carried an `AudioMaterial` enum and material-aware acoustic
+infrastructure since v0.20-something, but GDScript had no clean
+way to reach any of it. This release bridges that gap: designers
+can now tag colliders with a material and play the right impact
+variant from a single API call, without writing per-material
+Dictionary lookups in their weapon code.
+
+### What changed
+
+**Sound bank gains a `by_material` group policy.** Groups using
+this policy hold variant lists keyed by AudioMaterial name
+instead of a flat array. At play time the bank picks from the
+bucket matching the requested material, falling back to a
+`Default` bucket if the requested material has no entries.
+
+```json
+"groups": [
+  {
+    "name":   "bullet_impact",
+    "policy": "by_material",
+    "members_by_material": {
+      "Concrete": ["impact.concrete.01", "impact.concrete.02"],
+      "Wood":     ["impact.wood.01"],
+      "Default":  ["impact.generic"]
+    }
+  }
+]
+```
+
+Material name keys are case-sensitive and mirror the C++ enum:
+`Default`, `Air`, `Glass`, `Wood`, `Drywall`, `Concrete`,
+`Metal`, `Curtain`, `Foliage`. Unknown keys fail the bank load
+with a line-numbered error.
+
+**Lenient rule for missing materials.** If a `by_material` group
+has no bucket for the requested material AND no `Default` bucket,
+the lookup returns `kInvalidSoundId` and nothing plays. The bank
+loads successfully even if `Default` is missing — designers can
+ship partial material coverage and fill in the rest later without
+breaking builds. The reasoning is walked through in
+`docs/cookbook.md` section 11 in plain language.
+
+**New C++ overload** `SoundBank::Find(name, material)`. Existing
+`Find(name)` is unchanged for non-by_material groups; on
+by_material groups it picks from the `Default` bucket.
+
+**New Godot binding** `play_sound_at_location_for_material(name,
+position, material)` wrapping the new bank overload.
+
+**New GDScript API** on the `Gool` autoload singleton:
+- `Gool.MATERIAL_*` constants (DEFAULT=0..FOLIAGE=8)
+- `Gool.material_name(int) -> String` for debug overlays
+- `Gool.material_from_collider(Node) -> int` resolving any of
+  three tag sources: `gool_audio_material` metadata as int,
+  `gool_audio_material` metadata as a GoolAudioMaterial
+  resource, or `audio_material:<Name>` group membership.
+- `Gool.play_impact_sound(name, position, material)` — the
+  designer-facing one-call API.
+
+**New resource type** `GoolAudioMaterial`. Saved as a `.tres`
+file, holds a single `material` int matching one of the
+constants. Designed for reuse — one resource per surface kind
+in your game, referenced from every collider that uses it.
+
+### Designer workflow
+
+The full walkthrough lives in `docs/cookbook.md` section 11
+("Material-aware impact sounds"). Short form: author the bank
+with a `by_material` group, tag colliders via metadata or
+group membership, raycast on fire, pass the resolved material
+to `play_impact_sound`. That's the entire workflow.
+
+### Migration
+
+This is a purely additive release. Existing sound bank files
+continue to load and behave identically. The new `by_material`
+policy is opt-in — groups with `policy: "random"` etc. are
+untouched.
+
+### Tests
+
+Seven new unit tests in `tests/unit/sound_bank_test.cpp`
+covering: bucket selection by material, Default fallback,
+missing-Default lenient case, no-material call on by_material
+group, material-ignored-for-other-policies, unknown-material-key
+rejection, all-empty group rejection. All wired into `main()`.
+
+### Roadmap
+
+This closes Phase 5.1. Phase 5.2 (default Godot geometry query
+for material-aware occlusion) and Phase 5.3 (source-aware
+acoustic environment) are queued. The sandbox demo for 5.1's
+"done when" criterion — a wall with multiple material segments
+showing distinct impact sounds in the gool debug overlay — is
+queued as v0.30.1 user-side work.
+
+### Touch summary
+
+- `include/audio_engine/geometry_query.h`: new
+  `kAudioMaterialCount` constant
+- `include/audio_engine/sound_bank.h`: include geometry_query.h,
+  new `Find(name, material)` overload, header schema doc
+  expanded
+- `src/audio_engine/assets/sound_bank.cpp`: `GroupPolicy::ByMaterial`,
+  `ParseAudioMaterial` helper, `members_by_material` parser,
+  policy-aware validation, `memberIdsByMaterial` runtime,
+  `Find(name, material)` impl with lenient fallback
+- `godot/src/gool_godot.cpp`: include geometry_query.h, bind
+  `play_sound_at_location_for_material`, implement it
+- `godot/addons/gool/runtime_singleton.gd`: `MATERIAL_*`
+  constants, `material_name`, `material_from_collider`,
+  `play_impact_sound`
+- `godot/addons/gool/resources/gool_audio_material.gd`: new
+  resource type
+- `docs/asset_pipeline.md`: groups section + error reference
+  expanded with by_material schema
+- `docs/cookbook.md`: new section 11 with the full
+  designer-facing walkthrough including the lenient rule
+- `tests/unit/sound_bank_test.cpp`: 7 new tests
+
 ## [0.29.5] - 2026-05-19 — Reverb: dry passthrough parameter
 
 Additive feature requested while listening to the v0.29.4 reverb
@@ -13979,6 +14103,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.30.0]: https://github.com/siliconight/gool/releases/tag/v0.30.0
 [0.29.5]: https://github.com/siliconight/gool/releases/tag/v0.29.5
 [0.29.4]: https://github.com/siliconight/gool/releases/tag/v0.29.4
 [0.29.3]: https://github.com/siliconight/gool/releases/tag/v0.29.3

@@ -34,6 +34,11 @@ enum class AudioMaterial : uint8_t {
     Foliage     = 8,    // diffuse, mostly damping
 };
 
+// Number of values in AudioMaterial. Used to size per-material arrays
+// (e.g., the sound bank's by_material group buckets). Update whenever
+// AudioMaterial gains a new value.
+inline constexpr uint8_t kAudioMaterialCount = 9;
+
 struct AudioOcclusionHit {
     bool  hit                 = false;
     Vec3  hitPoint{};

@@ -457,6 +457,251 @@ void TestRtpcInJsonRejectsUnknownTarget() {
     rt.Shutdown();
 }
 
+// ------------------------------------------------------------------
+// by_material group policy (Phase 5.1, v0.30.0)
+// ------------------------------------------------------------------
+
+void TestByMaterialSelectsFromRequestedBucket() {
+    std::cout << "  [by_material: Find(name, Concrete) picks from "
+                 "Concrete bucket]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {
+        "impact.concrete.01", "impact.concrete.02",
+        "impact.wood.01",
+        "impact.generic"
+    });
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            { "name": "impact.concrete.01" },
+            { "name": "impact.concrete.02" },
+            { "name": "impact.wood.01" },
+            { "name": "impact.generic" }
+        ],
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Concrete": ["impact.concrete.01", "impact.concrete.02"],
+                    "Wood":     ["impact.wood.01"],
+                    "Default":  ["impact.generic"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(r.success);
+    assert(r.groupsLoaded == 1u);
+
+    const audio::AudioSoundId concrete1 = audio::HashSoundName("impact.concrete.01");
+    const audio::AudioSoundId concrete2 = audio::HashSoundName("impact.concrete.02");
+    const audio::AudioSoundId wood1     = audio::HashSoundName("impact.wood.01");
+
+    // Several picks against Concrete — every result must be from the
+    // Concrete bucket, never Wood, never Default.
+    for (int i = 0; i < 16; ++i) {
+        const auto id = bank.Find("bullet_impact", audio::AudioMaterial::Concrete);
+        assert(id == concrete1 || id == concrete2);
+    }
+    // Wood bucket has one variant; every pick should return it.
+    for (int i = 0; i < 8; ++i) {
+        const auto id = bank.Find("bullet_impact", audio::AudioMaterial::Wood);
+        assert(id == wood1);
+    }
+    rt.Shutdown();
+}
+
+void TestByMaterialFallsBackToDefault() {
+    std::cout << "  [by_material: unmapped material falls through to "
+                 "Default bucket]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {"impact.concrete.01", "impact.generic"});
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            { "name": "impact.concrete.01" },
+            { "name": "impact.generic" }
+        ],
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Concrete": ["impact.concrete.01"],
+                    "Default":  ["impact.generic"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(r.success);
+
+    const audio::AudioSoundId generic = audio::HashSoundName("impact.generic");
+    // Foliage isn't in the table; should fall through to Default.
+    const auto id = bank.Find("bullet_impact", audio::AudioMaterial::Foliage);
+    assert(id == generic);
+    rt.Shutdown();
+}
+
+void TestByMaterialMissingDefaultIsInvalid() {
+    std::cout << "  [by_material: missing Default + unmapped material "
+                 "returns kInvalidSoundId (lenient rule)]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {"impact.concrete.01"});
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            { "name": "impact.concrete.01" }
+        ],
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Concrete": ["impact.concrete.01"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    // The bank loads cleanly — designer chose not to provide Default,
+    // that's allowed.
+    assert(r.success);
+
+    const audio::AudioSoundId concrete1 = audio::HashSoundName("impact.concrete.01");
+    // Concrete works.
+    assert(bank.Find("bullet_impact", audio::AudioMaterial::Concrete) == concrete1);
+    // Wood has no bucket AND no Default — returns kInvalidSoundId.
+    assert(bank.Find("bullet_impact", audio::AudioMaterial::Wood) == audio::kInvalidSoundId);
+    rt.Shutdown();
+}
+
+void TestByMaterialFindWithoutMaterialUsesDefault() {
+    std::cout << "  [by_material: Find(name) without material picks "
+                 "from Default bucket]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {"impact.concrete.01", "impact.generic"});
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            { "name": "impact.concrete.01" },
+            { "name": "impact.generic" }
+        ],
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Concrete": ["impact.concrete.01"],
+                    "Default":  ["impact.generic"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(r.success);
+
+    const audio::AudioSoundId generic = audio::HashSoundName("impact.generic");
+    // No material argument → Default bucket.
+    assert(bank.Find("bullet_impact") == generic);
+    rt.Shutdown();
+}
+
+void TestByMaterialIgnoresMaterialForOtherPolicies() {
+    std::cout << "  [Find(name, material) on a random group ignores "
+                 "material]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {"footstep.01", "footstep.02"});
+    const char* json = R"({
+        "version": 1,
+        "sounds": [
+            { "name": "footstep.01" },
+            { "name": "footstep.02" }
+        ],
+        "groups": [
+            {
+                "name":   "footstep.grass",
+                "policy": "random",
+                "members": ["footstep.01", "footstep.02"]
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(r.success);
+
+    const audio::AudioSoundId f1 = audio::HashSoundName("footstep.01");
+    const audio::AudioSoundId f2 = audio::HashSoundName("footstep.02");
+    // Material is irrelevant for random groups — both calls behave
+    // identically and return one of the two variants.
+    for (int i = 0; i < 8; ++i) {
+        const auto idA = bank.Find("footstep.grass", audio::AudioMaterial::Wood);
+        const auto idB = bank.Find("footstep.grass");
+        assert(idA == f1 || idA == f2);
+        assert(idB == f1 || idB == f2);
+    }
+    rt.Shutdown();
+}
+
+void TestByMaterialUnknownMaterialKeyRejected() {
+    std::cout << "  [parse error: unknown material name in "
+                 "members_by_material]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    PreregisterSynthetic(rt, {"impact.x"});
+    // "Cement" is not a known AudioMaterial.
+    const char* json = R"({
+        "version": 1,
+        "sounds": [ { "name": "impact.x" } ],
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Cement": ["impact.x"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(!r.success);
+    assert(r.errorMessage.find("Cement") != std::string::npos);
+    rt.Shutdown();
+}
+
+void TestByMaterialAllBucketsEmptyRejected() {
+    std::cout << "  [parse error: by_material group with literally "
+                 "zero variants]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    const char* json = R"({
+        "version": 1,
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {}
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);
+    assert(!r.success);
+    assert(r.errorMessage.find("bullet_impact") != std::string::npos);
+    rt.Shutdown();
+}
+
 } // namespace
 
 int main() {
@@ -472,6 +717,13 @@ int main() {
     TestUnknownEnumValue();
     TestRtpcInJson();
     TestRtpcInJsonRejectsUnknownTarget();
+    TestByMaterialSelectsFromRequestedBucket();
+    TestByMaterialFallsBackToDefault();
+    TestByMaterialMissingDefaultIsInvalid();
+    TestByMaterialFindWithoutMaterialUsesDefault();
+    TestByMaterialIgnoresMaterialForOtherPolicies();
+    TestByMaterialUnknownMaterialKeyRejected();
+    TestByMaterialAllBucketsEmptyRejected();
     TestPerformance();
     std::cout << "[sound_bank_test] OK\n";
     return 0;

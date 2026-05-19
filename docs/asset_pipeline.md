@@ -97,16 +97,67 @@ sounds at play-time. Useful for footstep variations, gunshot variants,
 impact sounds — anywhere you don't want the same sample to play on
 back-to-back triggers.
 
-| Field     | Type     | Notes                                                                   |
-|-----------|----------|-------------------------------------------------------------------------|
-| `name`    | string   | Hashed and stored alongside sound names. Must be unique. Required.      |
-| `policy`  | string   | `"random"`, `"random_no_repeat"`, `"sequential"`. Required.             |
-| `members` | string[] | Names of declared sounds (must already appear in `sounds`). Required.   |
+| Field                  | Type             | Notes                                                                                            |
+|------------------------|------------------|--------------------------------------------------------------------------------------------------|
+| `name`                 | string           | Hashed and stored alongside sound names. Must be unique. Required.                               |
+| `policy`               | string           | `"random"`, `"random_no_repeat"`, `"sequential"`, or `"by_material"`. Required.                  |
+| `members`              | string[]         | Names of declared sounds (must already appear in `sounds`). Required for non-`by_material`.      |
+| `members_by_material`  | object[string]   | Dict of material name → variant array. Required for `by_material`. See below.                    |
 
 `Find("group_name")` runs the policy and returns one of the member
 ids each call. Find on a group is just as cheap as Find on a sound:
 hash lookup + (for `sequential`) a relaxed atomic increment, or +
 (for `random_no_repeat`) a relaxed atomic load and store.
+
+#### The `by_material` policy
+
+Groups with `policy: "by_material"` carry per-material variant lists
+instead of a single flat `members` array. At play time, the host
+calls `Find(name, material)` with the material the action happened
+against (the wall the bullet hit, the surface the footstep landed on),
+and the bank picks a random variant from that material's bucket.
+
+```json
+{
+  "groups": [
+    {
+      "name":   "bullet_impact",
+      "policy": "by_material",
+      "members_by_material": {
+        "Concrete": ["impact.concrete.01", "impact.concrete.02"],
+        "Wood":     ["impact.wood.01"],
+        "Metal":    ["impact.metal.01", "impact.metal.02"],
+        "Default":  ["impact.generic.01"]
+      }
+    }
+  ]
+}
+```
+
+Material name keys are case-sensitive and match the engine's
+`AudioMaterial` enum spelling exactly: `Default`, `Air`, `Glass`,
+`Wood`, `Drywall`, `Concrete`, `Metal`, `Curtain`, `Foliage`.
+
+**What happens when a material has no bucket** — say the player
+shoots a Foliage surface and the example above has no Foliage
+key:
+
+1. The bank checks for a `Default` bucket and picks from it if
+   present. In the example above, `impact.generic.01` plays.
+2. If `Default` is also missing or empty, `Find` returns
+   `kInvalidSoundId`. The caller is responsible for deciding what
+   to do — typically nothing plays and a warning may be logged.
+
+This is the **lenient rule**: missing material buckets never
+break the bank load or the game. You can ship a bank with only
+`Concrete` and `Wood` buckets defined, and any other material
+combination is simply silent (or falls back to `Default` if
+provided). Add buckets later without touching code.
+
+Calling `Find(name)` *without* a material on a `by_material`
+group is equivalent to `Find(name, Default)` — it always picks
+from the `Default` bucket, or returns `kInvalidSoundId` if
+that bucket is missing.
 
 ---
 
@@ -318,7 +369,7 @@ opening brace, the malformed token, or the validation failure site.
 | `unknown priority 'X'`                                               | Priority enum value isn't valid.                                                       | Use exactly one of `Lowest`, `Low`, `Normal`, `High`, `Critical`.        |
 | `unknown falloff model 'X'`                                          | Falloff value isn't valid.                                                             | Use `Linear`, `Logarithmic`, or `InverseSquare`.                         |
 | `unknown replication policy 'X'`                                     | Replication enum value isn't valid.                                                    | See the schema table.                                                    |
-| `unknown group policy 'X'`                                           | Group `policy` value isn't valid.                                                      | Use `random`, `random_no_repeat`, or `sequential`.                       |
+| `unknown group policy 'X'`                                           | Group `policy` value isn't valid.                                                      | Use `random`, `random_no_repeat`, `sequential`, or `by_material`.        |
 | `expected boolean for X`                                             | A field that must be `true`/`false` got something else.                                | Use a JSON boolean, not a quoted string.                                 |
 | `sound entry has empty 'name'`                                       | A sound entry has `"name": ""` or no `name`.                                           | Add a non-empty name.                                                    |
 | `duplicate sound name 'X'`                                           | Two sound entries (or one sound + one group) declared the same name.                   | Rename one.                                                              |
@@ -326,6 +377,9 @@ opening brace, the malformed token, or the validation failure site.
 | `hash collision between 'X' and 'Y'; rename one of them`             | Two distinct names happen to hash to the same `AudioSoundId`. Extremely rare (≤ 1 per ~70K names). | Rename one.                                                  |
 | `group 'X' has no members`                                           | The `members` array is empty or missing.                                               | Add at least one member.                                                 |
 | `group 'X' member 'Y' is not a declared sound`                       | A group references a name that isn't in the `sounds` array.                            | Fix the typo, or declare the missing sound. Set `validateReferences = false` to skip. |
+| `by_material group 'X' has no variants in any material`              | The `members_by_material` dict is empty, or every bucket is empty.                     | Add at least one variant to at least one bucket. Missing per-material buckets are OK; a completely empty group isn't. |
+| `by_material group 'X' references unknown sound 'Y'`                 | A variant inside `members_by_material` isn't in the `sounds` array.                    | Fix the typo, or declare the missing sound.                              |
+| `unknown material 'X' in members_by_material`                        | A key in `members_by_material` isn't a valid AudioMaterial name.                       | Use one of `Default`, `Air`, `Glass`, `Wood`, `Drywall`, `Concrete`, `Metal`, `Curtain`, `Foliage` (case-sensitive). |
 | `sound 'X' references unknown bus 'Y'`                               | The host's `busResolver` returned `kInvalidBusId` for the bus name.                    | Add the bus to the host's resolver, or change the entry's `bus` field.   |
 | `sound 'X': failed to load file 'Y'`                                 | The file loader (default or custom) returned false.                                    | Check the path is correct relative to the JSON file's directory.         |
 | `sound 'X': RegisterSoundFromMemory failed (decoder may be disabled at build time)` | The runtime rejected the loaded bytes — most often because the build wasn't compiled with the relevant decoder flag. | Build with the right `AUDIO_ENGINE_DECODERS_*` flag, or check the file's actual format. |

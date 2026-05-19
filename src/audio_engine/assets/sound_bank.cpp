@@ -22,6 +22,7 @@
 #include "audio_engine/result.h"
 
 #include <atomic>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -345,13 +346,19 @@ struct ParsedSound {
     std::vector<ParsedRtpcBinding> rtpc;
 };
 
-enum class GroupPolicy : uint8_t { Random, RandomNoRepeat, Sequential };
+enum class GroupPolicy : uint8_t { Random, RandomNoRepeat, Sequential, ByMaterial };
 
 struct ParsedGroup {
-    std::string              name;
-    GroupPolicy              policy = GroupPolicy::Random;
-    std::vector<std::string> memberNames;
-    int                      lineDeclared = 0;
+    std::string                                                              name;
+    GroupPolicy                                                              policy = GroupPolicy::Random;
+    std::vector<std::string>                                                 memberNames;
+    // For by_material groups, members are keyed by AudioMaterial. Each
+    // bucket holds the variant names to pick among at play time. Empty
+    // buckets are valid — they simply mean the material has no variant
+    // assigned, and Find(name, material) falls back to Default (or
+    // returns kInvalidSoundId if Default is also empty).
+    std::array<std::vector<std::string>, kAudioMaterialCount>                membersByMaterial;
+    int                                                                      lineDeclared = 0;
 };
 
 struct ParsedBank {
@@ -405,6 +412,24 @@ bool ParsePolicy(const std::string& s, GroupPolicy& out) {
     if (s == "random")            { out = GroupPolicy::Random;         return true; }
     if (s == "random_no_repeat")  { out = GroupPolicy::RandomNoRepeat; return true; }
     if (s == "sequential")        { out = GroupPolicy::Sequential;     return true; }
+    if (s == "by_material")       { out = GroupPolicy::ByMaterial;     return true; }
+    return false;
+}
+
+// Parse an AudioMaterial name (the enum literal as a string) to its
+// enum value. Used by the by_material group policy's members_by_material
+// dict keys. Case-sensitive on purpose — keys mirror the C++ enum
+// spelling exactly, no inventive aliasing.
+bool ParseAudioMaterial(const std::string& s, AudioMaterial& out) {
+    if (s == "Default")  { out = AudioMaterial::Default;  return true; }
+    if (s == "Air")      { out = AudioMaterial::Air;      return true; }
+    if (s == "Glass")    { out = AudioMaterial::Glass;    return true; }
+    if (s == "Wood")     { out = AudioMaterial::Wood;     return true; }
+    if (s == "Drywall")  { out = AudioMaterial::Drywall;  return true; }
+    if (s == "Concrete") { out = AudioMaterial::Concrete; return true; }
+    if (s == "Metal")    { out = AudioMaterial::Metal;    return true; }
+    if (s == "Curtain")  { out = AudioMaterial::Curtain;  return true; }
+    if (s == "Foliage")  { out = AudioMaterial::Foliage;  return true; }
     return false;
 }
 
@@ -731,7 +756,8 @@ bool ParseGroupEntry(JsonScanner& s, ParsedGroup& out, ParseError& err) {
             if (!ParsePolicy(v, out.policy)) {
                 err.line = s.Line();
                 err.message = "unknown group policy '" + v +
-                              "' (expected random, random_no_repeat, or sequential)";
+                              "' (expected random, random_no_repeat, "
+                              "sequential, or by_material)";
                 return false;
             }
         } else if (key == "members") {
@@ -745,6 +771,54 @@ bool ParseGroupEntry(JsonScanner& s, ParsedGroup& out, ParseError& err) {
                     out.memberNames.push_back(std::move(m));
                     if (s.Match(',')) continue;
                     s.Expect(']', "to close members array", err);
+                    if (!err.message.empty()) return false;
+                    break;
+                }
+            }
+        } else if (key == "members_by_material") {
+            // Dict of {AudioMaterial-name: [variant names]} for the
+            // by_material policy. Empty buckets are tolerated; missing
+            // Default is tolerated; unknown material keys are a parse
+            // error so typos don't silently disappear into nothing.
+            s.Expect('{', "to open members_by_material object", err);
+            if (!err.message.empty()) return false;
+            s.SkipWhitespace();
+            if (!s.Match('}')) {
+                while (true) {
+                    std::string materialKey;
+                    if (!s.ParseString(materialKey, err)) return false;
+                    s.Expect(':', "after material key", err);
+                    if (!err.message.empty()) return false;
+
+                    AudioMaterial mat;
+                    if (!ParseAudioMaterial(materialKey, mat)) {
+                        err.line = s.Line();
+                        err.message = "unknown material '" + materialKey +
+                                      "' in members_by_material (expected "
+                                      "Default, Air, Glass, Wood, Drywall, "
+                                      "Concrete, Metal, Curtain, or Foliage)";
+                        return false;
+                    }
+
+                    s.Expect('[', "to open variant array", err);
+                    if (!err.message.empty()) return false;
+                    s.SkipWhitespace();
+                    auto& bucket = out.membersByMaterial[
+                        static_cast<size_t>(mat)];
+                    if (!s.Match(']')) {
+                        while (true) {
+                            std::string m;
+                            if (!s.ParseString(m, err)) return false;
+                            bucket.push_back(std::move(m));
+                            if (s.Match(',')) continue;
+                            s.Expect(']', "to close variant array", err);
+                            if (!err.message.empty()) return false;
+                            break;
+                        }
+                    }
+
+                    if (s.Match(',')) continue;
+                    s.Expect('}', "to close members_by_material object", err);
                     if (!err.message.empty()) return false;
                     break;
                 }
@@ -842,10 +916,17 @@ bool ParseBankString(std::string_view json, ParsedBank& out, ParseError& err) {
 // ---------------------------------------------------------------------
 
 struct GroupRuntime {
-    std::vector<AudioSoundId>     memberIds;
+    // For random / random_no_repeat / sequential: the flat member list.
+    // For by_material: this is left empty (or unused); the
+    // material-keyed buckets below are what Find consults.
+    std::vector<AudioSoundId>      memberIds;
     GroupPolicy                    policy = GroupPolicy::Random;
-    mutable std::atomic<int>      lastPicked{-1};
-    mutable std::atomic<uint32_t> nextIndex{0};
+    mutable std::atomic<int>       lastPicked{-1};
+    mutable std::atomic<uint32_t>  nextIndex{0};
+    // For by_material groups only. Indexed by static_cast<size_t>(
+    // AudioMaterial). Empty buckets are valid (returns kInvalidSoundId
+    // when the material has no variants and Default is also empty).
+    std::array<std::vector<AudioSoundId>, kAudioMaterialCount> memberIdsByMaterial;
 };
 
 struct SoundBankImpl {
@@ -893,6 +974,22 @@ bool SoundBank::Contains(std::string_view name) const noexcept {
         || impl_->groups.find(key)   != impl_->groups.end();
 }
 
+// Internal: pick one variant from a non-empty flat list using the
+// bank's xorshift RNG. Used both by the no-material Find (for
+// random/random_no_repeat/sequential) and by Find(name, material)
+// for within-bucket variant selection in by_material groups.
+namespace {
+inline AudioSoundId PickRandomFromList(
+        const std::vector<AudioSoundId>& list,
+        std::atomic<uint32_t>& rng) noexcept {
+    const uint32_t n = static_cast<uint32_t>(list.size());
+    if (n == 0) return kInvalidSoundId;
+    if (n == 1) return list[0];
+    const uint32_t r = SoundBankImpl::XorshiftAdvance(rng);
+    return list[r % n];
+}
+} // namespace
+
 AudioSoundId SoundBank::Find(std::string_view name) const noexcept {
     const std::string key(name);
     if (auto it = impl_->soundIds.find(key); it != impl_->soundIds.end()) {
@@ -901,6 +998,17 @@ AudioSoundId SoundBank::Find(std::string_view name) const noexcept {
     auto gi = impl_->groups.find(key);
     if (gi == impl_->groups.end()) return kInvalidSoundId;
     const GroupRuntime& g = gi->second;
+
+    // by_material groups called without a material: fall through to
+    // the Default bucket. If Default is also empty, this is
+    // kInvalidSoundId — designers can either handle that or supply
+    // a material via Find(name, material).
+    if (g.policy == GroupPolicy::ByMaterial) {
+        const auto& def = g.memberIdsByMaterial[
+            static_cast<size_t>(AudioMaterial::Default)];
+        return PickRandomFromList(def, impl_->rng);
+    }
+
     const uint32_t n = static_cast<uint32_t>(g.memberIds.size());
     if (n == 0) return kInvalidSoundId;
     switch (g.policy) {
@@ -921,8 +1029,47 @@ AudioSoundId SoundBank::Find(std::string_view name) const noexcept {
         g.lastPicked.store(static_cast<int>(pick), std::memory_order_relaxed);
         return g.memberIds[pick];
     }
+    case GroupPolicy::ByMaterial:
+        // Handled above.
+        return kInvalidSoundId;
     }
     return kInvalidSoundId;
+}
+
+AudioSoundId SoundBank::Find(std::string_view name,
+                              AudioMaterial    material) const noexcept {
+    const std::string key(name);
+
+    // Sound names: material is ignored — a direct sound has no
+    // material-keyed variants.
+    if (auto it = impl_->soundIds.find(key); it != impl_->soundIds.end()) {
+        return it->second;
+    }
+
+    auto gi = impl_->groups.find(key);
+    if (gi == impl_->groups.end()) return kInvalidSoundId;
+    const GroupRuntime& g = gi->second;
+
+    // Non-by_material groups: material is ignored, behavior matches
+    // the no-material overload.
+    if (g.policy != GroupPolicy::ByMaterial) {
+        return Find(name);
+    }
+
+    // by_material: try the requested material's bucket first. If
+    // empty, fall through to Default. If both are empty, return
+    // kInvalidSoundId (the lenient rule — silent miss, log on the
+    // caller side if it matters).
+    const size_t mi = static_cast<size_t>(material);
+    if (mi < kAudioMaterialCount) {
+        const auto& bucket = g.memberIdsByMaterial[mi];
+        if (!bucket.empty()) {
+            return PickRandomFromList(bucket, impl_->rng);
+        }
+    }
+    const auto& def = g.memberIdsByMaterial[
+        static_cast<size_t>(AudioMaterial::Default)];
+    return PickRandomFromList(def, impl_->rng);
 }
 
 void SoundBank::Clear() noexcept {
@@ -1020,21 +1167,60 @@ SoundBankLoadResult ResolveAndRegister(SoundBankImpl&            impl,
                              "' is declared as both sound and group";
             return r;
         }
-        if (g.memberNames.empty()) {
-            r.errorLine = g.lineDeclared;
-            r.errorMessage = "group '" + g.name + "' has no members";
-            return r;
-        }
-        if (opts.validateReferences) {
-            for (const auto& m : g.memberNames) {
-                bool found = false;
-                for (const auto& s : parsed.sounds) if (s.name == m) { found = true; break; }
-                if (!found) {
-                    r.errorLine = g.lineDeclared;
-                    r.errorMessage = "group '" + g.name +
-                                     "' member '" + m +
-                                     "' is not a declared sound";
-                    return r;
+        if (g.policy == GroupPolicy::ByMaterial) {
+            // By-material groups must have at least one non-empty
+            // bucket somewhere. Individual empty buckets are tolerated;
+            // missing Default is tolerated (Find returns kInvalidSoundId
+            // when the material has no bucket and Default is also
+            // empty — designers can handle that silently or fall back).
+            // What we won't accept is a group with literally zero
+            // variants in any material, which is just a typo.
+            bool anyVariants = false;
+            for (const auto& bucket : g.membersByMaterial) {
+                if (!bucket.empty()) { anyVariants = true; break; }
+            }
+            if (!anyVariants) {
+                r.errorLine = g.lineDeclared;
+                r.errorMessage = "by_material group '" + g.name +
+                                 "' has no variants in any material "
+                                 "(every bucket in members_by_material "
+                                 "is empty)";
+                return r;
+            }
+            if (opts.validateReferences) {
+                for (const auto& bucket : g.membersByMaterial) {
+                    for (const auto& m : bucket) {
+                        bool found = false;
+                        for (const auto& s : parsed.sounds) {
+                            if (s.name == m) { found = true; break; }
+                        }
+                        if (!found) {
+                            r.errorLine = g.lineDeclared;
+                            r.errorMessage = "by_material group '" + g.name +
+                                             "' references unknown sound '" +
+                                             m + "'";
+                            return r;
+                        }
+                    }
+                }
+            }
+        } else {
+            if (g.memberNames.empty()) {
+                r.errorLine = g.lineDeclared;
+                r.errorMessage = "group '" + g.name + "' has no members";
+                return r;
+            }
+            if (opts.validateReferences) {
+                for (const auto& m : g.memberNames) {
+                    bool found = false;
+                    for (const auto& s : parsed.sounds) if (s.name == m) { found = true; break; }
+                    if (!found) {
+                        r.errorLine = g.lineDeclared;
+                        r.errorMessage = "group '" + g.name +
+                                         "' member '" + m +
+                                         "' is not a declared sound";
+                        return r;
+                    }
                 }
             }
         }
@@ -1142,15 +1328,28 @@ SoundBankLoadResult ResolveAndRegister(SoundBankImpl&            impl,
     for (const auto& g : parsed.groups) {
         GroupRuntime& rt = impl.groups[g.name];
         rt.policy = g.policy;
-        rt.memberIds.reserve(g.memberNames.size());
-        for (const auto& m : g.memberNames) {
-            auto it = impl.soundIds.find(m);
-            if (it == impl.soundIds.end()) {
-                // We already validated this in pass 1 if the option
-                // was set. If it wasn't, just skip the member.
-                continue;
+        if (g.policy == GroupPolicy::ByMaterial) {
+            for (size_t i = 0; i < kAudioMaterialCount; ++i) {
+                rt.memberIdsByMaterial[i].reserve(g.membersByMaterial[i].size());
+                for (const auto& m : g.membersByMaterial[i]) {
+                    auto it = impl.soundIds.find(m);
+                    if (it == impl.soundIds.end()) {
+                        // Already validated in pass 1 if the option
+                        // was set; if it wasn't, skip silently.
+                        continue;
+                    }
+                    rt.memberIdsByMaterial[i].push_back(it->second);
+                }
             }
-            rt.memberIds.push_back(it->second);
+        } else {
+            rt.memberIds.reserve(g.memberNames.size());
+            for (const auto& m : g.memberNames) {
+                auto it = impl.soundIds.find(m);
+                if (it == impl.soundIds.end()) {
+                    continue;
+                }
+                rt.memberIds.push_back(it->second);
+            }
         }
         ++r.groupsLoaded;
     }

@@ -55,10 +55,31 @@
 // other for play/eviction/spatialization.
 //     "groups": [
 //       { "name":    "footstep.grass",
-//         "policy":  "random_no_repeat", // random | random_no_repeat | sequential
+//         "policy":  "random_no_repeat", // random | random_no_repeat |
+//                                        //   sequential | by_material
 //         "members": ["footstep.grass.01", "footstep.grass.02", "footstep.grass.03"] }
 //     ]
 //   }
+//
+// The `by_material` policy uses a different "members" shape — a
+// dict of arrays keyed by AudioMaterial name strings:
+//
+//     "groups": [
+//       { "name":   "bullet_impact",
+//         "policy": "by_material",
+//         "members_by_material": {
+//           "Concrete": ["impact.concrete.01", "impact.concrete.02"],
+//           "Wood":     ["impact.wood.01"],
+//           "Default":  ["impact.generic.01"]
+//         } }
+//     ]
+//
+// At play time, the host code calls Find(name, material) with the
+// material the projectile hit; the bank picks one variant at random
+// from that material's bucket. If the material has no bucket but
+// a "Default" bucket exists, Default is used as the fallback. If
+// neither matches, Find returns kInvalidSoundId — designers can
+// choose to handle that silently or play a fallback themselves.
 //
 // Threading: Load* and Reload run on whatever thread the host calls
 // them on (typically the loading thread or game thread). Find() is
@@ -75,8 +96,9 @@
 #include <string_view>
 #include <vector>
 
-#include "audio_engine/bus.h"       // BusId, kInvalidBusId
-#include "audio_engine/types.h"     // AudioSoundId, kInvalidSoundId, enums
+#include "audio_engine/bus.h"             // BusId, kInvalidBusId
+#include "audio_engine/geometry_query.h"  // AudioMaterial (for Find overload)
+#include "audio_engine/types.h"           // AudioSoundId, kInvalidSoundId, enums
 
 namespace audio {
 
@@ -169,6 +191,16 @@ public:
     // returns the chosen member's id. Threadsafe-for-read after
     // load completes. No allocation.
     AudioSoundId Find(std::string_view name) const noexcept;
+
+    // Material-aware overload. For `by_material` groups, picks a
+    // random variant from the bucket matching `material`; if that
+    // bucket is empty or missing, falls back to the `Default`
+    // bucket; if both are empty, returns kInvalidSoundId. For
+    // any other policy (random, random_no_repeat, sequential),
+    // the material is ignored and behavior is identical to the
+    // single-argument overload. For sound names (not groups),
+    // material is also ignored. Safe to call with any AudioMaterial.
+    AudioSoundId Find(std::string_view name, AudioMaterial material) const noexcept;
 
     // Was this name loaded as either a sound or a group?
     bool Contains(std::string_view name) const noexcept;

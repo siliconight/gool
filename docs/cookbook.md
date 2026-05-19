@@ -318,6 +318,130 @@ is a no-op (the engine increments
 reconciliation code without tracking which predictions are still
 in flight.
 
+## 11 — Material-aware impact sounds ✨ Convenience
+
+A bullet hits a concrete wall vs. a wooden door vs. a glass window
+and you want a different impact thud for each — without writing
+a Dictionary lookup in your weapon code.
+
+### What you need
+
+A sound bank entry using the `by_material` group policy, plus
+material tags on your level geometry.
+
+### Author the bank
+
+In your sound bank JSON, add a group with `policy: "by_material"`
+and a `members_by_material` dict keyed by material name:
+
+```json
+{
+  "sounds": [
+    { "name": "impact.concrete.01", "file": "sfx/impacts/concrete_01.wav" },
+    { "name": "impact.concrete.02", "file": "sfx/impacts/concrete_02.wav" },
+    { "name": "impact.wood.01",     "file": "sfx/impacts/wood_01.wav" },
+    { "name": "impact.metal.01",    "file": "sfx/impacts/metal_01.wav" },
+    { "name": "impact.metal.02",    "file": "sfx/impacts/metal_02.wav" },
+    { "name": "impact.generic",     "file": "sfx/impacts/generic.wav" }
+  ],
+  "groups": [
+    {
+      "name":   "bullet_impact",
+      "policy": "by_material",
+      "members_by_material": {
+        "Concrete": ["impact.concrete.01", "impact.concrete.02"],
+        "Wood":     ["impact.wood.01"],
+        "Metal":    ["impact.metal.01", "impact.metal.02"],
+        "Default":  ["impact.generic"]
+      }
+    }
+  ]
+}
+```
+
+Material name keys are case-sensitive: `Default`, `Air`, `Glass`,
+`Wood`, `Drywall`, `Concrete`, `Metal`, `Curtain`, `Foliage`.
+
+### Tag your geometry
+
+For each surface in your level (CollisionObject3D, Area3D,
+StaticBody3D, etc.), tell gool what material it is. Pick one of:
+
+**Option A — Resource (recommended for reuse).** Create a
+GoolAudioMaterial resource (right-click in FileSystem dock →
+New Resource → GoolAudioMaterial). Set its `material` field to
+one of the `Gool.MATERIAL_*` constants. Save as e.g.
+`res://materials/audio/concrete.tres`. Then on each surface
+collider, add metadata named `gool_audio_material` pointing at
+the resource. One resource shared by every concrete surface —
+change it in one place, everything updates.
+
+**Option B — Inline metadata.** On the collider, add metadata
+named `gool_audio_material` with type Int, value matching the
+material (5 for Concrete, 3 for Wood, etc.). Faster than option
+A for one-off surfaces; tedious when you have many.
+
+**Option C — Group membership (legacy / FootstepSurfacePlayer
+compat).** Add the collider to a group named
+`audio_material:Concrete`, `audio_material:Wood`, etc. Useful
+when you're already organizing colliders by group for other
+reasons.
+
+All three paths work simultaneously and are checked in the order
+A → B → C by `Gool.material_from_collider`.
+
+### Play impact sounds from your weapon code
+
+Raycast on fire, resolve the hit's material, play the impact:
+
+```gdscript
+func _try_fire() -> void:
+    var space = get_world_3d().direct_space_state
+    var origin = global_transform.origin
+    var forward = -global_transform.basis.z
+    var query := PhysicsRayQueryParameters3D.create(
+        origin, origin + forward * 100.0)
+    var hit := space.intersect_ray(query)
+    if hit.is_empty():
+        return
+    var material := Gool.material_from_collider(hit.collider)
+    Gool.play_impact_sound("bullet_impact", hit.position, material)
+```
+
+That's it. The bank picks the right variant for the surface, and
+you don't need to write any per-material switch logic.
+
+### What happens when a material has no bucket
+
+This is the part designers worry about. The rule is **lenient**:
+
+- If the surface's material has a bucket in the group (the
+  Concrete wall got hit, Concrete is in your `members_by_material`):
+  pick a random variant from that bucket. Plays normally.
+- If the surface's material has *no* bucket, but the group
+  defines a `Default` bucket: pick from Default. The "generic
+  impact" plays as a fallback.
+- If neither matches: **nothing plays.** No error, no crash.
+  The bullet hit a surface you didn't anticipate, and there's
+  no audible response.
+
+Why lenient? So you can ship a level with only Concrete and Wood
+authored, add Foliage and Metal later, and your game keeps
+running between authoring passes. Missing materials show as
+silent gaps, not broken builds.
+
+To audit which materials are missing, watch the gool debug
+overlay during playtest — it logs every `play_impact_sound` call
+that returned no audible variant.
+
+### Where to find more
+
+The full schema for `by_material` groups (including parser error
+messages) is in
+[`docs/asset_pipeline.md`](asset_pipeline.md#the-by_material-policy).
+For the engine-level API and helper functions, see
+[`include/audio_engine/sound_bank.h`](../include/audio_engine/sound_bank.h).
+
 ## Where to find more
 
 - [`docs/godot_quickstart.md`](godot_quickstart.md) — start here

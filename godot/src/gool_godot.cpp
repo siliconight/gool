@@ -19,6 +19,7 @@
 #include "audio_engine/config.h"
 #include "audio_engine/emitter.h"
 #include "audio_engine/events.h"
+#include "audio_engine/geometry_query.h"  // AudioMaterial (Phase 5.1)
 #include "audio_engine/gpak.h"
 #include "audio_engine/backend/miniaudio_backend.h"
 #include "audio_engine/music_channel.h"
@@ -315,6 +316,14 @@ public:
         ClassDB::bind_method(D_METHOD("play_sound_at_location",
                                        "name", "position"),
                               &GoolAudioRuntime::play_sound_at_location);
+        // Phase 5.1 (v0.30.0): material-aware playback. Looks up the
+        // sound bank entry as a by_material group keyed by `material`,
+        // then plays the selected variant at `position`. If `name` is
+        // a plain sound or a non-by_material group, behavior matches
+        // play_sound_at_location and material is ignored.
+        ClassDB::bind_method(D_METHOD("play_sound_at_location_for_material",
+                                       "name", "position", "material"),
+                              &GoolAudioRuntime::play_sound_at_location_for_material);
         ClassDB::bind_method(D_METHOD("create_emitter",
                                        "name", "position",
                                        "looping", "fade_in_ms"),
@@ -1232,6 +1241,36 @@ public:
             id = bank_->Find(std::string_view(utf8.get_data(), utf8.length()));
         }
         if (id == audio::kInvalidSoundId) id = HashName(name);
+        runtime_->SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
+            id, V3(position)));
+    }
+
+    // Material-aware variant for impact sounds and similar
+    // surface-dependent triggers. Mirrors play_sound_at_location but
+    // passes the AudioMaterial through to the bank's by_material
+    // lookup. Out-of-range material values fall through to Default;
+    // the bank itself enforces the lenient rule for missing buckets.
+    void play_sound_at_location_for_material(const String& name,
+                                              const Vector3& position,
+                                              int            material) {
+        if (!runtime_) return;
+        audio::AudioMaterial mat = audio::AudioMaterial::Default;
+        if (material >= 0 &&
+            material < static_cast<int>(audio::kAudioMaterialCount)) {
+            mat = static_cast<audio::AudioMaterial>(material);
+        }
+        audio::AudioSoundId id = audio::kInvalidSoundId;
+        if (bank_) {
+            const auto utf8 = name.utf8();
+            id = bank_->Find(
+                std::string_view(utf8.get_data(), utf8.length()),
+                mat);
+        }
+        // Note: no HashName fallback here — material-aware playback
+        // only makes sense against a bank-registered group. If the
+        // bank doesn't recognize the name, return without playing
+        // anything (the lenient rule applies up the stack).
+        if (id == audio::kInvalidSoundId) return;
         runtime_->SubmitEvent(audio::AudioEvent::MakePlaySoundAtLocation(
             id, V3(position)));
     }

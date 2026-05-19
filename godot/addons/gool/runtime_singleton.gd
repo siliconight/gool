@@ -695,6 +695,94 @@ func find_bus_id_by_name(name: String) -> int:
 func play_sound_at_location(name: String, position: Vector3) -> void:
 	_runtime.play_sound_at_location(name, position)
 
+## AudioMaterial taxonomy (Phase 5.1).
+##
+## Mirrors the C++ `audio::AudioMaterial` enum in
+## `include/audio_engine/geometry_query.h`. Use these values in
+## `play_impact_sound` calls and as the `material` field on
+## `GoolAudioMaterial` resources tagging your level geometry.
+##
+## Designers: tag a CollisionObject3D / Area3D / StaticBody3D with
+## its surface material by either setting the `gool_audio_material`
+## metadata to one of these constants in the inspector, or assigning
+## a GoolAudioMaterial resource to the node. `material_from_collider`
+## reads either path.
+const MATERIAL_DEFAULT:  int = 0   ## unknown / fallback
+const MATERIAL_AIR:      int = 1   ## pass-through (no surface)
+const MATERIAL_GLASS:    int = 2
+const MATERIAL_WOOD:     int = 3
+const MATERIAL_DRYWALL:  int = 4
+const MATERIAL_CONCRETE: int = 5
+const MATERIAL_METAL:    int = 6
+const MATERIAL_CURTAIN:  int = 7
+const MATERIAL_FOLIAGE:  int = 8
+
+const _MATERIAL_NAMES := [
+	"Default", "Air", "Glass", "Wood", "Drywall",
+	"Concrete", "Metal", "Curtain", "Foliage",
+]
+
+## Return the string name of an AudioMaterial, e.g.
+## `material_name(Gool.MATERIAL_CONCRETE)` returns `"Concrete"`.
+## Returns `"Unknown"` for out-of-range values. Useful for debug
+## overlays and logging.
+func material_name(material: int) -> String:
+	if material >= 0 and material < _MATERIAL_NAMES.size():
+		return _MATERIAL_NAMES[material]
+	return "Unknown"
+
+## Resolve a Node's AudioMaterial. Checks two sources in order:
+##
+##   1. `gool_audio_material` metadata. Can be either an int
+##      (one of the MATERIAL_* constants) or a GoolAudioMaterial
+##      resource — both are accepted.
+##   2. Group membership of the form `audio_material:Concrete`,
+##      `audio_material:Wood`, etc. Provided for backward compat
+##      with the FootstepSurfacePlayer pattern; new content should
+##      prefer the metadata or resource path.
+##
+## Returns MATERIAL_DEFAULT if neither source identifies a material
+## (or if `node` is null). The lenient default means downstream
+## `play_impact_sound` falls back to the Default bucket if the
+## bank defines one, or silently does nothing if not.
+func material_from_collider(node: Node) -> int:
+	if node == null:
+		return MATERIAL_DEFAULT
+	# 1. Metadata path: explicit `gool_audio_material` meta. Accept
+	# either an int (constant) or a GoolAudioMaterial resource.
+	if node.has_meta("gool_audio_material"):
+		var meta = node.get_meta("gool_audio_material")
+		if meta is int:
+			return meta
+		# Duck-type: a GoolAudioMaterial resource has a `material`
+		# property holding the int. Avoid hard typing here so the
+		# resource script can be reloaded / replaced without
+		# tripping a type mismatch.
+		if meta != null and "material" in meta:
+			return int(meta.material)
+	# 2. Group fallback: audio_material:<MaterialName>.
+	for i in range(_MATERIAL_NAMES.size()):
+		if node.is_in_group("audio_material:" + _MATERIAL_NAMES[i]):
+			return i
+	return MATERIAL_DEFAULT
+
+## Play a one-shot impact sound at `position`, picking the variant
+## from the named bank group's bucket for `material`. If the group
+## has no bucket for that material, falls back to the group's
+## "Default" bucket; if that's also missing, plays nothing (the
+## lenient rule — see docs/asset_pipeline.md).
+##
+## Typical use in a weapon's _try_fire:
+##   var hit = space_state.intersect_ray(query)
+##   if hit:
+##       var mat := Gool.material_from_collider(hit.collider)
+##       Gool.play_impact_sound("bullet_impact", hit.position, mat)
+##
+## For non-by_material groups (or plain sounds), `material` is
+## ignored and behavior matches `play_sound_at_location`.
+func play_impact_sound(name: String, position: Vector3, material: int) -> void:
+	_runtime.play_sound_at_location_for_material(name, position, material)
+
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
 					 fade_in_ms: float = 0.0) -> int:
