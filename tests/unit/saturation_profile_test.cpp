@@ -140,7 +140,7 @@ void TestProfilesAreSelfContained() {
     auto v = SaturationProfiles::DialogueWarmth();
     EXPECT(v.gainDb              == 0.0f);
     EXPECT(v.compressorRatio     == 4.0f);   // EffectConfig default
-    EXPECT(v.reverbRoomSize      == 0.7f);
+    EXPECT(v.reverbDecay         == 0.5f);   // v0.29.0 Dattorro default
     EXPECT(v.compressorMixRatio  == 1.0f);
 
     std::printf("    OK\n");

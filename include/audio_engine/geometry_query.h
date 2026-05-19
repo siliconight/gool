@@ -86,6 +86,39 @@ inline void AudioMaterialDefaults(AudioMaterial m,
     }
 }
 
+// v0.29.0: Recommended (decay, lf_damping, hf_damping, diffusion)
+// preset for a Dattorro plate reverb tuned to feel like a small-to-medium
+// room finished with the given material. These are the values that
+// `Gool.reverb_preset_for_material()` will return once Phase 5.1 ships
+// the GDScript wrapper; in the meantime they're available to anyone
+// constructing a ReverbEffect programmatically.
+//
+// The values come from docs/audio_design/reverb_dattorro.md. They are
+// starting points, not authoritative — designers are expected to
+// override per-zone for specific spaces.
+struct ReverbMaterialPreset {
+    float decay;
+    float lfDamping;
+    float hfDamping;
+    float diffusion;
+};
+
+inline ReverbMaterialPreset ReverbPresetByMaterial(AudioMaterial m) noexcept {
+    switch (m) {
+        case AudioMaterial::Glass:    return { 0.85f, 0.00f, 0.05f, 0.50f };
+        case AudioMaterial::Wood:     return { 0.55f, 0.10f, 0.40f, 0.70f };
+        case AudioMaterial::Drywall:  return { 0.45f, 0.20f, 0.55f, 0.70f };
+        case AudioMaterial::Concrete: return { 0.85f, 0.05f, 0.15f, 0.55f };
+        case AudioMaterial::Metal:    return { 0.80f, 0.00f, 0.10f, 0.40f };
+        case AudioMaterial::Curtain:  return { 0.20f, 0.70f, 0.85f, 0.85f };
+        case AudioMaterial::Foliage:  return { 0.30f, 0.40f, 0.85f, 0.95f };
+        // Air and Default both use a balanced "average room" preset.
+        case AudioMaterial::Air:
+        case AudioMaterial::Default:
+        default:                      return { 0.50f, 0.10f, 0.30f, 0.625f };
+    }
+}
+
 // Resolve the effective (absorption, damping) pair from an
 // AudioOcclusionHit, honoring the precedence:
 //   1. material != Default     -> AudioMaterialDefaults(material)

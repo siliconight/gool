@@ -53,7 +53,18 @@ float Rms(const float* d, size_t n) {
 // -------------------------------------------------------------------------
 
 void TestReverbEffectImpulseResponse() {
-    ReverbEffect rv(/*roomSize*/ 0.85f, /*damping*/ 0.4f, /*wetGainDb*/ 0.0f);
+    // v0.29.0: ReverbEffect ctor went from 3 args to 6 (Dattorro plate
+    // parameter surface). Old roomSize → new decay 1:1, old damping →
+    // new hf_damping 1:1 (the soft-migration mapping from EffectConfig).
+    // The three new args (predelayMs, lfDamping, diffusion) get the
+    // EffectConfig defaults from include/audio_engine/bus.h.
+    ReverbEffect rv(
+            /*predelayMs*/ 30.0f,
+            /*decay*/      0.85f,    // was: roomSize
+            /*lfDamping*/  0.0f,
+            /*hfDamping*/  0.4f,     // was: damping
+            /*diffusion*/  0.625f,
+            /*wetGainDb*/  0.0f);
     rv.Prepare(kSampleRate, /*channels*/ 2);
 
     // Single-sample stereo impulse, then 1 second of silence.
@@ -89,8 +100,15 @@ void TestReverbEffectImpulseResponse() {
 }
 
 void TestReverbEffectShorterRoomDecaysFaster() {
-    ReverbEffect big  (0.95f, 0.2f, 0.0f);
-    ReverbEffect small(0.30f, 0.2f, 0.0f);
+    // Both reverbs use the same hf_damping/lfDamping/diffusion so that the
+    // ONLY difference is decay length — the test asserts that bigger decay
+    // ⇒ longer tail, so it's important the other axes don't vary.
+    ReverbEffect big  (/*predelayMs*/ 30.0f, /*decay*/ 0.95f,
+                       /*lfDamping*/   0.0f, /*hfDamping*/ 0.2f,
+                       /*diffusion*/   0.625f, /*wetGainDb*/ 0.0f);
+    ReverbEffect small(/*predelayMs*/ 30.0f, /*decay*/ 0.30f,
+                       /*lfDamping*/   0.0f, /*hfDamping*/ 0.2f,
+                       /*diffusion*/   0.625f, /*wetGainDb*/ 0.0f);
     big.Prepare  (kSampleRate, 2);
     small.Prepare(kSampleRate, 2);
 
@@ -189,8 +207,8 @@ RunResult RunImpulseAndMeasure(bool addReverbBus, float globalSend) {
         cfg.busGraph.buses[1].parent = kBusMaster;
         cfg.busGraph.buses[1].outputGainDb = 0.0f;
         cfg.busGraph.buses[1].effects[0].kind             = EffectKind::Reverb;
-        cfg.busGraph.buses[1].effects[0].reverbRoomSize   = 0.9f;
-        cfg.busGraph.buses[1].effects[0].reverbDamping    = 0.3f;
+        cfg.busGraph.buses[1].effects[0].reverbDecay      = 0.9f;
+        cfg.busGraph.buses[1].effects[0].reverbHfDamping  = 0.3f;
         cfg.busGraph.buses[1].effects[0].reverbWetGainDb  = 0.0f;
         cfg.busGraph.buses[1].effectCount                 = 1;
     }

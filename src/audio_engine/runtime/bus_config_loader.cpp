@@ -274,9 +274,21 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             }
             else if (key == "sidechain_bus")      { if (!s.parseString(sidechainName, err, errLine)) return false; }
             // Reverb.
-            else if (key == "room_size")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbRoomSize = static_cast<float>(n); }
-            else if (key == "damping")            { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDamping  = static_cast<float>(n); }
+            // Reverb (v0.29.0+ Dattorro plate). Six native keys plus
+            // soft migration of the v0.28.x Freeverb keys (room_size →
+            // decay, damping → hf_damping). The mapping is 1:1
+            // semantically — both old parameters were 0..1 in the same
+            // direction as their new analogues — so configs from prior
+            // versions load with perceptually similar behavior.
+            else if (key == "predelay_ms")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbPredelayMs = static_cast<float>(n); }
+            else if (key == "decay")              { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }
+            else if (key == "lf_damping")         { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbLfDamping = static_cast<float>(n); }
+            else if (key == "hf_damping")         { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbHfDamping = static_cast<float>(n); }
+            else if (key == "diffusion")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDiffusion = static_cast<float>(n); }
             else if (key == "wet_gain_db")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbWetGainDb = static_cast<float>(n); }
+            // v0.28.x soft-migration aliases.
+            else if (key == "room_size")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }
+            else if (key == "damping")            { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbHfDamping = static_cast<float>(n); }
             // Saturation.
             else if (key == "drive")              { if (!s.parseNumber(n, err, errLine)) return false; fx.saturationDrive       = static_cast<float>(n); }
             else if (key == "mix")                { if (!s.parseNumber(n, err, errLine)) return false; fx.saturationMix         = static_cast<float>(n); }

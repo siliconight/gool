@@ -223,7 +223,52 @@ When you find yourself reading a file that some other code path is
 writing on a debounced schedule, that's the smell. Read from the
 in-memory state instead.
 
-### `AcceptDialog` is not a `Popup` — class-family signals aren't shared
+### Signature changes: grep the callee, not the operands
+*(Surfaced v0.29.0, fixed in v0.29.2 (after a rollback in v0.29.1). Test file's direct ctor calls slipped through a field-name grep.)*
+
+When changing the signature of a function or constructor, search the
+tree for the **symbol name** (e.g. `ReverbEffect(`, `loadFromDisk(`),
+not just for the names of fields or arguments that pass through it.
+The two sets aren't the same — callers exist that reference the
+symbol but not its operands by name. The classic miss is a test file
+that constructs an object directly with positional literals:
+
+```cpp
+ReverbEffect rv(0.85f, 0.4f, 0.0f);   // no field names, won't show up
+                                      // in a grep for "reverbRoomSize"
+```
+
+In v0.29.0 the `ReverbEffect` constructor went from 3 args to 6 args.
+I updated every site that referenced `reverbRoomSize`/`reverbDamping`
+(the EffectConfig fields the ctor reads from). But three direct ctor
+calls in `tests/unit/reverb_send_test.cpp` passed positional floats with
+no field-name comments — invisible to the field-name grep. Result:
+the engine compiled fine on all three CI platforms but the test source
+file took the entire build matrix down with `error: no matching
+function for call to ReverbEffect::ReverbEffect(float, float, float)`.
+
+**Standard practice when changing a signature**: do BOTH searches:
+
+```bash
+# 1. Field-name search (the "operand" side)
+grep -rn "reverbRoomSize\|reverbDamping" --include="*.cpp" --include="*.h" .
+
+# 2. Symbol-name search (the "callee" side) — easy to forget
+grep -rn "ReverbEffect *(" --include="*.cpp" --include="*.h" .
+```
+
+The symbol-name search catches direct construction, function pointers,
+template instantiations, and any other place where the callee shows up
+without its argument names visible.
+
+**Meta-lesson**: a thorough audit of "all call sites of API X" requires
+searching for X itself, not just for the data that flows through X. The
+field-name approach feels equivalent because in normal usage you'd touch
+both — but tests, mocks, and ad-hoc construction sites routinely break
+that equivalence. The fix is mechanical (always run both greps); the
+discipline is remembering to.
+
+
 *(Surfaced v0.28.9 → v0.28.10. Copy-pasted a working idiom from `PopupMenu` to `AcceptDialog`; it compiled, then errored at runtime.)*
 
 Godot 4's dialog and popup classes look like they should share a base

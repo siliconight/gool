@@ -1756,13 +1756,21 @@ class _EffectsPanel extends PanelContainer:
 		# DetectionMode is binary Peak/RMS — OptionButton, not slider.
 		18: {"label": "Mode", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "discrete", "choices": ["Peak", "RMS"]},
-		# Reverb
-		9:  {"label": "Size", "unit": "", "min": 0.0, "max": 1.0,
+		# Reverb (v0.29.0+ Dattorro plate). IDs 9 and 10 were renamed
+		# from "Size" and "Damping" — same numeric IDs, refreshed labels.
+		# IDs 23/24/25 are new.
+		9:  {"label": "Decay", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "linear", "fmt": "%0.2f"},
-		10: {"label": "Damping", "unit": "", "min": 0.0, "max": 1.0,
+		10: {"label": "HF Damp", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "linear", "fmt": "%0.2f"},
 		11: {"label": "Wet", "unit": "dB", "min": -60.0, "max": 6.0,
 			"curve": "linear", "fmt": "%+0.1f"},
+		23: {"label": "Predelay", "unit": "ms", "min": 0.0, "max": 200.0,
+			"curve": "linear", "fmt": "%0.0f"},
+		24: {"label": "LF Damp", "unit": "", "min": 0.0, "max": 1.0,
+			"curve": "linear", "fmt": "%0.2f"},
+		25: {"label": "Diffusion", "unit": "", "min": 0.0, "max": 1.0,
+			"curve": "linear", "fmt": "%0.2f"},
 		# Saturation. Engine takes linear factors here, NOT dB —
 		# verified against SaturationEffect::OnParameter
 		# (saturation_effect.cpp). Drive is the pre-tanh gain factor;
@@ -1795,7 +1803,11 @@ class _EffectsPanel extends PanelContainer:
 		1: [1],
 		2: [2, 3, 12],
 		3: [4, 5, 6, 7, 8, 13, 15, 16, 17, 18, 14],
-		4: [9, 10, 11],
+		# Reverb (v0.29.0): Predelay → Decay → LF/HF Damp → Diffusion → Wet.
+		# Predelay at top because it's the strongest "what size of space?"
+		# cue; the damping pair sits together since designers usually tune
+		# them in tandem; Wet stays trailing per the dock convention.
+		4: [23, 9, 24, 10, 25, 11],
 		5: [19, 21, 22, 20],
 	}
 

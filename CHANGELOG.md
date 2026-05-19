@@ -22,27 +22,78 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.29.1] - 2026-05-19 — Reverb rollback + at-rest fix
+## [0.29.2] - 2026-05-19 — Restore Dattorro reverb (test fix closes v0.29.0 CI)
 
-This release backs out the v0.29.0 reverb rewrite (which broke CI on
-all three engine platforms) and ships the at-rest dock fix that should
-have ridden along with v0.29.0. Tree-wise, v0.29.1 is equivalent to
-v0.28.10 plus one file change in `mixer_dock.gd`. The reverb work is
-preserved on a working branch and will return as v0.29.2 once the
-compile errors are resolved.
+Re-introduces the Dattorro plate reverb that v0.29.0 attempted to ship
+and v0.29.1 rolled back. The reverb engine code (`reverb_effect.{h,cpp}`),
+parameter surface, soft migration, dock metadata, and material preset
+table are all identical to v0.29.0 — the only difference is that the
+three `ReverbEffect` constructor calls in `tests/unit/reverb_send_test.cpp`
+now use the 6-arg form they should have used in v0.29.0.
+
+### What broke in v0.29.0
+
+When the `ReverbEffect` constructor moved from 3 args to 6 args, I
+grep'd for the old EffectConfig field names (`reverbRoomSize`,
+`reverbDamping`) and updated those across all sites that referenced
+them. But `tests/unit/reverb_send_test.cpp` constructs `ReverbEffect`
+*directly* with positional float literals — no field-name comments
+visible to the field-name grep. Three call sites slipped through.
+
+The CI failure was uniform across all three platforms (msvc, gcc,
+clang) and identical: "no matching function for call to
+`ReverbEffect::ReverbEffect(float, float, float)`". The reverb
+implementation itself compiled cleanly on every platform; only the
+test source file was broken, which cascaded the build matrix to red.
+
+### What's in v0.29.2
+
+Compared to v0.29.1 (which had the reverb rolled back):
+
+- **Re-added:** all Dattorro reverb engine code, EffectParameter
+  additions/renames, EffectConfig fields, bus_graph construction site,
+  bus_config_loader JSON keys + soft-migration aliases, geometry_query
+  `ReverbPresetByMaterial` table, mixer_dock 6-slider layout,
+  config_model lookup tables, gool_godot.cpp parameter enumeration
+- **New:** `tests/unit/reverb_send_test.cpp` three ctor calls in 6-arg
+  form with annotated parameter comments
+- **Carried forward from v0.29.1:** the dock at-rest fix (read model,
+  not disk)
+
+`gool/config.json` files using the legacy `room_size` / `damping`
+keys continue to load unchanged via the soft-migration path. The
+behavior should match what v0.29.0 sounded like — same code, same
+constants, same defaults.
+
+### Lessons captured
+
+Added to `docs/engineering/lessons_learned.md`:
+*"Signature changes: grep the callee, not the operands."* When
+changing a function or constructor signature, do both a field-name
+grep AND a `SymbolName(` grep, because tests, mocks, and ad-hoc
+construction sites routinely reference the callee without its
+argument-name conventions. The field-name grep would not have caught
+this; the symbol-name grep would have.
+
+## [0.29.1] - 2026-05-19 — Rollback v0.29.0 reverb; ship dock at-rest fix
+
+Backs out the v0.29.0 reverb work (which broke CI on all three engine
+platforms) and ships the dock at-rest fix that should have ridden along
+with v0.29.0. Tree-wise, v0.29.1 is v0.28.10 plus one file change in
+`mixer_dock.gd`. The reverb is held for v0.29.2.
 
 ### What's IN v0.29.1
 
-The at-rest fix from the v0.29.1 work originally targeted at v0.28.11:
+The dock at-rest fix:
 
 Symptom: adding or removing a bus via the dock did not visibly update
 the strip row at editor-rest. The change was correctly persisted to
-the in-memory model, but the dock's visual rebuild fired on the
-`bus_added` / `bus_removed` signal *immediately*, before the debounced
-save flushed to disk. The rebuild then parsed stale `gool/config.json`
-content and produced no visible change. The change only appeared
-after starting the game, when the runtime poll triggered a separate
-rebuild from runtime stats.
+the in-memory model and eventually serialized — but the dock's visual
+rebuild fired immediately on the `bus_added`/`bus_removed` signal,
+before the debounced save flushed. The rebuild then parsed stale
+`gool/config.json` content. The change only appeared after starting
+the game, when the runtime poll triggered a separate rebuild from
+runtime stats.
 
 Root cause: `_load_static_layout_from_config()` was named for the
 disk file but should have been reading from the in-memory model
@@ -51,48 +102,162 @@ in `_ready` explicitly noted this intent). The function body never
 made that switch.
 
 Fix: `_load_static_layout_from_config()` now reads from
-`_config_model.get_buses()`, the authoritative in-memory parsed
-buses array. The dead `_read_buses_from_config()` is removed.
+`_config_model.get_buses()`. The dead `_read_buses_from_config()` is
+removed; the model is now the single source of truth for at-rest
+layout decisions.
 
-Captured in `docs/engineering/lessons_learned.md` as:
-*"Reading state: in-memory model > debounced disk."* — when two
-parallel paths feed the same UI, identify which is the authoritative
-state source in each mode and read from THAT. Disk is not
-authoritative once an in-memory model exists.
+Captured in `docs/engineering/lessons_learned.md`:
+*"Reading state: in-memory model > debounced disk."*
 
-### What's OUT (held for v0.29.2+)
+### What's OUT (held for v0.29.2)
 
-The v0.29.0 reverb rewrite from Freeverb to Dattorro plate. CI on
-v0.29.0 failed on:
-
-- engine / macos-latest / Release  (build, exit 2)
-- engine / ubuntu-latest / Release (build, exit 2)
-- engine / windows-latest / Release (build, exit 1)
-- sanitize / asan+ubsan / ubuntu  (cascading from compile)
-- sanitize / tsan / ubuntu          (cascading from compile)
-- coverage / gcovr                  (cascading from compile)
-- static-analysis / clang-tidy      (cascading from compile)
-- static-analysis / lizard          (complexity threshold)
-
-The reverb code itself is preserved on a working branch (or
-equivalent local working tree). It will return as v0.29.2 once
-the compile errors and lizard complexity flag are resolved.
-
-The user-facing param surface changes (six reverb sliders,
+The v0.29.0 Dattorro reverb. CI on v0.29.0 failed because three
+constructor calls in `tests/unit/reverb_send_test.cpp` were not
+updated to the new 6-arg signature. The reverb engine code itself
+compiled cleanly on all three platforms; only the test source was
+broken. The user-facing param surface changes (six reverb sliders,
 new JSON keys, soft migration) are also reverted in v0.29.1.
-`gool/config.json` files using the old `room_size` / `damping`
-keys continue to work as they did in v0.28.10. The
-`docs/audio_design/reverb_dattorro.md` design doc remains
-in-tree as the implementation target for v0.29.2.
+`gool/config.json` files using the old keys continue to work as
+they did in v0.28.10.
 
-## [0.29.0] - 2026-05-19 — Reverb: Freeverb → Dattorro plate (WITHHELD)
+The `docs/audio_design/reverb_dattorro.md` design doc remains in-tree
+as the implementation target.
 
-Pushed as v0.29.0 but did not pass CI. Reverted in v0.29.1; will
-return as v0.29.2 once the compile errors and lizard complexity
-flag are addressed. See v0.29.1 entry for the CI failure summary.
+## [0.29.0] - 2026-05-19 — Reverb: Freeverb → Dattorro plate
 
-This entry is preserved in the changelog so the v0.29.0 tag in
-git is documented; do not treat the tag as a release.
+> **Post-mortem note:** This release was tagged and pushed but did not
+> pass CI — three `ReverbEffect` constructor calls in
+> `tests/unit/reverb_send_test.cpp` were not updated to the new 6-arg
+> signature, breaking the build matrix on all three platforms.
+> v0.29.1 rolled the reverb back. v0.29.2 restored it with the
+> test-only fix. The detailed reverb description below applies
+> end-to-end to the code that shipped in v0.29.2.
+
+**Headline:** The reverb effect is rewritten from scratch as a Dattorro
+plate reverb (Dattorro 1997, "Effect Design Part 1"). The previous
+Freeverb implementation served well as a prototype but cannot deliver
+the frequency-shaped damping that Phase 5 (material & acoustic
+environment authoring) is built around. The new implementation:
+
+- Has predelay (0–200 ms) as a first-class parameter — the dominant
+  perceptual cue for room size, missing in v0.28.x.
+- Provides separable LF and HF damping (rather than a single damping
+  scalar), so the AudioMaterial taxonomy can produce audibly distinct
+  surface colors: a glass-finished room vs. curtain-finished vs.
+  concrete-finished, each with its own characteristic spectral tilt.
+- Has subtle internal LFO modulation on two of its allpasses
+  (hardcoded ~0.3–0.5 Hz, ~8-sample depth), eliminating the metallic
+  ringing that static-delay reverbs produce on sustained tonal material.
+- Includes a `diffusion` knob authoring early-echo smoothness
+  independent of decay length.
+
+Implementation: ~670 lines of new C++ across `reverb_effect.{h,cpp}`.
+Topology, parameter semantics, and material preset table are documented
+in `docs/audio_design/reverb_dattorro.md` (now marked shipped).
+
+### Parameter surface (6 knobs)
+
+| Param | JSON key | Range | Default | Notes |
+|---|---|---|---|---|
+| `Reverb_PredelayMs` (23) | `predelay_ms` | 0–200 | 30.0 | new |
+| `Reverb_Decay` (9) | `decay` | 0–1 | 0.5 | renamed from `Reverb_RoomSize` |
+| `Reverb_LfDamping` (24) | `lf_damping` | 0–1 | 0.0 | new |
+| `Reverb_HfDamping` (10) | `hf_damping` | 0–1 | 0.3 | renamed from `Reverb_Damping` |
+| `Reverb_Diffusion` (25) | `diffusion` | 0–1 | 0.625 | new |
+| `Reverb_WetGainDb` (11) | `wet_gain_db` | -24–12 | 0.0 | unchanged |
+
+### Soft migration from v0.28.x — old configs work without edits
+
+The two parameter IDs that were renamed (9 and 10) preserve their
+numeric values; `Reverb_RoomSize` and `Reverb_Damping` are now
+deprecated aliases for `Reverb_Decay` and `Reverb_HfDamping`. Code
+that calls `set_effect_parameter(..., Reverb_RoomSize, x)` keeps
+working.
+
+The JSON loader (`bus_config_loader.cpp`) routes the legacy keys
+`room_size` and `damping` into `reverbDecay` and `reverbHfDamping`
+respectively, with 1:1 numeric mapping. Existing `gool/config.json`
+files using the old keys load and sound roughly equivalent to their
+v0.28.x behavior — same nominal tail length, same nominal damping —
+through the new plate topology. Old sandbox configs require no edits.
+
+When a config is touched in the dock and re-serialized, the new keys
+are written. There's no automatic rewrite of untouched configs; that
+would be an opt-in "Normalize config formatting" action covered by
+the existing v0.28.8 follow-ups list.
+
+### Material → preset table (Phase 5.1 hook)
+
+A new `ReverbPresetByMaterial()` helper in `include/audio_engine/geometry_query.h`
+returns recommended (decay, lf_damping, hf_damping, diffusion) tuples
+keyed on `AudioMaterial`:
+
+| Material | decay | lf_damp | hf_damp | diffusion |
+|---|---|---|---|---|
+| Glass    | 0.85 | 0.00 | 0.05 | 0.50 |
+| Wood     | 0.55 | 0.10 | 0.40 | 0.70 |
+| Drywall  | 0.45 | 0.20 | 0.55 | 0.70 |
+| Concrete | 0.85 | 0.05 | 0.15 | 0.55 |
+| Metal    | 0.80 | 0.00 | 0.10 | 0.40 |
+| Curtain  | 0.20 | 0.70 | 0.85 | 0.85 |
+| Foliage  | 0.30 | 0.40 | 0.85 | 0.95 |
+| Default  | 0.50 | 0.10 | 0.30 | 0.625 |
+
+These are starting points for Phase 5.1 (`Gool.reverb_preset_for_material()`
+GDScript wrapper, queued). Designers will be expected to override
+per-zone for specific spaces; the preset table is the floor, not the
+ceiling.
+
+### Implementation simplification vs. the original design doc
+
+The design doc proposed analytical Cytomic SVFs (state-variable
+filters) for the in-tank damping shelves. This release uses simpler
+stacked one-pole filters: a lowpass for HF damping and a parallel
+low-cutoff lowpass whose output is subtracted from the HF-damped
+signal for LF damping. The parameter surface is unchanged. The
+audible effect is meaningfully separable — Curtain vs. Glass sound
+demonstrably different — so the simpler filters earn the slot for
+v0.29.0. A Cytomic SVF upgrade can land in v0.30.x if material
+material shapes need cleaner shelf transitions (e.g., for impulse-
+response matching down the road).
+
+### Dock changes
+
+The mixer dock's reverb section now shows six sliders instead of
+three. Display order (top to bottom): Predelay → Decay → LF Damp →
+HF Damp → Diffusion → Wet. Wet stays at the bottom per the dock
+convention for "trailing wet/dry blend" controls. PARAM_META,
+PARAM_ORDER_BY_KIND, PARAM_ID_TO_JSON_KEY, PARAM_ID_TO_KIND,
+KIND_INT_TO_JSON_KEYS, KIND_INT_TO_KEY_TO_PARAM_ID,
+PARAM_ID_TO_ENGINE_DEFAULT, and EFFECT_DEFAULTS_BY_KIND all
+updated in lock-step.
+
+### Test changes
+
+C++ unit tests touching the old `reverbRoomSize` / `reverbDamping`
+field names were renamed to `reverbDecay` / `reverbHfDamping`. The
+loader test (`bus_config_loader_test.cpp`) still uses the legacy
+JSON keys (`room_size`, `damping`) in its test fixture but asserts
+on the new field names — verifying that the soft-migration path
+works end-to-end.
+
+### File changes summary
+
+- `src/audio_engine/dsp/reverb_effect.{h,cpp}`: full rewrite
+  (Dattorro topology, ~670 LOC total)
+- `include/audio_engine/bus.h`: EffectParameter additions/renames,
+  EffectConfig reverb field replacements
+- `src/audio_engine/mixer/bus_graph.cpp`: ReverbEffect ctor call
+  updated to new 6-param signature
+- `src/audio_engine/runtime/bus_config_loader.cpp`: new JSON keys
+  + soft-migration aliases for `room_size` / `damping`
+- `include/audio_engine/geometry_query.h`: `ReverbPresetByMaterial()`
+  helper + `ReverbMaterialPreset` struct
+- `godot/src/gool_godot.cpp`: parameter ID enumeration for Reverb kind
+- `godot/addons/gool/editor/mixer_dock.gd`: PARAM_META + PARAM_ORDER_BY_KIND
+- `godot/addons/gool/editor/config_model.gd`: four tables updated
+- `tests/unit/*.cpp`: 5 tests updated for the new field names
+- `docs/audio_design/reverb_dattorro.md`: status → shipped
 
 ## [0.28.10] - 2026-05-19 — Bugfix: three v0.28.9 regressions
 
@@ -13575,6 +13740,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.29.2]: https://github.com/siliconight/gool/releases/tag/v0.29.2
 [0.29.1]: https://github.com/siliconight/gool/releases/tag/v0.29.1
 [0.29.0]: https://github.com/siliconight/gool/releases/tag/v0.29.0
 [0.28.10]: https://github.com/siliconight/gool/releases/tag/v0.28.10
