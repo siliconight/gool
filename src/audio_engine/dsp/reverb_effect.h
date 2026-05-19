@@ -110,7 +110,13 @@ private:
         }
     };
 
-    // Schroeder allpass: y = -gain*x + d; write x + gain*d (d = delay output).
+    // Schroeder allpass: y = -gain*x + d; write x + gain*y.
+    //
+    // Writing back `x + gain*y` (NOT `x + gain*d`) is what makes this a
+    // unity-gain allpass. See lessons_learned.md "Schroeder allpass
+    // write-back: y, not d" — the wrong form is a comb filter with
+    // gain > 1 at low frequencies, which we shipped in v0.29.0-v0.29.3
+    // and which broke the tank's stability at decay > ~0.6.
     struct Allpass {
         DelayLine line;
         float gain = 0.5f;
@@ -118,7 +124,7 @@ private:
         inline float Step(float x) noexcept {
             const float d = line.Read();
             const float y = -gain * x + d;
-            line.Write(x + gain * d);
+            line.Write(x + gain * y);
             line.Advance();
             return y;
         }

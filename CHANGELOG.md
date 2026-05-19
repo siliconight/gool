@@ -22,6 +22,118 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.29.4] - 2026-05-19 — Reverb stability fix: Schroeder allpass write-back
+
+**This is the real fix for the v0.29.0 reverb.** The v0.29.3 release
+*also* still failed CI — same test, different assertion line — and
+that failure was the symptom of a real DSP bug, not (as v0.29.3
+claimed) a topology-aware test expectation issue.
+
+### What v0.29.3 missed
+
+v0.29.3 replaced the early-vs-late assertion with mid-vs-tail,
+arguing the test had inherited Freeverb's exponential-decay
+expectations. That framing was wrong: it explained why
+`lateRms > earlyRms` was plausible (Dattorro buildup) but did not
+ask whether the *magnitudes* were plausible. The v0.29.2 measurement
+was early(0-50ms) = 0.00212, late(400-600ms) = 0.12290 — a 58×
+ratio. A real Dattorro plate's buildup-to-input ratio peaks at
+roughly 2-5×, never 58×. The v0.29.3 mid-vs-tail measurement on
+CI then made the divergence obvious:
+
+| Window | RMS |
+|--------|-----|
+| 0-50 ms | 0.00212 |
+| 200-400 ms | 0.05223 |
+| 400-600 ms | 0.12290 |
+| 700-1000 ms | 0.88074 |
+
+Energy is *monotonically growing* across the full 1-second window.
+That isn't a long buildup — it's the tank diverging. At decay=0.85
+with hf_damping=0.4 and lf_damping=0, the effective loop gain at
+low frequencies is > 1.0, so the impulse response never reaches
+steady state within the test buffer.
+
+### Root cause: Schroeder allpass write-back
+
+The bug is in the inner step of the Schroeder allpass — both
+`Allpass::Step` (used in the input diffuser and the tank's ap2/ap4)
+and `ModulatedAllpass::Step` (used as ap1/ap3 in each tank half).
+The canonical form writes back `x + g·y` to the delay line; the
+v0.29.0-v0.29.3 code wrote back `x + g·d` (where d is the delay
+line's old output, before the allpass produced y):
+
+```cpp
+// BUGGY (v0.29.0 - v0.29.3):
+const float d = line.Read();
+const float y = -gain * x + d;
+line.Write(x + gain * d);    // ← should be x + gain * y
+
+// CORRECT (v0.29.4):
+const float d = line.Read();
+const float y = -gain * x + d;
+line.Write(x + gain * y);
+```
+
+Mathematically: the correct form has transfer function
+H(z) = (z⁻ᴸ - g) / (1 - g·z⁻ᴸ), which is unity-magnitude at every
+frequency — the defining property of an allpass. The buggy form has
+transfer function H(z) = (z⁻ᴸ·(1+g²) - g) / (1 - g·z⁻ᴸ), which has
+magnitude > 1 at low frequencies — it's a comb filter, not an
+allpass. With six such "allpasses" in series per round trip (4 in
+the input diffuser, 2 per tank half), the compounded gain at DC was
+2-3× per round trip, easily overwhelming the decay coefficient.
+
+This bug shipped quietly because:
+- Freeverb (v0.28.x and earlier) used a different allpass
+  implementation that didn't have the bug
+- Dattorro was introduced in v0.29.0, and the v0.29.0 release was
+  rolled back before runtime tests caught the divergence
+- The v0.29.2 reverb_send_test was diagnosed as a Freeverb-era
+  expectation issue (constructor-call migration) without inspecting
+  the magnitudes
+- The v0.29.3 reverb_send_test was diagnosed as a topology-aware
+  buildup issue without sanity-checking whether the buildup-peak
+  ratio was physically plausible for a stable plate reverb
+
+### What changed in this release
+
+`src/audio_engine/dsp/reverb_effect.h`:
+- `Allpass::Step` writes `x + gain * y` (was: `x + gain * d`)
+
+`src/audio_engine/dsp/reverb_effect.cpp`:
+- `ModulatedAllpass::Step` writes `x + gain * y` (was: `x + gain * d`)
+
+`tests/unit/reverb_send_test.cpp`:
+- Test decay dropped from 0.85 to 0.50 so the mid-vs-tail assertion
+  has a clear buildup → decay separation at a moderate value
+- Updated explanatory comment to describe the v0.29.4 fix
+- Comparative test (`TestReverbEffectShorterRoomDecaysFaster`) still
+  exercises decay extremes (big=0.95, small=0.30) — those are inside
+  the stable region now that the loop is correctly bounded
+
+### kInputGain may need re-tuning post-fix
+
+The `kInputGain = 0.5f` constant in `reverb_effect.cpp` was tuned
+empirically against the buggy-allpass implementation. With correct
+unity-gain allpasses, the wet level at default parameters is likely
+to be substantially different (most likely quieter, since the bug
+was injecting low-frequency gain). After this release goes green in
+CI, a listening pass on the reverb's actual wet level is the next
+step. Adjusting kInputGain is a single-line change.
+
+### Lessons captured
+
+Added two new entries to `docs/engineering/lessons_learned.md`:
+1. *"Schroeder allpass write-back: y, not d."* — concrete formula
+   reference and transfer-function derivation for the next time
+   someone reaches for an allpass.
+2. *"When test numbers don't match the model: check both."* —
+   the meta-debug lesson this saga should have applied two
+   versions earlier. A 58× buildup ratio doesn't match any stable
+   reverb topology; recognizing that in v0.29.2 would have skipped
+   v0.29.3 entirely.
+
 ## [0.29.3] - 2026-05-19 — Test fix: reverb_send_test buildup expectation
 
 Pure test-side fix on top of v0.29.2. The build is unchanged; only
@@ -13797,6 +13909,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.29.4]: https://github.com/siliconight/gool/releases/tag/v0.29.4
 [0.29.3]: https://github.com/siliconight/gool/releases/tag/v0.29.3
 [0.29.2]: https://github.com/siliconight/gool/releases/tag/v0.29.2
 [0.29.1]: https://github.com/siliconight/gool/releases/tag/v0.29.1

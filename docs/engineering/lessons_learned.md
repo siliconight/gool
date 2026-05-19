@@ -317,6 +317,111 @@ the constructor signature; updating one without the other is the
 default failure mode and produces a green build with a red test
 suite — exactly what happened on the v0.29.2 push.
 
+### Schroeder allpass write-back: y, not d
+*(Surfaced v0.29.0, finally diagnosed v0.29.4 after the v0.29.3
+divergence pattern. Cost three releases.)*
+
+The canonical Schroeder allpass step is:
+
+```cpp
+const float d = line.Read();          // delay line's old output
+const float y = -gain * x + d;        // allpass output
+line.Write(x + gain * y);             // ← y, NOT d
+line.Advance();
+return y;
+```
+
+Writing `x + gain * d` instead of `x + gain * y` looks similar but
+is a different filter entirely. Transfer functions:
+
+- **Correct** `x + gain * y`: H(z) = (z⁻ᴸ - g) / (1 - g·z⁻ᴸ).
+  |H(jω)| = 1 at every frequency. True allpass.
+- **Wrong** `x + gain * d`: H(z) = (z⁻ᴸ(1+g²) - g) / (1 - g·z⁻ᴸ).
+  |H(0)| > 1 for g > 0. Comb filter with positive feedback.
+
+For g = 0.5 the wrong form has DC gain ≈ 1.5×. For g = 0.7 it's
+≈ 2.6×. Put six of these in series inside a feedback loop (as
+Dattorro does: 4 input diffuser stages + 2 per tank half) and the
+tank's effective loop gain at DC easily exceeds 1.0, regardless of
+the decay coefficient. The reverb diverges at moderate decay values.
+
+**Why this is easy to get wrong**: the two forms compile, run,
+sound somewhat reverb-y on isolated transients, and pass any test
+whose assertion is "reverb produces tail energy" or "tail is
+non-zero". They diverge only when (a) the allpass is inside a
+feedback loop with significant decay, and (b) the test runs long
+enough for the compounded amplification to show. Without an
+impulse-response stability test that explicitly checks late > peak,
+the bug is invisible.
+
+**Reference**: this is in every DSP textbook (Smith, Zölzer, Pirkle,
+Dattorro's original 1997 paper) and yet it's still common to see it
+wrong in production code. The mnemonic that sticks: *the delay line
+stores the future feedback signal, which by definition includes the
+allpass's own output.* If `y` isn't in what you write back, you're
+not building an allpass; you're building a comb filter that happens
+to subtract `g*x` at the output.
+
+### When test numbers don't match the model, check both
+*(Surfaced v0.29.0, missed in v0.29.2 and v0.29.3, finally
+diagnosed in v0.29.4.)*
+
+The v0.29.2 reverb_send_test produced these numbers:
+
+```
+ReverbEffect impulse: 0-50ms rms=0.00212  400-600ms rms=0.12290
+```
+
+The early-vs-late ratio is 58×. The v0.29.3 release treated this as
+evidence of "Dattorro plate buildup" and rewrote the test
+assertion. That framing was *partially* right (the test really did
+have stale Freeverb expectations) but missed the bigger signal:
+58× is not a number that fits a *stable* Dattorro plate. Real
+Dattorro buildup peaks at 2-5× the input transient. A 58× ratio
+between early and late RMS, while the system is still climbing, is
+evidence of divergence, not buildup.
+
+The v0.29.3 push then measured *later* windows on CI:
+
+```
+mid(200-400ms) rms=0.05223  tail(700-1000ms) rms=0.88074
+```
+
+Now the divergence is unmistakable — energy is still growing
+exponentially at 700-1000 ms, with no sign of decay. But the
+v0.29.3 framing led me to interpret this as "buildup completed
+later than expected" rather than "the system is unstable."
+
+**The lesson**: when test numbers don't match the model you have,
+both are suspect:
+
+1. The model could be wrong (the test was written against the wrong
+   assumption about how the implementation behaves).
+2. The implementation could be wrong (the model is correct, but the
+   code doesn't implement what the model describes).
+
+Before changing the test (option 1), do a back-of-envelope sanity
+check on the magnitudes against textbook values:
+
+- "Plate reverbs build up over hundreds of ms": yes, but the peak
+  is typically 2-5× the input transient amplitude, not 50×.
+- "Cross-coupled tanks amplify before decaying": yes, but the
+  steady-state amplitude is bounded by 1/(1 - loop_gain) where
+  loop_gain < 1 for stability.
+- "Reverb impulse response is louder at 400ms than at 50ms": only
+  if there's a long pre-delay. Without one, the late-vs-early ratio
+  is at most a few × for any stable reverb.
+
+If the measured numbers are an order of magnitude outside the
+textbook range, the implementation is more likely wrong than the
+test. Updating the test in that case (as v0.29.3 did) papers over
+the real bug and burns a release.
+
+**Standard practice**: before changing a test to accommodate
+unexpected numbers, derive the expected range from first principles
+or look it up. If the measured number is outside that range,
+suspect the code first.
+
 
 *(Surfaced v0.28.9 → v0.28.10. Copy-pasted a working idiom from `PopupMenu` to `AcceptDialog`; it compiled, then errored at runtime.)*
 

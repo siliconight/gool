@@ -53,16 +53,21 @@ float Rms(const float* d, size_t n) {
 // -------------------------------------------------------------------------
 
 void TestReverbEffectImpulseResponse() {
-    // v0.29.0: ReverbEffect ctor went from 3 args to 6 (Dattorro plate
-    // parameter surface). Old roomSize → new decay 1:1, old damping →
-    // new hf_damping 1:1 (the soft-migration mapping from EffectConfig).
-    // The three new args (predelayMs, lfDamping, diffusion) get the
-    // EffectConfig defaults from include/audio_engine/bus.h.
+    // v0.29.4: drop decay from 0.85 to 0.50 so this test cleanly
+    // separates the tank's buildup phase from its decay phase. The
+    // comparative `TestReverbEffectShorterRoomDecaysFaster` test still
+    // exercises both extremes (big=0.95, small=0.30); this test is the
+    // stability check, so we want a moderate value that's well inside
+    // the stable region for any reasonable allpass implementation.
+    // (Prior to the v0.29.4 Schroeder write-back fix, decay=0.85 with
+    // hf_damping=0.4, lf_damping=0 caused the tank to diverge — the
+    // buggy allpass had >1 gain at low frequencies that compounded
+    // around the figure-8 loop. See CHANGELOG v0.29.4 for details.)
     ReverbEffect rv(
             /*predelayMs*/ 30.0f,
-            /*decay*/      0.85f,    // was: roomSize
+            /*decay*/      0.50f,
             /*lfDamping*/  0.0f,
-            /*hfDamping*/  0.4f,     // was: damping
+            /*hfDamping*/  0.4f,
             /*diffusion*/  0.625f,
             /*wetGainDb*/  0.0f);
     rv.Prepare(kSampleRate, /*channels*/ 2);
@@ -97,8 +102,12 @@ void TestReverbEffectImpulseResponse() {
     //
     // Window placement: predelay is 30 ms in this test, so the first
     // 30 ms of the buffer is silence; wet field starts arriving at 30 ms.
-    // Buildup at decay=0.85 typically peaks around 150-250 ms; "mid"
-    // captures the post-peak energy, "tail" captures the decay region.
+    // Buildup at decay=0.50 reaches peak around 100-150 ms; "mid" (200-
+    // 400 ms) captures the post-peak energy, "tail" (700-1000 ms)
+    // captures the decay region well past the buildup. With proper
+    // allpass behavior (post v0.29.4 fix), per-round-trip loop gain at
+    // decay=0.50 is roughly 0.66² ≈ 0.44, giving a clearly bounded and
+    // exponentially decaying tail.
     const uint32_t mid0  = kSampleRate * 2 / 10;       // 200 ms (past buildup)
     const uint32_t mid1  = kSampleRate * 4 / 10;       // 400 ms
     const uint32_t tail0 = kSampleRate * 7 / 10;       // 700 ms (decay region)

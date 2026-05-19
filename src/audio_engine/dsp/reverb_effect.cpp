@@ -97,14 +97,15 @@ constexpr float kTwoPi = 6.28318530717958647692f;
 // modDepth * sin(2π·phase). Linear interpolation between adjacent samples
 // avoids the audible clicks an integer-sample-jump implementation would
 // produce. After computing the allpass output, writes the standard
-// Schroeder combination to the line.
+// Schroeder combination to the line — writing `x + gain*y`, NOT
+// `x + gain*d`. See sibling note on Allpass::Step.
 
 float ReverbEffect::ModulatedAllpass::Step(float x) noexcept {
     const float modOffset = modDepth * std::sin(kTwoPi * lfoPhase);
     const float readPos = baseDelay + modOffset;
     const float d = line.ReadFractional(readPos);
     const float y = -gain * x + d;
-    line.Write(x + gain * d);
+    line.Write(x + gain * y);
     line.Advance();
     lfoPhase += lfoIncr;
     if (lfoPhase >= 1.0f) lfoPhase -= 1.0f;
