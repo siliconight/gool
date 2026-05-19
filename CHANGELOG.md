@@ -22,6 +22,69 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.28.10] - 2026-05-19 — Bugfix: three v0.28.9 regressions
+
+Three bugs in v0.28.9, all in the topology UI plumbing, all surfaced
+in sandbox testing:
+
+### Fixed: `_empty_label` freed during bus-add / bus-remove rebuild
+
+```
+ERROR: Invalid assignment of property or key 'visible' with value
+of type 'bool' on a base object of type 'previously freed'.
+```
+
+v0.28.9 fixed the "+ Add Bus" column leak by replacing the
+`for c in _columns` cleanup with `for child in _strip_container.get_children()`.
+But `_empty_label` (added in `_ready` to show "No gool/config.json
+found") is ALSO a child of `_strip_container` — and the new fix nuked
+it along with the strip columns. Next rebuild hit a freed object.
+
+Fix: skip `_empty_label` explicitly when iterating children. Both
+rebuild paths (`_rebuild_strips_from_config` and `_rebuild_strips_from_runtime`)
+now do `if child == _empty_label: continue` before queue_freeing.
+
+### Fixed: `AcceptDialog.popup_hide` doesn't exist
+
+```
+ERROR: Invalid access to property or key 'popup_hide' on a base
+object of type 'AcceptDialog'.
+```
+
+Surfaced when right-clicking a bus that can't be removed (dangling
+refs path) and when an add-bus name conflict triggered the error
+dialog. Both used `err_dlg.popup_hide.connect(err_dlg.queue_free)`,
+copy-pasted from the PopupMenu cleanup pattern.
+
+Root cause: in Godot 4, `AcceptDialog` and `ConfirmationDialog`
+extend `Window` *directly*, not through `Popup`. So `popup_hide` is
+a `Popup`-only signal that doesn't exist on these dialogs.
+`PopupMenu` (which extends `Popup → Window`) does have it, which
+is why the original idiom worked there.
+
+Fix: AcceptDialog sites now connect both `confirmed` (OK button)
+and `close_requested` (window X button) to `queue_free`. `queue_free`
+is idempotent so double-firing is safe. The same defensive
+`close_requested.connect(queue_free)` was added to all
+ConfirmationDialog sites — they previously handled OK and Cancel
+buttons but leaked one dialog instance per X-button dismissal.
+Small leak, but free to fix.
+
+Captured the broader pitfall in `docs/engineering/lessons_learned.md`:
+*"AcceptDialog is not a Popup — class-family signals aren't shared."*
+Table of which signals exist on which dialog class included for next
+time.
+
+### Carry-over from this batch
+
+This is the second runtime-only error in two releases caused by
+porting an idiom from a related Godot class without verifying the
+target class actually supports it (v0.28.9 was the `Callable.bind`
+arg-order regression; v0.28.10 is `AcceptDialog` ≠ `Popup`). Both
+lessons now live side-by-side in `lessons_learned.md` with the
+shared meta-lesson: when copying an idiom across class siblings,
+read the `extends` line on the target class first.
+
 ## [0.28.9] - 2026-05-19 — Bugfix: three v0.28.8 regressions
 
 Three bugs in v0.28.8's topology release, all surfaced in
@@ -13440,6 +13503,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.28.10]: https://github.com/siliconight/gool/releases/tag/v0.28.10
 [0.28.9]: https://github.com/siliconight/gool/releases/tag/v0.28.9
 [0.28.8]: https://github.com/siliconight/gool/releases/tag/v0.28.8
 [0.28.7]: https://github.com/siliconight/gool/releases/tag/v0.28.7

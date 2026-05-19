@@ -185,7 +185,62 @@ The downside of `Array` over `Packed*Array` is variant boxing per
 element (slightly more memory). For typical const arrays of
 small size this is negligible.
 
-### `Callable.bind()` appends — it doesn't prepend
+### `AcceptDialog` is not a `Popup` — class-family signals aren't shared
+*(Surfaced v0.28.9 → v0.28.10. Copy-pasted a working idiom from `PopupMenu` to `AcceptDialog`; it compiled, then errored at runtime.)*
+
+Godot 4's dialog and popup classes look like they should share a base
+class, but they don't:
+
+```
+Window
+├── Popup
+│   └── PopupMenu          ← has popup_hide
+└── AcceptDialog            ← does NOT have popup_hide
+    └── ConfirmationDialog  ← also no popup_hide; has confirmed + canceled
+```
+
+`AcceptDialog` and `ConfirmationDialog` extend `Window` *directly*, not
+through `Popup`. So:
+
+| Signal | PopupMenu | AcceptDialog | ConfirmationDialog |
+|---|---|---|---|
+| `popup_hide` | ✓ | ✗ | ✗ |
+| `close_requested` | ✓ (via Window) | ✓ (via Window) | ✓ (via Window) |
+| `confirmed` | – | ✓ | ✓ |
+| `canceled` | – | – | ✓ |
+
+The runtime error when you get it wrong:
+
+```
+Invalid access to property or key 'popup_hide'
+on a base object of type 'AcceptDialog'.
+```
+
+…which is unusually clear. The GDScript parser doesn't catch this at
+parse time because signal access on `Object` is dynamic; the failure
+surfaces only when the offending `.connect(...)` line actually executes.
+
+**Cleanup idiom that works across both families:**
+
+```gdscript
+# Connect both signals; queue_free is idempotent so double-firing is fine.
+dlg.confirmed.connect(dlg.queue_free)         # OK button (AcceptDialog and below)
+dlg.close_requested.connect(dlg.queue_free)   # X button (all Window descendants)
+# Plus, for ConfirmationDialog only:
+dlg.canceled.connect(dlg.queue_free)          # Cancel button
+```
+
+For PopupMenu, `popup_hide` covers the case where the menu auto-hides after
+an item is selected (which is the dominant dismissal path); `close_requested`
+catches the rare "click outside the menu" case.
+
+**Meta-lesson**: when porting an idiom from one class to a sibling, check
+the inheritance chain on the target class explicitly. The parent classes
+look the same on the page but the actual `extends ...` line is what
+determines available signals. Same shape as the `Callable.bind` lesson
+below: rely on docs, not on muscle-memory from a related class.
+
+
 *(Surfaced v0.28.8 → v0.28.9. Got the rule right initially, "fixed" it wrong during an audit, user found the bug at runtime.)*
 
 In Godot 4, when you `.connect()` a signal with `Callable.bind(...)`:

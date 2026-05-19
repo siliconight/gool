@@ -261,7 +261,13 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 	# tracked _columns. The "+ Add Bus" trailing column is added by
 	# this function but intentionally not tracked in _columns, so
 	# freeing only _columns leaked one Add Bus column per rebuild.
+	# v0.28.10: ...except _empty_label, which is also a child of
+	# _strip_container (added once in _ready) but must persist
+	# across rebuilds. Pre-v0.28.10 nuked it, causing the next
+	# rebuild to access a freed object.
 	for child in _strip_container.get_children():
+		if child == _empty_label:
+			continue
 		child.queue_free()
 	_strips.clear()
 	_columns.clear()
@@ -382,8 +388,10 @@ func _poll() -> void:
 # currently include them (a future addition could).
 func _rebuild_strips_from_runtime(stats: Array) -> void:
 	_empty_label.visible = false
-	# v0.28.9: clear EVERY child (see _rebuild_strips_from_config).
+	# v0.28.10: skip _empty_label (see _rebuild_strips_from_config).
 	for child in _strip_container.get_children():
+		if child == _empty_label:
+			continue
 		child.queue_free()
 	_strips.clear()
 	_columns.clear()
@@ -607,6 +615,7 @@ func _on_panel_remove_effect_requested(bus_name: String,
 	dlg.confirmed.connect(_on_remove_effect_confirmed.bind(
 			bus_name, effect_index, dlg))
 	dlg.canceled.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
 	add_child(dlg)
 	dlg.popup_centered()
 
@@ -707,7 +716,14 @@ func _attempt_remove_bus(bus_name: String) -> void:
 				"This bus is still referenced from %d place(s):\n\n  - %s\n\n"
 				% [refs.size(), "\n  - ".join(refs)]
 				+ "Clear the references first, then try again.")
-		err_dlg.popup_hide.connect(err_dlg.queue_free)
+		# v0.28.10: AcceptDialog extends Window directly (not via
+		# Popup), so it doesn't have popup_hide. Connect both the
+		# OK button (confirmed) and the window-close button
+		# (close_requested) to queue_free so the dialog cleans up
+		# regardless of which path the user dismisses it through.
+		# queue_free is idempotent, so connecting both is safe.
+		err_dlg.confirmed.connect(err_dlg.queue_free)
+		err_dlg.close_requested.connect(err_dlg.queue_free)
 		add_child(err_dlg)
 		err_dlg.popup_centered()
 		return
@@ -717,6 +733,7 @@ func _attempt_remove_bus(bus_name: String) -> void:
 	dlg.dialog_text = "Remove bus '%s'?\n\nThis cannot be undone via the dock — restore from gool/config.json.gool-backup if needed." % bus_name
 	dlg.confirmed.connect(_on_remove_bus_confirmed.bind(bus_name, dlg))
 	dlg.canceled.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
 	add_child(dlg)
 	dlg.popup_centered()
 
@@ -763,6 +780,7 @@ func _on_add_bus_button_pressed() -> void:
 	dlg.register_text_enter(input)
 	dlg.confirmed.connect(_on_add_bus_dialog_confirmed.bind(input, dlg))
 	dlg.canceled.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
 	add_child(dlg)
 	dlg.popup_centered()
 	input.grab_focus()
@@ -781,7 +799,10 @@ func _on_add_bus_dialog_confirmed(input: LineEdit,
 		var err_dlg := AcceptDialog.new()
 		err_dlg.title = "Add bus failed"
 		err_dlg.dialog_text = "A bus named '%s' already exists." % bus_name_input
-		err_dlg.popup_hide.connect(err_dlg.queue_free)
+		# v0.28.10: AcceptDialog has no popup_hide signal — see the
+		# matching site in _attempt_remove_bus for the explanation.
+		err_dlg.confirmed.connect(err_dlg.queue_free)
+		err_dlg.close_requested.connect(err_dlg.queue_free)
 		add_child(err_dlg)
 		err_dlg.popup_centered()
 	elif err != OK:
