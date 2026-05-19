@@ -80,23 +80,39 @@ void TestReverbEffectImpulseResponse() {
                     /*sidechain*/ nullptr, /*sidechainCh*/ 0);
     }
 
-    // Energy in the first 50 ms (early reflections + initial buildup) and
-    // in 400-600 ms (decaying tail). Both should be non-zero and the latter
-    // should be smaller than the former; otherwise the tail isn't decaying.
-    const uint32_t early0 = 0;
-    const uint32_t early1 = kSampleRate / 20;          // 50 ms
-    const uint32_t late0  = kSampleRate * 4 / 10;      // 400 ms
-    const uint32_t late1  = kSampleRate * 6 / 10;      // 600 ms
+    // Plate reverb buildup characteristic:
+    // Unlike Freeverb (Schroeder comb topology, energy decays exponentially
+    // from t=0), the Dattorro plate's cross-coupled tank takes ~100-300 ms
+    // to fully energize. At high decay values the late field is *louder*
+    // than the very-early field — that's the plate's diffuse-field
+    // buildup, modeling how a real metal plate's surface saturates with
+    // standing-wave energy. The original v0.28.x version of this test
+    // asserted `lateRms < earlyRms`, which encoded Freeverb's behavior;
+    // see CHANGELOG v0.29.3 for the migration note.
+    //
+    // What we test instead, which is invariant to topology:
+    //   1. The reverb produces measurable tail energy after the predelay
+    //   2. That energy decays *over time* — measured between two LATE
+    //      windows (both past the buildup region), assertion is one-sided.
+    //
+    // Window placement: predelay is 30 ms in this test, so the first
+    // 30 ms of the buffer is silence; wet field starts arriving at 30 ms.
+    // Buildup at decay=0.85 typically peaks around 150-250 ms; "mid"
+    // captures the post-peak energy, "tail" captures the decay region.
+    const uint32_t mid0  = kSampleRate * 2 / 10;       // 200 ms (past buildup)
+    const uint32_t mid1  = kSampleRate * 4 / 10;       // 400 ms
+    const uint32_t tail0 = kSampleRate * 7 / 10;       // 700 ms (decay region)
+    const uint32_t tail1 = kSampleRate;                // 1000 ms
 
-    const float earlyRms = Rms(buf.data() + early0 * 2, (early1 - early0) * 2);
-    const float lateRms  = Rms(buf.data() + late0  * 2, (late1  - late0)  * 2);
+    const float midRms  = Rms(buf.data() + mid0  * 2, (mid1  - mid0)  * 2);
+    const float tailRms = Rms(buf.data() + tail0 * 2, (tail1 - tail0) * 2);
 
-    std::printf("  ReverbEffect impulse: 0-50ms rms=%.5f  400-600ms rms=%.5f\n",
-                earlyRms, lateRms);
+    std::printf("  ReverbEffect impulse: mid(200-400ms) rms=%.5f  "
+                "tail(700-1000ms) rms=%.5f\n", midRms, tailRms);
 
-    EXPECT(earlyRms > 1e-4f);              // tail must produce energy
-    EXPECT(lateRms  > 1e-5f);              // still decaying, not zeroed yet
-    EXPECT(lateRms  < earlyRms);           // monotonic-ish decay
+    EXPECT(midRms  > 1e-4f);          // tail produces measurable energy
+    EXPECT(tailRms > 1e-6f);          // ...persists into the deep tail
+    EXPECT(tailRms < midRms);         // ...and decays over time (no runaway)
 }
 
 void TestReverbEffectShorterRoomDecaysFaster() {

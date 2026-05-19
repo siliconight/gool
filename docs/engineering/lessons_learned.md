@@ -268,6 +268,55 @@ both — but tests, mocks, and ad-hoc construction sites routinely break
 that equivalence. The fix is mechanical (always run both greps); the
 discipline is remembering to.
 
+### Behavior changes: test assertions are part of the surface area
+*(Surfaced v0.29.0, missed in v0.29.2, fixed v0.29.3. Sibling to the
+"grep the callee" lesson — that one catches API changes; this one
+catches behavior changes.)*
+
+When changing a function's *implementation* (not just its signature),
+the test assertions referencing that function may encode behavioral
+expectations specific to the **old** implementation, even if the
+function name and signature haven't changed. The classic miss is
+updating a constructor call site (mechanical, find-and-replace) without
+re-reading the surrounding assertions that test what the function does.
+
+Concrete case: the `reverb_send_test` impulse response test contained
+this block from the Freeverb era:
+
+```cpp
+const float earlyRms = Rms(buf, 0, kSampleRate / 20);          // 0-50 ms
+const float lateRms  = Rms(buf, kSampleRate*4/10, kSampleRate*6/10); // 400-600 ms
+EXPECT(lateRms < earlyRms);    // monotonic-ish decay
+```
+
+The "grep the callee" lesson (v0.29.0 → v0.29.2) caught and fixed the
+`ReverbEffect` constructor calls inside this test. But the *assertion*
+`lateRms < earlyRms` survived intact, even though it encoded Freeverb's
+specific topology — Schroeder comb filters, energy decays exponentially
+from t=0. Under Dattorro's plate topology, the cross-coupled tank has a
+100-300 ms buildup phase where the late field is *louder* than the
+early field. The assertion failed in CI on all three platforms with
+the same message — late RMS was ~58× the early RMS, on every job, with
+identical numeric output. The reverb itself was working correctly; only
+the test's expectations were stale.
+
+**Standard practice when changing a function's behavior:**
+
+1. Run the "grep the callee" search to find all call sites.
+2. For each call site, re-read the surrounding logic — comments,
+   variable names, comparisons — and ask whether any of it encoded
+   behavioral assumptions specific to the old implementation.
+3. Pay special attention to test files: tests are *designed* to encode
+   behavioral expectations, so they're the most likely place to find
+   stale assumptions after a behavior change.
+
+**Meta-lesson**: when migrating tests across a topology change, the
+constructor call is the visible change but the assertions are the
+load-bearing change. Apply the same care to the assertion logic as to
+the constructor signature; updating one without the other is the
+default failure mode and produces a green build with a red test
+suite — exactly what happened on the v0.29.2 push.
+
 
 *(Surfaced v0.28.9 → v0.28.10. Copy-pasted a working idiom from `PopupMenu` to `AcceptDialog`; it compiled, then errored at runtime.)*
 

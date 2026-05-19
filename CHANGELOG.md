@@ -22,6 +22,63 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.29.3] - 2026-05-19 — Test fix: reverb_send_test buildup expectation
+
+Pure test-side fix on top of v0.29.2. The build is unchanged; only
+`tests/unit/reverb_send_test.cpp` is modified.
+
+### What broke in v0.29.2 CI
+
+`reverb_send_test` failed on all three platforms (msvc, gcc, clang)
+at the same line: `EXPECT(lateRms < earlyRms)`. The test compared
+energy in the first 50 ms against energy at 400-600 ms and expected
+the latter to be smaller — a Freeverb-era assertion that doesn't
+survive the topology change to Dattorro.
+
+Measured values from the CI run:
+
+| Window | RMS |
+|--------|-----|
+| 0-50 ms (early) | 0.00212 |
+| 400-600 ms (late) | 0.12290 |
+
+The late field was ~58× louder than the early field. This is not a
+DSP bug — it's the plate's expected buildup behavior. The Dattorro
+cross-coupled tank takes ~100-300 ms to fully energize (modeling how
+a real metal plate's surface saturates with standing-wave energy),
+which is fundamentally different from Freeverb's Schroeder comb
+topology, where energy decays exponentially from t=0. The companion
+test `TestReverbEffectShorterRoomDecaysFaster` correctly showed
+big-room RMS (0.147) > small-room RMS (0.033) at 400 ms — confirming
+that the decay axis works; only the early-vs-late assertion was wrong.
+
+### The fix
+
+Replaced the early-vs-late assertion with a mid-vs-tail assertion
+that measures energy at *two late points*, both past the buildup
+region:
+
+- **Mid window** (200-400 ms): captures the cross-coupled tank near
+  or just past peak energy
+- **Tail window** (700-1000 ms): captures the post-buildup decay
+- **Assertions**: tail produces measurable energy, persists into the
+  deep tail, and is strictly less than mid (i.e., the reverb decays
+  over time without runaway feedback)
+
+This tests what's actually invariant about *any* well-behaved reverb
+topology — buildup behavior is allowed but runaway feedback is not.
+
+### Lessons captured
+
+Added to `docs/engineering/lessons_learned.md`:
+*"Behavior changes: test assertions are part of the surface area."*
+The v0.29.2 release fixed the constructor call sites that needed
+updating (the "grep the callee" lesson). It did not catch this case:
+even when all call sites have been updated, the *surrounding
+assertion logic* may also encode topology-specific behavior. When
+changing a DSP component, re-read the test assertions as carefully
+as the constructor signature.
+
 ## [0.29.2] - 2026-05-19 — Restore Dattorro reverb (test fix closes v0.29.0 CI)
 
 Re-introduces the Dattorro plate reverb that v0.29.0 attempted to ship
@@ -13740,6 +13797,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.29.3]: https://github.com/siliconight/gool/releases/tag/v0.29.3
 [0.29.2]: https://github.com/siliconight/gool/releases/tag/v0.29.2
 [0.29.1]: https://github.com/siliconight/gool/releases/tag/v0.29.1
 [0.29.0]: https://github.com/siliconight/gool/releases/tag/v0.29.0
