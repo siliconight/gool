@@ -200,13 +200,8 @@ void TestAllEffectKinds() {
            EffectConfig::CompressorDetectionMode::Rms);
 
     EXPECT(m.effects[3].kind == EffectKind::Reverb);
-    // v0.29.0 soft migration: the test JSON still uses the legacy
-    // `room_size` and `damping` keys, which the loader now routes
-    // into the new reverbDecay / reverbHfDamping fields. The numeric
-    // mapping is 1:1, so the assertion values are unchanged from
-    // v0.28.x — only the field names moved.
-    EXPECT(m.effects[3].reverbDecay     == 0.6f);
-    EXPECT(m.effects[3].reverbHfDamping == 0.4f);
+    EXPECT(m.effects[3].reverbRoomSize == 0.6f);
+    EXPECT(m.effects[3].reverbDamping  == 0.4f);
 
     EXPECT(m.effects[4].kind == EffectKind::Saturation);
     EXPECT(m.effects[4].saturationDrive      == 1.5f);

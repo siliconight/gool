@@ -185,6 +185,44 @@ The downside of `Array` over `Packed*Array` is variant boxing per
 element (slightly more memory). For typical const arrays of
 small size this is negligible.
 
+### Reading state: in-memory model > debounced disk
+*(Surfaced v0.28.10, shipped v0.29.1. Comment said one thing, code did another, debounced save hid the discrepancy.)*
+
+When a UI is driven by signals from a model that owns in-memory state
+and ALSO persists to disk on a debounced schedule, every signal handler
+in the UI must read from the in-memory model, never from disk.
+
+The failure mode is sneaky because the wrong read works *eventually*:
+
+  1. Model state updates → emits signal
+  2. Handler reads disk — disk hasn't flushed yet → stale read
+  3. UI rebuilds with stale data → visual change is missing
+  4. Some unrelated event triggers a second rebuild (in our case,
+     the game starting and the runtime poll providing fresh stats)
+  5. NOW the change appears, with no clear correlation to the action
+
+For gool, the dock's `_load_static_layout_from_config()` was named
+"from_config" but the `_config_model` had become the authoritative
+source as of v0.28.4. The disk was just a serialization target. The
+fix was a one-function rewrite to call `_config_model.get_buses()`.
+
+**Meta-lesson**: when two parallel paths feed the same UI (here:
+`_rebuild_strips_from_runtime` for game-running, `_rebuild_strips_from_config`
+for at-rest), identify the authoritative state source in each mode and
+read from THAT:
+
+- **Runtime mode**: engine stats arriving via debugger plugin are
+  authoritative. Reading them is correct.
+- **At-rest mode**: the in-memory config model is authoritative.
+  Reading it (not the disk file) is correct.
+- **Disk** is only authoritative on a fresh editor open *before* the
+  model is constructed. After that, it's a serialization target, not
+  a source.
+
+When you find yourself reading a file that some other code path is
+writing on a debounced schedule, that's the smell. Read from the
+in-memory state instead.
+
 ### `AcceptDialog` is not a `Popup` — class-family signals aren't shared
 *(Surfaced v0.28.9 → v0.28.10. Copy-pasted a working idiom from `PopupMenu` to `AcceptDialog`; it compiled, then errored at runtime.)*
 

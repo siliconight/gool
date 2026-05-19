@@ -1,8 +1,6 @@
 # Reverb redesign: Dattorro plate
 
-**Status:** Shipped in v0.29.0. Implementation: `src/audio_engine/dsp/reverb_effect.{h,cpp}`. This document remains the authoritative reference for the topology and parameter semantics; the implementation tracks it directly.
-
-**Implementation note vs. the original design:** The damping shelves use stacked one-pole filters (HF lowpass + parallel low-cutoff lowpass with subtraction) rather than analytical Cytomic SVFs. The parameter surface is identical (`lf_damping` and `hf_damping`, both 0..1) and material distinctions are audibly preserved; a Cytomic SVF upgrade can land in v0.30.x if material shapes need cleaner shelf transitions.
+**Status:** Designed; v0.29.0 attempt did not pass CI. Held for v0.29.2.
 
 **Goal:** Replace the current Freeverb implementation with a Dattorro plate
 topology, giving the engine frequency-shaped damping (the load-bearing

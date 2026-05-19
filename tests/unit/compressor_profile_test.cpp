@@ -299,7 +299,7 @@ void TestProfilesAreSelfContained() {
     auto v = CompressorProfiles::VoiceSmoothing();
     EXPECT(v.gainDb         == 0.0f);
     EXPECT(v.biquadCutoffHz == 20000.0f);
-    EXPECT(v.reverbDecay    == 0.5f);   // v0.29.0 Dattorro default
+    EXPECT(v.reverbRoomSize == 0.7f);
 
     std::printf("    OK\n");
 }

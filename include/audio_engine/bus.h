@@ -127,25 +127,9 @@ struct EffectConfig {
     //                   The reverb bus sums into master at its configured
     //                   outputGainDb; wetGainDb is the effect-internal mix
     //                   level (default 0 = unity).
-    // Reverb (Dattorro plate, v0.29.0+).
-    //
-    // The 0..1 parameters all default to "moderate room" character at
-    // sensible levels. Predelay defaults to 30 ms — a reasonable
-    // "medium-small room" cue without being so short that the effect
-    // sounds like a chorus. Diffusion default 0.625 matches Dattorro's
-    // published baseline; lower values produce a more "echo-y" early
-    // signal, higher values are smoother.
-    //
-    // Soft migration from the v0.28.x Freeverb impl: old config files
-    // using `room_size` and `damping` JSON keys are routed by the
-    // loader into reverbDecay and reverbHfDamping respectively
-    // (the semantic mapping is 1:1). See bus_config_loader.cpp.
-    float reverbPredelayMs = 30.0f;   // 0..200 ms
-    float reverbDecay      = 0.5f;    // 0..1 — tank feedback length
-    float reverbLfDamping  = 0.0f;    // 0..1 — low-frequency absorption
-    float reverbHfDamping  = 0.3f;    // 0..1 — high-frequency absorption
-    float reverbDiffusion  = 0.625f;  // 0..1 — input-diffuser gain scale
-    float reverbWetGainDb  = 0.0f;    // post-effect trim, dB
+    float reverbRoomSize  = 0.7f;
+    float reverbDamping   = 0.5f;
+    float reverbWetGainDb = 0.0f;
 
     // Saturation (tanh waveshaper)
     //   drive       ; pre-shaper input gain. > 1 generates harmonics.
@@ -177,18 +161,9 @@ namespace EffectParameter {
     constexpr uint16_t Compressor_AttackMs      = 6;
     constexpr uint16_t Compressor_ReleaseMs     = 7;
     constexpr uint16_t Compressor_MakeupDb      = 8;
-    // Reverb. v0.29.0 renamed RoomSize → Decay and Damping → HfDamping
-    // when the Freeverb impl was replaced with a Dattorro plate. Old
-    // names are kept as deprecated aliases at the same numeric IDs so
-    // external code and config files keep working unchanged. The
-    // semantic mapping is 1:1 (decay ↔ feedback length, hf_damping ↔
-    // tail brightness), so the behavior shift is minimal.
-    constexpr uint16_t Reverb_Decay             = 9;
-    constexpr uint16_t Reverb_HfDamping         = 10;
+    constexpr uint16_t Reverb_RoomSize          = 9;
+    constexpr uint16_t Reverb_Damping           = 10;
     constexpr uint16_t Reverb_WetGainDb         = 11;
-    // Deprecated aliases (same IDs as above; kept for back-compat).
-    constexpr uint16_t Reverb_RoomSize          = Reverb_Decay;
-    constexpr uint16_t Reverb_Damping           = Reverb_HfDamping;
     constexpr uint16_t Biquad_GainDb            = 12;
     // Tier-A (v0.8) compressor parameters. SetEffectParameter accepts
     // floats, so the detection-mode IDs are encoded as 0.0f = Peak,
@@ -205,11 +180,6 @@ namespace EffectParameter {
     constexpr uint16_t Saturation_Mix           = 20;
     constexpr uint16_t Saturation_OutputGain    = 21;
     constexpr uint16_t Saturation_Bias          = 22;
-    // v0.29.0: Dattorro plate reverb additions. Decay (9) and
-    // HfDamping (10) are above; these three round out the surface.
-    constexpr uint16_t Reverb_PredelayMs        = 23;
-    constexpr uint16_t Reverb_LfDamping         = 24;
-    constexpr uint16_t Reverb_Diffusion         = 25;
 }
 
 // ---- Bus configuration ----------------------------------------------------

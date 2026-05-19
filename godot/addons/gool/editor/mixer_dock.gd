@@ -211,7 +211,25 @@ func _process(delta: float) -> void:
 # JSON → empty state with a warning print. The dock recovers as
 # soon as a valid config is present.
 func _load_static_layout_from_config() -> void:
-	var buses := _read_buses_from_config()
+	# v0.29.1 fix: read from the in-memory model, NOT from disk.
+	#
+	# Model saves are debounced, so when bus_added / bus_removed fires
+	# immediately on add/remove, the disk file still has the OLD
+	# content. Reading config.json here would rebuild the strip row
+	# from stale bytes, hiding the user's change until the debounced
+	# save flushed (which, in practice, didn't visibly happen until
+	# something else forced a rebuild — like starting the game and
+	# letting the runtime poll trigger _rebuild_strips_from_runtime).
+	#
+	# Fix is to use _config_model.get_buses(), which returns the
+	# authoritative in-memory parsed buses array. Model.load_from_disk
+	# was already called in _ready before this function fires for the
+	# first time, so this is safe at startup too.
+	if _config_model == null:
+		_empty_label.text = "  No gool/config.json found.\n  Mixer is unavailable until a config is present."
+		_empty_label.visible = true
+		return
+	var buses: Array = _config_model.get_buses()
 	if buses.is_empty():
 		_empty_label.text = "  No gool/config.json found, or it's empty.\n  Add buses to see them here."
 		_empty_label.visible = true
@@ -220,32 +238,10 @@ func _load_static_layout_from_config() -> void:
 	_last_bus_names = _strip_names_packed(buses)
 
 
-func _read_buses_from_config() -> Array:
-	if not FileAccess.file_exists(CONFIG_PATH):
-		return []
-	var f := FileAccess.open(CONFIG_PATH, FileAccess.READ)
-	if f == null:
-		return []
-	var txt := f.get_as_text()
-	f.close()
-	var parsed: Variant = JSON.parse_string(txt)
-	if parsed == null or not (parsed is Dictionary):
-		push_warning("[gool] mixer dock: %s is malformed JSON" % CONFIG_PATH)
-		return []
-	var buses_raw: Variant = parsed.get("buses", [])
-	if not (buses_raw is Array):
-		return []
-	var out: Array = []
-	for b in buses_raw:
-		if not (b is Dictionary):
-			continue
-		var d: Dictionary = b
-		out.append({
-			"name":     String(d.get("name", "")),
-			"parent":   String(d.get("parent", "")),
-			"gain_db":  float(d.get("gain_db", 0.0)),
-		})
-	return out
+# _read_buses_from_config was the v0.28.4–v0.29.0 implementation that
+# parsed config.json directly. Removed in v0.29.1: the in-memory model
+# is the single source of truth for at-rest layout decisions. Disk
+# loading is the model's job (load_from_disk / reload_from_disk_discarding_edits).
 
 
 func _strip_names_packed(buses: Array) -> PackedStringArray:
@@ -1760,21 +1756,13 @@ class _EffectsPanel extends PanelContainer:
 		# DetectionMode is binary Peak/RMS — OptionButton, not slider.
 		18: {"label": "Mode", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "discrete", "choices": ["Peak", "RMS"]},
-		# Reverb (v0.29.0+ Dattorro plate). IDs 9 and 10 were renamed
-		# from "Size" and "Damping" — same numeric IDs, refreshed labels.
-		# IDs 23/24/25 are new.
-		9:  {"label": "Decay", "unit": "", "min": 0.0, "max": 1.0,
+		# Reverb
+		9:  {"label": "Size", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "linear", "fmt": "%0.2f"},
-		10: {"label": "HF Damp", "unit": "", "min": 0.0, "max": 1.0,
+		10: {"label": "Damping", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "linear", "fmt": "%0.2f"},
 		11: {"label": "Wet", "unit": "dB", "min": -60.0, "max": 6.0,
 			"curve": "linear", "fmt": "%+0.1f"},
-		23: {"label": "Predelay", "unit": "ms", "min": 0.0, "max": 200.0,
-			"curve": "linear", "fmt": "%0.0f"},
-		24: {"label": "LF Damp", "unit": "", "min": 0.0, "max": 1.0,
-			"curve": "linear", "fmt": "%0.2f"},
-		25: {"label": "Diffusion", "unit": "", "min": 0.0, "max": 1.0,
-			"curve": "linear", "fmt": "%0.2f"},
 		# Saturation. Engine takes linear factors here, NOT dB —
 		# verified against SaturationEffect::OnParameter
 		# (saturation_effect.cpp). Drive is the pre-tanh gain factor;
@@ -1807,11 +1795,7 @@ class _EffectsPanel extends PanelContainer:
 		1: [1],
 		2: [2, 3, 12],
 		3: [4, 5, 6, 7, 8, 13, 15, 16, 17, 18, 14],
-		# Reverb (v0.29.0): Predelay → Decay → LF/HF Damp → Diffusion → Wet.
-		# Predelay at top because it's the strongest "what size of space?"
-		# cue; the damping pair sits together since designers usually tune
-		# them in tandem; Wet stays trailing per the dock convention.
-		4: [23, 9, 24, 10, 25, 11],
+		4: [9, 10, 11],
 		5: [19, 21, 22, 20],
 	}
 
