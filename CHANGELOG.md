@@ -22,6 +22,53 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.30.1] - 2026-05-19 — Static-analysis fixup for v0.30.0's new parser
+
+Two trivial fixes for findings introduced by v0.30.0's
+`members_by_material` parser. Caught by the static-analysis CI gates
+on the v0.30.0 push.
+
+### What changed
+
+- **`src/audio_engine/assets/sound_bank.cpp:793`** — `AudioMaterial mat;`
+  now reads `AudioMaterial mat = AudioMaterial::Default;`. The
+  `ParseAudioMaterial` call always sets the value before any use,
+  so the initial value never has a real-world effect, but
+  uninitialized POD declarations trip
+  `cppcoreguidelines-init-variables`. Default is the right
+  sentinel — if `ParseAudioMaterial` ever returned true without
+  writing the out param (it can't, by construction, but the
+  contract is now explicit), the parser would write into the
+  Default bucket rather than into a junk index.
+
+- **`src/audio_engine/assets/sound_bank.cpp:806`** — the local
+  `auto& bucket = out.membersByMaterial[static_cast<size_t>(mat)]`
+  reference is now declared inside the `if (!s.Match(']'))` branch
+  where it's actually used, fixing cppcheck's `variableScope`
+  warning. Behavior is unchanged because the original placement
+  outside the branch only ever read the default-constructed empty
+  vector when the array literal was empty — a no-op.
+
+### Why this matters
+
+cppcheck is a blocking CI gate; clang-tidy is currently
+non-blocking (`continue-on-error: true`) while the v0.21-era
+latent-findings backlog gets cleaned up in a future pass. v0.30.0
+broke the cppcheck gate and added one finding to the clang-tidy
+backlog. v0.30.1 unbreaks the cppcheck gate and keeps the
+clang-tidy backlog from growing.
+
+### Not touched
+
+The pre-existing ~70 clang-tidy findings in the v0.21-era backlog
+(init-variables in JSON parser temporaries, reinterpret_cast in
+binary loaders, narrowing conversions, branch-clone in
+bus_config_loader.cpp's key aliases, deprecated `<errno.h>`,
+unused snprintf return values, etc.) are out of scope for this
+patch. They are tracked as a dedicated cleanup pass — the
+workflow YAML pins this as targeted re-enabling of the blocking
+gate in some future release after the cleanup lands.
+
 ## [0.30.0] - 2026-05-19 — Phase 5.1: AudioMaterial taxonomy + impact sounds
 
 The first user-visible piece of Phase 5 (Material & acoustic
@@ -14103,6 +14150,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.30.1]: https://github.com/siliconight/gool/releases/tag/v0.30.1
 [0.30.0]: https://github.com/siliconight/gool/releases/tag/v0.30.0
 [0.29.5]: https://github.com/siliconight/gool/releases/tag/v0.29.5
 [0.29.4]: https://github.com/siliconight/gool/releases/tag/v0.29.4

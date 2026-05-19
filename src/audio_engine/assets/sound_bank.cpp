@@ -790,7 +790,7 @@ bool ParseGroupEntry(JsonScanner& s, ParsedGroup& out, ParseError& err) {
                     s.Expect(':', "after material key", err);
                     if (!err.message.empty()) return false;
 
-                    AudioMaterial mat;
+                    AudioMaterial mat = AudioMaterial::Default;
                     if (!ParseAudioMaterial(materialKey, mat)) {
                         err.line = s.Line();
                         err.message = "unknown material '" + materialKey +
@@ -803,9 +803,9 @@ bool ParseGroupEntry(JsonScanner& s, ParsedGroup& out, ParseError& err) {
                     s.Expect('[', "to open variant array", err);
                     if (!err.message.empty()) return false;
                     s.SkipWhitespace();
-                    auto& bucket = out.membersByMaterial[
-                        static_cast<size_t>(mat)];
                     if (!s.Match(']')) {
+                        auto& bucket = out.membersByMaterial[
+                            static_cast<size_t>(mat)];
                         while (true) {
                             std::string m;
                             if (!s.ParseString(m, err)) return false;
