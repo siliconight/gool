@@ -166,8 +166,8 @@ void RunIntegration() {
     cfg.busGraph.buses[1].parent = kBusMaster;
     cfg.busGraph.buses[1].outputGainDb = -3.0f;
     cfg.busGraph.buses[1].effects[0].kind            = EffectKind::Reverb;
-    cfg.busGraph.buses[1].effects[0].reverbRoomSize  = 0.75f;
-    cfg.busGraph.buses[1].effects[0].reverbDamping   = 0.4f;
+    cfg.busGraph.buses[1].effects[0].reverbDecay     = 0.75f;
+    cfg.busGraph.buses[1].effects[0].reverbHfDamping = 0.4f;
     cfg.busGraph.buses[1].effects[0].reverbWetGainDb = 0.0f;
     cfg.busGraph.buses[1].effectCount                = 1;
 

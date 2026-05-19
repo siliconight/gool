@@ -74,9 +74,15 @@ const PARAM_ID_TO_JSON_KEY: Dictionary = {
 	16: "sidechain_hpf_hz",   # Compressor_SidechainHpfHz
 	17: "hold_ms",            # Compressor_HoldMs
 	18: "detection_mode",     # Compressor_DetectionMode (string!)
-	9:  "room_size",          # Reverb_RoomSize
-	10: "damping",            # Reverb_Damping
+	# Reverb (v0.29.0+ Dattorro plate). IDs 9 and 10 were renamed —
+	# room_size → decay, damping → hf_damping — same numeric IDs.
+	# 23/24/25 are new.
+	9:  "decay",              # Reverb_Decay (was Reverb_RoomSize)
+	10: "hf_damping",         # Reverb_HfDamping (was Reverb_Damping)
 	11: "wet_gain_db",        # Reverb_WetGainDb
+	23: "predelay_ms",        # Reverb_PredelayMs
+	24: "lf_damping",         # Reverb_LfDamping
+	25: "diffusion",          # Reverb_Diffusion
 	19: "drive",              # Saturation_Drive
 	20: "mix",                # Saturation_Mix
 	21: "output_gain",        # Saturation_OutputGain
@@ -95,7 +101,7 @@ const PARAM_ID_TO_KIND: Dictionary = {
 	2: 2,  3: 2,  12: 2,                           # BiquadFilter
 	4: 3,  5: 3,  6: 3,  7: 3,  8: 3,
 	13: 3, 14: 3, 15: 3, 16: 3, 17: 3, 18: 3,      # Compressor
-	9: 4,  10: 4, 11: 4,                           # Reverb
+	9: 4,  10: 4, 11: 4, 23: 4, 24: 4, 25: 4,      # Reverb
 	19: 5, 20: 5, 21: 5, 22: 5,                    # Saturation
 }
 
@@ -123,7 +129,9 @@ const KIND_INT_TO_JSON_KEYS: Dictionary = {
 		"makeup_db", "knee_width_db", "mix_ratio",
 		"max_reduction_db", "sidechain_hpf_hz", "hold_ms",
 		"detection_mode"],
-	4: ["room_size", "damping", "wet_gain_db"],
+	# Reverb (v0.29.0): predelay → decay → lf/hf damping → diffusion → wet.
+	# Matches PARAM_ORDER_BY_KIND in mixer_dock.gd.
+	4: ["predelay_ms", "decay", "lf_damping", "hf_damping", "diffusion", "wet_gain_db"],
 	5: ["drive", "mix", "output_gain", "bias"],
 }
 # Per-kind map: JSON key → paramId. Used by get_effects() to
@@ -138,7 +146,10 @@ const KIND_INT_TO_KEY_TO_PARAM_ID: Dictionary = {
 		"max_reduction_db": 15, "sidechain_hpf_hz": 16, "hold_ms": 17,
 		"detection_mode": 18,
 	},
-	4: { "room_size": 9, "damping": 10, "wet_gain_db": 11 },
+	4: {
+		"predelay_ms": 23, "decay": 9, "lf_damping": 24,
+		"hf_damping": 10, "diffusion": 25, "wet_gain_db": 11,
+	},
 	5: { "drive": 19, "mix": 20, "output_gain": 21, "bias": 22 },
 }
 # Engine compile-time defaults for every paramId, mirroring
@@ -154,8 +165,8 @@ const PARAM_ID_TO_ENGINE_DEFAULT: Dictionary = {
 	# Compressor
 	4: -18.0, 5: 4.0, 6: 5.0, 7: 50.0, 8: 0.0, 13: 6.0,
 	14: 1.0, 15: 60.0, 16: 0.0, 17: 0.0, 18: 0.0,
-	# Reverb
-	9: 0.5, 10: 0.5, 11: -12.0,
+	# Reverb (v0.29.0 Dattorro defaults — mirror EffectConfig in bus.h)
+	9: 0.5, 10: 0.3, 11: 0.0, 23: 30.0, 24: 0.0, 25: 0.625,
 	# Saturation
 	19: 1.0, 20: 0.0, 21: 1.0, 22: 0.0,
 }
@@ -1097,8 +1108,17 @@ const EFFECT_DEFAULTS_BY_KIND: Dictionary = {
 	},
 	"reverb": {
 		"kind": "reverb",
-		"room_size": 0.7,
-		"damping": 0.5,
+		# v0.29.0 Dattorro plate. Defaults match
+		# include/audio_engine/bus.h::EffectConfig and the Dattorro
+		# design doc (docs/audio_design/reverb_dattorro.md). The
+		# wet_gain_db default of 0.0 dB plus the moderate predelay /
+		# decay settings give a usable "small-to-medium room" send
+		# without further tuning.
+		"predelay_ms": 30.0,
+		"decay": 0.5,
+		"lf_damping": 0.0,
+		"hf_damping": 0.3,
+		"diffusion": 0.625,
 		"wet_gain_db": 0.0,
 	},
 	"saturation": {

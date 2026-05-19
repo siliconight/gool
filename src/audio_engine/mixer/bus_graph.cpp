@@ -242,8 +242,11 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
             } break;
             case EffectKind::Reverb:
                 fx = std::make_unique<ReverbEffect>(
-                    ec.reverbRoomSize,
-                    ec.reverbDamping,
+                    ec.reverbPredelayMs,
+                    ec.reverbDecay,
+                    ec.reverbLfDamping,
+                    ec.reverbHfDamping,
+                    ec.reverbDiffusion,
                     ec.reverbWetGainDb);
                 break;
             case EffectKind::Saturation: {

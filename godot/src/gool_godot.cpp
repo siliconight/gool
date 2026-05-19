@@ -130,8 +130,13 @@ static void _gool_fill_params_for_kind(audio::AudioRuntime* rt,
             put(EP::Compressor_DetectionMode);
             break;
         case audio::EffectKind::Reverb:
-            put(EP::Reverb_RoomSize);
-            put(EP::Reverb_Damping);
+            // v0.29.0: Dattorro plate exposes 6 IDs. Decay and HfDamping
+            // are the renamed aliases at the original 9/10 IDs.
+            put(EP::Reverb_PredelayMs);
+            put(EP::Reverb_Decay);
+            put(EP::Reverb_LfDamping);
+            put(EP::Reverb_HfDamping);
+            put(EP::Reverb_Diffusion);
             put(EP::Reverb_WetGainDb);
             break;
         case audio::EffectKind::Saturation:

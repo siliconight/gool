@@ -22,6 +22,134 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.29.0] - 2026-05-19 — Reverb: Freeverb → Dattorro plate
+
+**Headline:** The reverb effect is rewritten from scratch as a Dattorro
+plate reverb (Dattorro 1997, "Effect Design Part 1"). The previous
+Freeverb implementation served well as a prototype but cannot deliver
+the frequency-shaped damping that Phase 5 (material & acoustic
+environment authoring) is built around. The new implementation:
+
+- Has predelay (0–200 ms) as a first-class parameter — the dominant
+  perceptual cue for room size, missing in v0.28.x.
+- Provides separable LF and HF damping (rather than a single damping
+  scalar), so the AudioMaterial taxonomy can produce audibly distinct
+  surface colors: a glass-finished room vs. curtain-finished vs.
+  concrete-finished, each with its own characteristic spectral tilt.
+- Has subtle internal LFO modulation on two of its allpasses
+  (hardcoded ~0.3–0.5 Hz, ~8-sample depth), eliminating the metallic
+  ringing that static-delay reverbs produce on sustained tonal material.
+- Includes a `diffusion` knob authoring early-echo smoothness
+  independent of decay length.
+
+Implementation: ~670 lines of new C++ across `reverb_effect.{h,cpp}`.
+Topology, parameter semantics, and material preset table are documented
+in `docs/audio_design/reverb_dattorro.md` (now marked shipped).
+
+### Parameter surface (6 knobs)
+
+| Param | JSON key | Range | Default | Notes |
+|---|---|---|---|---|
+| `Reverb_PredelayMs` (23) | `predelay_ms` | 0–200 | 30.0 | new |
+| `Reverb_Decay` (9) | `decay` | 0–1 | 0.5 | renamed from `Reverb_RoomSize` |
+| `Reverb_LfDamping` (24) | `lf_damping` | 0–1 | 0.0 | new |
+| `Reverb_HfDamping` (10) | `hf_damping` | 0–1 | 0.3 | renamed from `Reverb_Damping` |
+| `Reverb_Diffusion` (25) | `diffusion` | 0–1 | 0.625 | new |
+| `Reverb_WetGainDb` (11) | `wet_gain_db` | -24–12 | 0.0 | unchanged |
+
+### Soft migration from v0.28.x — old configs work without edits
+
+The two parameter IDs that were renamed (9 and 10) preserve their
+numeric values; `Reverb_RoomSize` and `Reverb_Damping` are now
+deprecated aliases for `Reverb_Decay` and `Reverb_HfDamping`. Code
+that calls `set_effect_parameter(..., Reverb_RoomSize, x)` keeps
+working.
+
+The JSON loader (`bus_config_loader.cpp`) routes the legacy keys
+`room_size` and `damping` into `reverbDecay` and `reverbHfDamping`
+respectively, with 1:1 numeric mapping. Existing `gool/config.json`
+files using the old keys load and sound roughly equivalent to their
+v0.28.x behavior — same nominal tail length, same nominal damping —
+through the new plate topology. Old sandbox configs require no edits.
+
+When a config is touched in the dock and re-serialized, the new keys
+are written. There's no automatic rewrite of untouched configs; that
+would be an opt-in "Normalize config formatting" action covered by
+the existing v0.28.8 follow-ups list.
+
+### Material → preset table (Phase 5.1 hook)
+
+A new `ReverbPresetByMaterial()` helper in `include/audio_engine/geometry_query.h`
+returns recommended (decay, lf_damping, hf_damping, diffusion) tuples
+keyed on `AudioMaterial`:
+
+| Material | decay | lf_damp | hf_damp | diffusion |
+|---|---|---|---|---|
+| Glass    | 0.85 | 0.00 | 0.05 | 0.50 |
+| Wood     | 0.55 | 0.10 | 0.40 | 0.70 |
+| Drywall  | 0.45 | 0.20 | 0.55 | 0.70 |
+| Concrete | 0.85 | 0.05 | 0.15 | 0.55 |
+| Metal    | 0.80 | 0.00 | 0.10 | 0.40 |
+| Curtain  | 0.20 | 0.70 | 0.85 | 0.85 |
+| Foliage  | 0.30 | 0.40 | 0.85 | 0.95 |
+| Default  | 0.50 | 0.10 | 0.30 | 0.625 |
+
+These are starting points for Phase 5.1 (`Gool.reverb_preset_for_material()`
+GDScript wrapper, queued). Designers will be expected to override
+per-zone for specific spaces; the preset table is the floor, not the
+ceiling.
+
+### Implementation simplification vs. the original design doc
+
+The design doc proposed analytical Cytomic SVFs (state-variable
+filters) for the in-tank damping shelves. This release uses simpler
+stacked one-pole filters: a lowpass for HF damping and a parallel
+low-cutoff lowpass whose output is subtracted from the HF-damped
+signal for LF damping. The parameter surface is unchanged. The
+audible effect is meaningfully separable — Curtain vs. Glass sound
+demonstrably different — so the simpler filters earn the slot for
+v0.29.0. A Cytomic SVF upgrade can land in v0.30.x if material
+material shapes need cleaner shelf transitions (e.g., for impulse-
+response matching down the road).
+
+### Dock changes
+
+The mixer dock's reverb section now shows six sliders instead of
+three. Display order (top to bottom): Predelay → Decay → LF Damp →
+HF Damp → Diffusion → Wet. Wet stays at the bottom per the dock
+convention for "trailing wet/dry blend" controls. PARAM_META,
+PARAM_ORDER_BY_KIND, PARAM_ID_TO_JSON_KEY, PARAM_ID_TO_KIND,
+KIND_INT_TO_JSON_KEYS, KIND_INT_TO_KEY_TO_PARAM_ID,
+PARAM_ID_TO_ENGINE_DEFAULT, and EFFECT_DEFAULTS_BY_KIND all
+updated in lock-step.
+
+### Test changes
+
+C++ unit tests touching the old `reverbRoomSize` / `reverbDamping`
+field names were renamed to `reverbDecay` / `reverbHfDamping`. The
+loader test (`bus_config_loader_test.cpp`) still uses the legacy
+JSON keys (`room_size`, `damping`) in its test fixture but asserts
+on the new field names — verifying that the soft-migration path
+works end-to-end.
+
+### File changes summary
+
+- `src/audio_engine/dsp/reverb_effect.{h,cpp}`: full rewrite
+  (Dattorro topology, ~670 LOC total)
+- `include/audio_engine/bus.h`: EffectParameter additions/renames,
+  EffectConfig reverb field replacements
+- `src/audio_engine/mixer/bus_graph.cpp`: ReverbEffect ctor call
+  updated to new 6-param signature
+- `src/audio_engine/runtime/bus_config_loader.cpp`: new JSON keys
+  + soft-migration aliases for `room_size` / `damping`
+- `include/audio_engine/geometry_query.h`: `ReverbPresetByMaterial()`
+  helper + `ReverbMaterialPreset` struct
+- `godot/src/gool_godot.cpp`: parameter ID enumeration for Reverb kind
+- `godot/addons/gool/editor/mixer_dock.gd`: PARAM_META + PARAM_ORDER_BY_KIND
+- `godot/addons/gool/editor/config_model.gd`: four tables updated
+- `tests/unit/*.cpp`: 5 tests updated for the new field names
+- `docs/audio_design/reverb_dattorro.md`: status → shipped
+
 ## [0.28.10] - 2026-05-19 — Bugfix: three v0.28.9 regressions
 
 Three bugs in v0.28.9, all in the topology UI plumbing, all surfaced
@@ -13503,6 +13631,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.29.0]: https://github.com/siliconight/gool/releases/tag/v0.29.0
 [0.28.10]: https://github.com/siliconight/gool/releases/tag/v0.28.10
 [0.28.9]: https://github.com/siliconight/gool/releases/tag/v0.28.9
 [0.28.8]: https://github.com/siliconight/gool/releases/tag/v0.28.8
