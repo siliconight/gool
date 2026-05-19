@@ -83,6 +83,7 @@ const PARAM_ID_TO_JSON_KEY: Dictionary = {
 	23: "predelay_ms",        # Reverb_PredelayMs
 	24: "lf_damping",         # Reverb_LfDamping
 	25: "diffusion",          # Reverb_Diffusion
+	26: "dry_gain_db",        # Reverb_DryGainDb (v0.29.5)
 	19: "drive",              # Saturation_Drive
 	20: "mix",                # Saturation_Mix
 	21: "output_gain",        # Saturation_OutputGain
@@ -101,7 +102,7 @@ const PARAM_ID_TO_KIND: Dictionary = {
 	2: 2,  3: 2,  12: 2,                           # BiquadFilter
 	4: 3,  5: 3,  6: 3,  7: 3,  8: 3,
 	13: 3, 14: 3, 15: 3, 16: 3, 17: 3, 18: 3,      # Compressor
-	9: 4,  10: 4, 11: 4, 23: 4, 24: 4, 25: 4,      # Reverb
+	9: 4,  10: 4, 11: 4, 23: 4, 24: 4, 25: 4, 26: 4, # Reverb
 	19: 5, 20: 5, 21: 5, 22: 5,                    # Saturation
 }
 
@@ -129,9 +130,9 @@ const KIND_INT_TO_JSON_KEYS: Dictionary = {
 		"makeup_db", "knee_width_db", "mix_ratio",
 		"max_reduction_db", "sidechain_hpf_hz", "hold_ms",
 		"detection_mode"],
-	# Reverb (v0.29.0): predelay → decay → lf/hf damping → diffusion → wet.
-	# Matches PARAM_ORDER_BY_KIND in mixer_dock.gd.
-	4: ["predelay_ms", "decay", "lf_damping", "hf_damping", "diffusion", "wet_gain_db"],
+	# Reverb (v0.29.0): predelay → decay → lf/hf damping → diffusion → dry → wet.
+	# Matches PARAM_ORDER_BY_KIND in mixer_dock.gd. Dry added v0.29.5.
+	4: ["predelay_ms", "decay", "lf_damping", "hf_damping", "diffusion", "dry_gain_db", "wet_gain_db"],
 	5: ["drive", "mix", "output_gain", "bias"],
 }
 # Per-kind map: JSON key → paramId. Used by get_effects() to
@@ -148,7 +149,8 @@ const KIND_INT_TO_KEY_TO_PARAM_ID: Dictionary = {
 	},
 	4: {
 		"predelay_ms": 23, "decay": 9, "lf_damping": 24,
-		"hf_damping": 10, "diffusion": 25, "wet_gain_db": 11,
+		"hf_damping": 10, "diffusion": 25, "dry_gain_db": 26,
+		"wet_gain_db": 11,
 	},
 	5: { "drive": 19, "mix": 20, "output_gain": 21, "bias": 22 },
 }
@@ -165,8 +167,9 @@ const PARAM_ID_TO_ENGINE_DEFAULT: Dictionary = {
 	# Compressor
 	4: -18.0, 5: 4.0, 6: 5.0, 7: 50.0, 8: 0.0, 13: 6.0,
 	14: 1.0, 15: 60.0, 16: 0.0, 17: 0.0, 18: 0.0,
-	# Reverb (v0.29.0 Dattorro defaults — mirror EffectConfig in bus.h)
-	9: 0.5, 10: 0.3, 11: 0.0, 23: 30.0, 24: 0.0, 25: 0.625,
+	# Reverb (v0.29.0 Dattorro defaults — mirror EffectConfig in bus.h).
+	# v0.29.5 added id 26 (dry_gain_db) at default 0 dB (unity passthrough).
+	9: 0.5, 10: 0.3, 11: 0.0, 23: 30.0, 24: 0.0, 25: 0.625, 26: 0.0,
 	# Saturation
 	19: 1.0, 20: 0.0, 21: 1.0, 22: 0.0,
 }
@@ -1113,12 +1116,14 @@ const EFFECT_DEFAULTS_BY_KIND: Dictionary = {
 		# design doc (docs/audio_design/reverb_dattorro.md). The
 		# wet_gain_db default of 0.0 dB plus the moderate predelay /
 		# decay settings give a usable "small-to-medium room" send
-		# without further tuning.
+		# without further tuning. dry_gain_db (v0.29.5) defaults to
+		# 0 dB so a fresh reverb on an insert sounds like signal+tail.
 		"predelay_ms": 30.0,
 		"decay": 0.5,
 		"lf_damping": 0.0,
 		"hf_damping": 0.3,
 		"diffusion": 0.625,
+		"dry_gain_db": 0.0,
 		"wet_gain_db": 0.0,
 	},
 	"saturation": {

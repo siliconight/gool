@@ -30,7 +30,14 @@
 //                          Higher ⇒ darker tail (carpet vs. tile feel).
 //   diffusion    (0..1)    scales input-diffuser allpass gains.
 //                          Higher ⇒ smoother, less echo-y early signal.
-//   wet_gain_db  (-24..12) post-effect output trim. Unchanged from v0.28.x.
+//   dry_gain_db  (-∞..+∞)  passthrough of the source signal at the
+//                          effect output. Default 0 dB (unity) so the
+//                          reverb on an insert sounds like source + tail.
+//                          For send/return on a dedicated reverb bus,
+//                          set this very negative (e.g. -60 dB) so the
+//                          return path is wet-only.
+//   wet_gain_db  (-∞..+∞)  post-effect output trim on the wet field.
+//                          (Dock UI bounds: -60..+6 dB.)
 //
 // v0.29.0 retains EffectParameter::Reverb_RoomSize and Reverb_Damping
 // enum IDs as deprecated aliases for Reverb_Decay and Reverb_HfDamping
@@ -59,7 +66,7 @@ class ReverbEffect final : public IDspEffect {
 public:
     ReverbEffect(float predelayMs, float decay,
                  float lfDamping, float hfDamping,
-                 float diffusion, float wetGainDb);
+                 float diffusion, float dryGainDb, float wetGainDb);
 
     void Prepare(uint32_t sampleRate, uint32_t channels) override;
     void Process(float* output, uint32_t frames, uint32_t channels,
@@ -184,6 +191,7 @@ private:
     // ---- Derived value recompute ----------------------------------------
 
     void RecomputeWetGain() noexcept;
+    void RecomputeDryGain() noexcept;
     void RecomputeDecayFeedback() noexcept;
     void RecomputeDiffusion() noexcept;
     void RecomputePredelay() noexcept;
@@ -196,6 +204,7 @@ private:
     float lfDamping_  = 0.0f;
     float hfDamping_  = 0.3f;
     float diffusion_  = 0.625f;
+    float dryGainDb_  = 0.0f;
     float wetGainDb_  = 0.0f;
 
     // ---- Derived render-thread values -----------------------------------
@@ -203,6 +212,7 @@ private:
     float    tankFeedback_   = 0.5f;
     float    diffuserGainAB_ = 0.75f;
     float    diffuserGainCD_ = 0.625f;
+    float    dryLin_         = 1.0f;
     float    wetLin_         = 1.0f;
     uint32_t predelaySamples_ = 0;
 

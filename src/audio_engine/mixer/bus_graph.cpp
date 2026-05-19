@@ -247,6 +247,7 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                     ec.reverbLfDamping,
                     ec.reverbHfDamping,
                     ec.reverbDiffusion,
+                    ec.reverbDryGainDb,
                     ec.reverbWetGainDb);
                 break;
             case EffectKind::Saturation: {

@@ -22,6 +22,76 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.29.5] - 2026-05-19 — Reverb: dry passthrough parameter
+
+Additive feature requested while listening to the v0.29.4 reverb
+in-game. With the stability fix landed, the natural next gap was
+that the reverb sat on an insert position (Fx 1 on the bus) but
+replaced the dry signal entirely — there was no way to hear
+"source + tail" without setting up a separate send/return.
+
+### What changed
+
+The reverb effect grows a Dry parameter alongside the existing Wet
+control, so it can be used as either insert (signal + wet together)
+or send/return (dry muted, wet only).
+
+- **Engine**: `ReverbEffect` ctor signature gains `dryGainDb` before
+  `wetGainDb`. `Process()` now writes
+  `output = inSample * dryLin_ + ySample * wetLin_` instead of
+  wet-only. Default `dryLin_ = 1.0` (0 dB) means a fresh reverb on
+  an insert passes the source through as well as adding the tail —
+  the natural insert behavior.
+
+- **Public API**:
+  - New `EffectParameter::Reverb_DryGainDb = 26`
+  - New `EffectConfig::reverbDryGainDb` field, default `0.0f`
+  - New `dry_gain_db` JSON key in bus config files
+
+- **UI**: New "Dry" slider in the mixer dock, placed right above
+  "Wet" so the dry/wet pair is grouped at the bottom of the reverb
+  panel. Slider range -60..+6 dB, matching Wet's range; format
+  `%+0.1f`. Display order is now Predelay → Decay → LF/HF Damp →
+  Diffusion → **Dry** → Wet.
+
+### Migration notes
+
+**Existing reverb instances** (any config file written before
+v0.29.5) will load with `reverbDryGainDb = 0.0f` since the JSON key
+is missing and the EffectConfig field defaults to 0. This is a
+*behavior change*: those reverbs previously emitted wet-only at
+their bus, and now they'll emit dry passthrough + wet. For most
+in-game testing this is the desired outcome — you wanted to hear
+the source through the reverb effect; that's what motivated this
+release. For classic send/return setups (a dedicated reverb bus
+receiving from sends), set the bus's reverb effect's Dry slider to
+-60 dB to restore wet-only behavior.
+
+**kInputGain note**: with the v0.29.4 stability fix, the wet level
+is already quieter at default params than before. The Wet slider
+default (0 dB) is roughly calibrated to "audible but not overpowering"
+in send/return use. On insert with dry at 0 dB, you may want Wet
+somewhere in the -6 to -18 dB range depending on the source — the
+in-game listening pass is the only way to tune this confidently
+since the perceptual balance is material-dependent.
+
+### Test config explicit dry mute
+
+The `reverb_send_test` and `integration_kitchen_sink_test` test
+files set up classic send/return routing (a dedicated reverb bus
+receiving sends from sources). To make the wet-only contract
+unambiguous after v0.29.5's dry default, those tests now set
+`reverbDryGainDb = -100.0f` on the reverb bus's effect explicitly.
+This is documentation as much as behavior — readers can see at a
+glance that the test bus is wet-only.
+
+The three direct `ReverbEffect` constructor calls in
+`reverb_send_test.cpp` (impulse test + big/small comparative test)
+also pass `dryGainDb = -100.0f` so the wet measurements aren't
+contaminated by the dry impulse at sample 0. The mid (200-400 ms)
+and tail (700-1000 ms) measurement windows wouldn't have caught
+the impulse anyway, but explicit muting documents the intent.
+
 ## [0.29.4] - 2026-05-19 — Reverb stability fix: Schroeder allpass write-back
 
 **This is the real fix for the v0.29.0 reverb.** The v0.29.3 release
@@ -13909,6 +13979,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.29.5]: https://github.com/siliconight/gool/releases/tag/v0.29.5
 [0.29.4]: https://github.com/siliconight/gool/releases/tag/v0.29.4
 [0.29.3]: https://github.com/siliconight/gool/releases/tag/v0.29.3
 [0.29.2]: https://github.com/siliconight/gool/releases/tag/v0.29.2

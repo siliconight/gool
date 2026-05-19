@@ -147,12 +147,13 @@ void ReverbEffect::DampingShelf::Configure(float lfDamping, float hfDamping,
 
 ReverbEffect::ReverbEffect(float predelayMs, float decay,
                              float lfDamping, float hfDamping,
-                             float diffusion, float wetGainDb)
+                             float diffusion, float dryGainDb, float wetGainDb)
     : predelayMs_(std::clamp(predelayMs, 0.0f, kMaxPredelayMs)),
       decay_(std::clamp(decay, 0.0f, 1.0f)),
       lfDamping_(std::clamp(lfDamping, 0.0f, 1.0f)),
       hfDamping_(std::clamp(hfDamping, 0.0f, 1.0f)),
       diffusion_(std::clamp(diffusion, 0.0f, 1.0f)),
+      dryGainDb_(dryGainDb),
       wetGainDb_(wetGainDb)
 {
     // Derived values are computed in Prepare once we know the sample rate.
@@ -161,6 +162,10 @@ ReverbEffect::ReverbEffect(float predelayMs, float decay,
 
 void ReverbEffect::RecomputeWetGain() noexcept {
     wetLin_ = DbToLinear(wetGainDb_);
+}
+
+void ReverbEffect::RecomputeDryGain() noexcept {
+    dryLin_ = DbToLinear(dryGainDb_);
 }
 
 // Decay parameter maps to internal tank-feedback gain via:
@@ -280,6 +285,7 @@ void ReverbEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
     crossFromB_ = 0.0f;
 
     RecomputeWetGain();
+    RecomputeDryGain();
     RecomputeDecayFeedback();
     RecomputeDiffusion();
     RecomputePredelay();
@@ -387,11 +393,16 @@ void ReverbEffect::Process(float* output, uint32_t frames, uint32_t channels,
             - A.ap    .line.ReadTap(ScaleDelay(kTapR_ap2,    sampleRate_))
             - A.delay2.ReadTap(ScaleDelay(kTapR_delay2,   sampleRate_));
 
-        // 7 taps each, summed with mixed signs ⇒ roughly unity gain at
-        // moderate decay. wetLin_ is the user trim on top.
-        output[f * channels + 0] = yL * wetLin_;
+        // Mix dry passthrough with wet output. inL/inR captured at the
+        // top of the iteration (before the predelay write clobbered the
+        // input slot). v0.29.5 introduced this dry path so the reverb
+        // can be used as an insert effect (signal + tail) as well as
+        // send/return (set dry to -60 dB on the reverb bus's effect).
+        // 7 wet taps each, summed with mixed signs ⇒ roughly unity gain
+        // at moderate decay; wetLin_ is the user trim on top.
+        output[f * channels + 0] = inL * dryLin_ + yL * wetLin_;
         if (channels >= 2) {
-            output[f * channels + 1] = yR * wetLin_;
+            output[f * channels + 1] = inR * dryLin_ + yR * wetLin_;
         }
     }
 }
@@ -430,6 +441,10 @@ void ReverbEffect::OnParameter(uint16_t paramId, float value) noexcept {
             diffusion_ = std::clamp(value, 0.0f, 1.0f);
             RecomputeDiffusion();
             break;
+        case EffectParameter::Reverb_DryGainDb:
+            dryGainDb_ = value;
+            RecomputeDryGain();
+            break;
         default:
             break;
     }
@@ -443,6 +458,7 @@ float ReverbEffect::GetParameter(uint16_t paramId) const noexcept {
         case EffectParameter::Reverb_PredelayMs:   return predelayMs_;
         case EffectParameter::Reverb_LfDamping:    return lfDamping_;
         case EffectParameter::Reverb_Diffusion:    return diffusion_;
+        case EffectParameter::Reverb_DryGainDb:    return dryGainDb_;
         default:                                    return 0.0f;
     }
 }

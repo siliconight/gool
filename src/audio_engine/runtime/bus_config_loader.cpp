@@ -285,6 +285,7 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             else if (key == "lf_damping")         { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbLfDamping = static_cast<float>(n); }
             else if (key == "hf_damping")         { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbHfDamping = static_cast<float>(n); }
             else if (key == "diffusion")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDiffusion = static_cast<float>(n); }
+            else if (key == "dry_gain_db")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDryGainDb = static_cast<float>(n); }
             else if (key == "wet_gain_db")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbWetGainDb = static_cast<float>(n); }
             // v0.28.x soft-migration aliases.
             else if (key == "room_size")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }

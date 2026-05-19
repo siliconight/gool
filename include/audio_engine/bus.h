@@ -145,7 +145,15 @@ struct EffectConfig {
     float reverbLfDamping  = 0.0f;    // 0..1 — low-frequency absorption
     float reverbHfDamping  = 0.3f;    // 0..1 — high-frequency absorption
     float reverbDiffusion  = 0.625f;  // 0..1 — input-diffuser gain scale
-    float reverbWetGainDb  = 0.0f;    // post-effect trim, dB
+    // Dry/wet mix levels in dB. v0.29.5 added reverbDryGainDb so the
+    // reverb can sit on an insert position (signal + wet together) as
+    // well as on a send/return bus (dry muted, wet only). Default 0 dB
+    // dry = unity passthrough of the input. For classic send/return
+    // routing, set reverbDryGainDb to a very negative value (e.g.
+    // -60 dB) so the reverb bus emits wet only and the user mixes
+    // the dry signal in via a separate (parallel) bus path.
+    float reverbDryGainDb  = 0.0f;    // pre-effect dry passthrough, dB
+    float reverbWetGainDb  = 0.0f;    // post-effect wet trim, dB
 
     // Saturation (tanh waveshaper)
     //   drive       ; pre-shaper input gain. > 1 generates harmonics.
@@ -210,6 +218,11 @@ namespace EffectParameter {
     constexpr uint16_t Reverb_PredelayMs        = 23;
     constexpr uint16_t Reverb_LfDamping         = 24;
     constexpr uint16_t Reverb_Diffusion         = 25;
+    // v0.29.5: dry passthrough level. Together with WetGainDb (11) this
+    // forms the standard dry/wet pair for insert use; for send/return,
+    // set DryGainDb to a very negative value (e.g. -60) on the reverb
+    // bus's effect so only the wet field reaches the return.
+    constexpr uint16_t Reverb_DryGainDb         = 26;
 }
 
 // ---- Bus configuration ----------------------------------------------------

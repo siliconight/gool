@@ -1771,6 +1771,12 @@ class _EffectsPanel extends PanelContainer:
 			"curve": "linear", "fmt": "%0.2f"},
 		25: {"label": "Diffusion", "unit": "", "min": 0.0, "max": 1.0,
 			"curve": "linear", "fmt": "%0.2f"},
+		# Reverb dry passthrough (v0.29.5). Matches Wet's range so the
+		# pair feels symmetric in the dock; default 0 dB means the
+		# source signal passes through unchanged alongside the wet
+		# field. For send/return routing, drag this to -60.
+		26: {"label": "Dry", "unit": "dB", "min": -60.0, "max": 6.0,
+			"curve": "linear", "fmt": "%+0.1f"},
 		# Saturation. Engine takes linear factors here, NOT dB —
 		# verified against SaturationEffect::OnParameter
 		# (saturation_effect.cpp). Drive is the pre-tanh gain factor;
@@ -1803,11 +1809,12 @@ class _EffectsPanel extends PanelContainer:
 		1: [1],
 		2: [2, 3, 12],
 		3: [4, 5, 6, 7, 8, 13, 15, 16, 17, 18, 14],
-		# Reverb (v0.29.0): Predelay → Decay → LF/HF Damp → Diffusion → Wet.
+		# Reverb (v0.29.0): Predelay → Decay → LF/HF Damp → Diffusion → Dry → Wet.
 		# Predelay at top because it's the strongest "what size of space?"
 		# cue; the damping pair sits together since designers usually tune
-		# them in tandem; Wet stays trailing per the dock convention.
-		4: [23, 9, 24, 10, 25, 11],
+		# them in tandem; Dry/Wet pair stays trailing per the dock
+		# convention (Dry added v0.29.5).
+		4: [23, 9, 24, 10, 25, 26, 11],
 		5: [19, 21, 22, 20],
 	}
 

@@ -69,6 +69,7 @@ void TestReverbEffectImpulseResponse() {
             /*lfDamping*/  0.0f,
             /*hfDamping*/  0.4f,
             /*diffusion*/  0.625f,
+            /*dryGainDb*/  -100.0f,  // mute dry to measure wet only
             /*wetGainDb*/  0.0f);
     rv.Prepare(kSampleRate, /*channels*/ 2);
 
@@ -130,10 +131,12 @@ void TestReverbEffectShorterRoomDecaysFaster() {
     // ⇒ longer tail, so it's important the other axes don't vary.
     ReverbEffect big  (/*predelayMs*/ 30.0f, /*decay*/ 0.95f,
                        /*lfDamping*/   0.0f, /*hfDamping*/ 0.2f,
-                       /*diffusion*/   0.625f, /*wetGainDb*/ 0.0f);
+                       /*diffusion*/   0.625f,
+                       /*dryGainDb*/  -100.0f, /*wetGainDb*/ 0.0f);
     ReverbEffect small(/*predelayMs*/ 30.0f, /*decay*/ 0.30f,
                        /*lfDamping*/   0.0f, /*hfDamping*/ 0.2f,
-                       /*diffusion*/   0.625f, /*wetGainDb*/ 0.0f);
+                       /*diffusion*/   0.625f,
+                       /*dryGainDb*/  -100.0f, /*wetGainDb*/ 0.0f);
     big.Prepare  (kSampleRate, 2);
     small.Prepare(kSampleRate, 2);
 
@@ -227,13 +230,21 @@ RunResult RunImpulseAndMeasure(bool addReverbBus, float globalSend) {
         // [0] master
         cfg.busGraph.buses[0].id     = kBusMaster;
         cfg.busGraph.buses[0].parent = kBusMaster;     // ignored for master
-        // [1] reverb → master, with a single ReverbEffect
+        // [1] reverb → master, with a single ReverbEffect.
+        // The reverb bus is a classic send/return setup: the source
+        // pushes into it via a send, the reverb bus emits wet-only,
+        // and that joins the dry source path at master. To make the
+        // wet-only contract explicit in v0.29.5+ (where the reverb
+        // effect now has a dry passthrough), the bus's effect sets
+        // dry to -100 dB — effectively muted — so the bus output is
+        // unambiguously the wet field.
         cfg.busGraph.buses[1].id     = kBusReverb;
         cfg.busGraph.buses[1].parent = kBusMaster;
         cfg.busGraph.buses[1].outputGainDb = 0.0f;
         cfg.busGraph.buses[1].effects[0].kind             = EffectKind::Reverb;
         cfg.busGraph.buses[1].effects[0].reverbDecay      = 0.9f;
         cfg.busGraph.buses[1].effects[0].reverbHfDamping  = 0.3f;
+        cfg.busGraph.buses[1].effects[0].reverbDryGainDb  = -100.0f;
         cfg.busGraph.buses[1].effects[0].reverbWetGainDb  = 0.0f;
         cfg.busGraph.buses[1].effectCount                 = 1;
     }
