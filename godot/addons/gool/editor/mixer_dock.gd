@@ -167,6 +167,10 @@ func _ready() -> void:
 	_config_model.save_failed.connect(_on_model_save_failed)
 	_config_model.external_change_detected.connect(
 			_on_model_external_change_detected)
+	# v0.28.8 topology signals.
+	_config_model.topology_changed.connect(_on_model_topology_changed)
+	_config_model.bus_added.connect(_on_model_bus_added)
+	_config_model.bus_removed.connect(_on_model_bus_removed)
 	var load_err: int = _config_model.load_from_disk()
 	if load_err != OK and load_err != ERR_FILE_NOT_FOUND:
 		push_warning("[gool] config_model load_from_disk: error %d" % load_err)
@@ -275,6 +279,8 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		strip.bypass_changed.connect(_on_strip_bypass_changed)
 		# v0.28.3: Fx toggle.
 		strip.fx_toggled.connect(_on_strip_fx_toggled)
+		# v0.28.8 context menu (right-click) for bus topology ops.
+		strip.context_menu_requested.connect(_on_strip_context_menu_requested)
 		# v0.28.5: populate Fx button count IMMEDIATELY from the
 		# config model rather than waiting for the first _poll tick.
 		# v0.28.4 had this gated on _poll firing the empty-stats branch,
@@ -293,6 +299,9 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		_strip_container.add_child(col)
 		_strips.append(strip)
 		_columns.append(col)
+	# v0.28.8: trailing "+ Add Bus" column. Not added to _strips/_columns
+	# since it doesn't represent a real bus — it's a UI affordance only.
+	_strip_container.add_child(_build_add_bus_column())
 
 
 # ---- Live data polling (during F5) -----------------------------------
@@ -390,12 +399,17 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 		strip.bypass_changed.connect(_on_strip_bypass_changed)
 		# v0.28.3: Fx toggle.
 		strip.fx_toggled.connect(_on_strip_fx_toggled)
+		# v0.28.8: context menu for bus topology ops, parity with the
+		# static-config build path.
+		strip.context_menu_requested.connect(_on_strip_context_menu_requested)
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 4)
 		col.add_child(strip)
 		_strip_container.add_child(col)
 		_strips.append(strip)
 		_columns.append(col)
+	# v0.28.8: + Add Bus column (parity with _rebuild_strips_from_config).
+	_strip_container.add_child(_build_add_bus_column())
 
 
 # Strip fader was dragged. Forward to the running game via the
@@ -470,6 +484,10 @@ func _on_strip_fx_toggled(bus_name: String, expanded: bool) -> void:
 		var panel := _EffectsPanel.new()
 		panel.bus_name = bus_name
 		panel.param_changed.connect(_on_effect_param_changed)
+		# v0.28.8 topology hooks.
+		panel.add_effect_requested.connect(_on_panel_add_effect_requested)
+		panel.remove_effect_requested.connect(_on_panel_remove_effect_requested)
+		panel.move_effect_requested.connect(_on_panel_move_effect_requested)
 		col.add_child(panel)
 		# build_from_effects must happen AFTER add_child so child
 		# Controls have a tree parent before any internal init paths
@@ -540,6 +558,237 @@ func _lookup_effects_for_bus(bus_name: String) -> Array:
 	if _config_model != null:
 		return _config_model.get_effects(bus_name)
 	return []
+
+
+# ===================================================================
+# v0.28.8 Phase 3.3d: topology operations
+# ===================================================================
+#
+# Three categories of handlers:
+#
+#   1. Panel-side signals (add/remove/move effect button presses) →
+#      call into _config_model, which validates and re-serializes.
+#
+#   2. Model topology signals (topology_changed, bus_added,
+#      bus_removed) → rebuild the affected UI: just the open Fx
+#      panel for an effect change, or the whole strip row for a
+#      bus change.
+#
+#   3. Strip context-menu signal (right-click on strip) → show the
+#      "Remove bus..." PopupMenu; on selection, gather refs and
+#      either block with an error dialog or confirm with a dialog.
+
+# --- Effect topology: _EffectsPanel signal handlers ---
+
+func _on_panel_add_effect_requested(bus_name: String, kind_string: String) -> void:
+	if _config_model == null:
+		return
+	if not _config_model.add_effect(bus_name, kind_string):
+		push_warning("[gool] add_effect failed for bus '%s' kind '%s'"
+				% [bus_name, kind_string])
+
+
+func _on_panel_remove_effect_requested(bus_name: String,
+		effect_index: int) -> void:
+	if _config_model == null:
+		return
+	# ConfirmationDialog before commit. We dismiss immediately on
+	# Cancel and call _config_model.remove_effect on confirm.
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "Remove effect"
+	# Get the effect's kind name for the confirm prompt.
+	var effects := _config_model.get_effects(bus_name)
+	var kind_name: String = "(unknown)"
+	if effect_index >= 0 and effect_index < effects.size():
+		kind_name = String((effects[effect_index] as Dictionary)
+				.get("kind_name", "(unknown)"))
+	dlg.dialog_text = "Remove %s effect from bus '%s'?\n\nThis cannot be undone via the dock — restore from gool/config.json.gool-backup if needed." % [kind_name, bus_name]
+	dlg.confirmed.connect(_on_remove_effect_confirmed.bind(
+			bus_name, effect_index, dlg))
+	dlg.canceled.connect(dlg.queue_free)
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _on_remove_effect_confirmed(bus_name: String, effect_index: int,
+		dlg: ConfirmationDialog) -> void:
+	if _config_model != null:
+		if not _config_model.remove_effect(bus_name, effect_index):
+			push_warning("[gool] remove_effect failed for bus '%s' idx %d"
+					% [bus_name, effect_index])
+	dlg.queue_free()
+
+
+func _on_panel_move_effect_requested(bus_name: String,
+		effect_index: int, direction: int) -> void:
+	if _config_model == null:
+		return
+	var target: int = effect_index + direction
+	if not _config_model.reorder_effect(bus_name, effect_index, target):
+		push_warning("[gool] reorder_effect failed for bus '%s' %d→%d"
+				% [bus_name, effect_index, target])
+
+
+# --- Model topology signal handlers ---
+
+# Effect chain changed on bus_name. If that bus's Fx panel is open,
+# rebuild it from the current model state. Also refresh the strip's
+# effect_count (drives the Fx button label "Fx (N)").
+func _on_model_topology_changed(bus_name: String) -> void:
+	# Update the strip's Fx button count.
+	var idx: int = _index_of_bus(bus_name)
+	if idx >= 0 and idx < _strips.size():
+		var n: int = 0
+		if _config_model != null:
+			n = _config_model.get_effects(bus_name).size()
+		(_strips[idx] as _BusStrip).set_effect_count(n)
+		# If the strip is in the open-fx state but the bus now has zero
+		# effects, collapse the panel.
+		if _expanded_bus == bus_name and n == 0:
+			(_strips[idx] as _BusStrip).set_fx_expanded(false, false)
+			_remove_panel_from_column(_columns[idx] as VBoxContainer)
+			_expanded_bus = ""
+			return
+	# Rebuild the open panel if this is the one being viewed.
+	if _expanded_bus == bus_name and idx >= 0 and idx < _columns.size():
+		var col: VBoxContainer = _columns[idx] as VBoxContainer
+		_remove_panel_from_column(col)
+		var effects: Array = _lookup_effects_for_bus(bus_name)
+		var panel := _EffectsPanel.new()
+		panel.bus_name = bus_name
+		panel.param_changed.connect(_on_effect_param_changed)
+		panel.add_effect_requested.connect(_on_panel_add_effect_requested)
+		panel.remove_effect_requested.connect(_on_panel_remove_effect_requested)
+		panel.move_effect_requested.connect(_on_panel_move_effect_requested)
+		col.add_child(panel)
+		panel.build_from_effects(effects)
+
+
+# A bus was added to the config. Rebuild the strip row to include it.
+func _on_model_bus_added(_bus_name: String) -> void:
+	_load_static_layout_from_config()
+
+
+# A bus was removed. Rebuild the strip row.
+func _on_model_bus_removed(_bus_name: String) -> void:
+	_load_static_layout_from_config()
+
+
+# --- Bus context menu (right-click on strip) ---
+
+func _on_strip_context_menu_requested(bus_name: String,
+		global_pos: Vector2) -> void:
+	# PopupMenu with a single "Remove bus..." entry for now. Future
+	# v0.28.8+ work can add Rename, Duplicate, etc.
+	var menu := PopupMenu.new()
+	menu.add_item("Remove bus '%s'..." % bus_name, 0)
+	menu.id_pressed.connect(_on_strip_context_menu_id_pressed.bind(bus_name))
+	menu.close_requested.connect(menu.queue_free)
+	menu.popup_hide.connect(menu.queue_free)
+	add_child(menu)
+	menu.popup(Rect2i(Vector2i(global_pos), Vector2i(0, 0)))
+
+
+# Signature note: GDScript's Callable.bind puts bound args BEFORE
+# signal args in the slot's parameter list. So `id_pressed(id)`
+# + `.bind(bus_name)` → slot called as `(bus_name, id)`.
+func _on_strip_context_menu_id_pressed(bus_name: String, id: int) -> void:
+	if id == 0:
+		_attempt_remove_bus(bus_name)
+
+
+# Pre-check refs. If any → error dialog with the list. Else →
+# ConfirmationDialog. On confirm → model.remove_bus.
+func _attempt_remove_bus(bus_name: String) -> void:
+	if _config_model == null:
+		return
+	var refs: Array = _config_model.collect_bus_references(bus_name)
+	if not refs.is_empty():
+		var err_dlg := AcceptDialog.new()
+		err_dlg.title = "Cannot remove bus '%s'" % bus_name
+		err_dlg.dialog_text = (
+				"This bus is still referenced from %d place(s):\n\n  - %s\n\n"
+				% [refs.size(), "\n  - ".join(refs)]
+				+ "Clear the references first, then try again.")
+		err_dlg.popup_hide.connect(err_dlg.queue_free)
+		add_child(err_dlg)
+		err_dlg.popup_centered()
+		return
+	# No refs — confirm and delete.
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "Remove bus"
+	dlg.dialog_text = "Remove bus '%s'?\n\nThis cannot be undone via the dock — restore from gool/config.json.gool-backup if needed." % bus_name
+	dlg.confirmed.connect(_on_remove_bus_confirmed.bind(bus_name, dlg))
+	dlg.canceled.connect(dlg.queue_free)
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _on_remove_bus_confirmed(bus_name: String,
+		dlg: ConfirmationDialog) -> void:
+	if _config_model != null:
+		var err: int = _config_model.remove_bus(bus_name)
+		if err != OK:
+			push_warning("[gool] remove_bus failed for '%s': %d"
+					% [bus_name, err])
+	dlg.queue_free()
+
+
+# --- Add bus button + name input ---
+
+# Builds a strip-shaped "+ Add Bus" column appended to the strip row.
+# Called from _rebuild_strips_from_config after all real strips.
+func _build_add_bus_column() -> VBoxContainer:
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	var btn := Button.new()
+	btn.text = "+\nAdd Bus"
+	btn.custom_minimum_size = Vector2(STRIP_WIDTH, STRIP_HEIGHT)
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.tooltip_text = "Add a new bus to the mixer"
+	btn.pressed.connect(_on_add_bus_button_pressed)
+	col.add_child(btn)
+	return col
+
+
+func _on_add_bus_button_pressed() -> void:
+	# A ConfirmationDialog with a LineEdit child for the bus name.
+	# Godot doesn't have a built-in "prompt for a string" dialog,
+	# so we compose one. register_text_enter wires Enter-to-confirm
+	# natively — no manual text_submitted handler needed.
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "Add bus"
+	dlg.dialog_text = "Bus name:"
+	var input := LineEdit.new()
+	input.placeholder_text = "Bus name (e.g. 'Footsteps')"
+	input.custom_minimum_size = Vector2(240, 0)
+	dlg.add_child(input)
+	dlg.register_text_enter(input)
+	dlg.confirmed.connect(_on_add_bus_dialog_confirmed.bind(input, dlg))
+	dlg.canceled.connect(dlg.queue_free)
+	add_child(dlg)
+	dlg.popup_centered()
+	input.grab_focus()
+
+
+func _on_add_bus_dialog_confirmed(input: LineEdit,
+		dlg: ConfirmationDialog) -> void:
+	var bus_name_input: String = input.text.strip_edges()
+	dlg.queue_free()
+	if bus_name_input.is_empty():
+		return
+	if _config_model == null:
+		return
+	var err: int = _config_model.add_bus(bus_name_input)
+	if err == ERR_ALREADY_EXISTS:
+		var err_dlg := AcceptDialog.new()
+		err_dlg.title = "Add bus failed"
+		err_dlg.dialog_text = "A bus named '%s' already exists." % bus_name_input
+		err_dlg.popup_hide.connect(err_dlg.queue_free)
+		add_child(err_dlg)
+		err_dlg.popup_centered()
+	elif err != OK:
+		push_warning("[gool] add_bus failed for '%s': %d" % [bus_name_input, err])
 
 
 # v0.28.4: model save signals → dock visual response.
@@ -746,6 +995,11 @@ class _BusStrip extends Control:
 	# expansion state. Outer dock catches this and builds / removes
 	# the effects panel below the strip in the column wrapper.
 	signal fx_toggled(bus_name: String, expanded: bool)
+
+	# v0.28.8 right-click for bus context menu (remove, future ops).
+	# global_pos is where the click landed in screen coords, used to
+	# popup the menu next to the cursor.
+	signal context_menu_requested(bus_name: String, global_pos: Vector2)
 
 	# v0.26.5: LineEdit child for click-to-type dB entry. Hidden by
 	# default; shown when the user clicks the dB readout at the
@@ -1252,6 +1506,14 @@ class _BusStrip extends Control:
 
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
+			# v0.28.8: right-click anywhere on the strip → context menu.
+			# Handled before the LEFT-click branch so MOUSE_BUTTON_RIGHT
+			# doesn't fall through to the readout/fader handlers.
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+				context_menu_requested.emit(
+						bus_name, get_global_mouse_position())
+				accept_event()
+				return
 			if mb.button_index == MOUSE_BUTTON_LEFT:
 				# v0.27.0: S/M/B buttons. Checked first because they
 				# sit at the top of the strip, above the fader and
@@ -1523,6 +1785,14 @@ class _EffectsPanel extends PanelContainer:
 	signal param_changed(bus_name: String, effect_index: int,
 			param_id: int, value: float)
 
+	# v0.28.8 topology signals. Outer dock routes to GoolConfigModel.
+	# Direction is -1 for "move up" (toward index 0, earlier in signal
+	# flow) and +1 for "move down".
+	signal add_effect_requested(bus_name: String, kind_string: String)
+	signal remove_effect_requested(bus_name: String, effect_index: int)
+	signal move_effect_requested(bus_name: String, effect_index: int,
+			direction: int)
+
 	var bus_name: String = ""
 
 	# Map (effect_idx:param_id) String → HSlider or OptionButton, so
@@ -1551,25 +1821,82 @@ class _EffectsPanel extends PanelContainer:
 	# Build the panel from a list of effect dicts as returned by
 	# get_bus_effects: [{kind: int, kind_name: String, params: {paramId: value, ...}}, ...].
 	# Clears any previous content first.
+	#
+	# v0.28.8: after the effect sections, a "+ Add Effect" button is
+	# appended. Clicking it opens a PopupMenu with the five kinds.
 	func build_from_effects(effects: Array) -> void:
 		_control_map.clear()
 		_value_label_map.clear()
 		for child in _vbox.get_children():
 			child.queue_free()
-		for i in range(effects.size()):
+		var n: int = effects.size()
+		for i in range(n):
 			var e: Dictionary = effects[i]
 			var kind: int = int(e.get("kind", 0))
 			var kind_name: String = String(e.get("kind_name", "Effect"))
 			var params: Dictionary = e.get("params", {})
-			_vbox.add_child(_build_effect_section(i, kind, kind_name, params))
+			_vbox.add_child(_build_effect_section(i, n, kind, kind_name, params))
+		_vbox.add_child(_build_add_effect_button())
 
-	func _build_effect_section(effect_idx: int, kind: int,
-			kind_name: String, params: Dictionary) -> Control:
+	# v0.28.8: "+ Add Effect" button that opens a PopupMenu of the
+	# five effect kinds. Selection emits add_effect_requested for
+	# the outer dock to route to the model.
+	func _build_add_effect_button() -> Control:
+		var btn := Button.new()
+		btn.text = "+ Add Effect"
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.tooltip_text = "Append a new effect to this bus's chain"
+		btn.pressed.connect(_on_add_effect_button_pressed.bind(btn))
+		return btn
+
+	# Kind labels matching EFFECT_KIND_ORDER in GoolConfigModel.
+	# Kept local so _EffectsPanel doesn't need to import the model.
+	const _KIND_PICKER_LABELS: Array = [
+		["gain", "Gain"],
+		["biquad", "Biquad Filter"],
+		["compressor", "Compressor"],
+		["saturation", "Saturation"],
+		["reverb", "Reverb"],
+	]
+
+	func _on_add_effect_button_pressed(anchor_btn: Button) -> void:
+		var menu := PopupMenu.new()
+		# IDs match the index in _KIND_PICKER_LABELS so id_pressed
+		# can look up the kind string.
+		for i in range(_KIND_PICKER_LABELS.size()):
+			menu.add_item(String((_KIND_PICKER_LABELS[i] as Array)[1]), i)
+		menu.id_pressed.connect(_on_kind_picker_selected)
+		# Free the menu when it closes so we don't leak one per click.
+		menu.close_requested.connect(menu.queue_free)
+		menu.popup_hide.connect(menu.queue_free)
+		anchor_btn.add_child(menu)
+		var origin: Vector2 = anchor_btn.global_position \
+				+ Vector2(0, anchor_btn.size.y)
+		menu.popup(Rect2i(Vector2i(origin), Vector2i(0, 0)))
+
+	func _on_kind_picker_selected(id: int) -> void:
+		if id < 0 or id >= _KIND_PICKER_LABELS.size():
+			return
+		var kind_string: String = String((_KIND_PICKER_LABELS[id] as Array)[0])
+		add_effect_requested.emit(bus_name, kind_string)
+
+	func _on_move_up_pressed(idx: int) -> void:
+		move_effect_requested.emit(bus_name, idx, -1)
+
+	func _on_move_down_pressed(idx: int) -> void:
+		move_effect_requested.emit(bus_name, idx, +1)
+
+	func _on_remove_pressed(idx: int) -> void:
+		remove_effect_requested.emit(bus_name, idx)
+
+	func _build_effect_section(effect_idx: int, total_count: int,
+			kind: int, kind_name: String, params: Dictionary) -> Control:
 		var section := VBoxContainer.new()
 		section.add_theme_constant_override("separation", 2)
 
 		# Header band: distinct background so the section boundary is
-		# visually clear when multiple effects are stacked.
+		# visually clear when multiple effects are stacked. v0.28.8:
+		# header now hosts ↑/↓/× topology buttons on the right edge.
 		var header := PanelContainer.new()
 		var header_sb := StyleBoxFlat.new()
 		header_sb.bg_color = COLOR_HEADER_BG
@@ -1578,10 +1905,54 @@ class _EffectsPanel extends PanelContainer:
 		header_sb.content_margin_top = 2.0
 		header_sb.content_margin_bottom = 2.0
 		header.add_theme_stylebox_override("panel", header_sb)
+
+		var header_row := HBoxContainer.new()
+		header_row.add_theme_constant_override("separation", 2)
+		header.add_child(header_row)
+
 		var header_label := Label.new()
 		header_label.text = kind_name
 		header_label.add_theme_color_override("font_color", COLOR_HEADER_TEXT)
-		header.add_child(header_label)
+		header_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		header_row.add_child(header_label)
+
+		# ↑ Move up: disabled on the first effect in the chain.
+		var btn_up := Button.new()
+		btn_up.text = "↑"
+		btn_up.flat = true
+		btn_up.focus_mode = Control.FOCUS_NONE
+		btn_up.custom_minimum_size = Vector2(20, 18)
+		btn_up.disabled = (effect_idx == 0)
+		btn_up.tooltip_text = "Move effect earlier in signal flow"
+		# capture-by-value via bind() since the lambda's idx would
+		# otherwise close over the loop variable.
+		btn_up.pressed.connect(_on_move_up_pressed.bind(effect_idx))
+		header_row.add_child(btn_up)
+
+		# ↓ Move down: disabled on the last effect.
+		var btn_down := Button.new()
+		btn_down.text = "↓"
+		btn_down.flat = true
+		btn_down.focus_mode = Control.FOCUS_NONE
+		btn_down.custom_minimum_size = Vector2(20, 18)
+		btn_down.disabled = (effect_idx >= total_count - 1)
+		btn_down.tooltip_text = "Move effect later in signal flow"
+		btn_down.pressed.connect(_on_move_down_pressed.bind(effect_idx))
+		header_row.add_child(btn_down)
+
+		# × Remove. Outer dock catches the signal and shows a
+		# ConfirmationDialog before actually removing.
+		var btn_remove := Button.new()
+		btn_remove.text = "×"
+		btn_remove.flat = true
+		btn_remove.focus_mode = Control.FOCUS_NONE
+		btn_remove.custom_minimum_size = Vector2(20, 18)
+		btn_remove.tooltip_text = "Remove this effect"
+		btn_remove.add_theme_color_override("font_color",
+				Color(1.0, 0.55, 0.55))
+		btn_remove.pressed.connect(_on_remove_pressed.bind(effect_idx))
+		header_row.add_child(btn_remove)
+
 		section.add_child(header)
 
 		# Param rows in the configured order

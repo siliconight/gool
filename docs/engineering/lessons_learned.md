@@ -185,8 +185,54 @@ The downside of `Array` over `Packed*Array` is variant boxing per
 element (slightly more memory). For typical const arrays of
 small size this is negligible.
 
-### Inner class scope
-*(Surfaced v0.26.0 – v0.26.2.)*
+### GDScript `%` operator format specifiers don't match printf
+*(Surfaced v0.28.4 – v0.28.7. Four releases for one character.)*
+
+GDScript's `%` operator (e.g. `"%0.1f" % value`) implements its own
+format specifiers — NOT printf-compatible. The supported set is:
+
+| Specifier | Use |
+|---|---|
+| `%s` | string |
+| `%d` | int (also accepts float, truncates) |
+| `%f` | float (precision OK: `%0.1f`, `%5.3f`) |
+| `%c` | character |
+| `%o` | octal |
+| `%x` / `%X` | hex (lower/upper) |
+| `%v` | vector |
+
+Notable omissions: **`%g`, `%e`, `%a`, `%i`, `%u`** — all standard in
+printf and Python, all unsupported in GDScript. Hitting one produces:
+
+```
+ERROR: String formatting error: unsupported format character.
+```
+
+The expression returns garbage and execution continues. Where the
+result flows into structured output (JSON, network protocol, file
+format), this silently corrupts data.
+
+The v0.28.4 config patcher used `"%g" % value` for non-integer
+floats. Python's `%` operator supports `%g` (round-trip tests
+passed); GDScript's doesn't (every save with a non-integer fader
+value silently failed). The patcher's parse-verify-and-restore-from-
+backup mechanism hid this from the user across v0.28.4–v0.28.6;
+the diagnostic dump added in v0.28.6 finally surfaced the actual
+corrupted JSON, and v0.28.7 fixed the format call.
+
+**Replacements:**
+- `%g` → `String.num(value)` (Godot's default float-to-string,
+  trims trailing zeros)
+- `%e` → also unsupported; use `String.num()` and add an `e`
+  suffix manually if you need scientific notation
+- `%i` → use `%d`
+- `%u` → use `%d` (no unsigned format in GDScript; just be careful
+  about negative values)
+
+When formatting numbers for JSON, network protocols, or any
+structured output, prefer `String.num()` over `%`-based formatting.
+
+### Inner class scope*(Surfaced v0.26.0 – v0.26.2.)*
 
 GDScript inner classes do NOT inherit the outer class's scope. An
 inner `class Inner extends Control:` declared inside an outer
@@ -845,6 +891,64 @@ The lessons that came out of those three patches became this
 document plus permanent pre-ship steps. The hope: future
 features ship in one or two releases, not four.
 
+### Python-port-as-test catches algorithm bugs, not language-idiom bugs
+*(Surfaced v0.28.4 – v0.28.7.)*
+
+For GDScript code with non-trivial logic — the v0.28.4 config
+patcher being the example — porting the algorithm to Python and
+running Python unit tests is a fast feedback loop that doesn't
+require a running Godot instance. The patcher's round-trip tests
+against real config files caught several real algorithm bugs
+during v0.28.4 development.
+
+What it does NOT catch: places where the Python idiom and the
+GDScript idiom diverge despite looking identical in source.
+Examples that have actually bitten or could:
+
+- `%g` works in Python's `%` operator, not in GDScript's
+  (the v0.28.4–0.28.7 bug; see the `%` format-specifiers entry above)
+- `"%i" % x` / `"%u" % x` similarly unsupported in GDScript
+- Integer division: `5 / 2 == 2.5` in Python 3; in GDScript 4 it
+  depends on static typing (typed int operands → 2; otherwise 2.5).
+  A direct port that worked in Python may behave differently in
+  GDScript if the value types differ
+- String indexing returns a `str` of length 1 in Python; in
+  GDScript 4 it returns a `String` of length 1 — usually fine,
+  but list comprehension idioms don't translate
+- `null` (GDScript) vs `None` (Python) — obvious but the
+  comparison semantics differ: in GDScript `0 == null` is
+  `false`; in Python `0 == None` is also `false` but the
+  reasoning is different and string formatting around them isn't
+  the same
+
+The takeaway is NOT to abandon Python-port testing — the
+algorithm verification is genuinely valuable, and the round-trip
+test against real configs has caught real bugs. The takeaway is
+to know what it doesn't cover:
+
+1. **Don't borrow printf-isms from Python.** When the GDScript
+   needs to format a value, look up the specifier in Godot's
+   actual `%` operator docs, not C/Python printf.
+2. **Strongly typed GDScript helps.** `var x: float = ...` and
+   typed function signatures surface type-confusion early.
+3. **Defensive output validation pays off.** The patcher
+   parse-verifies its own output before committing the write
+   (and restores from `.gool-backup` if invalid). This kept the
+   `%g` silent corruption from reaching user data across three
+   releases — without that step, every save would have written
+   invalid JSON and users would have lost work. The v0.28.6
+   addition (dump the failed text to `config.json.failed` for
+   inspection) is the *diagnostic* counterpart: when the safety
+   net fires, leave a forensic artifact behind.
+
+Point 3 generalizes beyond GDScript: any layer that produces
+structured output should validate its own output before committing,
+and dump artifacts on validation failure. For the patcher: re-parse
+the JSON. For a network protocol layer: re-decode the encoded
+frame. For a binary file writer: read it back and compare hash.
+Cheap, catches a lot, and turns a silent corruption into a loud
+recoverable error.
+
 ---
 
 ## What's NOT in this document
@@ -859,5 +963,6 @@ burned by. When a class of bug bites twice, that's the signal
 to add a section. When it bites three times, that's the signal
 to automate detection.
 
-*Last meaningful update: v0.26.4 — initial extraction of
-accumulated lessons from CHANGELOG entries through v0.26.3.*
+*Last meaningful update: v0.28.7 — added the GDScript `%` format
+specifier entry and the Python-port-as-test entry following the
+v0.28.4-0.28.7 patcher %g saga. Previous extraction was v0.26.4.*

@@ -12,14 +12,116 @@ upgrading.
 
 Nothing shipping yet. Next-up candidates:
 
-- **v0.28.8 / Phase 3.3d — Topology editing**: add/remove/reorder
-  effects from the dock + add/remove buses.
 - **Phase 4 — Runtime player audio preferences**: see
   `docs/audio_design/player_audio_preferences.md` for the
   5-release plan (v0.29.0–v0.29.4).
 - **Phase 5 — Material & acoustic environment authoring.**
 - **Sidechain feature work** (parallel from
   `docs/audio_design/sidechain_tuning.md`).
+- **v0.28.9 follow-ups for topology editing**: rename bus,
+  duplicate bus, reorder buses, in-block comment preservation
+  on topology edits.
+
+## [0.28.8] - 2026-05-19 — Phase 3.3d: topology editing
+
+The mixer dock can now author the bus graph end-to-end. Previous
+releases let you adjust fader values and effect params (value
+patching); v0.28.8 adds structural editing:
+
+- **Add an effect** to a bus's chain (Gain / Biquad / Compressor /
+  Saturation / Reverb).
+- **Remove an effect** from a bus.
+- **Reorder effects** within a bus (move earlier/later in signal flow).
+- **Add a bus** to the mixer.
+- **Remove a bus** (refuses if anything still references it).
+
+This finishes the dev-side mixer authoring story. The dock is now
+sufficient for the full author-loop — open Godot, open the dock,
+build out a mixer graph, see it persisted to `gool/config.json` for
+the engine to load at next runtime start.
+
+### New UI affordances
+
+- **Per-effect header buttons** in the open Fx panel: `↑` / `↓`
+  reorder, `×` remove. The `↑` button is disabled on the first
+  effect; `↓` is disabled on the last.
+
+- **"+ Add Effect" button** at the bottom of the Fx panel. Click
+  opens a PopupMenu with the five kinds. Selecting a kind appends
+  a new effect populated with engine-default params (mirror of the
+  `*Config` struct field defaults in `src/audio_engine/dsp/`).
+
+- **"+ Add Bus" column** appended after the last strip. Click opens
+  a name-input dialog. New buses default to `parent: "Master"`,
+  `gain_db: 0.0`, no effects array.
+
+- **Right-click on a strip** opens a context menu with
+  "Remove bus '\<name\>'...". Pre-checks references; if any other
+  bus has `parent: <name>`, any compressor has
+  `sidechain_bus: <name>`, or `category_routing` points at the bus,
+  surfaces them in an error dialog and refuses the remove. If clean,
+  shows a ConfirmationDialog before commit.
+
+- **ConfirmationDialog** for both remove-effect and remove-bus.
+  No "undo" in the dock — the model still backs up to
+  `gool/config.json.gool-backup` on every save, which is the
+  recovery path.
+
+### How topology persists
+
+Value patching (v0.28.4) was byte-precise: edit only the value's
+bytes, leave every comment and every other byte alone. That doesn't
+work for structural changes — the structure itself changes.
+
+v0.28.8 adds two re-serialization paths in `GoolConfigModel`:
+
+- **Per-bus re-serialize** (effect topology): replace just the
+  affected bus's `{...}` block with canonical JSON from the
+  in-memory model. Outer file structure (other buses, top-level
+  comments, `sample_rate`, `category_routing`) preserved bit-for-bit.
+
+- **Whole-buses-array re-serialize** (add/remove bus): replace the
+  entire `"buses": [...]` block. Top-level keys (`_comment`,
+  `sample_rate`, `category_routing`) still preserved; comments
+  inside the buses array are lost.
+
+Save-time dispatch in `_do_save` routes by dirty type:
+- `_buses_array_dirty: bool` → whole-array re-serialize (wins
+  over everything else).
+- Per-bus `"topology"` dirty → bus-block re-serialize.
+- Per-bus `"value"` dirty → existing byte patcher.
+
+All paths still go through the v0.28.6/7 safety net: backup before
+write, parse-verify after, restore from .bak + dump to .failed on
+parse failure.
+
+### Native JSON.stringify, no printf
+
+The serializer uses `JSON.stringify(dict, "\t")` exclusively for
+emission. No format-string round-tripping anywhere, so the v0.28.7
+`%g` class of bug cannot recur on this path. The lesson from
+`docs/engineering/lessons_learned.md` ("Don't borrow printf-isms
+from Python") is the policy this code follows.
+
+### New public API on `GoolConfigModel`
+
+- `add_effect(bus_name: String, kind_string: String) -> bool`
+- `remove_effect(bus_name: String, effect_index: int) -> bool`
+- `reorder_effect(bus_name: String, from_index: int, to_index: int) -> bool`
+- `add_bus(bus_name: String) -> int` (OK / ERR_ALREADY_EXISTS / ...)
+- `remove_bus(bus_name: String) -> int` (OK / ERR_INVALID_PARAMETER if dangling refs)
+- `collect_bus_references(bus_name: String) -> Array`
+- New signals: `topology_changed(bus_name)`, `bus_added(bus_name)`,
+  `bus_removed(bus_name)`
+
+### Known cosmetic limitation
+
+A bus that's been topology-edited is rewritten in canonical
+multi-line JSON form. Untouched buses keep their original
+hand-formatted compact style. The resulting file is functionally
+correct but visually heterogeneous. A "Normalize config formatting"
+menu action could re-serialize the whole file in one shot if this
+becomes annoying; tracked as a v0.28.9+ follow-up.
 
 ## [0.28.7] - 2026-05-18 — Critical fix: %g not supported in GDScript
 
@@ -13273,6 +13375,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.28.8]: https://github.com/siliconight/gool/releases/tag/v0.28.8
 [0.28.7]: https://github.com/siliconight/gool/releases/tag/v0.28.7
 [0.28.6]: https://github.com/siliconight/gool/releases/tag/v0.28.6
 [0.28.5]: https://github.com/siliconight/gool/releases/tag/v0.28.5

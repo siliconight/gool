@@ -233,6 +233,7 @@ func load_from_disk() -> int:
 	_parsed = {}
 	_last_seen_mtime = 0
 	_dirty_buses.clear()
+	_buses_array_dirty = false
 	_has_pending_save = false
 
 	if not FileAccess.file_exists(CONFIG_PATH):
@@ -375,7 +376,13 @@ func force_save() -> int:
 # ---- Internal: dirty tracking + debounce --------------------------
 
 func _mark_dirty(bus_name: String) -> void:
-	_dirty_buses[bus_name] = true
+	# v0.28.8: don't downgrade a topology-dirty bus to value-dirty.
+	# Topology re-serialization subsumes value patches.
+	if _dirty_buses.get(bus_name) == _DIRTY_TOPOLOGY:
+		_has_pending_save = true
+		_schedule_save()
+		return
+	_dirty_buses[bus_name] = _DIRTY_VALUE
 	_has_pending_save = true
 	_schedule_save()
 
@@ -446,10 +453,25 @@ func _do_save() -> int:
 	# walk uses the current _parsed (which already reflects all
 	# the user's edits) as the source of values; the raw text is
 	# what we patch.
+	#
+	# v0.28.8: dispatch by dirty type:
+	#   - _buses_array_dirty (add/remove bus): re-serialize the
+	#     whole buses array; subsumes any per-bus dirty flags.
+	#   - per-bus topology: re-serialize that bus's {...} block.
+	#   - per-bus value: existing targeted byte patcher.
 	var new_text: String = _raw_text
 	var write_errors: Array = []
-	for bus_name in _dirty_buses.keys():
-		new_text = _patch_bus_in_text(new_text, String(bus_name), write_errors)
+	if _buses_array_dirty:
+		new_text = _re_serialize_buses_array(new_text, write_errors)
+	else:
+		for bus_name in _dirty_buses.keys():
+			var dirty_type: Variant = _dirty_buses[bus_name]
+			if dirty_type == _DIRTY_TOPOLOGY:
+				new_text = _re_serialize_bus_block(
+						new_text, String(bus_name), write_errors)
+			else:
+				new_text = _patch_bus_in_text(
+						new_text, String(bus_name), write_errors)
 	if not write_errors.is_empty():
 		# At least one bus failed to patch (key not found and
 		# insertion also failed somehow). Don't write a partial
@@ -493,6 +515,7 @@ func _do_save() -> int:
 	_last_seen_mtime = FileAccess.get_modified_time(CONFIG_PATH)
 	var saved_buses: Array = _dirty_buses.keys()
 	_dirty_buses.clear()
+	_buses_array_dirty = false
 	_has_pending_save = false
 	model_saved.emit(saved_buses)
 	return OK
@@ -1010,3 +1033,437 @@ func _copy_file(src: String, dst: String) -> bool:
 	fout.store_buffer(bytes)
 	fout.close()
 	return true
+
+
+# ===================================================================
+# v0.28.8 Phase 3.3d: topology editing
+# ===================================================================
+#
+# Adds/removes/reorders effects on a bus and adds/removes buses
+# themselves. Topology changes can't be expressed as targeted byte
+# patches (the structure itself changes), so they're written via
+# re-serialization of the affected scope:
+#
+#   - Effect topology (one bus changed): re-serialize that bus's
+#     {...} block. Outer file structure (other buses, _comment,
+#     sample_rate, category_routing, etc.) bit-for-bit preserved.
+#
+#   - Bus topology (add/remove bus): re-serialize the whole `buses`
+#     [...] array. Outer top-level structure preserved; comments
+#     WITHIN the buses array are lost (acceptable: users typically
+#     comment at the top level, not between bus elements).
+#
+# Save-time dispatch in _do_save picks the right path based on a
+# per-bus dirty type ("value" → byte patcher, "topology" → bus-block
+# re-serializer) plus a flag _buses_array_dirty that subsumes
+# everything when set.
+#
+# Why JSON.stringify (not custom number formatting): the %g lesson
+# from v0.28.4-v0.28.7 still applies. Godot's native serializer is
+# the only thing guaranteed to round-trip GDScript dict-of-Variants
+# back through GDScript JSON.parse_string. No printf format strings
+# anywhere on this path.
+
+# Engine-default param values for each effect kind. Mirror of the
+# *Config struct field initializers in src/audio_engine/dsp/. When
+# the user adds an effect via the dock, ALL params for that kind
+# are written into config.json so the dock has values to display
+# immediately (vs. relying on engine fallback defaults at load time).
+const EFFECT_DEFAULTS_BY_KIND: Dictionary = {
+	"gain": {
+		"kind": "gain",
+		"gain_db": 0.0,
+	},
+	"biquad": {
+		"kind": "biquad",
+		"biquad_type": "lowpass",
+		"cutoff_hz": 1000.0,
+		"q": 0.707,
+		"biquad_gain_db": 0.0,
+	},
+	"compressor": {
+		"kind": "compressor",
+		"threshold_db": -20.0,
+		"ratio": 4.0,
+		"attack_ms": 10.0,
+		"release_ms": 200.0,
+		"makeup_db": 0.0,
+		"knee_width_db": 0.0,
+		"mix_ratio": 1.0,
+		"max_reduction_db": 60.0,
+		"sidechain_hpf_hz": 0.0,
+		"hold_ms": 0.0,
+		"detection_mode": "peak",
+	},
+	"reverb": {
+		"kind": "reverb",
+		"room_size": 0.7,
+		"damping": 0.5,
+		"wet_gain_db": 0.0,
+	},
+	"saturation": {
+		"kind": "saturation",
+		"drive": 1.0,
+		"mix": 0.0,
+		"output_gain": 1.0,
+		"bias": 0.0,
+	},
+}
+
+# Display order for the effect kind picker. Five kinds, signal-flow
+# logical order: source-shaping first, then dynamics, then space.
+const EFFECT_KIND_ORDER: Array = ["gain", "biquad", "compressor", "saturation", "reverb"]
+
+# Per-bus dirty-type sentinels. _dirty_buses[bus_name] holds one of
+# these strings when the bus has unsaved edits.
+#
+# Topology supersedes value: once a bus has been marked topology-dirty,
+# subsequent value edits don't downgrade it (the re-serializer already
+# rewrites the whole block, picking up every in-memory change).
+const _DIRTY_VALUE: String = "value"
+const _DIRTY_TOPOLOGY: String = "topology"
+
+# When true, the whole `buses` array gets re-serialized at save time.
+# Set by add_bus / remove_bus. Subsumes per-bus dirty flags.
+var _buses_array_dirty: bool = false
+
+signal topology_changed(bus_name: String)
+signal bus_added(bus_name: String)
+signal bus_removed(bus_name: String)
+
+
+# ===================================================================
+# Public topology API: effects (in-bus)
+# ===================================================================
+
+# Append a new effect of the given kind to bus_name's effect chain.
+# Effect is populated with EFFECT_DEFAULTS_BY_KIND[kind_string] —
+# the user can adjust params via the existing sliders afterward.
+# Returns true on success.
+func add_effect(bus_name: String, kind_string: String) -> bool:
+	if not EFFECT_DEFAULTS_BY_KIND.has(kind_string):
+		push_error("[gool config] add_effect: unknown kind '%s'" % kind_string)
+		return false
+	var b := get_bus(bus_name)
+	if b.is_empty():
+		push_error("[gool config] add_effect: bus not found: %s" % bus_name)
+		return false
+	var effects_v: Variant = b.get("effects", null)
+	if effects_v == null:
+		b["effects"] = []
+		effects_v = b["effects"]
+	elif not (effects_v is Array):
+		push_error("[gool config] add_effect: bus '%s' has non-array effects" % bus_name)
+		return false
+	var effects: Array = effects_v
+	var new_effect: Dictionary = (EFFECT_DEFAULTS_BY_KIND[kind_string] as Dictionary).duplicate(true)
+	effects.append(new_effect)
+	_mark_topology_dirty(bus_name)
+	topology_changed.emit(bus_name)
+	return true
+
+
+# Remove the effect at effect_index from bus_name's chain.
+# Returns true on success.
+func remove_effect(bus_name: String, effect_index: int) -> bool:
+	var b := get_bus(bus_name)
+	if b.is_empty():
+		return false
+	var effects_v: Variant = b.get("effects", null)
+	if not (effects_v is Array):
+		return false
+	var effects: Array = effects_v
+	if effect_index < 0 or effect_index >= effects.size():
+		return false
+	effects.remove_at(effect_index)
+	_mark_topology_dirty(bus_name)
+	topology_changed.emit(bus_name)
+	return true
+
+
+# Move the effect at from_index to to_index in bus_name's chain.
+# from_index/to_index are both 0-based positions in the chain after
+# any prior removes. Returns true on success.
+func reorder_effect(bus_name: String, from_index: int, to_index: int) -> bool:
+	var b := get_bus(bus_name)
+	if b.is_empty():
+		return false
+	var effects_v: Variant = b.get("effects", null)
+	if not (effects_v is Array):
+		return false
+	var effects: Array = effects_v
+	var n: int = effects.size()
+	if from_index < 0 or from_index >= n:
+		return false
+	if to_index < 0 or to_index >= n:
+		return false
+	if from_index == to_index:
+		return true
+	var moved: Variant = effects[from_index]
+	effects.remove_at(from_index)
+	effects.insert(to_index, moved)
+	_mark_topology_dirty(bus_name)
+	topology_changed.emit(bus_name)
+	return true
+
+
+# ===================================================================
+# Public topology API: buses
+# ===================================================================
+
+# Append a new bus to the buses array.
+#
+# Defaults: gain_db = 0.0, parent = "Master" (if Master exists and
+# this isn't Master itself), no effects array.
+#
+# Returns OK on success, ERR_INVALID_PARAMETER for empty name,
+# ERR_ALREADY_EXISTS for name conflict, ERR_INVALID_DATA if the
+# config doesn't have a valid buses array.
+func add_bus(bus_name: String) -> int:
+	if bus_name.is_empty():
+		push_error("[gool config] add_bus: empty name rejected")
+		return ERR_INVALID_PARAMETER
+	if not get_bus(bus_name).is_empty():
+		return ERR_ALREADY_EXISTS
+	var arr_v: Variant = _parsed.get("buses", null)
+	if not (arr_v is Array):
+		push_error("[gool config] add_bus: buses array missing/invalid")
+		return ERR_INVALID_DATA
+	var arr: Array = arr_v
+	var new_bus: Dictionary = { "name": bus_name }
+	# Default parent to Master if it exists; skip for Master itself.
+	if bus_name != "Master" and not get_bus("Master").is_empty():
+		new_bus["parent"] = "Master"
+	new_bus["gain_db"] = 0.0
+	arr.append(new_bus)
+	_buses_array_dirty = true
+	_has_pending_save = true
+	_schedule_save()
+	bus_added.emit(bus_name)
+	return OK
+
+
+# Remove bus_name from the buses array.
+#
+# Refuses if any other bus or category_routing entry references this
+# bus (parent, sidechain_bus, routing target). Caller should pre-check
+# via collect_bus_references and surface the list to the user; this
+# function returns ERR_INVALID_PARAMETER if any refs exist.
+#
+# Returns OK on success, ERR_INVALID_PARAMETER on dangling refs or
+# empty name, ERR_DOES_NOT_EXIST if no such bus.
+func remove_bus(bus_name: String) -> int:
+	if bus_name.is_empty():
+		return ERR_INVALID_PARAMETER
+	var refs := collect_bus_references(bus_name)
+	if not refs.is_empty():
+		push_error("[gool config] remove_bus: '%s' has %d dangling reference(s)"
+				% [bus_name, refs.size()])
+		return ERR_INVALID_PARAMETER
+	var arr_v: Variant = _parsed.get("buses", null)
+	if not (arr_v is Array):
+		return ERR_INVALID_DATA
+	var arr: Array = arr_v
+	var idx: int = -1
+	for i in range(arr.size()):
+		var b_v: Variant = arr[i]
+		if b_v is Dictionary and (b_v as Dictionary).get("name") == bus_name:
+			idx = i
+			break
+	if idx < 0:
+		return ERR_DOES_NOT_EXIST
+	arr.remove_at(idx)
+	# A removed bus can't have pending per-bus edits to save anymore.
+	if _dirty_buses.has(bus_name):
+		_dirty_buses.erase(bus_name)
+	_buses_array_dirty = true
+	_has_pending_save = true
+	_schedule_save()
+	bus_removed.emit(bus_name)
+	return OK
+
+
+# Returns human-readable descriptions of references to bus_name that
+# would dangle if bus_name were removed. Empty array means safe to
+# remove. Used by the dock to surface refs to the user before commit.
+#
+# Reference sources:
+#   - Other buses with parent = bus_name
+#   - category_routing values pointing at bus_name
+#   - compressor effects with sidechain_bus = bus_name
+func collect_bus_references(bus_name: String) -> Array:
+	var refs: Array = []
+	var arr_v: Variant = _parsed.get("buses", [])
+	if arr_v is Array:
+		for b_v in (arr_v as Array):
+			if not (b_v is Dictionary):
+				continue
+			var b: Dictionary = b_v
+			if b.get("name") == bus_name:
+				continue
+			if b.get("parent") == bus_name:
+				refs.append("bus '%s' has parent='%s'"
+						% [b.get("name", "?"), bus_name])
+			var effects_v: Variant = b.get("effects", [])
+			if effects_v is Array:
+				var ei: int = 0
+				for e_v in (effects_v as Array):
+					if e_v is Dictionary \
+							and (e_v as Dictionary).get("kind") == "compressor" \
+							and (e_v as Dictionary).get("sidechain_bus") == bus_name:
+						refs.append("bus '%s' effect #%d sidechain_bus='%s'"
+								% [b.get("name", "?"), ei, bus_name])
+					ei += 1
+	var routing_v: Variant = _parsed.get("category_routing", {})
+	if routing_v is Dictionary:
+		for cat in (routing_v as Dictionary).keys():
+			if (routing_v as Dictionary)[cat] == bus_name:
+				refs.append("category_routing.%s → '%s'" % [cat, bus_name])
+	return refs
+
+
+# ===================================================================
+# Topology dirty-marking
+# ===================================================================
+
+# Topology supersedes value. Once marked topology, subsequent value
+# edits don't downgrade it — the re-serializer rewrites the whole
+# bus block from current model state.
+func _mark_topology_dirty(bus_name: String) -> void:
+	_dirty_buses[bus_name] = _DIRTY_TOPOLOGY
+	_has_pending_save = true
+	_schedule_save()
+
+
+# ===================================================================
+# Serializer
+# ===================================================================
+
+# Replace a single bus's {...} block in text with canonical JSON from
+# the in-memory model. Outer file structure (other buses, comments,
+# top-level keys) bit-for-bit preserved.
+#
+# On failure (bus not in source, bus not in model) appends to errors
+# and returns text unchanged.
+func _re_serialize_bus_block(text: String, bus_name: String,
+		errors: Array) -> String:
+	var rng := _find_bus_block_range(text, bus_name)
+	if rng.x < 0:
+		errors.append("bus '%s': block not found in source" % bus_name)
+		return text
+	var b := get_bus(bus_name)
+	if b.is_empty():
+		errors.append("bus '%s': not in model" % bus_name)
+		return text
+	var canonical: String = JSON.stringify(b, "\t")
+	var indent_prefix := _infer_indent_prefix(text, rng.x)
+	var reindented := canonical.replace("\n", "\n" + indent_prefix)
+	return text.substr(0, rng.x) + reindented + text.substr(rng.y)
+
+
+# Replace the entire `buses` array in text with canonical JSON from
+# the in-memory model. Used for bus add/remove.
+#
+# Comments WITHIN the buses array are lost. Comments at the top
+# level (the `_comment` key, sample_rate notes, category_routing
+# block) survive.
+func _re_serialize_buses_array(text: String, errors: Array) -> String:
+	var rng := _find_buses_array_range(text)
+	if rng.x < 0:
+		errors.append("buses array: not found in source")
+		return text
+	var arr_v: Variant = _parsed.get("buses", null)
+	if not (arr_v is Array):
+		errors.append("buses array: not an array in model")
+		return text
+	var canonical: String = JSON.stringify(arr_v, "\t")
+	var indent_prefix := _infer_indent_prefix(text, rng.x)
+	var reindented := canonical.replace("\n", "\n" + indent_prefix)
+	return text.substr(0, rng.x) + reindented + text.substr(rng.y)
+
+
+# Find the byte range of the `buses` array's [...] in text. Returns
+# Vector2i(open_pos, close_pos+1) on success, Vector2i(-1, -1) on miss.
+# Mirror of _find_bus_block_range's structure but for the array literal.
+func _find_buses_array_range(text: String) -> Vector2i:
+	var i: int = 0
+	var in_string: bool = false
+	while i < text.length():
+		var ch: String = text.substr(i, 1)
+		if in_string:
+			if ch == "\\":
+				i += 2
+				continue
+			if ch == '"':
+				in_string = false
+			i += 1
+			continue
+		if ch == '"':
+			if text.substr(i, 7) == '"buses"':
+				var j: int = i + 7
+				while j < text.length() and text.substr(j, 1) in [" ", "\t", "\n", "\r"]:
+					j += 1
+				if j < text.length() and text.substr(j, 1) == ":":
+					j += 1
+					while j < text.length() and text.substr(j, 1) in [" ", "\t", "\n", "\r"]:
+						j += 1
+					if j < text.length() and text.substr(j, 1) == "[":
+						var bracket_open: int = j
+						var bracket_close: int = _find_matching_bracket_close(
+								text, bracket_open)
+						if bracket_close < 0:
+							return Vector2i(-1, -1)
+						return Vector2i(bracket_open, bracket_close + 1)
+			in_string = true
+		i += 1
+	return Vector2i(-1, -1)
+
+
+# From the '[' at open_pos walk forward and return offset of the
+# matching ']'. Tracks bracket depth, brace depth, and string state
+# so the close fires only when nesting is fully balanced.
+func _find_matching_bracket_close(text: String, open_pos: int) -> int:
+	var i: int = open_pos + 1
+	var bracket_depth: int = 1
+	var brace_depth: int = 0
+	var in_string: bool = false
+	while i < text.length():
+		var ch: String = text.substr(i, 1)
+		if in_string:
+			if ch == "\\":
+				i += 2
+				continue
+			if ch == '"':
+				in_string = false
+			i += 1
+			continue
+		if ch == '"':
+			in_string = true
+		elif ch == "{":
+			brace_depth += 1
+		elif ch == "}":
+			brace_depth -= 1
+		elif ch == "[":
+			bracket_depth += 1
+		elif ch == "]":
+			bracket_depth -= 1
+			if bracket_depth == 0 and brace_depth == 0:
+				return i
+		i += 1
+	return -1
+
+
+# Returns the whitespace prefix on the line containing pos, up to pos.
+# Used to align canonical JSON's subsequent lines with the bus block /
+# buses array's surrounding indent. Falls back to "" if the prefix
+# isn't pure whitespace (weird configs; better to produce ugly-but-
+# parseable output than to refuse).
+func _infer_indent_prefix(text: String, pos: int) -> String:
+	var line_start: int = pos
+	while line_start > 0 and text.substr(line_start - 1, 1) != "\n":
+		line_start -= 1
+	var raw_indent: String = text.substr(line_start, pos - line_start)
+	for c in raw_indent:
+		if c != " " and c != "\t":
+			return ""
+	return raw_indent
