@@ -209,12 +209,101 @@ void TestAllEffectKinds() {
     EXPECT(m.effects[3].reverbHfDamping == 0.4f);
 
     EXPECT(m.effects[4].kind == EffectKind::Saturation);
-    EXPECT(m.effects[4].saturationDrive      == 1.5f);
+    // v0.40.0 soft migration: the legacy JSON value `"drive": 1.5` is
+    // unnormalized (pre-v0.40.0 drives lived in [1..N]); the loader
+    // detects drive > 1.0 and remaps it to the normalized form via
+    // (raw - 1) / 3. (1.5 - 1) / 3 = 0.1666..., which on the default
+    // Tanh mode maps back to scale 1.5 — so the round-tripped sound
+    // is identical to pre-v0.40.0 (within FP rounding). The other
+    // four fields pass through unchanged. Mode defaults to 0 (Tanh).
+    EXPECT(std::abs(m.effects[4].saturationDrive - 0.1666667f) < 1e-6f);
     EXPECT(m.effects[4].saturationMix        == 0.15f);
     EXPECT(m.effects[4].saturationOutputGain == 0.85f);
     EXPECT(m.effects[4].saturationBias       == 0.05f);
+    EXPECT(m.effects[4].saturationMode       == 0);   // default Tanh
 
     std::printf("    OK (all effect kinds + their fields)\n");
+}
+
+// =============================================================================
+// v0.40.0: Saturation mode key + drive normalization soft-migration.
+//
+// Covers three behaviors introduced by Phase 2 of saturation_v2.md:
+//   a) Legacy unnormalized drive (> 1.0) is silently mapped to
+//      normalized 0..1 via the Tanh-mode inverse.
+//   b) Already-normalized drive (≤ 1.0) is passed through unchanged.
+//   c) New `mode` JSON key accepts "tanh"/"tube"/"tape"/"diode"
+//      strings and rejects unknowns.
+// =============================================================================
+void TestSaturationModeAndMigration() {
+    std::printf("  [v0.40.0: saturation mode key + drive normalization]\n");
+
+    // a) Legacy unnormalized drive triggers soft migration.
+    //    legacy 4.0 → norm 1.0 (saturates the Tanh range exactly).
+    //    legacy 2.5 → norm 0.5 (mid-range, round-trip exact).
+    //    legacy 99.0 → norm 1.0 (clamps at max).
+    constexpr std::string_view legacyJson = R"({
+        "buses": [
+            { "name": "Master",
+              "effects": [
+                { "kind": "saturation", "drive": 4.0, "mix": 0.3 },
+                { "kind": "saturation", "drive": 2.5, "mix": 0.2 },
+                { "kind": "saturation", "drive": 99.0, "mix": 0.4 }
+              ] }
+        ]
+    })";
+    auto r1 = BusConfigLoader::ParseFromJson(legacyJson);
+    EXPECT_OK(r1);
+    const auto& mLeg = r1.busGraph.buses[kBusMaster];
+    EXPECT(mLeg.effectCount == 3);
+    EXPECT(std::abs(mLeg.effects[0].saturationDrive - 1.0f)      < 1e-6f); // 4.0 → 1.0
+    EXPECT(std::abs(mLeg.effects[1].saturationDrive - 0.5f)      < 1e-6f); // 2.5 → 0.5
+    EXPECT(std::abs(mLeg.effects[2].saturationDrive - 1.0f)      < 1e-6f); // 99 clamps to 1.0
+    EXPECT(mLeg.effects[0].saturationMode == 0);  // default Tanh
+    EXPECT(mLeg.effects[1].saturationMode == 0);
+    EXPECT(mLeg.effects[2].saturationMode == 0);
+    std::printf("    legacy drive migration: 4.0→1.0, 2.5→0.5, 99.0→clamp(1.0) OK\n");
+
+    // b) Already-normalized drive (≤ 1.0) is unchanged. Each of the
+    //    four modes parses correctly.
+    constexpr std::string_view normJson = R"({
+        "buses": [
+            { "name": "Master",
+              "effects": [
+                { "kind": "saturation", "drive": 0.0,  "mode": "tanh" },
+                { "kind": "saturation", "drive": 0.5,  "mode": "tube" },
+                { "kind": "saturation", "drive": 0.75, "mode": "tape" },
+                { "kind": "saturation", "drive": 1.0,  "mode": "diode" }
+              ] }
+        ]
+    })";
+    auto r2 = BusConfigLoader::ParseFromJson(normJson);
+    EXPECT_OK(r2);
+    const auto& mNorm = r2.busGraph.buses[kBusMaster];
+    EXPECT(mNorm.effectCount == 4);
+    EXPECT(mNorm.effects[0].saturationDrive == 0.0f);
+    EXPECT(mNorm.effects[1].saturationDrive == 0.5f);
+    EXPECT(mNorm.effects[2].saturationDrive == 0.75f);
+    EXPECT(mNorm.effects[3].saturationDrive == 1.0f);
+    EXPECT(mNorm.effects[0].saturationMode == 0);   // tanh
+    EXPECT(mNorm.effects[1].saturationMode == 1);   // tube
+    EXPECT(mNorm.effects[2].saturationMode == 2);   // tape
+    EXPECT(mNorm.effects[3].saturationMode == 3);   // diode
+    std::printf("    normalized drive + mode parse: all 4 modes OK\n");
+
+    // c) Unknown mode string is rejected with a clear error.
+    constexpr std::string_view badModeJson = R"({
+        "buses": [
+            { "name": "Master",
+              "effects": [
+                { "kind": "saturation", "mode": "fuzzbox" }
+              ] }
+        ]
+    })";
+    auto r3 = BusConfigLoader::ParseFromJson(badModeJson);
+    EXPECT(!r3.ok);
+    EXPECT(r3.error.find("fuzzbox") != std::string::npos);
+    std::printf("    unknown mode rejected: error='%s'\n", r3.error.c_str());
 }
 
 // =============================================================================
@@ -417,6 +506,7 @@ int main() {
     TestMinimalConfig();
     TestMultiTierDuckingShape();
     TestAllEffectKinds();
+    TestSaturationModeAndMigration();
     TestEndToEndInitialize();
     TestMalformedJsonReportsLine();
     TestUnknownEffectKind();

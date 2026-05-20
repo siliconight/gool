@@ -22,6 +22,121 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.40.0] - 2026-05-20 — Saturation Phase 2: mode selector + four shapes + normalized drive
+
+The single-shape Tanh saturator becomes a four-mode engine. Tanh
+stays the default (existing configs sound identical via soft
+migration); Tube, Tape, and Diode add distinct acoustic character
+suited to dialogue warmth, music glue, and aggressive comms/gunshot
+work respectively. Each mode has its own closed-form ADAA
+antiderivative, its own useful drive range, and its own low-drive
+crossfade behavior. Drive is now normalized 0..1; the per-mode
+useful range is applied internally.
+
+This is Phase 2 of the saturation_v2.md plan (Phase 1 = ADAA shipped
+in v0.38.0/v0.38.1). Phase 3 (auto-comp + DC blocker + smoothers) and
+Phase 4 (tone filter) remain queued for future releases.
+
+### Added
+
+- `SaturationMode` enum in `include/audio_engine/bus.h`: `Tanh` (0,
+  default), `Tube` (1), `Tape` (2), `Diode` (3). All four values
+  cover a different memoryless nonlinearity per
+  `docs/audio_design/saturation_v2.md` §6.
+- `Saturation_Mode` parameter (ID **27**, not 26 as the design doc
+  predicted — ID 26 was already taken by `Reverb_DryGainDb` in
+  v0.29.5). ID 28 reserved for `Saturation_Tone` in Phase 4.
+- `mode` JSON key in saturation effect config, accepting the strings
+  `"tanh"`, `"tube"`, `"tape"`, `"diode"`. Unknown strings produce a
+  clear parse error.
+- `saturationMode` field on `EffectConfig` (`uint8_t`, default 0).
+- ADAA antiderivatives for the three new shapes:
+  Tube `(x·asinh(x) - √(1+x²)) / asinh(1)`,
+  Tape `x² - sign(x)·x³/3` (inside |x|<1) / `|x| - 1/3` (outside),
+  Diode `x²/2 - x⁴/12` (inside |x|<1) / `(2/3)·|x| - 1/4` (outside).
+- Per-mode drive normalization: Tanh maps norm 0..1 → scale 1..4,
+  Tube and Tape → 1..3, Diode → 1..6. The +1 baseline keeps norm=0
+  acoustically linear regardless of mode.
+- Low-drive bypass crossfade per saturation_v2.md §7.3: ADAA mix
+  coefficient is 0 below norm drive 0.10, linearly ramps to 1.0
+  across 0.10..0.30, fully engaged above 0.30. Avoids the
+  noise-floor bump pure ADAA can introduce on very quiet signals.
+- New tests in `tests/unit/saturation_test.cpp`:
+  `TestNewModesProcess` (smoke-test each new mode produces
+  non-trivial saturated output) and `TestGetParameterRoundTrip`
+  (full 5-parameter readback including the new Mode).
+- New test `TestSaturationModeAndMigration` in
+  `tests/unit/bus_config_loader_test.cpp` covers the three
+  migration scenarios (legacy unnormalized, already-normalized,
+  unknown mode string).
+
+### Changed
+
+- `SaturationConfig::drive` is now **normalized 0..1**. C++ callers
+  passing legacy unnormalized values (1..N) via the struct get
+  clamped to 1.0 by the constructor (effectively saturating at the
+  per-mode maximum). JSON callers go through the loader's soft
+  migration (see below).
+- `SaturationEffect::Process` dispatches on `mode_` via templated
+  inner-loop monomorphization. The compiler inlines each shape pair,
+  so dispatch cost is one switch per buffer (negligible). The
+  per-sample cost is roughly equal across Tanh/Tube
+  (transcendental) and somewhat cheaper for Tape/Diode (pure
+  polynomial).
+- `bus_config_loader.cpp` saturation `drive` parse: values > 1.0 are
+  silently soft-migrated to normalized via `(raw - 1) / 3` (the
+  inverse of the Tanh-mode mapping, since Tanh was the only mode
+  pre-v0.40.0). Round-trip is exact at the canonical values 1.0,
+  2.5, 4.0; legacy values > 4 clamp to norm 1.0.
+- `bus_graph.cpp` saturation construction now passes `saturationMode`
+  through to the `SaturationConfig`, with a defensive range check
+  that falls back to Tanh if a C++ caller set an out-of-range value
+  directly.
+- All five `SaturationProfiles::*` recipes in
+  `include/audio_engine/saturation_profiles.h` updated to use
+  normalized drive values + explicit `saturationMode = 0` (Tanh).
+  The round-tripped numeric values produce bit-identical output to
+  the pre-v0.40.0 profiles. Comments suggest the new modes as
+  optional tuning starting points (e.g. Tube for `DialogueWarmth`,
+  Tape for `TapeColor`, Diode for `WeaponBody`) without changing
+  default behavior.
+- Test `TestUnityDriveMatchesTanh` is simpler under the v0.40.0
+  low-drive crossfade: at norm drive 0 the ADAA path is fully
+  bypassed and every sample (including the cold start) equals
+  `tanh(input)` exactly. The pre-v0.40.0 cold-start transient
+  assertion is removed.
+- Test `TestDriveCompressesPeaks` renamed to
+  `TestMaxDriveCompressesPeaks` for clarity; same behavior at norm
+  drive 1.0 → Tanh scale 4.0.
+- Test assertions in `bus_config_loader_test.cpp::TestAllEffectKinds`
+  updated: the legacy `"drive": 1.5` JSON value now soft-migrates to
+  `saturationDrive ≈ 0.1667`.
+
+### Compatibility
+
+- **JSON configs**: existing files with `"drive": 1.0..4.0`, no
+  `mode` key, load with bit-identical behavior via soft migration
+  to normalized drive on Tanh mode. Files with `drive > 4.0` will
+  cap at scale 4.0 (mild reduction in harmonic generation, but >4
+  drive was extreme territory). The `Saturation_Mode` JSON key is
+  additive — old files don't need to set it.
+- **C++ `EffectConfig`**: gains a `saturationMode` field at the
+  end of the struct. Old code that doesn't set it gets the
+  `Tanh` default. C++ callers that constructed `SaturationConfig`
+  directly with legacy unnormalized drive will see those values
+  clamped to 1.0 by the constructor — they should be updated to
+  use normalized drive (or routed through the JSON loader).
+- **Parameter API**: `SetEffectParameter(Saturation_Drive, ...)`
+  now expects 0..1 and clamps out-of-range values. Code that
+  pushed 1.0..4.0 values via this API will now max out at
+  norm 1.0 instead of producing scale 4.0 (which it would have
+  done by coincidence under the new clamp, but the semantics are
+  now wrong for any in-between value).
+- ABI: `SaturationConfig` and `EffectConfig` both gain a trailing
+  field. Recompile required for users embedding the C++ engine; no
+  behavior change for users on the GDExtension binding (the binding
+  was already recompiled per-release).
+
 ## [0.39.0] - 2026-05-20 — DEAD AIR diagnostic refinement: kill false positives, surface the real bug
 
 The mixer's "DEAD AIR: no active voices" warning has been firing every

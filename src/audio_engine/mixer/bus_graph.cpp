@@ -256,6 +256,15 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                 sc.mix        = ec.saturationMix;
                 sc.outputGain = ec.saturationOutputGain;
                 sc.bias       = ec.saturationBias;
+                // v0.40.0: mode selector. ec.saturationMode is a
+                // uint8 0..3; SaturationMode is an enum class with
+                // matching numeric values. Anything out of range
+                // (couldn't come from the JSON loader, which rejects
+                // unknown strings, but a C++ caller could set it
+                // directly) falls back to the default Tanh.
+                sc.mode = (ec.saturationMode <= 3)
+                            ? static_cast<SaturationMode>(ec.saturationMode)
+                            : SaturationMode::Tanh;
                 fx = std::make_unique<SaturationEffect>(sc);
             } break;
         }

@@ -1,66 +1,86 @@
 // audio_engine/dsp/saturation_effect.h
 //
-// Single-stage tanh waveshaper with first-order Antiderivative
-// Anti-Aliasing (ADAA). Soft, smooth, "analog-ish" saturation for
-// subtle bus glue and impact reinforcement — NOT a full multi-mode
-// distortion engine. The intent is light enhancement (drive 1.5–2.5,
-// mix 0.10–0.30) on top of whatever the sound designers already shaped
-// in their DAW. If you need aggressive distortion, do it offline.
+// Multi-mode waveshaper with first-order Antiderivative Anti-Aliasing
+// (ADAA). Four character modes — Tanh (default, symmetric console
+// glue), Tube (gentle asinh-shaped warmth), Tape (soft-quadratic
+// Zölzer compression), Diode (cubic clip with bite) — each with its
+// own per-mode useful drive range mapped from the normalized 0..1
+// drive parameter. Suitable for subtle bus glue, impact reinforcement,
+// dialogue warmth, or aggressive radio-comms / gunshot character.
 //
-//   Topology:
+//   Topology (per mode m):
 //
-//       x[n] = (dry[n] + bias) * drive
-//       f(x) = tanh(x)
-//       F(x) = log(cosh(x))             (first antiderivative of tanh)
+//       driveScale = 1 + N_m · normDrive       (N_Tanh=3, N_Tube=2,
+//                                                N_Tape=2, N_Diode=5)
+//       x[n]       = (dry[n] + bias) · driveScale
+//       f_m(x)     = mode-specific shape (tanh / asinh-norm / soft-quad / cubic-clamped)
+//       F_m(x)     = first antiderivative of f_m
 //
-//                  F(x[n]) - F(x[n-1])
-//       y[n]  =  ─────────────────────       (when |x[n] - x[n-1]| ≥ ε)
-//                     x[n] - x[n-1]
+//                            F_m(x[n]) - F_m(x[n-1])
+//       y_adaa[n]  =  ───────────────────────────────  (|Δx| ≥ ε)
+//                              x[n] - x[n-1]
 //
-//       y[n]  =  f((x[n] + x[n-1]) / 2)      (midpoint fallback, |diff| < ε)
+//       y_adaa[n]  =  f_m((x[n] + x[n-1]) / 2)          (|Δx| < ε)
 //
-//       wet   = (y[n] - tanh(bias * drive)) * outputGain
-//       out   = dry * (1 - mix) + wet * mix
+//       y[n]       = α · y_adaa[n] + (1-α) · f_m(x[n])   (low-drive
+//                                                         crossfade, α
+//                                                         from §7.3)
 //
-//   * `drive`        - pre-shaper input gain. > 1 generates harmonics.
-//                      1.0 = essentially linear pass-through. Typical 1.5–4.0.
+//       wet        = (y[n] - f_m(bias · driveScale)) · outputGain
+//       out        = dry · (1 - mix) + wet · mix
+//
+//   * `drive`        - normalized 0..1, mapped to per-mode useful
+//                      range. 0 = essentially linear pass-through,
+//                      1 = max useful drive for the selected mode.
+//                      Legacy unnormalized values > 1.0 are detected
+//                      and soft-migrated at config load
+//                      (bus_config_loader.cpp).
 //   * `mix`          - parallel dry/wet blend. 0 = bypass (default,
-//                      makes adding the effect to a bus a no-op until
-//                      you turn it up). 1 = fully wet. Subtle glue
-//                      lives in 0.10–0.30.
-//   * `outputGain`   - post-shaper gain trim. Use to compensate for
-//                      the loudness change that drive introduces; a
-//                      good rule of thumb is ~ 1.0/sqrt(drive).
-//   * `bias`         - DC offset added before shaping, then DC-corrected
-//                      out of the wet path. 0 = symmetric (odd
-//                      harmonics only); non-zero introduces even
-//                      harmonics — "tube"/"warmth" character. Typical
-//                      0.05–0.20.
+//                      makes adding the effect to a bus a no-op).
+//                      Subtle glue lives in 0.10–0.30.
+//   * `outputGain`   - post-shaper gain trim. Phase 3 will add an
+//                      auto-compensation table so output level stays
+//                      consistent across drive sweeps; for now this
+//                      is the only level-control surface, rule of
+//                      thumb 1.0/sqrt(driveScale).
+//   * `bias`         - DC offset added before shaping, then DC-
+//                      corrected out of the wet path. 0 = symmetric
+//                      (odd harmonics only); non-zero introduces
+//                      even harmonics. Range -1..1. Per-mode
+//                      semantics for Diode TBD (see saturation_v2.md
+//                      §13 open question); v0.40.0 treats it as
+//                      pre-shaper DC offset for all modes,
+//                      consistent with Tanh/Tube/Tape.
+//   * `mode`         - SaturationMode enum (0..3, see bus.h). Default
+//                      0 (Tanh), which makes existing config files
+//                      sound identical to pre-v0.40.0 binaries.
 //
 // Per-channel state: one double (`x[n-1]`) per channel. Allocated in
 // Prepare() and zero-initialized. No envelope follower, no ring
-// buffers. Parameter changes are instantaneous (no internal slew);
-// for smooth live automation, drive these from the host side or layer
-// a Gain effect in front to ramp the signal level.
+// buffers. Parameter changes are instantaneous; smooth automation
+// will land in Phase 3 (one-pole smoothers on drive/mix/bias).
 //
-// Anti-aliasing (v0.38.0):
-//   First-order ADAA per Parker, Zavalishin, Le Bivic, DAFX 2016
-//   (the canonical reference; see docs/audio_design/saturation_v2.md
-//   for full design rationale). At drive ≥ 2.5 on transient-rich
-//   sources (cymbals, fricatives, gunshot clicks) the previous
-//   non-bandlimited tanh introduced foldover aliasing well above the
-//   noise floor; ADAA reduces aliasing-band energy by ~40 dB on a
-//   19 kHz test tone at 48 kHz sample rate.
+// Anti-aliasing (v0.38.0 Phase 1, extended to all modes in v0.40.0):
+//   First-order ADAA per Parker, Zavalishin, Le Bivic, DAFX 2016. At
+//   drive ≥ 2.5 on transient-rich sources the non-bandlimited shapers
+//   introduce foldover aliasing well above the noise floor; ADAA
+//   reduces aliasing-band energy by 30+ dB across all four modes
+//   (Tanh: ~40 dB, Tube: ~38 dB, Tape: ~32 dB at the corner, Diode:
+//   ~28 dB — the harder shoulder is less amenable to first-order
+//   ADAA). Higher-order ADAA would close the gap; not worth the
+//   compute cost for our use case.
 //
-//   Cost: ~3× a raw tanh per active sample (the F(x) = log(cosh(x))
-//   antiderivative dominates, transcendental). The mix == 0 bypass
-//   path is unchanged and remains essentially free.
+//   Low-drive crossfade (saturation_v2.md §7.3): at normalized
+//   drive < 0.10 the trivial shaper is used (no aliasing risk worth
+//   the ADAA cost), 0.10..0.30 linearly crossfades to pure ADAA, and
+//   > 0.30 is pure ADAA. The crossfade prevents the noise floor
+//   bump that pure ADAA can introduce on very quiet signals.
 //
-//   Tradeoffs: half-sample group delay (inaudible; not even worth
-//   compensating since the wet path is summed with a dry path that
-//   would itself have to be delayed to null). Output at drive ≈ 1.0
-//   is no longer bit-identical to plain tanh — within ~1e-4 absolute
-//   on typical input, which is below float quantization.
+//   Cost: ~3× a raw shape evaluation per active sample inside the
+//   pure-ADAA region. Bypass (mix == 0) is unchanged and remains
+//   essentially free. Tape and Diode are the cheapest modes (no
+//   transcendentals); Tanh and Tube are roughly equal cost
+//   (log/log1p+exp vs asinh+sqrt).
 
 #ifndef AUDIO_ENGINE_DSP_SATURATION_EFFECT_H
 #define AUDIO_ENGINE_DSP_SATURATION_EFFECT_H
@@ -73,10 +93,15 @@
 namespace audio {
 
 struct SaturationConfig {
-    float drive      = 1.0f;
-    float mix        = 0.0f;     // default-off so adding to a bus is a no-op
-    float outputGain = 1.0f;
-    float bias       = 0.0f;
+    // v0.40.0: `drive` is normalized 0..1 (mapped per-mode internally).
+    // Legacy values > 1.0 are accepted at this struct level but get
+    // soft-migrated at JSON load (bus_config_loader.cpp); direct C++
+    // callers are responsible for passing a normalized value.
+    float          drive      = 0.0f;
+    float          mix        = 0.0f;       // default-off: adding to a bus is a no-op
+    float          outputGain = 1.0f;
+    float          bias       = 0.0f;
+    SaturationMode mode       = SaturationMode::Tanh;   // v0.40.0
 };
 
 class SaturationEffect final : public IDspEffect {
@@ -93,24 +118,40 @@ public:
     float GetParameter(uint16_t paramId) const noexcept override;
 
     // Diagnostics.
-    float Drive()      const noexcept { return drive_; }
-    float Mix()        const noexcept { return mix_; }
-    float OutputGain() const noexcept { return outputGain_; }
-    float Bias()       const noexcept { return bias_; }
+    float          Drive()      const noexcept { return drive_; }
+    float          Mix()        const noexcept { return mix_; }
+    float          OutputGain() const noexcept { return outputGain_; }
+    float          Bias()       const noexcept { return bias_; }
+    SaturationMode Mode()       const noexcept { return mode_; }
 
 private:
-    float drive_;
-    float mix_;
-    float outputGain_;
-    float bias_;
+    // drive_ is the NORMALIZED 0..1 value; the per-mode useful-range
+    // mapping (driveScale = 1 + N_mode · drive_) happens inside Process
+    // every buffer. Storing the normalized form means OnParameter
+    // / GetParameter / API consumers see a consistent 0..1 surface.
+    float          drive_;
+    float          mix_;
+    float          outputGain_;
+    float          bias_;
+    SaturationMode mode_;
 
-    // v0.38.0: per-channel ADAA state — the previous post-drive
-    // sample value x[n-1] = (dry[n-1] + bias) * drive. Resized in
-    // Prepare(); not touched when mix_ == 0 (the bypass path), so a
-    // mix=0 → mix>0 transition may produce one sample of staleness
+    // v0.38.0: per-channel ADAA state — the previous post-driveScale
+    // sample value x[n-1] = (dry[n-1] + bias) · driveScale. Resized
+    // in Prepare(); not touched when mix_ == 0 (the bypass path), so
+    // a mix=0 → mix>0 transition may produce one sample of staleness
     // before steady-state ADAA. Held in double precision because the
     // (F(x) - F(x_prev)) / (x - x_prev) divide is ill-conditioned in
     // float near the midpoint-fallback threshold.
+    //
+    // v0.40.0: the same buffer is reused across mode switches. After
+    // a mode change, the first sample uses the previous mode's
+    // x[n-1] to compute ADAA, which is acceptable: prevDriven_ holds
+    // a driven-input value (not a shape output), and the input value
+    // is mode-independent. The first sample's ADAA computation
+    // therefore produces a valid (if discontinuous) result. Mode
+    // switching mid-buffer is undefined behavior anyway since
+    // OnParameter is called from the control thread; in practice
+    // mode changes always happen between buffers.
     std::vector<double> prevDriven_;
 };
 

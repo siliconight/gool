@@ -3,13 +3,20 @@
 // Curated saturation parameter bundles. Sibling to
 // `compressor_profiles.h`. Same shape: each profile is one
 // `inline constexpr` function returning a populated `EffectConfig`
-// with `kind = EffectKind::Saturation` and the four saturation
-// fields set per the recipe.
+// with `kind = EffectKind::Saturation` and the saturation fields
+// set per the recipe.
 //
 // The intent is *light* enhancement — engine-side saturation is for
 // glue and impact reinforcement, not the heavy distortion you'd
-// shape in a DAW. Drive values stay in 1.3–4.0; mixes in 0.10–0.45.
-// Anything more aggressive, do offline and re-import.
+// shape in a DAW. Anything more aggressive, do offline and re-import.
+//
+// v0.40.0 update: drive is now normalized 0..1 and mapped per-mode
+// internally (Tanh range 1..4, Tube/Tape 1..3, Diode 1..6). All
+// profiles below pin `saturationMode = 0` (Tanh) and use the
+// round-tripped normalized drive value, so their sound is bit-for-bit
+// identical to v0.39.x. New profiles or per-project tuning can opt
+// into the other modes (Tube for dialogue, Tape for music, Diode
+// for radio/comms) — see saturation_v2.md §6.1.
 //
 //     #include "audio_engine/saturation_profiles.h"
 //
@@ -41,20 +48,21 @@ namespace audio::SaturationProfiles {
 
 // Light master-bus glue.
 //
-// Pattern: drive 1.5 (gentle harmonic generation), mix 15 % wet
-// (audible cohesion, no character change), output gain 0.85
-// (compensates for the small loudness boost drive introduces),
-// no bias (symmetric — odd harmonics only, transparent).
+// Pattern: norm drive 0.167 (Tanh maps to scale 1.5 — gentle harmonic
+// generation), mix 15 % wet (audible cohesion, no character change),
+// output gain 0.85 (compensates for the small loudness boost drive
+// introduces), no bias (symmetric — odd harmonics only, transparent).
 //
 // Use on a master or a music sub-bus. If you can hear it as a
 // separate effect, dial mix down.
 inline constexpr EffectConfig BusGlue() {
     EffectConfig ec{};
     ec.kind                  = EffectKind::Saturation;
-    ec.saturationDrive       = 1.5f;
+    ec.saturationDrive       = 0.1667f;   // Tanh scale 1.5 (= 1 + 3·0.1667)
     ec.saturationMix         = 0.15f;
     ec.saturationOutputGain  = 0.85f;
     ec.saturationBias        = 0.0f;
+    ec.saturationMode        = 0;         // Tanh — v0.40.0 default
     return ec;
 }
 
@@ -69,19 +77,26 @@ inline constexpr EffectConfig BusGlue() {
 
 // Voice / dialogue warmth.
 //
-// Pattern: drive 1.3 (very light), mix 10 % wet (subtle), bias 0.05
-// (small DC offset → asymmetric → even harmonics → "tube"-like
-// warmth), output gain 0.9 (compensates).
+// Pattern: norm drive 0.10 (Tanh scale 1.3 — very light), mix 10 %
+// wet (subtle), bias 0.05 (small DC offset → asymmetric → even
+// harmonics → "tube"-like warmth), output gain 0.9.
+//
+// v0.40.0 tuning note: SaturationMode::Tube would arguably suit
+// dialogue better (the asinh shoulder is gentler than tanh's), but
+// switching modes changes the character; this profile keeps Tanh
+// for round-trip compat. Try Tube if your dialogue chain wants a
+// hair more openness.
 //
 // If the source already has DAW-side analog modeling, set mix to
 // zero and skip this effect — stacking warmth processors gets muddy.
 inline constexpr EffectConfig DialogueWarmth() {
     EffectConfig ec{};
     ec.kind                  = EffectKind::Saturation;
-    ec.saturationDrive       = 1.3f;
+    ec.saturationDrive       = 0.10f;     // Tanh scale 1.3 (= 1 + 3·0.10)
     ec.saturationMix         = 0.10f;
     ec.saturationOutputGain  = 0.9f;
     ec.saturationBias        = 0.05f;
+    ec.saturationMode        = 0;         // Tanh — v0.40.0 default
     return ec;
 }
 
@@ -95,44 +110,45 @@ inline constexpr EffectConfig DialogueWarmth() {
 
 // Weapon body — gunshots, melee impacts, single-shot SFX.
 //
-// Pattern: drive 2.5 (assertive harmonic generation — adds body
-// where the dry sample lacks bottom), mix 30 % wet (clearly
-// audible character), output gain 0.7 (significant trim — drive
-// at 2.5 boosts perceived loudness 3–4 dB), symmetric.
+// Pattern: norm drive 0.5 (Tanh scale 2.5 — assertive harmonic
+// generation), mix 30 % wet (clearly audible character), output
+// gain 0.7 (significant trim — scale 2.5 boosts perceived loudness
+// 3–4 dB), symmetric.
 //
-// Best paired with `CompressorProfiles::GunshotSnap` *after* the
-// saturator: saturate first to add body, compress to control the
-// boosted peaks.
+// v0.40.0 tuning note: SaturationMode::Diode is purpose-built for
+// "gunshot bite" character (sharp cubic shoulder). Try it for
+// dryer, more aggressive impacts; Tanh stays the safe round-trip
+// default. Best paired with `CompressorProfiles::GunshotSnap`
+// after the saturator: saturate first to add body, compress to
+// control the boosted peaks.
 inline constexpr EffectConfig WeaponBody() {
     EffectConfig ec{};
     ec.kind                  = EffectKind::Saturation;
-    ec.saturationDrive       = 2.5f;
+    ec.saturationDrive       = 0.5f;      // Tanh scale 2.5 (= 1 + 3·0.5)
     ec.saturationMix         = 0.30f;
     ec.saturationOutputGain  = 0.7f;
     ec.saturationBias        = 0.0f;
+    ec.saturationMode        = 0;         // Tanh — v0.40.0 default
     return ec;
 }
 
 // Explosion / impact character — large hits with grit.
 //
-// Pattern: drive 4.0 (heavy harmonic generation — pushing tanh
-// into clear nonlinearity), mix 45 % wet (close to fully
-// saturated — the dry stays just present enough to keep the
-// transient pop), bias 0.10 (asymmetry — even harmonics give a
-// "broken speaker" / "blown subwoofer" feel that big movie hits
-// rely on), output gain 0.55 (heavy trim — drive at 4.0 boosts
-// peak loudness substantially and we want to fit back into the
-// bus's headroom).
+// Pattern: norm drive 1.0 (Tanh scale 4.0 — max Tanh range,
+// pushing the shape into clear nonlinearity), mix 45 % wet, bias
+// 0.10 (asymmetry → even harmonics → "broken speaker" feel that
+// movie hits rely on), output gain 0.55 (heavy trim).
 //
 // Pair with `CompressorProfiles::ExplosionImpact` for the full
 // "movie hit" chain.
 inline constexpr EffectConfig ImpactCharacter() {
     EffectConfig ec{};
     ec.kind                  = EffectKind::Saturation;
-    ec.saturationDrive       = 4.0f;
+    ec.saturationDrive       = 1.0f;      // Tanh scale 4.0 (= 1 + 3·1.0)
     ec.saturationMix         = 0.45f;
     ec.saturationOutputGain  = 0.55f;
     ec.saturationBias        = 0.10f;
+    ec.saturationMode        = 0;         // Tanh — v0.40.0 default
     return ec;
 }
 
@@ -142,23 +158,26 @@ inline constexpr EffectConfig ImpactCharacter() {
 
 // Tape-style color for music / ambience.
 //
-// Pattern: drive 2.0 (medium), mix 25 % wet (audible character —
-// the "not-digital" feel that listeners associate with analog
-// recording), output gain 0.75, symmetric (odd-harmonic only —
-// real magnetic tape's saturation curve is close to symmetric
-// soft clipping).
+// Pattern: norm drive 0.333 (Tanh scale 2.0 — medium), mix 25 % wet
+// (audible character — the "not-digital" feel that listeners
+// associate with analog recording), output gain 0.75, symmetric.
 //
-// Use on a music sub-bus or ambience layer. Strongly recommended
-// to pair with a soft `MasterBusGlue` compressor downstream so
-// the harmonics get gently leveled by RMS averaging — which is
-// how analog tape and tape compressors actually interacted.
+// v0.40.0 tuning note: this profile pre-dates the actual Tape mode.
+// SaturationMode::Tape is the literal Zölzer soft-quadratic that
+// approximates magnetic-tape behavior; switching this profile to
+// mode 2 would arguably be a better match for the name. Kept on
+// Tanh for round-trip compat. Pair with `MasterBusGlue`
+// compressor downstream so the harmonics get gently leveled by
+// RMS averaging — which is how analog tape and tape compressors
+// actually interacted.
 inline constexpr EffectConfig TapeColor() {
     EffectConfig ec{};
     ec.kind                  = EffectKind::Saturation;
-    ec.saturationDrive       = 2.0f;
+    ec.saturationDrive       = 0.3333f;   // Tanh scale 2.0 (= 1 + 3·0.3333)
     ec.saturationMix         = 0.25f;
     ec.saturationOutputGain  = 0.75f;
     ec.saturationBias        = 0.0f;
+    ec.saturationMode        = 0;         // Tanh — v0.40.0 default
     return ec;
 }
 

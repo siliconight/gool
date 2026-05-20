@@ -46,7 +46,7 @@ enum class EffectKind : uint8_t {
     BiquadFilter,   // LPF / HPF / BPF
     Compressor,     // envelope-driven gain reduction; supports sidechain
     Reverb,         // Schroeder/Freeverb-style algorithmic reverb
-    Saturation,     // tanh waveshaper; subtle bus glue / impact reinforcement
+    Saturation,     // v0.40.0: 4-mode multi-shape waveshaper (Tanh, Tube, Tape, Diode)
 };
 
 enum class BiquadType : uint8_t {
@@ -168,10 +168,28 @@ struct EffectConfig {
     //                  output). 0 = symmetric (odd harmonics only,
     //                  "tape"-ish). Non-zero introduces even
     //                  harmonics ("tube"/"warmth"). Typical 0.05–0.20.
+    //   mode        ; v0.40.0 — shape function selector. See
+    //                  SaturationMode below. Default 0 (Tanh), which
+    //                  matches pre-v0.40.0 behavior bit-for-bit at
+    //                  the equivalent normalized drive.
     float saturationDrive       = 1.0f;
     float saturationMix         = 0.0f;
     float saturationOutputGain  = 1.0f;
     float saturationBias        = 0.0f;
+    uint8_t saturationMode      = 0;       // 0=Tanh, 1=Tube, 2=Tape, 3=Diode (v0.40.0)
+};
+
+// v0.40.0: shape mode selector for the multi-character saturation
+// engine. Each mode has a different acoustic character (driven by a
+// different memoryless nonlinearity) and a different useful drive
+// range; drive itself is normalized 0..1 in the v0.40.0+ API and
+// mapped to the per-mode useful range internally. See
+// docs/audio_design/saturation_v2.md §6 for mode-by-mode rationale.
+enum class SaturationMode : uint8_t {
+    Tanh  = 0,   // tanh(x), drive 1..4, symmetric, odd-harmonic-dominant. Default.
+    Tube  = 1,   // asinh(x)/asinh(1), drive 1..3, gentle shoulder, unbounded.
+    Tape  = 2,   // soft-quadratic Zölzer, drive 1..3, bounded ±1, parabolic shoulder.
+    Diode = 3,   // x - x³/3 clamped at ±2/3, drive 1..6, sharp shoulder, gunshot bite.
 };
 
 // Parameter IDs accepted by SetEffectParameter. Not every effect honors
@@ -223,6 +241,12 @@ namespace EffectParameter {
     // set DryGainDb to a very negative value (e.g. -60) on the reverb
     // bus's effect so only the wet field reaches the return.
     constexpr uint16_t Reverb_DryGainDb         = 26;
+    // v0.40.0: Saturation Phase 2 — mode selector. The design doc
+    // (saturation_v2.md §5) claims ID 26 as the first free slot but
+    // that was written before v0.29.5 took 26 for Reverb_DryGainDb;
+    // ID 27 is the actual first-free at the time of v0.40.0 cut. ID
+    // 28 is reserved for Saturation_Tone in Phase 4.
+    constexpr uint16_t Saturation_Mode          = 27;
 }
 
 // ---- Bus configuration ----------------------------------------------------

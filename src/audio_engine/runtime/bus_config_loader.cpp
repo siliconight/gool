@@ -290,11 +290,40 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             // v0.28.x soft-migration aliases.
             else if (key == "room_size")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }
             else if (key == "damping")            { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbHfDamping = static_cast<float>(n); }
-            // Saturation.
-            else if (key == "drive")              { if (!s.parseNumber(n, err, errLine)) return false; fx.saturationDrive       = static_cast<float>(n); }
+            // Saturation. v0.40.0 adds the `mode` key and changes
+            // `drive` semantics from unnormalized 1..N to normalized
+            // 0..1. Legacy unnormalized drive values are detected as
+            // drive > 1.0 and silently remapped via the inverse of
+            // the Tanh mode mapping: norm = (legacy - 1) / 3, clamped
+            // to 0..1. Tanh is the only mode that existed pre-v0.40.0
+            // so this is the correct migration for any legacy config.
+            // Round-trip is exact at the canonical example values
+            // (1.0, 2.5, 4.0); legacy values > 4 cap at norm=1.0
+            // (slight aural difference, but >4 drive was extreme).
+            else if (key == "drive")              {
+                if (!s.parseNumber(n, err, errLine)) return false;
+                const float raw = static_cast<float>(n);
+                if (raw > 1.0f) {
+                    // Legacy unnormalized → normalized 0..1 via Tanh
+                    // inverse. (raw - 1) / 3 clamped to [0, 1].
+                    const float norm = (raw - 1.0f) / 3.0f;
+                    fx.saturationDrive = norm < 0.0f ? 0.0f : (norm > 1.0f ? 1.0f : norm);
+                } else {
+                    fx.saturationDrive = raw < 0.0f ? 0.0f : raw;
+                }
+            }
             else if (key == "mix")                { if (!s.parseNumber(n, err, errLine)) return false; fx.saturationMix         = static_cast<float>(n); }
             else if (key == "output_gain")        { if (!s.parseNumber(n, err, errLine)) return false; fx.saturationOutputGain  = static_cast<float>(n); }
             else if (key == "bias")               { if (!s.parseNumber(n, err, errLine)) return false; fx.saturationBias        = static_cast<float>(n); }
+            else if (key == "mode")               {
+                std::string m;
+                if (!s.parseString(m, err, errLine)) return false;
+                if      (m == "tanh")  fx.saturationMode = 0;
+                else if (m == "tube")  fx.saturationMode = 1;
+                else if (m == "tape")  fx.saturationMode = 2;
+                else if (m == "diode") fx.saturationMode = 3;
+                else { err = "unknown saturation mode '" + m + "'"; errLine = s.line(); return false; }
+            }
             // Tolerate unknown keys for forward-compat.
             else { if (!s.skipValue(err, errLine)) return false; }
         }
