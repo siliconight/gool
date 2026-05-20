@@ -1139,6 +1139,196 @@ curves. Likely a `GoolAudioMaterial` resource with an inspector
 EQ-curve editor, so studios can author their own materials
 beyond the built-in 9-entry taxonomy.
 
+## 15 — Player audio settings menu (Phase 4) ✨ Convenience
+
+### What ships
+
+Phase 4 closes a gap that's been open since v0.31.0: the engine
+has had volume / occlusion / EQ controls all along, but no
+standard pattern for letting *players* adjust them in-game.
+v0.37.0 ships two pieces:
+
+1. **`GoolAudioSettings`** — a static-methods helper (in
+   `addons/gool/audio_settings.gd`) that bridges three layers:
+   - On-disk save (`user://gool_audio_settings.cfg`, ConfigFile
+     format, survives between sessions)
+   - The Gool autoload's runtime state
+   - Whatever UI you build
+2. **`GoolAudioSettingsPanel`** — a reference UI prefab (in
+   `addons/gool/prefabs/gool_audio_settings_panel.gd`) that
+   builds a working settings menu in code: volume sliders for
+   Master + each standard bus, an occlusion toggle, occlusion
+   intensity slider, material EQ intensity slider, reset button.
+
+Most projects will use the prefab as-is; serious projects will
+copy the prefab and restyle, or write fully custom UI calling
+the static helpers directly.
+
+### What settings the panel covers
+
+```
+Volumes
+  Master           [────────●────] +0.0 dB
+  SFX              [────────●────] +0.0 dB
+  Music            [────────●────] +0.0 dB
+  UI               [────────●────] +0.0 dB
+  Voice            [────────●────] +0.0 dB
+  Dialogue         [────────●────] +0.0 dB
+  Ambience         [────────●────] +0.0 dB
+
+Acoustic
+  Occlusion enabled  ☑
+  Occlusion intensity  [─────●─────] 1.00
+  Material EQ intensity [─────●─────] 1.00
+
+  [ Reset to defaults ]  [ Close ]
+```
+
+The volume sliders range -60 to +6 dB with 0.5 dB steps. Intensity
+sliders are 0..2 with 0.05 steps (the natural range for the two
+Phase 5.2 / 6.D realism dials).
+
+The "Reset to defaults" button calls `GoolAudioSettings.reset_to_defaults()`
+which restores hard-coded factory defaults (everything at unity /
+on). Different from "reset to project defaults" — if you want that
+behavior, write your own reset that reads the project settings
+table instead.
+
+### The simplest possible integration
+
+In your pause menu or options scene:
+
+```gdscript
+extends Control  # your existing options menu
+
+func _on_audio_button_pressed() -> void:
+    var panel = GoolAudioSettingsPanel.new()
+    panel.closed.connect(panel.queue_free)  # remove when done
+    add_child(panel)
+```
+
+That's the whole hookup. The panel:
+1. Loads the on-disk save (or factory defaults if no save yet)
+2. Applies those values to the Gool runtime so the player hears
+   them
+3. Builds its UI, populates sliders from the loaded settings
+4. Wires each slider to apply live + save on drag release
+
+Open it, close it, the panel is self-contained. No autoload
+required on top of the existing Gool autoload.
+
+### Startup integration — apply saved settings before the player hears anything
+
+Drop one line into your game's boot scene (or main menu's
+`_ready`):
+
+```gdscript
+func _ready() -> void:
+    await GoolAudioSettings.load_and_apply()
+    # ... continue with game startup
+```
+
+This reads the save file and pushes every value into the engine
+before any sound plays. Without this, the player would hear the
+project setting defaults for the first frame of audio, then see
+the saved values "snap into place" when they later open the
+menu — small but jarring.
+
+### Writing custom UI
+
+If the prefab's layout doesn't match your game's style, ignore
+it entirely and call the static helpers from whatever UI you
+build:
+
+```gdscript
+class_name MyCustomAudioMenu
+extends Control
+
+var _settings: Dictionary = {}
+
+func _ready() -> void:
+    _settings = GoolAudioSettings.load_from_disk()
+    await GoolAudioSettings.apply_to_runtime(_settings)
+    _populate_my_sliders()
+
+func _on_master_slider_changed(value: float) -> void:
+    _settings.volumes.master_db = value
+    GoolAudioSettings.apply_to_runtime(_settings)  # live preview
+
+func _on_master_slider_drag_ended(_changed: bool) -> void:
+    GoolAudioSettings.save_to_disk(_settings)
+```
+
+The two-step pattern — apply on every tick, save on drag end —
+gives the player a responsive live preview while not hammering
+the disk. The reference panel uses this exact pattern internally.
+
+### What's saved, where it saves
+
+On-disk format is Godot's ConfigFile, INI-style:
+
+```ini
+[volumes]
+master_db=-3.0
+sfx_db=0.0
+music_db=-6.0
+ui_db=0.0
+voice_db=0.0
+dialogue_db=0.0
+ambience_db=0.0
+
+[occlusion]
+enabled=true
+intensity=0.7
+
+[material_eq]
+intensity=1.0
+```
+
+Path: `user://gool_audio_settings.cfg`. The exact location on
+disk depends on platform — `%APPDATA%\Godot\app_userdata\<project_name>\`
+on Windows, `~/.local/share/godot/app_userdata/<project_name>/`
+on Linux. Players can hand-edit this file if needed but the
+expectation is they'll use the menu.
+
+If the file is missing or malformed, `load_from_disk()` returns
+factory defaults silently — no error, no crash, just the
+first-run experience.
+
+### Backward compatibility
+
+`load_from_disk()` falls back to `DEFAULTS` for any missing
+section or key. This means save files from older versions of
+gool keep working when new settings get added — the new fields
+inherit their defaults on first load, get saved correctly on
+next slider release.
+
+So you can keep iterating on the menu's scope (adding new
+sliders, deprecating old ones) without breaking player saves.
+
+### What this release doesn't cover
+
+Intentionally out of scope for v0.37.0:
+
+- **Audio device selection** (output picker). Godot's
+  `AudioServer.get_output_device_list()` would be the API, but
+  it's gnarly enough to deserve its own pass.
+- **Surround / headphones toggle.** Same — Godot exposes the
+  channel count but auto-detection is platform-dependent.
+- **Subtitles / language.** Out of scope (different system).
+- **Per-channel mute.** The volume sliders go to -60 dB which is
+  effectively silent; a dedicated mute toggle could be added
+  per-bus but the slider-to-minimum pattern works for most
+  cases.
+- **Hearing accessibility presets.** "Boost speech" / "reduce
+  bass" presets would be a layer above this — a preset would
+  set multiple sliders at once. Easy to add: write a function
+  that builds a settings dictionary and calls
+  `save_to_disk` + `apply_to_runtime`.
+
+These are all candidates for a Phase 4.1 release if/when the
+project demands them.
+
 ## Where to find more
 
 - [`docs/godot_quickstart.md`](godot_quickstart.md) — start here

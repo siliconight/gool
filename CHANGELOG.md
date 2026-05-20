@@ -22,6 +22,164 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.37.0] - 2026-05-20 — Phase 4: player audio settings menu
+
+Closes the gap that's been open since v0.31.0: the engine has
+had volume / occlusion / EQ controls all along, but no standard
+pattern for letting *players* adjust them in-game. v0.37.0 ships
+the missing pieces — a persistence helper and a reference UI
+prefab — so a typical project can wire a working settings menu
+in a couple of lines.
+
+### What ships
+
+**`GoolAudioSettings`** (`addons/gool/audio_settings.gd`) — a
+static-methods helper that bridges three layers:
+
+- On-disk save (`user://gool_audio_settings.cfg`, ConfigFile
+  format, survives between sessions)
+- The Gool autoload's runtime state
+- Whatever UI the project builds
+
+Public surface:
+
+- `load_from_disk() -> Dictionary` — reads the save file, falls
+  back to factory `DEFAULTS` for any missing section/key.
+  Crash-safe: bad files just return defaults silently.
+- `save_to_disk(settings: Dictionary) -> int` — writes the
+  settings dictionary as a ConfigFile.
+- `apply_to_runtime(settings: Dictionary)` — pushes every value
+  to the Gool autoload. Awaits `Gool.ready_to_play` if not
+  initialized. Skips missing buses silently.
+- `load_and_apply()` — combined boot-time helper. One line in
+  your game's main scene.
+- `reset_to_defaults()` — restore factory defaults, write to
+  disk, push to engine.
+
+**`GoolAudioSettingsPanel`** (`addons/gool/prefabs/gool_audio_settings_panel.gd`)
+— a reference UI prefab that builds its layout in code. Drops
+into a pause menu / options scene; emits a `closed` signal when
+the user dismisses it. Sliders apply live to the engine on
+every tick, save to disk on drag release (debounced).
+
+Covers: master volume + per-bus volumes (Sfx, Music, UI, Voice,
+Dialogue, Ambience), occlusion enabled toggle, occlusion
+intensity slider, material EQ intensity slider, reset button.
+
+### Two missing autoload wrappers closed in passing
+
+Found while wiring `GoolAudioSettings.apply_to_runtime`: the C++
+binding had `set_master_volume_db` and `set_bus_gain_db`
+exported, but the GDScript autoload didn't wrap them. Anyone
+calling `Gool.set_master_volume_db(...)` before v0.37.0 would
+have hit "Nonexistent function 'set_master_volume_db' in base
+'Node'" — same shape as the v0.35.0 ReverbZone bug. v0.37.0
+adds both wrappers.
+
+### Format
+
+On-disk save is Godot's ConfigFile, INI-style sections matching
+the in-memory Dictionary structure:
+
+```ini
+[volumes]
+master_db=-3.0
+sfx_db=0.0
+...
+
+[occlusion]
+enabled=true
+intensity=0.7
+
+[material_eq]
+intensity=1.0
+```
+
+Save files from older versions auto-inherit defaults for new
+fields (load_from_disk's fallback merge). So we can iterate on
+menu scope across releases without breaking player saves.
+
+### Integration patterns
+
+Simplest possible — drop into options menu:
+
+```gdscript
+func _on_audio_button_pressed():
+    var panel = GoolAudioSettingsPanel.new()
+    panel.closed.connect(panel.queue_free)
+    add_child(panel)
+```
+
+Startup — apply saved settings before any audio plays:
+
+```gdscript
+func _ready():
+    await GoolAudioSettings.load_and_apply()
+    # ... continue with game startup
+```
+
+Custom UI — bypass the prefab, use the static helpers directly:
+
+```gdscript
+var _settings = GoolAudioSettings.load_from_disk()
+GoolAudioSettings.apply_to_runtime(_settings)
+
+func _on_master_slider_changed(value: float):
+    _settings.volumes.master_db = value
+    GoolAudioSettings.apply_to_runtime(_settings)  # live preview
+
+func _on_master_slider_drag_ended(_changed: bool):
+    GoolAudioSettings.save_to_disk(_settings)
+```
+
+### Design choices to flag
+
+**Static helpers, not autoload.** A third autoload (on top of
+Gool, AudioSetup) would mean another startup hook, another
+settings-of-settings file, another "is it initialized yet"
+question. The truth lives in two places — ConfigFile + Gool
+runtime — and the static methods just bridge them. Anyone
+building a Phase 4.1 extension that needs to *cache* settings
+in memory can add that layer themselves.
+
+**UI built in code, no .tscn shipped.** Two reasons: (a) .tscn
+format is fiddly to ship without an editor to test in, and
+(b) designers who want to restyle will copy the .gd file and
+modify anyway. The prefab is a reference implementation; the
+persistence helper is the durable contract.
+
+**Debounced disk saves.** Sliders fire `value_changed` on every
+pixel of drag — that's ~60+ writes per second per slider on a
+typical drag. Live-applying to the engine each tick is cheap
+(in-memory parameter writes), but saving to disk each tick
+isn't. Pattern: apply on `value_changed`, save on `drag_ended`.
+Checkboxes save immediately since there's no drag.
+
+### What's deferred (Phase 4.1+)
+
+- Audio device selection (output picker)
+- Surround / headphones toggle
+- Per-channel mute (the volume sliders cover this via -60 dB
+  floor)
+- Subtitles / language
+- Hearing accessibility presets ("boost speech")
+
+All achievable as future additions on the same persistence
+pattern; the scope discipline here is "ship the foundation."
+
+### Touch summary
+
+- `godot/addons/gool/audio_settings.gd` — new file, the static
+  persistence helper
+- `godot/addons/gool/prefabs/gool_audio_settings_panel.gd` —
+  new file, the reference UI prefab
+- `godot/addons/gool/runtime_singleton.gd` — added
+  `set_master_volume_db` and `set_bus_gain_db` autoload
+  wrappers (closes another v0.31.0-era hole where C++ bindings
+  existed but autoload didn't forward to them)
+- `docs/cookbook.md` — new Section 15 "Player audio settings
+  menu (Phase 4)"
+
 ## [0.36.0] - 2026-05-20 — Phase 6.D: realism multiplier
 
 A single global dial — `gool/material_eq/intensity` — scaling
@@ -15055,6 +15213,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.37.0]: https://github.com/siliconight/gool/releases/tag/v0.37.0
 [0.36.0]: https://github.com/siliconight/gool/releases/tag/v0.36.0
 [0.35.2]: https://github.com/siliconight/gool/releases/tag/v0.35.2
 [0.35.1]: https://github.com/siliconight/gool/releases/tag/v0.35.1

@@ -805,6 +805,35 @@ func get_bus_effects(bus_name: String) -> Array:
 		return []
 	return _runtime.get_bus_effects(bus_name)
 
+## v0.37.0: forwarder for the engine's set_master_volume_db.
+## Sets the post-mixdown master volume in decibels. Used by the
+## GoolAudioSettings persistence helper (Phase 4 settings menu)
+## and by anyone wiring a volume slider to overall game audio.
+##
+## (Closes a hole where the C++ binding exposed this but the
+## autoload didn't wrap it. Anyone trying to call
+## Gool.set_master_volume_db before v0.37.0 would have hit
+## "Nonexistent function".)
+func set_master_volume_db(db: float) -> void:
+	if not is_initialized():
+		return
+	_runtime.set_master_volume_db(db)
+
+## v0.37.0: forwarder for the engine's set_bus_gain_db. Sets the
+## gain of a named bus in decibels.
+##
+## Takes the bus *name* (String), not the BusId. The engine
+## resolves the name internally each call — fine for menu-driven
+## use (a few writes per second at most). For high-frequency
+## writes, hold a BusId from find_bus_id_by_name() and call the
+## engine's bus_id-based path directly via _runtime.
+##
+## (Same auto-load wrapper hole as set_master_volume_db.)
+func set_bus_gain_db(bus_name: String, gain_db: float) -> void:
+	if not is_initialized():
+		return
+	_runtime.set_bus_gain_db(bus_name, gain_db)
+
 ## Toggle occlusion globally at runtime.
 ##
 ## Useful for accessibility settings ("disable audio occlusion"
