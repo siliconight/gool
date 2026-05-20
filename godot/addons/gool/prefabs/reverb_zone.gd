@@ -1,35 +1,95 @@
 # addons/gool/prefabs/reverb_zone.gd
 #
-# Area3D that adjusts the reverb mix when a listener enters or
-# leaves. Detects the listener via group ("gool_listener" by
-# default — your player character should be in that group).
+# Area3D that paints a space's acoustic character onto the reverb
+# bus when a listener walks in. Two ways to author:
 #
-# Each zone defines target reverb parameters (room size, damping,
-# wet level). On listener entry, the zone smoothly ramps the
-# active reverb bus toward those parameters; on exit, it ramps
-# back to the runtime's default.
+#   1. **Material-aware (the easy path).** Set `material` to one of
+#      the Gool.MATERIAL_* constants — Concrete, Wood, Foliage, etc.
+#      The zone pulls the matching engine preset (decay + dampings +
+#      diffusion) and applies it. Drop the node, pick the material,
+#      done.
 #
-# This is a thin coordinator — the actual DSP is the gool reverb
-# bus effect already in the engine. The zone just commands
-# parameter changes via SetBusParameter.
+#   2. **Per-parameter override (for fine-tuning).** Leave material
+#      at MATERIAL_DEFAULT and dial decay / lf_damping / hf_damping /
+#      diffusion in the inspector. The zone uses those values
+#      verbatim. Use this when no preset feels exactly right and
+#      you want to author the room by hand.
+#
+# Either way, the zone targets a named reverb bus in your gool
+# config (default "Sfx", the standard mixer's reverb-bearing bus).
+# It scans the bus's effect chain for the first effect of kind
+# "Reverb" and pushes parameters to that effect. If no reverb is on
+# the bus, the zone warns once at _ready and goes inert.
+#
+# On entry the zone smoothly ramps the four reverb parameters
+# toward the target values over `transition_ms`. On exit it ramps
+# back to whatever the parameters were before the zone first
+# applied (captured at first entry). `wet_gain_db` is also pushed
+# the same way; it's the most direct control over "how much
+# reverb you hear" and the most natural designer knob for spaces
+# that should feel more or less reverberant overall.
+#
+# Stacked / overlapping zones aren't fully supported yet: only the
+# most recently entered zone wins, and on exit the params restore
+# to the captured defaults regardless of whether another zone is
+# still active. For 99% of layouts (a level's rooms don't usually
+# overlap) this is fine. Track <github issue link> if you hit a
+# layout where stacking matters.
 
 @tool
 class_name ReverbZone
 extends Area3D
 
-## Reverb room size in [0..1]: 0 = small room, 1 = cathedral.
-@export_range(0.0, 1.0, 0.01) var room_size: float = 0.6
+## Material that defines this space's acoustic character. When set
+## to anything other than MATERIAL_DEFAULT, the zone uses the
+## engine's per-material reverb preset (decay + dampings +
+## diffusion) and ignores the per-parameter values below. Set to
+## MATERIAL_DEFAULT to author parameters manually instead.
+@export_enum("Default:0", "Air:1", "Glass:2", "Wood:3", "Drywall:4",
+		"Concrete:5", "Metal:6", "Curtain:7", "Foliage:8")
+var material: int = 0
 
-## High-frequency damping in [0..1]: 0 = bright, 1 = muffled.
-@export_range(0.0, 1.0, 0.01) var damping: float = 0.5
+## Reverb decay length in [0..1]: 0 = short tail, 1 = long. Only
+## used when `material` is MATERIAL_DEFAULT. (Maps to the engine's
+## Reverb_Decay parameter — the same knob that JSON bus configs
+## call "decay" or, historically, "room_size".)
+@export_range(0.0, 1.0, 0.01) var decay: float = 0.6
 
-## Wet-mix level in dB (negative = quieter).
+## Low-frequency damping in [0..1]: how much the reverb tail's
+## bass is absorbed. 0 = full bass tail, 1 = bass cut entirely.
+## Only used when `material` is MATERIAL_DEFAULT.
+@export_range(0.0, 1.0, 0.01) var lf_damping: float = 0.1
+
+## High-frequency damping in [0..1]: 0 = bright tail, 1 = muffled.
+## Only used when `material` is MATERIAL_DEFAULT.
+@export_range(0.0, 1.0, 0.01) var hf_damping: float = 0.3
+
+## Diffusion in [0..1]: how smeared the tail is. 0 = comb-like
+## "ping-pong" reflections, 1 = smooth wash. Only used when
+## `material` is MATERIAL_DEFAULT.
+@export_range(0.0, 1.0, 0.01) var diffusion: float = 0.625
+
+## Wet-mix level in dB. The most direct "how much reverb" knob —
+## independent from material/per-parameter authoring (always
+## applied regardless of which mode you're in). -60 = effectively
+## dry (no audible reverb), 0 = unity, positive values boost.
 @export_range(-60.0, 0.0, 0.5, "suffix:dB") var wet_gain_db: float = -12.0
 
 ## Smoothing time for the parameter ramp on entry/exit (ms).
+## Longer values feel more natural (real spaces don't switch
+## acoustic identity instantly). 800 ms is the default sweet spot;
+## drop to ~200 ms for fast-paced level transitions, push to
+## ~2000 ms for cinematic camera moves into a new room.
 @export_range(0.0, 5000.0, 1.0, "suffix:ms") var transition_ms: float = 800.0
 
-## Group that the listener (player) is expected to be in.
+## Target bus carrying the reverb effect. Default "Sfx" matches
+## the standard gool config; change if your project routes reverb
+## to a dedicated bus (e.g. "Reverb" or "ReverbBus").
+@export var bus_name: String = "Sfx"
+
+## Group that the listener (player) is expected to be in. Match
+## this to the group your character body is in — the standard
+## convention is "gool_listener".
 @export var listener_group: String = "gool_listener"
 
 signal listener_entered
@@ -38,6 +98,35 @@ signal listener_exited
 var _runtime: Node = null
 var _occupied: bool = false
 
+# Cached at _ready (or first entry): the bus's reverb effect index
+# in the chain, and the parameter values present BEFORE this zone
+# ever pushed anything, so we can restore them on exit. -1 means
+# "we haven't found a reverb effect on the bus; zone is inert."
+var _effect_index: int = -1
+var _have_defaults: bool = false
+var _default_decay: float = 0.0
+var _default_lf_damping: float = 0.0
+var _default_hf_damping: float = 0.0
+var _default_diffusion: float = 0.0
+var _default_wet_gain_db: float = 0.0
+
+# Smoothing state. We tween from current → target over
+# transition_ms by linearly interpolating each frame in _process.
+# A null target means no ramp is in progress.
+var _ramp_progress: float = 1.0   # [0..1] — 1.0 = done
+var _ramp_duration_s: float = 0.0
+var _ramp_from := {}
+var _ramp_to := {}
+
+# Engine effect parameter IDs (from include/audio_engine/bus.h
+# namespace EffectParameter). Copied here so the GDScript zone
+# doesn't need a header bridge.
+const _PARAM_DECAY:       int = 9
+const _PARAM_HF_DAMPING:  int = 10
+const _PARAM_WET_GAIN_DB: int = 11
+const _PARAM_LF_DAMPING:  int = 24
+const _PARAM_DIFFUSION:   int = 25
+
 func _ready() -> void:
 	if Engine.is_editor_hint():
 		return
@@ -45,8 +134,39 @@ func _ready() -> void:
 	if _runtime == null:
 		push_warning("ReverbZone: /root/Gool autoload not found. The gool plugin is installed but not enabled. Fix: open Project Settings → Plugins, find 'gool' in the list, tick the Enable checkbox. (If gool is not in the list, the addon folder is missing — see https://github.com/siliconight/gool for install instructions.)")
 		return
+	if not _runtime.is_initialized():
+		await _runtime.ready_to_play
+	# Locate the reverb effect on the target bus by scanning the
+	# effect chain. Cache its index for set_effect_parameter calls.
+	# Also snapshot the current parameter values as our exit-restore
+	# defaults so the zone is a pure overlay on top of whatever the
+	# project's reverb is already set to.
+	_locate_reverb_effect()
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
+
+func _locate_reverb_effect() -> void:
+	var effects: Array = _runtime.get_bus_effects(bus_name)
+	if effects.is_empty():
+		push_warning("ReverbZone: bus '%s' has no effects (or doesn't exist). " % bus_name
+				+ "Zone is inert. Add a Reverb effect to the bus in your gool config, "
+				+ "or set `bus_name` to a bus that has one.")
+		return
+	for i in range(effects.size()):
+		var e: Dictionary = effects[i]
+		var kind_name: String = String(e.get("kind_name", ""))
+		if kind_name == "Reverb":
+			_effect_index = i
+			var params: Dictionary = e.get("params", {})
+			_default_decay       = float(params.get(_PARAM_DECAY,       0.5))
+			_default_lf_damping  = float(params.get(_PARAM_LF_DAMPING,  0.1))
+			_default_hf_damping  = float(params.get(_PARAM_HF_DAMPING,  0.3))
+			_default_diffusion   = float(params.get(_PARAM_DIFFUSION,   0.625))
+			_default_wet_gain_db = float(params.get(_PARAM_WET_GAIN_DB, -60.0))
+			_have_defaults = true
+			return
+	push_warning("ReverbZone: bus '%s' has no Reverb effect. Zone is inert. " % bus_name
+			+ "Add a Reverb effect to the bus's effect chain in your gool config.")
 
 func _on_body_entered(body: Node) -> void:
 	if not body.is_in_group(listener_group):
@@ -55,7 +175,7 @@ func _on_body_entered(body: Node) -> void:
 		return
 	_occupied = true
 	listener_entered.emit()
-	_apply_zone_settings()
+	_start_ramp_to_zone_settings()
 
 func _on_body_exited(body: Node) -> void:
 	if not body.is_in_group(listener_group):
@@ -64,20 +184,131 @@ func _on_body_exited(body: Node) -> void:
 		return
 	_occupied = false
 	listener_exited.emit()
-	_restore_default_settings()
+	_start_ramp_to_defaults()
 
+func _start_ramp_to_zone_settings() -> void:
+	if _effect_index < 0 or not _have_defaults:
+		return
+	var target := _resolve_zone_target()
+	# `_ramp_from` is the current state (whatever's live right now
+	# on the engine; if we're ramping mid-transition, the latest
+	# interpolated values, otherwise the captured defaults). We
+	# read from `_ramp_to` if a ramp is in progress, else from
+	# defaults — this makes back-to-back zones smooth.
+	_ramp_from = _current_live_values()
+	_ramp_to   = target
+	_begin_ramp()
+
+func _start_ramp_to_defaults() -> void:
+	if _effect_index < 0 or not _have_defaults:
+		return
+	_ramp_from = _current_live_values()
+	_ramp_to = {
+		_PARAM_DECAY:       _default_decay,
+		_PARAM_LF_DAMPING:  _default_lf_damping,
+		_PARAM_HF_DAMPING:  _default_hf_damping,
+		_PARAM_DIFFUSION:   _default_diffusion,
+		_PARAM_WET_GAIN_DB: _default_wet_gain_db,
+	}
+	_begin_ramp()
+
+func _resolve_zone_target() -> Dictionary:
+	# Material-aware path. If the designer picked a non-Default
+	# material, pull the engine's preset for the four character
+	# parameters; wet_gain_db is always taken from the zone's own
+	# export (it's the volume of the reverb, not a property of
+	# the material).
+	if material != 0:
+		var preset: Dictionary = _runtime.get_reverb_preset_for_material(material)
+		return {
+			_PARAM_DECAY:       float(preset.get("decay",      _default_decay)),
+			_PARAM_LF_DAMPING:  float(preset.get("lf_damping", _default_lf_damping)),
+			_PARAM_HF_DAMPING:  float(preset.get("hf_damping", _default_hf_damping)),
+			_PARAM_DIFFUSION:   float(preset.get("diffusion",  _default_diffusion)),
+			_PARAM_WET_GAIN_DB: wet_gain_db,
+		}
+	# Manual path — use the per-parameter exports verbatim.
+	return {
+		_PARAM_DECAY:       decay,
+		_PARAM_LF_DAMPING:  lf_damping,
+		_PARAM_HF_DAMPING:  hf_damping,
+		_PARAM_DIFFUSION:   diffusion,
+		_PARAM_WET_GAIN_DB: wet_gain_db,
+	}
+
+func _current_live_values() -> Dictionary:
+	# Mid-ramp: latest interpolated. Otherwise: most recent target,
+	# or defaults if we haven't ramped yet.
+	if _ramp_progress < 1.0:
+		# Interpolated snapshot at current progress.
+		var out := {}
+		for k in _ramp_from.keys():
+			var f: float = float(_ramp_from[k])
+			var t: float = float(_ramp_to.get(k, f))
+			out[k] = lerp(f, t, _ramp_progress)
+		return out
+	if _ramp_to.is_empty():
+		# Never ramped — defaults.
+		return {
+			_PARAM_DECAY:       _default_decay,
+			_PARAM_LF_DAMPING:  _default_lf_damping,
+			_PARAM_HF_DAMPING:  _default_hf_damping,
+			_PARAM_DIFFUSION:   _default_diffusion,
+			_PARAM_WET_GAIN_DB: _default_wet_gain_db,
+		}
+	return _ramp_to.duplicate()
+
+func _begin_ramp() -> void:
+	_ramp_progress = 0.0
+	_ramp_duration_s = max(0.001, transition_ms / 1000.0)
+	# Apply ramp-start values immediately for clean t=0 alignment.
+	_apply_values(_ramp_from)
+	set_process(true)
+
+func _process(delta: float) -> void:
+	if Engine.is_editor_hint():
+		return
+	if _ramp_progress >= 1.0:
+		set_process(false)
+		return
+	_ramp_progress = min(1.0, _ramp_progress + delta / _ramp_duration_s)
+	var values := {}
+	for k in _ramp_from.keys():
+		var f: float = float(_ramp_from[k])
+		var t: float = float(_ramp_to.get(k, f))
+		values[k] = lerp(f, t, _ramp_progress)
+	_apply_values(values)
+	if _ramp_progress >= 1.0:
+		set_process(false)
+
+func _apply_values(values: Dictionary) -> void:
+	if _effect_index < 0:
+		return
+	# set_effect_parameter takes bus_name (String), not bus_id —
+	# it resolves the name to a BusId internally each call. The
+	# resolution is O(N) over kMaxBuses (16) but only fires a few
+	# times per frame during a ramp, well below any perf concern.
+	for k in values.keys():
+		_runtime.set_effect_parameter(bus_name, _effect_index,
+				int(k), float(values[k]))
+
+# Public helpers retained for back-compat with v0.x scripts that
+# invoked the old no-op methods. They now apply the zone settings
+# (or defaults) immediately without ramping — useful for tests,
+# editor previews, or scripted reverb changes outside the body-
+# entered flow.
 func _apply_zone_settings() -> void:
-	# NOTE: Calling SetBusParameter on the underlying engine isn't
-	# exposed through the v0 binding yet. For now, this prefab
-	# emits the listener_entered signal so the host can update bus
-	# parameters directly via a small C++ helper, OR just record
-	# the desired room_size/damping/wet for use by the host's
-	# custom reverb logic.
-	#
-	# When the binding adds set_bus_parameter() (planned), this
-	# method calls into it directly and the zone becomes fully
-	# self-contained.
-	pass
+	if _effect_index < 0 or not _have_defaults:
+		return
+	_apply_values(_resolve_zone_target())
 
 func _restore_default_settings() -> void:
-	pass
+	if _effect_index < 0 or not _have_defaults:
+		return
+	_apply_values({
+		_PARAM_DECAY:       _default_decay,
+		_PARAM_LF_DAMPING:  _default_lf_damping,
+		_PARAM_HF_DAMPING:  _default_hf_damping,
+		_PARAM_DIFFUSION:   _default_diffusion,
+		_PARAM_WET_GAIN_DB: _default_wet_gain_db,
+	})

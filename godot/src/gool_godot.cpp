@@ -437,6 +437,14 @@ public:
         ClassDB::bind_method(D_METHOD("find_bus_id_by_name", "name"),
                               &GoolAudioRuntime::find_bus_id_by_name);
 
+        // v0.32.0 (Phase 5.3): material-aware reverb presets.
+        // Returns the engine's ReverbPresetByMaterial table value
+        // for a given AudioMaterial as a Dictionary the GDScript
+        // ReverbZone prefab applies via set_effect_parameter.
+        ClassDB::bind_method(D_METHOD("get_reverb_preset_for_material",
+                                       "material"),
+                              &GoolAudioRuntime::get_reverb_preset_for_material);
+
         // v0.31.0 (Phase 5.2): live occlusion controls.
         ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"),
                               &GoolAudioRuntime::set_occlusion_enabled);
@@ -1399,6 +1407,30 @@ public:
         return (id == audio::kInvalidBusId)
             ? -1
             : static_cast<int>(id);
+    }
+
+    // v0.32.0 (Phase 5.3): material-aware reverb preset lookup.
+    // Returns the engine's per-material reverb preset (decay,
+    // lf_damping, hf_damping, diffusion) for use by ReverbZone or
+    // any host that wants to apply a material's acoustic character
+    // to a reverb bus. Out-of-range material values fall through
+    // to the Default preset (a balanced "average room"). Returns
+    // a Dictionary because that's the friendly form for GDScript
+    // consumers and matches the JSON authoring conventions for
+    // reverb parameters in the bus config.
+    Dictionary get_reverb_preset_for_material(int material) const {
+        audio::AudioMaterial m = audio::AudioMaterial::Default;
+        if (material >= 0
+            && material < static_cast<int>(audio::kAudioMaterialCount)) {
+            m = static_cast<audio::AudioMaterial>(material);
+        }
+        const audio::ReverbMaterialPreset p = audio::ReverbPresetByMaterial(m);
+        Dictionary out;
+        out["decay"]      = static_cast<double>(p.decay);
+        out["lf_damping"] = static_cast<double>(p.lfDamping);
+        out["hf_damping"] = static_cast<double>(p.hfDamping);
+        out["diffusion"]  = static_cast<double>(p.diffusion);
+        return out;
     }
 
     // v0.31.0 (Phase 5.2): live occlusion controls. Both safe to call

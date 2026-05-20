@@ -803,6 +803,36 @@ func material_name(material: int) -> String:
 		return _MATERIAL_NAMES[material]
 	return "Unknown"
 
+## Return the engine's per-material reverb preset as a Dictionary
+## with keys: `decay`, `lf_damping`, `hf_damping`, `diffusion` (all
+## floats in [0, 1]).
+##
+## These are the values that paint each material's acoustic
+## character on a reverb bus — concrete corridors have long bright
+## decay, wooden cabins have shorter mid-rich tails, foliage has
+## very damp short tails. The ReverbZone prefab consumes these
+## automatically when its `material` is set; this function is for
+## designers who want to apply presets programmatically (custom
+## triggers, level-script reverb changes, etc).
+##
+## Example — push the concrete preset onto the Sfx bus's reverb:
+##
+##     var preset = Gool.reverb_preset_for_material(Gool.MATERIAL_CONCRETE)
+##     # Effect index 0 = first effect in the chain (the reverb in
+##     # the standard gool config). set_effect_parameter takes the
+##     # bus NAME, not its BusId.
+##     Gool._runtime.set_effect_parameter("Sfx", 0, 9,  preset.decay)
+##     Gool._runtime.set_effect_parameter("Sfx", 0, 24, preset.lf_damping)
+##     Gool._runtime.set_effect_parameter("Sfx", 0, 10, preset.hf_damping)
+##     Gool._runtime.set_effect_parameter("Sfx", 0, 25, preset.diffusion)
+##
+## Out-of-range material values fall through to the Default
+## preset ("average room").
+func reverb_preset_for_material(material: int) -> Dictionary:
+	if not is_initialized():
+		return {}
+	return _runtime.get_reverb_preset_for_material(material)
+
 ## Resolve a Node's AudioMaterial. Checks two sources in order:
 ##
 ##   1. `gool_audio_material` metadata. Can be either an int

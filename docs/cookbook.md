@@ -607,6 +607,136 @@ players expect ("I hear it muffled, my teammate doesn't,
 because they're on the other side of the wall") and matches
 how positional audio already works.
 
+## 13 — Reverb that matches the room ✨ Convenience
+
+### What this is
+
+The same material taxonomy that drives impact sounds (section 11)
+and through-wall occlusion (section 12) now drives the *acoustic
+character of the spaces themselves*. A concrete corridor reverbs
+like a concrete corridor. A wooden cabin sounds warmer. A foliage-
+dense clearing has barely any tail at all. Drop a `ReverbZone`
+into your scene, pick a material, done.
+
+This completes the Phase 5 material trilogy:
+
+| What it is | What changes |
+|---|---|
+| **Section 11** — impacts | the sound of *hitting* a material |
+| **Section 12** — occlusion | what a material does to sounds *passing through* it |
+| **Section 13** — reverb zones | what a material does to the sound of *being inside it* |
+
+All three read from the same engine tables. Tag a slab as Concrete
+once and it influences impact sounds, occlusion muffling, and (if
+the slab is inside a ReverbZone marked Concrete) the room's
+acoustic character — three different physical phenomena, one
+piece of authoring metadata.
+
+### The minimum viable setup
+
+You need three things in your scene:
+
+1. A reverb effect on a bus (the standard gool config has one on
+   "Sfx" by default — nothing for you to do here unless you've
+   customized your bus graph).
+2. A `GoolListener3D` in the tree (which you already have if any
+   spatialized sound is working at all). Player character is in
+   the `gool_listener` group.
+3. A `ReverbZone` Area3D with a CollisionShape3D child defining
+   where the zone applies.
+
+In the `ReverbZone`'s inspector, set **Material** to one of the
+Gool.MATERIAL_* values. Walk into the zone — the reverb should
+change. Walk out — it ramps back. That's the entire workflow.
+
+### The materials, in plain terms
+
+| Material | Feel | Good for |
+|---|---|---|
+| **Glass** | bright, ringing, long-ish tail | greenhouses, observatories, dome rooms |
+| **Wood** | warm, mid-rich, short-ish | cabins, wooden corridors, attics |
+| **Drywall** | balanced, slightly damped, medium tail | residential interiors, offices |
+| **Concrete** | bright, very long, hard reflections | bunkers, parking garages, stairwells |
+| **Metal** | bright, slightly metallic ring, long | industrial corridors, ship interiors |
+| **Curtain** | very damped, very short | theatre booths, sound rooms, plush dens |
+| **Foliage** | very damped, very short, soft | dense forest clearings, jungle interiors |
+| **Default** | balanced "average room" | anything that doesn't fit the above |
+
+These are starting points the engine chose to feel right at common
+listening levels. Designers are expected to override per-zone for
+specific spaces — a small wooden bathroom isn't the same as a
+wooden cathedral, even if they share the material category.
+
+### When the presets aren't right: per-parameter override
+
+Set **Material** to `Default` and the zone uses the four per-parameter
+exports verbatim:
+
+- **Decay** (0..1) — how long the tail lasts. 0.6 is "normal room",
+  0.85 is "long corridor", 0.95 is "cathedral".
+- **Lf Damping** (0..1) — how much bass dies in the tail. Higher
+  damping = less rumbling, more focused tail.
+- **Hf Damping** (0..1) — how much treble dies. Higher damping =
+  duller, more muffled tail. Bright spaces (tile, glass) want
+  low values; soft spaces (curtained rooms) want high.
+- **Diffusion** (0..1) — how smeared the reflections are.
+  0 = comb-like "ping-pong" echo, 1 = smooth wash. Most real
+  rooms sit around 0.6-0.7.
+
+The **Wet Gain Db** is always applied regardless of which path
+you're using — it's the "how much reverb you hear" knob,
+independent from acoustic character.
+
+### When to use Default + manual values
+
+- A space where no preset feels exactly right and you've got a
+  specific sound in mind.
+- A space that's a hybrid (e.g. wood walls but tile floor) where
+  you want to dial in something between two presets.
+- A *non-physical* space — surreal, dream, or stylized environments
+  that aren't trying to match a real-world material.
+
+### Targeting a different reverb bus
+
+The `ReverbZone` defaults to the "Sfx" bus because that's where
+gool's standard config puts the reverb effect. If your project
+has carved out a dedicated "Reverb" bus, set the zone's **Bus
+Name** export to that. The zone scans the bus's effect chain for
+the first `Reverb` effect and pushes parameters to it. If no
+reverb effect is on the named bus, the zone warns at scene load
+and goes inert (no silent failure).
+
+### Programmatic usage
+
+For custom triggers, cinematic moments, or hand-written reverb
+logic without a zone, the preset lookup is exposed directly:
+
+```gdscript
+var preset = Gool.reverb_preset_for_material(Gool.MATERIAL_CONCRETE)
+# preset == { "decay": 0.85, "lf_damping": 0.05,
+#             "hf_damping": 0.15, "diffusion": 0.55 }
+# Apply yourself via set_effect_parameter, or feed into your own
+# blending logic if you're crossfading between multiple presets.
+```
+
+### Stacked / overlapping zones
+
+Currently, only the most recently entered zone is active. Walking
+out of zone B while still inside zone A ramps reverb back to the
+captured defaults, not back to zone A's settings. For most level
+layouts (rooms don't typically nest or overlap meaningfully) this
+is fine. If you have a case where stacking matters — a large
+zone containing smaller "sub-zones" — file an issue and we'll
+build a zone-stack abstraction.
+
+### Performance
+
+Per-zone cost is negligible — three integer-keyed Dictionary
+operations per frame during a ramp (typically 800 ms after a
+zone transition), then nothing until the next entry/exit. The
+underlying engine parameter changes are atomic writes; no
+audio-thread synchronization.
+
 ## Where to find more
 
 - [`docs/godot_quickstart.md`](godot_quickstart.md) — start here

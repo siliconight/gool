@@ -22,6 +22,121 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.32.0] - 2026-05-20 — Phase 5.3: reverb zones that match the room
+
+Completes the Phase 5 material trilogy: the same `AudioMaterial`
+taxonomy that drives impact sounds (5.1) and through-wall occlusion
+(5.2) now drives the acoustic character of *spaces themselves*.
+Drop a `ReverbZone` into a level, pick a material in the inspector
+(Concrete / Wood / Foliage / etc.), and the room reverbs like that
+material when the listener walks in.
+
+### What changed
+
+The engine side already had the `ReverbPresetByMaterial` table
+(per-material decay, lf_damping, hf_damping, diffusion) sitting
+in `geometry_query.h` from the v0.29 era — exposed to designers
+but nothing was consuming it. The existing `ReverbZone` prefab was
+a stub with `_apply_zone_settings` and `_restore_default_settings`
+left as no-ops awaiting the bus-parameter binding (which had
+shipped in v0.28 as `set_effect_parameter`, just never gotten
+wired up here).
+
+v0.32.0 connects all of it.
+
+### New API surface
+
+**`Gool.reverb_preset_for_material(material: int) -> Dictionary`**
+returns the engine's per-material preset as a Dictionary with
+keys `decay`, `lf_damping`, `hf_damping`, `diffusion` (all floats
+in [0, 1]). Out-of-range material values fall through to the
+Default preset.
+
+Underlying C++ binding `get_reverb_preset_for_material(int)` on
+`GoolAudioRuntime` exposes the same data for hosts that want
+it directly.
+
+### `ReverbZone` prefab — actually does something now
+
+New `material` inspector property (enum of MATERIAL_DEFAULT through
+MATERIAL_FOLIAGE). When set to a non-Default value, the zone
+applies the engine's per-material preset on listener entry. When
+left at Default, the zone uses its per-parameter exports
+(`decay` / `lf_damping` / `hf_damping` / `diffusion`) verbatim.
+Either way `wet_gain_db` always applies — it's the "how much
+reverb you hear" knob, independent from acoustic character.
+
+Implementation: on `_ready`, the zone scans the configured bus
+(default "Sfx") for a Reverb effect, caches its chain index,
+and snapshots the current parameter values as exit-restore
+defaults. On listener entry the zone smoothly ramps the five
+parameters (four character + wet) toward the target over
+`transition_ms` (default 800 ms). On exit it ramps back to the
+captured defaults. The ramp is GDScript-driven via `_process`,
+calling `set_effect_parameter` per frame during the transition;
+when the ramp completes the zone goes inert until the next
+entry/exit.
+
+Inert states (no warning storm on every parameter set):
+
+- Target bus has no Reverb effect → warn once at `_ready`, zone
+  goes inert (no silent failure but no console spam either).
+- Target bus doesn't exist → same warning, same inert state.
+- Listener body not in the configured group → ignored silently
+  (matches existing collision-area conventions).
+
+### Authoring guidance
+
+The historical `room_size` / `damping` exports from v0.21 were
+removed in this rewrite. v0.21 was never functional (no-op zone
+methods), so no projects depended on those names actually doing
+anything; the new `decay` / `hf_damping` / `lf_damping` /
+`diffusion` quartet matches both the engine's parameter naming
+and the Dattorro plate's actual parameter semantics. If you have
+inspector-set values from v0.21-era ReverbZones, the values will
+need to be re-entered under the new parameter names — but again,
+they had no audible effect before this release.
+
+### Designer docs
+
+New cookbook section 13 "Reverb that matches the room", explicitly
+framed as the closing piece of the Phase 5 trilogy. Walks through
+the minimum viable setup (3 prerequisites), per-material feel
+guidance, when to use Default + manual values, and the
+stacked-zone limitation (most recently entered zone wins; tracked
+for future iteration).
+
+### Touch summary
+
+- `godot/src/gool_godot.cpp`: new `get_reverb_preset_for_material`
+  binding method + ClassDB registration
+- `godot/addons/gool/runtime_singleton.gd`: new
+  `reverb_preset_for_material` GDScript wrapper
+- `godot/addons/gool/prefabs/reverb_zone.gd`: full rewrite from
+  the v0.21 stub — material-aware preset path, per-parameter
+  override path, effect-index auto-discovery, captured-default
+  restore, GDScript-side parameter ramping
+- `docs/cookbook.md`: new section 13
+
+### Known: stacked / overlapping zones
+
+The current implementation handles single-zone-at-a-time correctly
+but doesn't model a zone stack. Overlapping zones aren't a common
+shape for game levels — rooms don't usually nest — so this is
+ship-acceptable for now. If a project hits a case where it matters
+(an outer "park" zone with inner "gazebo" zones, say), the fix
+is a zone-stack abstraction in `runtime_singleton.gd` that tracks
+which zones are active per listener and restores to the topmost
+non-exiting zone instead of to defaults. Tracked for future work.
+
+### Known: deferred preset-table tuning, again
+
+The `ReverbPresetByMaterial` values (concrete decay 0.85, foliage
+damping 0.85, etc.) remain at their v0.29 defaults. Now that they
+actually drive an audible zone, this is the right release after
+which to listen and judge. Tuning passes will follow as separate
+small releases.
+
 ## [0.31.0] - 2026-05-20 — Phase 5.2: occlusion through walls (it just works)
 
 Sounds now muffle when a wall is between them and the listener,
@@ -14352,6 +14467,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.32.0]: https://github.com/siliconight/gool/releases/tag/v0.32.0
 [0.31.0]: https://github.com/siliconight/gool/releases/tag/v0.31.0
 [0.30.2]: https://github.com/siliconight/gool/releases/tag/v0.30.2
 [0.30.1]: https://github.com/siliconight/gool/releases/tag/v0.30.1
