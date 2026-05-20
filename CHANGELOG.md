@@ -22,6 +22,87 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.39.0] - 2026-05-20 — DEAD AIR diagnostic refinement: kill false positives, surface the real bug
+
+The mixer's "DEAD AIR: no active voices" warning has been firing every
+2 seconds in any scene with no SFX currently playing — a false positive
+that accused the C++ command dispatch of being broken when in reality
+the engine was just idle. v0.39.0 splits this branch into "truly idle"
+(suppressed) and "real bug case" (emitters exist but voice slots
+didn't promote, kept as WARN with a better diagnosis).
+
+While tracing the symptom we also found a genuine silent-failure path
+in `CreateEmitter`: when the caller passes a valid `soundId` but
+neither a streaming asset nor a pinned PCM asset is loaded under that
+ID, the emitter handle was being returned with no `MixerCommand`
+posted and no log emitted. v0.39.0 logs a WARN in that case so the
+cause is visible.
+
+This release also fixes a latent bug in `include/audio_engine/version.h`:
+the hand-edited version constants had drifted from the CMake project
+version (last bumped in v0.28.7 ten releases ago). `Gool.get_version()`
+on the Godot side has been reporting `"0.28.7"` regardless of the
+actually-shipped binary; v0.39.0 brings them back in sync and adds
+this back to the release checklist.
+
+### Added
+
+- `AudioRuntime::GetActiveEmitterCount()` accessor (and the
+  `AudioRuntimeImpl::` and binding forwarders). Cheap — one count
+  load from the emitter `SlotMap`. Returns 0 before `Initialize` /
+  after `Shutdown`, matching the lifetime semantics of the
+  surrounding diagnostic accessors.
+- `active_emitters` key in the Dictionary returned by
+  `Gool.get_render_stats()` (Godot binding side). Exposes the new
+  engine accessor for the GDScript runtime singleton's dead-air
+  diagnostic.
+
+### Changed
+
+- `runtime_singleton.gd::_log_render_stats()` — the "no active voices"
+  branch of the layered DEAD AIR diagnostic now reads
+  `active_emitters` to discriminate between two distinct symptoms.
+  `active_emitters == 0` (truly idle, expected silence): no warning
+  emitted. `active_emitters > 0 && active_voices == 0` (the real bug
+  case): WARN emitted with an updated message that points at
+  `CreateEmitter` asset-lookup failure as the likely cause, not the
+  mixer dispatch path. Legacy binaries that predate v0.39.0 fall
+  back to the old combined warning (with a hint to upgrade) so
+  users on stale .dlls still get diagnostics.
+- The DEBUG-level "render" log line emitted every 2 seconds now
+  includes the emitter pool count under the `emitters` key.
+
+### Fixed
+
+- `AudioRuntimeImpl::CreateEmitter()` — when `descriptor.soundId !=
+  kInvalidSoundId` but neither `GetStreamingAsset` nor `GetAsset`
+  finds the asset, the function now emits a WARN log
+  (`"CreateEmitter: asset lookup failed"`, category `emitter`)
+  identifying the sound ID and emitter slot. Pre-v0.39.0 this path
+  silently fell through, returning an emitter handle with no mixer
+  command posted — the voice slot would stay `Inactive` forever
+  and the dead-air diagnostic would falsely blame the mixer.
+- `include/audio_engine/version.h` — bumped from `0.28.7` (stale
+  for 10+ releases) to `0.39.0`. `Gool.get_version()` has been
+  reporting the wrong version to GDScript for months; this fixes
+  it.
+
+### Documentation
+
+- `RELEASING.md` checklist already calls out the dual edit between
+  `CMakeLists.txt` and `version.h`; no doc change this release, but
+  the v0.39.0 patch underscores that the checklist needs to be
+  followed (it was getting skipped).
+
+### Compatibility
+
+- No public-API breaks. The new `GetActiveEmitterCount()` accessor
+  is purely additive. The new `active_emitters` key in
+  `get_render_stats` is additive on the Godot binding side — old
+  GDScript that doesn't reference it sees no change. The
+  GDScript runtime singleton handles legacy binaries (those
+  without the new key) gracefully.
+
 ## [0.38.1] - 2026-05-20 — Saturation Phase 1 hotfix: aliasing test was measuring window leakage
 
 Patch release. v0.38.0 shipped with a unit test that failed on all

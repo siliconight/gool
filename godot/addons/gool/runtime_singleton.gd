@@ -491,6 +491,11 @@ func _log_render_stats() -> void:
 	var active_voices: int = stats.get("active_voices", -1)
 	var mixer_peak: float = stats.get("mixer_peak", -1.0)
 	var master_gain: float = stats.get("master_gain", -1.0)
+	# v0.39.0: emitter pool count. -1 means the binary predates v0.39.0
+	# and we should keep the legacy single-branch behavior (i.e.
+	# can't discriminate idle from real bug; fall back to the old
+	# combined warning).
+	var active_emitters: int = stats.get("active_emitters", -1)
 	var delta_invocations: int = invocations - _render_stats_last_invocations
 	var delta_frames: int = frames - _render_stats_last_frames
 	_render_stats_last_invocations = invocations
@@ -507,6 +512,7 @@ func _log_render_stats() -> void:
 			"frames": frames, "dframes": delta_frames,
 			"peak": "%.4f" % peak, "mixer_peak": "%.4f" % mixer_peak,
 			"voices": active_voices, "gain": "%.2f" % master_gain,
+			"emitters": active_emitters,
 			"exc": exceptions,
 		})
 	else:
@@ -532,11 +538,49 @@ func _log_render_stats() -> void:
 	elif peak == 0.0 and delta_frames > 0:
 		# v0.22.8: now use mixer stats to discriminate the cause.
 		if active_voices == 0:
-			GoolLog.warn("mixer", "DEAD AIR: no active voices",
-				{"frames_this_interval": delta_frames,
-				 "cause": "create_emitter returned a handle but voice "
-						+ "slot didn't get promoted from Inactive",
-				 "investigate": "MixerCommand dispatch path in audio_mixer.cpp"})
+			# v0.39.0: split into idle (no emitters) vs real bug
+			# (emitters exist but their voice slots never promoted
+			# out of Inactive). Pre-v0.39.0 this was one combined
+			# warning that fired every 2 seconds in any scene with
+			# no SFX currently playing — a false positive.
+			if active_emitters == 0:
+				# Truly idle. Audio engine is healthy; nothing is
+				# playing. Demote to DEBUG so projects that
+				# silence the mixer category by default don't
+				# see it, but the routine "render" debug log
+				# above already captures the same state so this
+				# extra line would be redundant — skip entirely.
+				pass
+			elif active_emitters > 0:
+				# THE real bug case. Emitters exist (someone
+				# called create_emitter and got handles back) but
+				# none of them have an active voice slot in the
+				# mixer. Most likely cause v0.39.0+: the
+				# CreateEmitter asset-lookup fall-through (look
+				# for "CreateEmitter: asset lookup failed"
+				# warnings in the log just before this fired).
+				# Less likely: command queue overflow (would
+				# also fire underrun warnings) or actual mixer
+				# dispatch bug.
+				GoolLog.warn("mixer", "DEAD AIR: emitters exist but no voice slots active",
+					{"frames_this_interval": delta_frames,
+					 "active_emitters": active_emitters,
+					 "cause": "voice slots didn't promote from Inactive — "
+							+ "likely asset lookup failure in CreateEmitter "
+							+ "(check for 'asset lookup failed' warnings above), "
+							+ "or PostCommand queue full",
+					 "investigate": "audio_runtime.cpp::CreateEmitter, "
+							+ "or mixer command ring depth"})
+			else:
+				# active_emitters == -1: legacy binary without
+				# the v0.39.0 accessor. Fall back to the old
+				# combined warning so users on older binaries
+				# still get diagnostics (just less precise).
+				GoolLog.warn("mixer", "DEAD AIR: no active voices",
+					{"frames_this_interval": delta_frames,
+					 "cause": "no voice slots active; legacy binary "
+							+ "(pre-v0.39.0) can't tell idle from bug",
+					 "action": "upgrade gool to v0.39.0+ for precise diagnosis"})
 		elif mixer_peak == 0.0 and active_voices > 0:
 			GoolLog.warn("mixer", "DEAD AIR: mixer silent with voices active",
 				{"active_voices": active_voices,

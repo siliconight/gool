@@ -64,6 +64,11 @@ void AudioRuntime::ResetMasterPreGainPeak() noexcept {
     impl_->ResetMasterPreGainPeak();
 }
 
+// v0.39.0: emitter pool count for dead-air discrimination.
+uint32_t AudioRuntime::GetActiveEmitterCount() const noexcept {
+    return impl_->GetActiveEmitterCount();
+}
+
 // v0.24.0: per-bus metering wrappers.
 uint32_t AudioRuntime::GetBusCount() const noexcept {
     return impl_->GetBusCount();
@@ -358,6 +363,13 @@ float AudioRuntimeImpl::GetMasterGainLinear() const noexcept {
 }
 void AudioRuntimeImpl::ResetMasterPreGainPeak() noexcept {
     if (mixer_) mixer_->ResetMasterPreGainPeak();
+}
+
+// v0.39.0: emitter pool count. Cheap (SlotMap::Count is one load).
+// Returns 0 before Initialize / after Shutdown, matching the
+// lifetime semantics of the surrounding accessors.
+uint32_t AudioRuntimeImpl::GetActiveEmitterCount() const noexcept {
+    return emitters_ ? emitters_->Count() : 0u;
 }
 
 // v0.24.0: per-bus metering forwarders. busGraph_ ownership matches
@@ -724,6 +736,35 @@ Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& d
                 PostMixerStartStreamingForEmitter(*rec, *stream);
             } else if (auto* asset = assets_->GetAsset(rec->descriptor.soundId)) {
                 PostMixerStartForEmitter(*rec, *asset);
+            } else {
+                // v0.39.0: silent-failure trap. soundId is non-invalid
+                // (so the caller meant to play something), but neither
+                // a streaming asset nor a pinned PCM asset was found
+                // under that ID. This typically means the asset was
+                // never registered, was unregistered, or was evicted
+                // before the emitter was created. Pre-v0.39.0 this
+                // path just fell through — the emitter handle was
+                // returned, no MixerCommand was posted, and the voice
+                // slot stayed Inactive forever. The "DEAD AIR: no
+                // active voices" diagnostic accused the mixer dispatch
+                // of being broken; in reality the dispatch never ran.
+                // We surface the cause here so it actually points at
+                // the right thing.
+                if (ShouldLog_(LogLevel::Warn)) {
+                    const LogField fields[] = {
+                        LogField::UInt("sound_id", static_cast<uint64_t>(
+                            rec->descriptor.soundId)),
+                        LogField::UInt("emitter_slot", static_cast<uint64_t>(slot)),
+                        LogField::Str ("reason",
+                            "soundId valid but asset not loaded "
+                            "(neither streaming nor PCM); emitter "
+                            "returned with no voice"),
+                    };
+                    Log_(static_cast<uint8_t>(LogLevel::Warn),
+                          LogCategory::kEmitter,
+                          "CreateEmitter: asset lookup failed",
+                          fields);
+                }
             }
         }
     }

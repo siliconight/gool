@@ -851,6 +851,15 @@ public:
             static_cast<int64_t>(runtime_->GetActiveVoicesApprox());
         d["mixer_peak"]    = runtime_->GetMasterPreGainPeak();
         d["master_gain"]   = runtime_->GetMasterGainLinear();
+        // v0.39.0: emitter pool count for the dead-air diagnostic.
+        // Lets GDScript distinguish "idle game with no emitters
+        // active" (normal silence — not a bug) from "emitters
+        // exist but their voice slots never promoted out of
+        // Inactive" (the real bug case). Without this, the warning
+        // produced false positives every 2 seconds in any scene
+        // with no SFX currently playing.
+        d["active_emitters"] =
+            static_cast<int64_t>(runtime_->GetActiveEmitterCount());
         return d;
     }
 

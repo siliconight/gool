@@ -243,6 +243,16 @@ public:
     float    GetMasterGainLinear() const noexcept;
     void     ResetMasterPreGainPeak() noexcept;
 
+    // v0.39.0: how many emitters are currently allocated in the
+    // emitter pool. Cheap (one count load). The GDScript dead-air
+    // diagnostic uses this to discriminate "idle game with no
+    // emitters active" (expected silence, not a bug) from "emitters
+    // exist but their voice slots never promoted out of Inactive"
+    // (the real bug case). Without this number the warning produces
+    // false positives every 2 seconds in any scene with no SFX
+    // currently playing.
+    uint32_t GetActiveEmitterCount() const noexcept;
+
     // ---- v0.24.0: per-bus metering for the editor mixer dock --------------
     //
     // Light enumeration + read-and-reset accessors over the bus graph so a

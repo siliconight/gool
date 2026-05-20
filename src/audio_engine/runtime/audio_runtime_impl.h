@@ -104,6 +104,10 @@ public:
     float    GetMasterGainLinear() const noexcept;
     void     ResetMasterPreGainPeak() noexcept;
 
+    // v0.39.0: emitter pool count for dead-air discrimination.
+    // See AudioRuntime::GetActiveEmitterCount() for the rationale.
+    uint32_t GetActiveEmitterCount() const noexcept;
+
     // v0.24.0: per-bus metering for the editor mixer dock. Forwarders
     // to BusGraph (which actually owns the bus list and atomic peaks).
     // Same lifetime semantics as the master-peak accessors above: zero
