@@ -455,6 +455,16 @@ public:
                                        "material"),
                               &GoolAudioRuntime::get_material_eq_for_material);
 
+        // v0.34.0 (Phase 6.B): apply a material's EQ curve to a
+        // named bus's 3-biquad chain. The convention from cookbook
+        // section 14 — first biquad is LowShelf, second is Peak,
+        // third is HighShelf — is what this method writes to.
+        // Returns false if the bus or chain isn't shaped right
+        // (caller can decide whether to warn).
+        ClassDB::bind_method(D_METHOD("apply_material_eq_to_bus",
+                                       "bus_name", "material"),
+                              &GoolAudioRuntime::apply_material_eq_to_bus);
+
         // v0.31.0 (Phase 5.2): live occlusion controls.
         ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"),
                               &GoolAudioRuntime::set_occlusion_enabled);
@@ -1482,6 +1492,88 @@ public:
         out["high_freq_hz"] = static_cast<double>(c.highFreqHz);
         out["is_neutral"]   = audio::MaterialEqIsNeutral(c);
         return out;
+    }
+
+    // v0.34.0 (Phase 6.B): push a material's EQ curve to the
+    // first three biquads on a named bus. By convention from
+    // cookbook section 14 those biquads are LowShelf / Peak /
+    // HighShelf in that order; the gool runtime can't currently
+    // introspect a biquad's *subtype* (GetEffectKind reports
+    // "BiquadFilter" for all three), so this method trusts the
+    // authoring contract and writes to indices 0, 1, 2.
+    //
+    // Designers wanting non-standard arrangements should call
+    // set_effect_parameter directly with the curve values from
+    // get_material_eq_for_material.
+    //
+    // Returns false if:
+    //   - the bus doesn't exist
+    //   - the first 3 effects on the bus aren't all biquads
+    //     (the chain isn't shaped right — caller should warn the
+    //     designer their bus config doesn't match the EQ contract)
+    //
+    // Neutral materials (Air / Default) still get written through
+    // — the caller is responsible for checking is_neutral and
+    // skipping the call if it wants to optimize. From this
+    // method's perspective, writing 0 dB to all three biquads is
+    // a valid "reset to flat" operation.
+    bool apply_material_eq_to_bus(const String& bus_name, int material) {
+        if (!runtime_) return false;
+        const auto utf8 = bus_name.utf8();
+        const audio::BusId bus_id = runtime_->FindBusIdByName(
+            std::string_view(utf8.get_data(), utf8.length()));
+        if (bus_id == audio::kInvalidBusId) {
+            return false;
+        }
+        // Find the bus's index in the engine's bus array (for the
+        // effect-introspection API which uses indices, not BusId
+        // tokens). We mirror the same lookup that get_bus_effects
+        // does.
+        const uint32_t n = runtime_->GetBusCount();
+        uint32_t bus_idx = 0xFFFFFFFFu;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (bus_name == String::utf8(runtime_->GetBusName(i))) {
+                bus_idx = i;
+                break;
+            }
+        }
+        if (bus_idx == 0xFFFFFFFFu) return false;
+
+        // Verify the first 3 effects are biquads. We don't know
+        // their subtypes (LowShelf vs Peak vs HighShelf) but we
+        // can at least catch the case where someone wrote
+        // Compressor first by mistake.
+        const uint32_t effect_count = runtime_->GetEffectCount(bus_idx);
+        if (effect_count < 3) return false;
+        for (uint32_t i = 0; i < 3; ++i) {
+            if (runtime_->GetEffectKind(bus_idx, i)
+                != audio::EffectKind::BiquadFilter) {
+                return false;
+            }
+        }
+
+        // Look up the curve and push.
+        audio::AudioMaterial m = audio::AudioMaterial::Default;
+        if (material >= 0
+            && material < static_cast<int>(audio::kAudioMaterialCount)) {
+            m = static_cast<audio::AudioMaterial>(material);
+        }
+        const audio::MaterialEqCurve c = audio::MaterialEqByMaterial(m);
+
+        namespace EP = audio::EffectParameter;
+        // LowShelf at index 0: cutoff_hz, gain_db. Q stays at its
+        // authored value (transition steepness — designer's call).
+        runtime_->SetEffectParameter(bus_id, 0, EP::Biquad_CutoffHz, c.lowFreqHz);
+        runtime_->SetEffectParameter(bus_id, 0, EP::Biquad_GainDb,   c.lowGainDb);
+        // Peak at index 1: cutoff_hz (center), Q (sharpness),
+        // gain_db.
+        runtime_->SetEffectParameter(bus_id, 1, EP::Biquad_CutoffHz, c.midFreqHz);
+        runtime_->SetEffectParameter(bus_id, 1, EP::Biquad_Q,        c.midQ);
+        runtime_->SetEffectParameter(bus_id, 1, EP::Biquad_GainDb,   c.midGainDb);
+        // HighShelf at index 2: cutoff_hz, gain_db.
+        runtime_->SetEffectParameter(bus_id, 2, EP::Biquad_CutoffHz, c.highFreqHz);
+        runtime_->SetEffectParameter(bus_id, 2, EP::Biquad_GainDb,   c.highGainDb);
+        return true;
     }
 
     // v0.31.0 (Phase 5.2): live occlusion controls. Both safe to call

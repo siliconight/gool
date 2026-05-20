@@ -22,6 +22,122 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.34.0] - 2026-05-20 — Phase 6.B: automatic per-material impact EQ
+
+Wires the v0.33.0 per-material EQ curves into the impact playback
+path. `Gool.play_impact_sound("bullet_impact", position, material)`
+now automatically applies the material's EQ before playing, so the
+same `impact.generic.wav` sounds audibly distinct on Concrete vs
+Wood vs Foliage without any designer setup beyond a one-time bus
+authoring step.
+
+### How it works
+
+A designer adds an `ImpactEq` bus to their `gool/config.json`,
+parented under `Sfx` (or wherever they want colored impacts to
+route), with three biquads in chain order: LowShelf, Peak,
+HighShelf. They register their impact sounds with
+`target_bus_name="ImpactEq"`. From then on, every
+`play_impact_sound` call pushes the material's EQ curve to the
+bus's biquads just before triggering the sound.
+
+The runtime checks the bus configuration once at startup,
+caches the bus name, and only pushes parameters on impact plays
+if the cached name is valid. If the bus is missing or
+mis-shaped, a single warning explains the fix and the
+auto-EQ silently disables — impacts still play correctly, just
+without per-material coloring.
+
+### What this trades off
+
+The implementation pushes EQ to a single shared bus rather than
+per-emitter. Back-to-back impacts of different materials within
+the same ~5 ms audio block share the most-recently-set EQ for
+their overlapping tails. For typical FPS gameplay (rapid fire
+into one wall = same material per shot) this is invisible. For
+unusual cases (shotgun pellets hitting multiple materials
+simultaneously) the last material processed wins. If this ever
+becomes audible in real-world use, the fix is per-emitter EQ
+— a multi-release engine change planned for a future phase.
+
+### Why ship the bus-routing approach now
+
+Per-emitter EQ requires adding a new per-voice DSP chain to the
+audio engine — multi-file engine surgery touching EmitterDescriptor,
+VoiceSource, the mixer, and the create-emitter path. Real work
+that should follow ear-testing of the curves themselves.
+
+The bus-routing approach lets us listen to the curves in real
+gameplay *now* and use that experience to inform whether
+per-emitter EQ is even worth the engine investment — same
+discipline as the deferred AudioMaterialDefaults table tuning
+and the deferred ReverbPresetByMaterial table tuning.
+
+### New API surface
+
+**`Gool.apply_material_eq_to_bus(bus_name: String, material: int) -> bool`**
+— GDScript wrapper for the new binding method
+`GoolAudioRuntime::apply_material_eq_to_bus`. Pushes a material's
+EQ curve to a bus's first 3 biquads (which must be LowShelf,
+Peak, HighShelf in that order — the authoring contract from
+cookbook section 14). Returns false if the bus doesn't exist or
+the chain isn't shaped right.
+
+Most designers won't call this directly — `play_impact_sound`
+handles it automatically for the configured impact bus. Use the
+explicit form for non-impact material coloring (a cinematic
+moment that pushes the concrete curve onto an ambient bus, a
+custom UI feedback sound, etc.).
+
+**Project setting** `gool/material_eq/impact_bus` (default
+`"ImpactEq"`). Set to the empty string to disable auto-EQ
+entirely — `play_impact_sound` then behaves as in v0.33.0.
+
+### Authoring contract: the impact EQ bus
+
+The `Gool.apply_material_eq_to_bus` binding writes to bus chain
+indices 0, 1, 2 — assuming they hold LowShelf, Peak, HighShelf
+in that order. The current runtime can't introspect a biquad's
+subtype (`GetEffectKind` reports `BiquadFilter` for all of
+them), so the binding trusts the JSON-authored shape rather
+than scanning at runtime. The cookbook section 14 documents
+this convention. Designers wanting non-standard arrangements
+should call `set_effect_parameter` directly with values from
+`Gool.material_eq_for_material(material)`.
+
+### Designer doc
+
+Cookbook section 14 promoted from "🛠 Foundational" to
+"✨ Convenience" and rewritten:
+
+- New "Phase 6.B automatic path" subsection with the 3-step
+  setup (author the ImpactEq bus, register sounds with the
+  target_bus_name, call play_impact_sound as before).
+- "What you trade off" section explaining the shared-bus
+  caveat in plain language.
+- "When you'd reach for the manual API" reframed as a
+  decision aid — the manual path is now opt-in for special
+  cases rather than the default workflow.
+
+### Touch summary
+
+- `godot/src/gool_godot.cpp`: `apply_material_eq_to_bus`
+  binding method + ClassDB registration
+- `godot/addons/gool/runtime_singleton.gd`: `_setup_impact_eq`
+  one-shot check at startup, `play_impact_sound` extended,
+  `apply_material_eq_to_bus` GDScript wrapper, new project
+  setting registration
+- `docs/cookbook.md`: section 14 rewrite
+
+### What's not in this release (still)
+
+- No per-emitter EQ stage. Phase 6.B uses bus routing; the
+  per-emitter path is a future option if the trade-off becomes
+  audible.
+- No reverb-zone EQ. That's Phase 6.C.
+- No realism multiplier. That's Phase 6.D.
+- No inspector EQ editor. That's Phase 6.E.
+
 ## [0.33.0] - 2026-05-20 — Phase 6.A: per-material EQ curves (the foundation)
 
 Opens Phase 6 (Acoustic Presence — dynamic EQ) with the
@@ -14593,6 +14709,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.34.0]: https://github.com/siliconight/gool/releases/tag/v0.34.0
 [0.33.0]: https://github.com/siliconight/gool/releases/tag/v0.33.0
 [0.32.0]: https://github.com/siliconight/gool/releases/tag/v0.32.0
 [0.31.0]: https://github.com/siliconight/gool/releases/tag/v0.31.0

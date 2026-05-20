@@ -737,7 +737,7 @@ zone transition), then nothing until the next entry/exit. The
 underlying engine parameter changes are atomic writes; no
 audio-thread synchronization.
 
-## 14 — The sound of a material (Phase 6.A) 🛠 Foundational
+## 14 — The sound of a material (Phase 6.A + 6.B) ✨ Convenience
 
 ### Why a material has a sound
 
@@ -748,17 +748,19 @@ frequency contour that makes "concrete" sound like concrete and
 "wood" sound like wood, even when the source audio is identical.
 
 This is what Phase 6 (Acoustic Presence — dynamic EQ) is about.
-Phase 6.A ships the foundation: the per-material EQ curves
-themselves, expressed as 3-band tone shapes (low shelf + peak +
-high shelf). Subsequent phases will wire them into the playback
-path automatically:
+Phase 6.A defined the per-material EQ curves as a 3-band shape
+(low shelf + peak + high shelf). Phase 6.B wires those curves
+into `play_impact_sound` automatically — the same `impact.generic.wav`
+now sounds audibly different on Concrete vs Wood vs Foliage with
+zero designer setup beyond the one-time bus authoring below.
 
 | Phase | What it does |
 |---|---|
-| **6.A (this)** | defines the curves, exposes them as a Dictionary, designers apply manually |
-| **6.B** (next) | wires curves into impact sounds — a bullet hitting concrete sounds *concrete* without designer setup |
-| **6.C** (later) | wires curves into reverb zones — being *inside* a wooden cabin colors everything you hear with the wood curve |
+| **6.A** (v0.33.0) | defines the curves, exposes them as a Dictionary |
+| **6.B** (v0.34.0, this) | auto-applies curves to impact sounds via the configured EQ bus |
+| **6.C** (next) | wires curves into reverb zones — being *inside* a wooden cabin colors everything you hear with the wood curve |
 | **6.D** (later) | realism multiplier (0..2) — dial back for clarity, push up for surreal/horror |
+| **6.E** (later) | inspector EQ editor on a custom GoolAudioMaterial resource |
 
 ### The curves, in plain terms
 
@@ -865,31 +867,99 @@ func apply_material_eq(bus_name: String, material: int) -> void:
 `EffectParameter` namespace; copy these constants into your
 own GDScript if you want named symbols.)
 
-### When you'd do this manually
+### The Phase 6.B automatic path: zero-touch impact coloring
 
-For most designers, "apply material EQ manually" isn't something
-you'd reach for in v0.33.0 — 6.B/6.C will automate the common
-cases (impacts color themselves on hit, zones color the listener
-space). The manual path matters when:
+In v0.34.0 (this release), `Gool.play_impact_sound` handles the
+parameter-pushing automatically. The designer setup:
+
+**Step 1: author an "ImpactEq" bus** in your `gool/config.json`,
+parent it under `Sfx` (or wherever you want material-colored
+impacts to route), with the standard 3-biquad chain:
+
+```json
+{
+  "name": "ImpactEq",
+  "parent": "Sfx",
+  "effects": [
+    { "kind": "biquad", "biquad_type": "lowshelf",
+      "cutoff_hz": 200,  "q": 0.7, "biquad_gain_db": 0 },
+    { "kind": "biquad", "biquad_type": "peak",
+      "cutoff_hz": 1000, "q": 1.0, "biquad_gain_db": 0 },
+    { "kind": "biquad", "biquad_type": "highshelf",
+      "cutoff_hz": 8000, "q": 0.7, "biquad_gain_db": 0 }
+  ]
+}
+```
+
+The chain starts at 0 dB across the board — a no-op until the
+first impact pushes a material curve into it.
+
+**Step 2: register your impact sounds with `target_bus_name="ImpactEq"`**
+so they route through the EQ chain:
+
+```gdscript
+Gool.register_sound_definition(
+    "impact.generic", true, false, 1.0, 30.0, 0.0,
+    Gool.CATEGORY_SFX,
+    "ImpactEq")   # target_bus_name — sends to the EQ-aware bus
+```
+
+**Step 3: call `play_impact_sound` as before.** Gool detects the
+configured bus at startup, verifies the chain shape, and from
+then on pushes the per-material curve before each impact plays:
+
+```gdscript
+Gool.play_impact_sound("bullet_impact", hit.position, material)
+```
+
+That's it. Concrete hits sound concrete. Wood hits sound wood.
+Foliage hits sound soft. No per-emitter wiring, no extra code.
+
+**Project setting** to point at a different bus or disable
+entirely: `gool/material_eq/impact_bus` (default `"ImpactEq"`).
+Set to `""` to opt out of auto-EQ — `play_impact_sound` then
+behaves exactly as in v0.33.0.
+
+**Graceful degradation.** If the configured bus doesn't exist
+in your config, or doesn't have the 3-biquad chain shape, the
+auto-EQ behavior silently disables on startup with a single
+warning explaining what to fix. Impacts still play correctly
+through whatever bus they're registered to target — they just
+lack the per-material coloring.
+
+### What you trade off
+
+The implementation pushes EQ parameters to a single shared bus
+just before each impact. This means **back-to-back impacts of
+different materials share the most-recent material's coloring
+for a few milliseconds** while the new params propagate (~5 ms
+at typical buffer sizes). For an FPS where a player is firing
+into one wall (same material per shot) this is invisible. For
+the unusual case of rapid-fire alternation across materials —
+e.g. a shotgun pellet pattern hitting concrete + wood + foliage
+simultaneously — the last material the engine processes wins
+for the overlapping tails. Practically rare; if it ever becomes
+audible in a real situation, the fix is a per-emitter EQ stage
+(planned for a future release if needed).
+
+### When you'd reach for the manual API
+
+The manual `set_effect_parameter`-driven path from earlier in
+this section is still the right tool when:
 
 - You want EQ to follow a non-standard event (player crouches
-  behind a concrete pillar → push the concrete curve onto the
-  ambient bus).
-- You're prototyping a custom audio behavior that 6.B/6.C
-  won't cover.
-- You want to crossfade between two materials' curves smoothly
+  behind a concrete pillar → push the concrete curve onto an
+  ambient bus that isn't the impact bus).
+- You're crossfading between two materials' curves smoothly
   (lerp the gain values yourself; the cutoff frequencies don't
   need to crossfade because they're frequency-domain anchors,
   not amplitudes).
+- You want material coloring on something that isn't an impact
+  sound — `Gool.apply_material_eq_to_bus(bus_name, material)`
+  is the explicit form, with the same authoring contract
+  (first 3 biquads on the bus are LowShelf / Peak / HighShelf).
 
 ### What's coming
-
-**Phase 6.B** will add automatic source-material EQ to the
-impact playback path. `Gool.play_impact_sound(name, position,
-material)` will route through a per-emitter EQ stage applying
-the material's curve, so the same `impact.generic.wav` sounds
-audibly different on Concrete vs Wood vs Foliage without the
-designer authoring per-material variants.
 
 **Phase 6.C** will add listener-space EQ to the `ReverbZone`
 prefab. When the listener is inside a Wood zone, all sound

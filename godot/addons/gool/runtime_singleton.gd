@@ -31,6 +31,22 @@ var _music_state: String = ""
 # voice playback for the same player works without state coordination.
 var _voice_counter: int = 0
 
+# v0.34.0 (Phase 6.B): per-material impact EQ state.
+#
+# The autoload checks once at _ready whether the configured bus
+# (default "ImpactEq") exists with the 3-biquad shape from cookbook
+# section 14. If yes, `_impact_eq_bus_name` holds the bus name and
+# `play_impact_sound` automatically pushes the material's EQ curve
+# before playing. If no, it stays empty and the auto-EQ behavior is
+# silently disabled — impacts still play through their normal bus
+# routing, just without the per-material coloration.
+#
+# The check is one-shot to avoid re-scanning the bus graph on every
+# impact (impacts can fire at 60+ Hz in a shooter, and get_bus_effects
+# is O(buses × effects)).
+const _IMPACT_EQ_BUS_SETTING := "gool/material_eq/impact_bus"
+var _impact_eq_bus_name: String = ""
+
 signal ready_to_play
 
 func _ready() -> void:
@@ -136,6 +152,14 @@ func _ready() -> void:
 		GoolLog.info("runtime", "audio device unknown",
 			{"reason": "backend doesn't expose name"})
 	_ready_emitted = true
+	# v0.34.0 (Phase 6.B): set up automatic per-material EQ for
+	# impact sounds. Reads the configured impact-EQ bus name from
+	# project settings, verifies its effect chain matches the 3-
+	# biquad convention from cookbook section 14, and caches the
+	# result. If anything's off, the auto-EQ silently disables
+	# (with a single warning) and impacts still play through
+	# their normal bus routing.
+	_setup_impact_eq()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -902,6 +926,20 @@ func material_from_collider(node: Node) -> int:
 ## "Default" bucket; if that's also missing, plays nothing (the
 ## lenient rule — see docs/asset_pipeline.md).
 ##
+## v0.34.0 (Phase 6.B): when an impact-EQ bus is configured (the
+## project setting `gool/material_eq/impact_bus`, default "ImpactEq")
+## and the bus has the conventional 3-biquad shape (LowShelf →
+## Peak → HighShelf), the material's EQ curve is automatically
+## pushed to that bus before playback. Concrete impacts get the
+## upper-mid bite, wood impacts get the warm low-mid body, foliage
+## impacts get the broadband softness — without designer setup
+## beyond the bus authoring.
+##
+## If the bus doesn't exist or doesn't match the convention, the
+## auto-EQ behavior is silently disabled and the impact plays
+## through its normal bus routing without per-material coloration.
+## A single warning at startup explains why.
+##
 ## Typical use in a weapon's _try_fire:
 ##   var hit = space_state.intersect_ray(query)
 ##   if hit:
@@ -911,7 +949,104 @@ func material_from_collider(node: Node) -> int:
 ## For non-by_material groups (or plain sounds), `material` is
 ## ignored and behavior matches `play_sound_at_location`.
 func play_impact_sound(name: String, position: Vector3, material: int) -> void:
+	# v0.34.0: push the material's EQ curve to the impact bus
+	# before play. The C++ method is a no-op for unrecognized
+	# bus configurations, but our _setup_impact_eq has already
+	# verified the bus is shaped right at startup, so this is
+	# the fast path (write 7 atomic params, then play).
+	#
+	# Skip the apply call entirely for materials whose curves are
+	# neutral (Air, Default) — pushing zeros for those is correct
+	# but wasteful, and skipping also avoids relaxing the EQ for
+	# an unrelated impact that was just colored for, say, Concrete.
+	# (If a Concrete impact at t=0 sets the EQ, and a Default
+	# impact at t=10ms reset it to flat, the Concrete impact's
+	# tail would lose its color. The "skip Default" rule preserves
+	# the most recent non-neutral material's coloring until another
+	# non-neutral impact overwrites it.)
+	if _impact_eq_bus_name != "" \
+			and material != MATERIAL_DEFAULT \
+			and material != MATERIAL_AIR:
+		_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material)
 	_runtime.play_sound_at_location_for_material(name, position, material)
+
+# v0.34.0 (Phase 6.B): one-shot check at _ready to determine
+# whether the auto-EQ for impacts is viable. Reads the configured
+# bus name from project settings, registers the setting if absent,
+# verifies the bus has at least 3 effects of kind BiquadFilter at
+# indices 0, 1, 2. If anything's off, warns once and leaves
+# `_impact_eq_bus_name` empty (auto-EQ disabled).
+func _setup_impact_eq() -> void:
+	# Register the project setting on first run so it appears
+	# editable under Project Settings → General → Gool → Material Eq.
+	# Default "ImpactEq" matches the bus name shipped in the
+	# default gool config; empty string disables the auto-EQ
+	# behavior entirely (designers can opt out without touching
+	# their bus graph).
+	if not ProjectSettings.has_setting(_IMPACT_EQ_BUS_SETTING):
+		ProjectSettings.set_setting(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
+		ProjectSettings.set_initial_value(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
+	var configured: String = ProjectSettings.get_setting(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
+	if configured == "":
+		# Designer explicitly disabled auto-EQ. No warning — this is
+		# a valid choice (e.g. for projects that handle material
+		# coloring through some other mechanism).
+		return
+
+	# Verify the bus exists with the right shape.
+	var effects: Array = _runtime.get_bus_effects(configured)
+	if effects.is_empty():
+		push_warning(
+			"[gool] Phase 6.B impact EQ disabled: bus '%s' " % configured
+			+ "not found in the gool config (or has no effects). "
+			+ "Add a bus with 3 biquads (LowShelf → Peak → HighShelf) "
+			+ "to enable automatic per-material impact coloring. "
+			+ "See docs/cookbook.md section 14 for the authoring "
+			+ "contract. Set gool/material_eq/impact_bus to '' to "
+			+ "suppress this warning."
+		)
+		return
+	if effects.size() < 3:
+		push_warning(
+			"[gool] Phase 6.B impact EQ disabled: bus '%s' " % configured
+			+ "has only %d effect(s); need at least 3 biquads. " % effects.size()
+			+ "See docs/cookbook.md section 14."
+		)
+		return
+	for i in range(3):
+		var e: Dictionary = effects[i]
+		var kind_name: String = String(e.get("kind_name", ""))
+		if kind_name != "Biquad":
+			push_warning(
+				"[gool] Phase 6.B impact EQ disabled: bus '%s' " % configured
+				+ "effect #%d is '%s', expected 'Biquad'. " % [i, kind_name]
+				+ "The first three effects on the impact EQ bus must "
+				+ "be biquads in order LowShelf → Peak → HighShelf. "
+				+ "See docs/cookbook.md section 14."
+			)
+			return
+
+	# All checks passed. Cache the bus name; play_impact_sound
+	# will use it on every impact from here on.
+	_impact_eq_bus_name = configured
+	GoolLog.info("runtime", "phase 6.B impact eq enabled",
+		{"bus": configured})
+
+## Apply a material's 3-band EQ curve to a named bus. The bus must
+## have at least 3 effects, and the first three must be biquads in
+## order LowShelf / Peak / HighShelf (cookbook section 14
+## convention). Returns true on success, false if the bus or chain
+## isn't shaped right.
+##
+## Most designers don't need to call this directly — `play_impact_sound`
+## handles it automatically for the configured impact-EQ bus. Use
+## this when applying material coloring to a non-impact context
+## (e.g. a custom UI sound, a cinematic moment, a one-off whose
+## bus isn't the default impact bus).
+func apply_material_eq_to_bus(bus_name: String, material: int) -> bool:
+	if not is_initialized():
+		return false
+	return _runtime.apply_material_eq_to_bus(bus_name, material)
 
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
