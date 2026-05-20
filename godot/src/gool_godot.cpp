@@ -308,9 +308,10 @@ public:
         ClassDB::bind_method(D_METHOD("find_bus_id_by_name", "name"),
                               &GoolAudioRuntime::find_bus_id_by_name);
         ClassDB::bind_method(D_METHOD("load_sound_bank_from_json",
-                                       "json_string", "gpak_path"),
+                                       "json_string", "gpak_path",
+                                       "skip_validation"),
                               &GoolAudioRuntime::load_sound_bank_from_json,
-                              DEFVAL(""));
+                              DEFVAL(""), DEFVAL(false));
 
         // Playback (one-shot + handle-based).
         ClassDB::bind_method(D_METHOD("play_sound_at_location",
@@ -1204,9 +1205,20 @@ public:
     }
 
     bool load_sound_bank_from_json(const String& json_string,
-                                     const String& gpak_path) {
+                                     const String& gpak_path,
+                                     bool           skip_validation) {
         if (!runtime_ || !bank_) return false;
         audio::SoundBankLoadOptions opts;
+        // skip_validation=true is for the "group-only" authoring
+        // pattern: a JSON bank that declares groups whose members
+        // are sounds the runtime knows about from outside the bank
+        // (programmatic registration via register_pcm_sound /
+        // register_sound_from_stream). With validation off, the
+        // bank's pass-3 resolver hashes unknown member names rather
+        // than dropping them, so the groups resolve against the
+        // runtime's existing registrations. See docs/asset_pipeline.md
+        // "Group-only JSON banks" for the designer-facing pattern.
+        opts.validateReferences = !skip_validation;
         if (gpak_path.length() > 0) {
             pak_ = std::make_unique<audio::PakReader>();
             const auto utf8 = gpak_path.utf8();

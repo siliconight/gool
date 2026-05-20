@@ -702,6 +702,76 @@ void TestByMaterialAllBucketsEmptyRejected() {
     rt.Shutdown();
 }
 
+void TestByMaterialUnknownMemberFallsBackToHashWhenValidationSkipped() {
+    std::cout << "  [by_material: members not in JSON resolve via "
+                 "HashSoundName when validateReferences=false]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    // Pre-register a sound via the runtime path (mimics
+    // register_pcm_sound from GDScript). The bank's JSON won't
+    // declare this sound, but the group will reference it.
+    PreregisterSynthetic(rt, {"impact.runtime.01"});
+    const char* json = R"({
+        "version": 1,
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Concrete": ["impact.runtime.01"],
+                    "Default":  ["impact.runtime.01"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    audio::SoundBankLoadOptions opts;
+    opts.validateReferences = false;
+    auto r = bank.LoadFromJsonString(rt, json, opts);
+    assert(r.success);
+    assert(r.groupsLoaded == 1u);
+
+    // The bank's local soundIds is empty (no sounds declared in
+    // JSON), but the group's resolver hashed the member name. That
+    // hash matches what PreregisterSynthetic used for runtime
+    // registration. So Find returns the runtime-registered id.
+    const audio::AudioSoundId expected =
+        audio::HashSoundName("impact.runtime.01");
+    assert(bank.Find("bullet_impact", audio::AudioMaterial::Concrete)
+           == expected);
+    // Foliage (unmapped) falls through to Default bucket, which
+    // contains the same hashed id.
+    assert(bank.Find("bullet_impact", audio::AudioMaterial::Foliage)
+           == expected);
+    rt.Shutdown();
+}
+
+void TestByMaterialValidationStillCatchesTyposWhenOn() {
+    std::cout << "  [by_material: undeclared member still rejected "
+                 "when validateReferences=true (default)]\n";
+    AE_TEST_SETUP_RUNTIME(rt);
+    // Same JSON as the test above, same not-in-JSON member name.
+    // But this time validation is on (the default). Should fail.
+    const char* json = R"({
+        "version": 1,
+        "groups": [
+            {
+                "name":   "bullet_impact",
+                "policy": "by_material",
+                "members_by_material": {
+                    "Concrete": ["impact.not_declared.01"]
+                }
+            }
+        ]
+    })";
+
+    audio::SoundBank bank;
+    auto r = bank.LoadFromJsonString(rt, json);  // default opts
+    assert(!r.success);
+    assert(r.errorMessage.find("impact.not_declared.01") != std::string::npos);
+    rt.Shutdown();
+}
+
 } // namespace
 
 int main() {
@@ -724,6 +794,8 @@ int main() {
     TestByMaterialIgnoresMaterialForOtherPolicies();
     TestByMaterialUnknownMaterialKeyRejected();
     TestByMaterialAllBucketsEmptyRejected();
+    TestByMaterialUnknownMemberFallsBackToHashWhenValidationSkipped();
+    TestByMaterialValidationStillCatchesTyposWhenOn();
     TestPerformance();
     std::cout << "[sound_bank_test] OK\n";
     return 0;

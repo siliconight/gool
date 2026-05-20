@@ -159,6 +159,53 @@ group is equivalent to `Find(name, Default)` — it always picks
 from the `Default` bucket, or returns `kInvalidSoundId` if
 that bucket is missing.
 
+#### Group-only JSON banks
+
+A common workflow: the project registers individual sounds
+programmatically (via `Gool.register_sound_from_stream` or
+`Gool.register_pcm_sound` from GDScript, or via a
+`GoolFolderSoundBank` resource scanning a folder) and only needs
+the JSON bank for the *group* definitions. Authoring the same
+sound list twice (once programmatic, once in JSON) is annoying
+and error-prone.
+
+The `skip_validation` parameter on `load_sound_bank_from_json`
+exists for this case:
+
+```gdscript
+var json = """{
+  "version": 1,
+  "groups": [
+    {
+      "name":   "bullet_impact",
+      "policy": "by_material",
+      "members_by_material": {
+        "Concrete": ["impact.concrete.01", "impact.concrete.02"],
+        "Wood":     ["impact.wood.01"],
+        "Default":  ["impact.generic"]
+      }
+    }
+  ]
+}"""
+Gool.load_sound_bank_from_json(json, "", true)  # skip_validation=true
+```
+
+With `skip_validation=true`, the bank does not require its
+group members to be declared as `sounds` in the same JSON.
+Member names are hashed at load time and resolved against the
+runtime's existing sound registry at play time. If a sound is
+registered under that name (by any path), it plays; if not,
+nothing plays — the lenient rule from
+[`docs/cookbook.md`](cookbook.md) section 11.
+
+Trade-off: typos in member names are no longer caught at load
+time. With validation on (the default), `"impact.concrete.01"`
+mistyped as `"impact.concrete.1"` fails the bank load with a
+line-numbered error. With validation off, the typo loads
+cleanly and silently plays nothing at runtime. Use validation
+on whenever possible; skip it only when the group-only
+workflow demands it.
+
 ---
 
 ## Patterns that show up in real games

@@ -1324,6 +1324,26 @@ SoundBankLoadResult ResolveAndRegister(SoundBankImpl&            impl,
     }
 
     // Pass 3: build groups now that sounds are registered.
+    //
+    // Member-name resolution: each member name is looked up in the
+    // bank's local soundIds table first. If found, we use the id
+    // that table stored. If NOT found, we fall back to
+    // HashSoundName(m) and use that — same hash the runtime uses
+    // when sounds were registered through other paths
+    // (register_pcm_sound, register_sound_from_stream, etc).
+    // This lets a JSON bank declare a group whose members are
+    // sounds the runtime knows about from outside the bank
+    // (programmatic registration, folder-scan resources, etc).
+    //
+    // Authoring contract:
+    //   - validateReferences=true (default): every group member
+    //     must be declared as a sound in the SAME JSON. Typos and
+    //     missing entries are caught at load time.
+    //   - validateReferences=false: members may reference sounds
+    //     registered by any path. Unknown names hash to ids that
+    //     the runtime may or may not have — if not, Find returns
+    //     the hashed id but the runtime silently does nothing on
+    //     play (the lenient rule).
     impl.groups.reserve(parsed.groups.size());
     for (const auto& g : parsed.groups) {
         GroupRuntime& rt = impl.groups[g.name];
@@ -1333,22 +1353,20 @@ SoundBankLoadResult ResolveAndRegister(SoundBankImpl&            impl,
                 rt.memberIdsByMaterial[i].reserve(g.membersByMaterial[i].size());
                 for (const auto& m : g.membersByMaterial[i]) {
                     auto it = impl.soundIds.find(m);
-                    if (it == impl.soundIds.end()) {
-                        // Already validated in pass 1 if the option
-                        // was set; if it wasn't, skip silently.
-                        continue;
-                    }
-                    rt.memberIdsByMaterial[i].push_back(it->second);
+                    const AudioSoundId id = (it != impl.soundIds.end())
+                        ? it->second
+                        : HashSoundName(m);
+                    rt.memberIdsByMaterial[i].push_back(id);
                 }
             }
         } else {
             rt.memberIds.reserve(g.memberNames.size());
             for (const auto& m : g.memberNames) {
                 auto it = impl.soundIds.find(m);
-                if (it == impl.soundIds.end()) {
-                    continue;
-                }
-                rt.memberIds.push_back(it->second);
+                const AudioSoundId id = (it != impl.soundIds.end())
+                    ? it->second
+                    : HashSoundName(m);
+                rt.memberIds.push_back(id);
             }
         }
         ++r.groupsLoaded;

@@ -695,6 +695,36 @@ func find_bus_id_by_name(name: String) -> int:
 func play_sound_at_location(name: String, position: Vector3) -> void:
 	_runtime.play_sound_at_location(name, position)
 
+## Load a JSON sound bank into the runtime.
+##
+## `json_string` is the JSON text — usually from a .json file in
+## res://, loaded via FileAccess.get_file_as_string() or a packed
+## resource. See docs/asset_pipeline.md for the full schema.
+##
+## `gpak_path` is an optional .gpak archive path for bundled
+## binary audio assets. Empty string (default) means the bank
+## reads files via the standard filesystem.
+##
+## `skip_validation` (default false): if true, the bank doesn't
+## require its groups' member sound names to be declared in the
+## same JSON. Use this when authoring a "group-only" bank — a
+## small JSON file with just groups, referencing sounds the
+## runtime knows about from somewhere else (programmatic
+## registration via register_pcm_sound / register_sound_from_stream,
+## or a separate bank already loaded). Unknown member names
+## hash to ids that the runtime resolves at play time — if
+## the runtime has the sound, it plays; if not, silently nothing
+## (the lenient rule from docs/cookbook.md section 11).
+##
+## Returns true on success, false on parse or validation error.
+## On failure, an error with the line number is pushed via
+## push_error so it's visible in the editor's output panel.
+func load_sound_bank_from_json(json_string: String,
+								 gpak_path: String = "",
+								 skip_validation: bool = false) -> bool:
+	return _runtime.load_sound_bank_from_json(
+			json_string, gpak_path, skip_validation)
+
 ## AudioMaterial taxonomy (Phase 5.1).
 ##
 ## Mirrors the C++ `audio::AudioMaterial` enum in

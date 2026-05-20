@@ -22,6 +22,83 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.30.2] - 2026-05-19 — Group-only JSON banks; HashName fallback in group resolution
+
+A small engine change to support the workflow where individual
+sounds are registered programmatically (via `register_pcm_sound`
+or `register_sound_from_stream`) and the JSON bank is used only
+for *group* definitions. Surfaced while wiring the Phase 5.1
+sandbox demo — the existing partial-bank loading path required
+sound declarations in the JSON even when the runtime already
+knew about them.
+
+### What changed
+
+**Pass-3 group resolution** in
+`src/audio_engine/assets/sound_bank.cpp` now falls back to
+`HashSoundName(member)` when a group's member name isn't in
+the bank's local `soundIds` table. Previously the member was
+silently dropped from the group's runtime buckets, leading to
+empty buckets and the lenient-rule "nothing plays" outcome at
+the group level. Now the member's id is hashed and the group
+resolves against the runtime's existing sound registrations.
+
+This matches the contract `play_sound_at_location` has always
+had — the bank knows nothing about `"gunshot"` registered via
+`register_pcm_sound`, but `play_sound_at_location` falls back
+to `HashName("gunshot")` and the runtime plays it. Groups now
+behave the same way.
+
+Validation (when on, the default) still catches typos at load
+time. The fallback only kicks in for the partial-bank loading
+path where validation is intentionally disabled.
+
+### New API surface
+
+`load_sound_bank_from_json` (both C++ and Godot bindings) gains
+a third parameter `skip_validation: bool = false`. When true:
+
+- The bank does not require group members to be declared as
+  `sounds` in the same JSON.
+- Member names are hashed at load time and resolved against
+  the runtime's existing sound registry at play time.
+- Trade-off: typos no longer caught at load. Use only for
+  group-only authoring against pre-registered sounds.
+
+A new GDScript wrapper `Gool.load_sound_bank_from_json(json,
+gpak_path, skip_validation)` was added to the autoload
+singleton — previously callers had to reach into
+`_runtime.load_sound_bank_from_json()` directly.
+
+### Designer-facing docs
+
+`docs/asset_pipeline.md` gained a "Group-only JSON banks"
+subsection under the `by_material` policy documentation,
+walking through the workflow with a concrete code example and
+the trade-offs.
+
+### Tests
+
+Two new unit tests in `tests/unit/sound_bank_test.cpp`:
+
+- `TestByMaterialUnknownMemberFallsBackToHashWhenValidationSkipped`
+  — group members not declared in JSON resolve via HashName
+  when `validateReferences=false`.
+- `TestByMaterialValidationStillCatchesTyposWhenOn` — the
+  default validateReferences=true behavior is unchanged;
+  undeclared members still error at load.
+
+### Touch summary
+
+- `src/audio_engine/assets/sound_bank.cpp`: pass-3 fallback
+  + expanded comment block documenting the contract
+- `godot/src/gool_godot.cpp`: `load_sound_bank_from_json`
+  C++ method + binding gain `skip_validation` param
+- `godot/addons/gool/runtime_singleton.gd`: new wrapper
+  `Gool.load_sound_bank_from_json(...)` with docstring
+- `docs/asset_pipeline.md`: group-only authoring section
+- `tests/unit/sound_bank_test.cpp`: 2 new tests + wiring
+
 ## [0.30.1] - 2026-05-19 — Static-analysis fixup for v0.30.0's new parser
 
 Two trivial fixes for findings introduced by v0.30.0's
@@ -14150,6 +14227,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.30.2]: https://github.com/siliconight/gool/releases/tag/v0.30.2
 [0.30.1]: https://github.com/siliconight/gool/releases/tag/v0.30.1
 [0.30.0]: https://github.com/siliconight/gool/releases/tag/v0.30.0
 [0.29.5]: https://github.com/siliconight/gool/releases/tag/v0.29.5
