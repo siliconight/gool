@@ -737,7 +737,7 @@ zone transition), then nothing until the next entry/exit. The
 underlying engine parameter changes are atomic writes; no
 audio-thread synchronization.
 
-## 14 — The sound of a material (Phase 6.A + 6.B + 6.C) ✨ Convenience
+## 14 — The sound of a material (Phase 6.A + 6.B + 6.C + 6.D) ✨ Convenience
 
 ### Why a material has a sound
 
@@ -755,15 +755,17 @@ now sounds audibly different on Concrete vs Wood vs Foliage with
 zero designer setup beyond the one-time bus authoring. Phase 6.C
 wires curves into `ReverbZone` so being *inside* a wooden cabin
 colors everything you hear with the wood curve — modeling "your
-ears are inside this material."
+ears are inside this material." Phase 6.D adds a single realism
+dial that scales the whole EQ effect uniformly, from "barely
+there" through "as defined" to "amplified for atmosphere."
 
 | Phase | What it does |
 |---|---|
 | **6.A** (v0.33.0) | defines the curves, exposes them as a Dictionary |
 | **6.B** (v0.34.0) | auto-applies curves to impact sounds via the configured EQ bus |
-| **6.C** (v0.35.0, this) | optional listener-space EQ on ReverbZone — coloring everything you hear inside a material |
-| **6.D** (next) | realism multiplier (0..2) — dial back for clarity, push up for surreal/horror |
-| **6.E** (later) | inspector EQ editor on a custom GoolAudioMaterial resource |
+| **6.C** (v0.35.0) | optional listener-space EQ on ReverbZone — coloring everything you hear inside a material |
+| **6.D** (v0.36.0, this) | global realism multiplier (0..2) scaling all material EQ |
+| **6.E** (next) | inspector EQ editor on a custom GoolAudioMaterial resource |
 
 ### The curves, in plain terms
 
@@ -1069,12 +1071,68 @@ zone overrides or this zone exits. This is intentional: the
 listener EQ is a positive editorial choice, not a state that
 every zone resets.
 
-### What's coming next
+### Phase 6.D — the realism multiplier
 
-**Phase 6.D** — realism multiplier (0..2) as a global dial,
-mirroring the v0.31.0 occlusion intensity pattern. Cinematic
-push-up to 1.5+ for surreal moments; pull back to 0.4 for
-gameplay-critical clarity.
+Phase 6.D adds a single dial — `gool/material_eq/intensity` — that
+scales every per-material EQ gain uniformly. Defaults to 1.0
+(curves as defined in `MaterialEqByMaterial`). Below 1.0 softens
+the coloring; above 1.0 amplifies it. The dial affects both 6.B
+impact EQ and 6.C listener EQ in lockstep, so the two stages stay
+in proportion no matter where the slider sits.
+
+This is the same shape as v0.31.0's `gool/occlusion/intensity`
+dial — two parallel knobs that designers and players can use to
+trade physical accuracy against gameplay clarity:
+
+| Intensity | Feel |
+|---|---|
+| **0.0** | EQ disabled — every material sounds the same tonally (still occluded, still reverbs differently) |
+| **0.5** | gentle — material is a flavor, not a dominant texture. Good clarity-first default for competitive shooters |
+| **1.0** | realistic — the v0.33.0 table values, physically modeled |
+| **1.5** | amplified — material identity reads strongly, good for atmospheric games where the *world* matters more than the *fight* |
+| **2.0** | surreal — caricatured coloring; horror, dream sequences, intentionally unreal spaces |
+
+Cutoff frequencies and Q values are NOT scaled — they're
+frequency-domain anchors, not amplitudes. Only the three gain_db
+values per curve get multiplied. This means turning the dial
+preserves the *shape* of each material's spectral fingerprint
+while changing its *prominence*.
+
+**Set at project load:** Project Settings → Gool → Material Eq →
+Intensity. The setting registers automatically on first run with
+default 1.0; you'll see it appear in the editor's project settings
+UI after the first project open with gool v0.36.0+.
+
+**Adjust at runtime** (e.g. from a player audio settings menu —
+Phase 4):
+
+```gdscript
+# Player picked "gentle EQ" in the audio settings menu:
+Gool.set_eq_intensity(0.5)
+
+# Or read the current value to populate a slider:
+var current = Gool.get_eq_intensity()
+```
+
+Changes take effect on the next impact play (for 6.B) and the
+next zone enter/exit (for 6.C). Currently-active ramps aren't
+rescaled retroactively — the change applies from here forward.
+
+**At intensity 0.0**, the auto-EQ paths still execute (no perf
+saving), but every gain pushed to the biquads is 0 dB. The
+chains pass signal through cleanly with no coloration. If you
+want to actually skip the EQ machinery entirely for perf, set
+`gool/material_eq/impact_bus` and `gool/material_eq/listener_bus`
+to empty strings instead — that disables the bus shape checks
+at startup and short-circuits the per-impact apply path.
+
+**Intended Phase 4 hookup:** the player audio settings menu will
+expose this as a "Material EQ intensity" slider with discrete
+presets ("Subtle / Realistic / Amplified") behind the raw 0..2
+scrubber. The slider's on_value_changed handler calls
+`Gool.set_eq_intensity(value)`; that's the entire integration.
+
+### What's coming next
 
 **Phase 6.E** — designer authoring tool for custom material
 curves. Likely a `GoolAudioMaterial` resource with an inspector

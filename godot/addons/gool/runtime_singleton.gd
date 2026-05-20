@@ -63,6 +63,33 @@ var _impact_eq_bus_name: String = ""
 const _LISTENER_EQ_BUS_SETTING := "gool/material_eq/listener_bus"
 var _listener_eq_bus_name: String = ""
 
+# v0.36.0 (Phase 6.D): realism multiplier for ALL per-material EQ.
+#
+# A single global dial in [0..2] that scales the EQ curve gains
+# uniformly. Affects both Phase 6.B impact EQ and Phase 6.C
+# listener-space EQ so the two stages stay in proportion.
+#
+#   0.0  bypass — all gains forced to 0 dB, EQ effectively off
+#   0.5  gentle — half-strength coloring, useful for clarity-
+#        first gameplay where the material reads as flavor
+#        rather than dominant texture
+#   1.0  realistic — curves applied as defined in
+#        MaterialEqByMaterial (the v0.33.0 table). Default.
+#   1.5  amplified — pushed past realism for atmospheric or
+#        horror moments
+#   2.0  surreal — caricatured material presence; cutoff
+#        cap to avoid run-away gains
+#
+# Frequency/Q values are NOT scaled — they're frequency-domain
+# anchors, not amplitudes. Only the three gain_db values
+# (low/mid/high) get the multiplier applied.
+#
+# The dial is read from project settings at init and cached.
+# Runtime adjustment via set_eq_intensity() (planned hook-in
+# point for Phase 4's player audio settings menu).
+const _EQ_INTENSITY_SETTING := "gool/material_eq/intensity"
+var _eq_intensity: float = 1.0
+
 signal ready_to_play
 
 func _ready() -> void:
@@ -180,6 +207,10 @@ func _ready() -> void:
 	# space EQ bus. ReverbZones with apply_listener_eq=true will
 	# consult _listener_eq_bus_name to know whether to ramp.
 	_setup_listener_eq()
+	# v0.36.0 (Phase 6.D): cache the realism multiplier from
+	# project settings. Affects both 6.B impact EQ and 6.C
+	# listener EQ when applied via the GDScript helpers below.
+	_setup_eq_intensity()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -1020,10 +1051,18 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 	# tail would lose its color. The "skip Default" rule preserves
 	# the most recent non-neutral material's coloring until another
 	# non-neutral impact overwrites it.)
+	#
+	# v0.36.0 (Phase 6.D): if the realism multiplier isn't 1.0,
+	# route through the scaled GDScript helper (applies intensity
+	# to the three gain bands). At intensity exactly 1.0, the
+	# C++ binding is cheaper and the result identical.
 	if _impact_eq_bus_name != "" \
 			and material != MATERIAL_DEFAULT \
 			and material != MATERIAL_AIR:
-		_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material)
+		if abs(_eq_intensity - 1.0) < 0.001:
+			_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material)
+		else:
+			_apply_scaled_material_eq_to_bus(_impact_eq_bus_name, material)
 	_runtime.play_sound_at_location_for_material(name, position, material)
 
 # v0.34.0 (Phase 6.B): one-shot check at _ready to determine
@@ -1145,6 +1184,106 @@ func _setup_listener_eq() -> void:
 	_listener_eq_bus_name = configured
 	GoolLog.info("runtime", "phase 6.C listener eq available",
 		{"bus": configured})
+
+# v0.36.0 (Phase 6.D): cache the realism multiplier from project
+# settings. The dial is read once at init and stored in
+# _eq_intensity; runtime changes go through set_eq_intensity().
+# This keeps the hot path (per-impact, per-frame ramp) free of
+# ProjectSettings.get_setting() calls which involve a dictionary
+# lookup each time.
+func _setup_eq_intensity() -> void:
+	if not ProjectSettings.has_setting(_EQ_INTENSITY_SETTING):
+		ProjectSettings.set_setting(_EQ_INTENSITY_SETTING, 1.0)
+		ProjectSettings.set_initial_value(_EQ_INTENSITY_SETTING, 1.0)
+		# Give the editor UI a hint so the setting appears as a
+		# slider with the expected range, not just a free-form
+		# float field.
+		ProjectSettings.add_property_info({
+			"name": _EQ_INTENSITY_SETTING,
+			"type": TYPE_FLOAT,
+			"hint": PROPERTY_HINT_RANGE,
+			"hint_string": "0.0,2.0,0.05",
+		})
+	var v: float = float(ProjectSettings.get_setting(_EQ_INTENSITY_SETTING, 1.0))
+	_eq_intensity = clamp(v, 0.0, 2.0)
+	if abs(_eq_intensity - 1.0) > 0.001:
+		GoolLog.info("runtime", "phase 6.D eq intensity set",
+			{"value": _eq_intensity})
+
+## Set the global EQ realism multiplier (Phase 6.D).
+##
+## Scales every per-material EQ gain uniformly:
+## - 0.0 disables material coloring entirely (gains -> 0 dB)
+## - 1.0 (default) applies curves as defined in
+##   MaterialEqByMaterial — physically realistic
+## - >1.0 amplifies for cinematic / surreal effect, capped at 2.0
+##
+## Takes effect on the next impact play (6.B) and the next zone
+## enter/exit ramp (6.C). Currently-active ramps are not
+## retroactively rescaled — change persists from here forward.
+##
+## Intended as the engine hook for Phase 4's player audio settings
+## menu: a "Material EQ intensity" slider can call this directly
+## to give players agency over how aggressive the material
+## coloring feels.
+##
+## Values outside [0, 2] are clamped. NaN and inf are rejected
+## (function returns without changing state).
+func set_eq_intensity(value: float) -> void:
+	if not is_finite(value):
+		push_warning("[gool] set_eq_intensity: rejected non-finite value")
+		return
+	_eq_intensity = clamp(value, 0.0, 2.0)
+
+## Get the currently active EQ realism multiplier.
+## Defaults to 1.0; changes when set_eq_intensity() is called or
+## when project setting gool/material_eq/intensity is loaded at
+## startup.
+func get_eq_intensity() -> float:
+	return _eq_intensity
+
+# v0.36.0 (Phase 6.D): push a material's EQ curve to a bus with
+# the current realism multiplier applied to all three gain bands.
+# Cutoffs and Q stay unscaled — they're frequency-domain anchors,
+# not amplitudes.
+#
+# Used internally by play_impact_sound() when intensity != 1.0.
+# At intensity exactly 1.0, the original C++ binding
+# apply_material_eq_to_bus is used instead (cheaper, no
+# duplication of param-push logic in GDScript).
+#
+# Returns false on the same conditions as the C++ binding:
+# bus doesn't exist, or first 3 effects aren't biquads.
+func _apply_scaled_material_eq_to_bus(bus_name: String,
+									   material: int) -> bool:
+	if not is_initialized():
+		return false
+	var curve: Dictionary = material_eq_for_material(material)
+	if curve.is_empty():
+		return false
+	# Same authoring contract as the C++ binding: bus has 3
+	# biquads at indices 0/1/2 in order LowShelf/Peak/HighShelf.
+	# We trust _setup_impact_eq / _setup_listener_eq already
+	# validated this at startup.
+	var intensity := _eq_intensity
+	# LowShelf at index 0
+	_runtime.set_effect_parameter(bus_name, 0,  2, # Biquad_CutoffHz
+			float(curve.get("low_freq_hz", 200.0)))
+	_runtime.set_effect_parameter(bus_name, 0, 12, # Biquad_GainDb
+			float(curve.get("low_gain_db", 0.0)) * intensity)
+	# Peak at index 1
+	_runtime.set_effect_parameter(bus_name, 1,  2,
+			float(curve.get("mid_freq_hz", 1000.0)))
+	_runtime.set_effect_parameter(bus_name, 1,  3, # Biquad_Q
+			float(curve.get("mid_q", 1.0)))
+	_runtime.set_effect_parameter(bus_name, 1, 12,
+			float(curve.get("mid_gain_db", 0.0)) * intensity)
+	# HighShelf at index 2
+	_runtime.set_effect_parameter(bus_name, 2,  2,
+			float(curve.get("high_freq_hz", 8000.0)))
+	_runtime.set_effect_parameter(bus_name, 2, 12,
+			float(curve.get("high_gain_db", 0.0)) * intensity)
+	return true
 
 ## Apply a material's 3-band EQ curve to a named bus. The bus must
 ## have at least 3 effects, and the first three must be biquads in

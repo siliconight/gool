@@ -22,6 +22,108 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.36.0] - 2026-05-20 — Phase 6.D: realism multiplier
+
+A single global dial — `gool/material_eq/intensity` — scaling
+every per-material EQ gain uniformly. Defaults to 1.0 (curves
+as-tabled); 0.5 = half-strength material flavor, 0.0 = EQ off
+(gains forced to 0 dB), 1.5+ = amplified for atmospheric or
+surreal moments, capped at 2.0.
+
+Same shape as v0.31.0's `gool/occlusion/intensity` dial —
+parallel knobs trading physical accuracy against gameplay
+clarity. Affects both Phase 6.B impact EQ and Phase 6.C
+listener EQ uniformly, so the two stages stay in proportion at
+any intensity setting. Cutoff frequencies and Q values are NOT
+scaled — frequency-domain anchors stay put, only the three
+gain_db values per curve get multiplied. Turning the dial
+preserves the *shape* of each material's spectral fingerprint
+while changing its *prominence*.
+
+### GDScript-only — no engine binary change
+
+Implemented entirely in the autoload's GDScript surface. The
+existing C++ binding `apply_material_eq_to_bus` stays unchanged
+(any direct caller still gets unity behavior); the autoload's
+`play_impact_sound` routes through a new GDScript helper
+`_apply_scaled_material_eq_to_bus` when intensity != 1.0, which
+pushes the same seven biquad parameters with the gains
+multiplied. The ReverbZone listener-EQ ramp reads
+`Gool._eq_intensity` directly at the moment target gains are
+computed and scales them inline.
+
+Result: the existing v0.34.0+ .dll continues to work without
+rebuild. Drop in the v0.36.0 .gd files and you've got Phase 6.D.
+
+### New API surface
+
+**`Gool.set_eq_intensity(value: float)`** — runtime setter,
+clamps to [0.0, 2.0], rejects non-finite values with a warning.
+Intended primary use: the Phase 4 player audio settings menu's
+"Material EQ intensity" slider calls this on value-changed.
+
+**`Gool.get_eq_intensity() -> float`** — read the current value,
+useful for populating a slider's initial position from the
+cached project setting.
+
+**Project setting** `gool/material_eq/intensity` (default `1.0`).
+Registered on first run with a slider hint of `0.0,2.0,0.05`,
+appears in the editor's Project Settings → Gool → Material Eq
+section after the first v0.36.0+ project open.
+
+### Edge cases handled
+
+- **At intensity 0.0** the apply paths still execute but every
+  gain pushed is 0 dB — chains pass signal cleanly with no
+  coloration. To skip the apply machinery entirely for perf,
+  set the impact_bus and listener_bus project settings to
+  empty strings.
+- **NaN / inf inputs** to `set_eq_intensity` are rejected with
+  a `push_warning`; the cached value stays unchanged.
+- **Active ramps** during a setter call are not retroactively
+  rescaled — the new value applies from the next impact play
+  or the next zone enter/exit. Acceptable trade-off; the
+  alternative would require recomputing the in-flight ramp
+  state which is more bookkeeping than it's worth.
+
+### Designer doc
+
+Cookbook section 14 expanded:
+
+- Title bumped to "Phase 6.A + 6.B + 6.C + 6.D", phase table updated
+- New "Phase 6.D — the realism multiplier" subsection with the
+  intensity-to-feel mapping table (0.0 disabled / 0.5 gentle /
+  1.0 realistic / 1.5 amplified / 2.0 surreal)
+- Project Settings UI location + runtime adjustment example
+- Phase 4 hookup note — this is the intended integration target
+  for the upcoming player audio settings menu
+
+### Touch summary
+
+- `godot/addons/gool/runtime_singleton.gd`: `_eq_intensity` state
+  + `_setup_eq_intensity` init + `set_eq_intensity` /
+  `get_eq_intensity` public API + `_apply_scaled_material_eq_to_bus`
+  helper + branched call in `play_impact_sound`
+- `godot/addons/gool/prefabs/reverb_zone.gd`: intensity scaling
+  applied to listener-EQ target gains in
+  `_setup_eq_ramp_to_material`
+- `docs/cookbook.md`: section 14 6.D subsection + revised
+  "what's coming next"
+
+### What's not in this release
+
+- No per-material intensity. The dial is uniform across all
+  materials. Per-material intensity could be added in a future
+  release if designers find specific materials want different
+  prominence (e.g. concrete dialed to 1.2, foliage to 0.6) —
+  but unlikely needed; the curves themselves already capture
+  per-material relative prominence.
+- No automatic intensity ramp on dial change. Setter is instant.
+  If smooth transitions are wanted (cutscene transitions in/out
+  of surreal mode), the caller can lerp `set_eq_intensity` over
+  time themselves.
+- No inspector EQ editor. Still Phase 6.E.
+
 ## [0.35.2] - 2026-05-20 — Patch: undeclared listener-EQ ramp state in reverb_zone.gd
 
 A third v0.35.0 parse error that escaped v0.35.1's fix pass.
@@ -14953,6 +15055,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.36.0]: https://github.com/siliconight/gool/releases/tag/v0.36.0
 [0.35.2]: https://github.com/siliconight/gool/releases/tag/v0.35.2
 [0.35.1]: https://github.com/siliconight/gool/releases/tag/v0.35.1
 [0.35.0]: https://github.com/siliconight/gool/releases/tag/v0.35.0

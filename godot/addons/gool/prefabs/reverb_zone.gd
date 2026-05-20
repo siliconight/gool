@@ -342,9 +342,15 @@ func _setup_eq_ramp_to_material() -> void:
 	_eq_from_low  = _eq_to_low   # carry forward whatever was live
 	_eq_from_mid  = _eq_to_mid
 	_eq_from_high = _eq_to_high
-	_eq_to_low    = float(curve.get("low_gain_db",  0.0))
-	_eq_to_mid    = float(curve.get("mid_gain_db",  0.0))
-	_eq_to_high   = float(curve.get("high_gain_db", 0.0))
+	# v0.36.0 (Phase 6.D): apply the realism multiplier to the
+	# three gain bands. Pulled from the Gool autoload's cached
+	# value (set at startup, runtime-adjustable via
+	# Gool.set_eq_intensity). Cutoff/Q stay unscaled — they're
+	# frequency anchors, not amplitudes.
+	var intensity: float = _runtime._eq_intensity
+	_eq_to_low    = float(curve.get("low_gain_db",  0.0)) * intensity
+	_eq_to_mid    = float(curve.get("mid_gain_db",  0.0)) * intensity
+	_eq_to_high   = float(curve.get("high_gain_db", 0.0)) * intensity
 	_eq_active = true
 
 func _setup_eq_ramp_to_neutral() -> void:
