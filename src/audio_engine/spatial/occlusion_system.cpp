@@ -25,6 +25,14 @@ void OcclusionSystem::Reset() {
     lastFrameRaycasts_  = 0;
 }
 
+void OcclusionSystem::SetIntensity(float intensity) noexcept {
+    // Clamp to a wide-but-bounded range. Below 0 doesn't make
+    // physical sense; above ~3 starts to flatten everything at the
+    // [0,1] post-clamp ceiling regardless of material (every wall
+    // becomes "wall").
+    intensity_ = std::clamp(intensity, 0.0f, 3.0f);
+}
+
 void OcclusionSystem::Update(const Vec3&    listenerPos,
                               const Vec3*    emitterPositions,
                               const uint8_t* slotOccupied,
@@ -57,8 +65,13 @@ void OcclusionSystem::Update(const Vec3&    listenerPos,
             if (blocked) {
                 float abs = 0.0f, dmp = 0.0f;
                 ResolveOcclusion(hit, abs, dmp);
-                targetAbsorption_[slot] = std::clamp(abs, 0.0f, 1.0f);
-                targetDamping_[slot]    = std::clamp(dmp, 0.0f, 1.0f);
+                // Apply global intensity multiplier, then clamp to
+                // [0,1]. Materials with strong defaults (e.g.
+                // Concrete at 0.90 absorption) saturate first as
+                // intensity rises above 1; weaker materials retain
+                // headroom for designers to push harder.
+                targetAbsorption_[slot] = std::clamp(abs * intensity_, 0.0f, 1.0f);
+                targetDamping_[slot]    = std::clamp(dmp * intensity_, 0.0f, 1.0f);
             } else {
                 targetAbsorption_[slot] = 0.0f;
                 targetDamping_[slot]    = 0.0f;

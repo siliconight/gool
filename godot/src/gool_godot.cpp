@@ -41,6 +41,15 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
+// v0.31.0 (Phase 5.2): occlusion bridge.
+#include <godot_cpp/classes/physics_server3d.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
+#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+
 #include <atomic>
 #include <memory>
 
@@ -155,11 +164,129 @@ static void _gool_fill_params_for_kind(audio::AudioRuntime* rt,
 }
 
 // =====================================================================
-// GoolAudioRuntime
+// GodotGeometryQuery (v0.31.0, Phase 5.2)
 // =====================================================================
 //
-// Singleton-style Node. Add as autoload at /root/Gool. Init once;
-// every other prefab calls into it.
+// Implements audio::IAudioGeometryQuery using Godot's PhysicsServer3D.
+// The runtime owns this via AudioRuntimeDependencies::geometryQuery;
+// GoolAudioRuntime keeps a non-owning observer pointer so a current
+// GoolListener3D can push its World3D space RID in.
+//
+// Threading: RaycastAudioOcclusion is called from
+// OcclusionSystem::Update inside AudioRuntime::Update, which the
+// GoolAudioRuntime calls from _process — i.e. Godot's main thread.
+// PhysicsServer3D direct-space-state queries are safe from this
+// context provided Godot's 3D physics is not running on a separate
+// thread (the default; see ProjectSettings → physics/3d/run_on_separate_thread).
+//
+// Material resolution mirrors GDScript's `material_from_collider`:
+// the metadata-on-collider path. Accepts either an int (one of the
+// MATERIAL_* constants) or a Resource with a `material` int property
+// (the GoolAudioMaterial path). Group membership is not honored here
+// — designers can still tag via metadata in the inspector and the
+// raycast will see it.
+
+class GodotGeometryQuery final : public audio::IAudioGeometryQuery {
+public:
+    GodotGeometryQuery() = default;
+    ~GodotGeometryQuery() override = default;
+
+    void SetSpaceRID(const RID& rid) noexcept {
+        space_rid_ = rid;
+    }
+
+    bool RaycastAudioOcclusion(const audio::Vec3& from,
+                                 const audio::Vec3& to,
+                                 audio::AudioOcclusionHit& outHit) noexcept override {
+        outHit = {};
+        if (!space_rid_.is_valid()) {
+            // No world bound yet (no GoolListener3D has gone current).
+            // Engine treats false as "unblocked" — same outcome as
+            // NullGeometryQuery would return.
+            return false;
+        }
+
+        PhysicsServer3D* ps = PhysicsServer3D::get_singleton();
+        if (ps == nullptr) return false;
+        PhysicsDirectSpaceState3D* state = ps->space_get_direct_state(space_rid_);
+        if (state == nullptr) return false;
+
+        const Vector3 v_from(from.x, from.y, from.z);
+        const Vector3 v_to  (to.x,   to.y,   to.z);
+
+        Ref<PhysicsRayQueryParameters3D> q = PhysicsRayQueryParameters3D::create(v_from, v_to);
+        // Default collision mask 0xFFFFFFFF — hit everything. Designers
+        // who need to exclude triggers / debug colliders from the
+        // audio raycast can re-author per-layer logic later (project
+        // setting `gool/occlusion/collision_mask` is a likely future
+        // hook).
+        q->set_collide_with_areas(false);
+        q->set_collide_with_bodies(true);
+
+        const Dictionary result = state->intersect_ray(q);
+        if (result.is_empty()) return false;
+
+        // Resolve material from the hit collider. The intersect_ray
+        // dictionary's "collider" entry is a Godot Object pointer (a
+        // CollisionObject3D, typically StaticBody3D or Area3D).
+        audio::AudioMaterial material = audio::AudioMaterial::Default;
+        if (result.has("collider")) {
+            const Variant collider_var = result["collider"];
+            // Variant→Object extraction. The pattern in godot-cpp is
+            // the Variant's operator Object*() conversion via static
+            // cast, gated on the actual type to avoid undefined
+            // behavior when the variant isn't an object. Object::cast_to
+            // is for downcasting *between* Object subclasses, not for
+            // pulling an Object* out of a Variant.
+            Object* collider = nullptr;
+            if (collider_var.get_type() == Variant::OBJECT) {
+                collider = static_cast<Object*>(collider_var);
+            }
+            if (collider != nullptr && collider->has_meta("gool_audio_material")) {
+                const Variant meta = collider->get_meta("gool_audio_material");
+                int material_int = 0;
+                if (meta.get_type() == Variant::INT) {
+                    material_int = static_cast<int>(meta);
+                } else if (meta.get_type() == Variant::OBJECT) {
+                    // GoolAudioMaterial resource path — duck-type by
+                    // reading the `material` property without hard
+                    // typing the resource (avoids needing the resource
+                    // header in the binding).
+                    Object* res = static_cast<Object*>(meta);
+                    if (res != nullptr) {
+                        const Variant inner = res->get("material");
+                        if (inner.get_type() == Variant::INT) {
+                            material_int = static_cast<int>(inner);
+                        }
+                    }
+                }
+                if (material_int >= 0
+                    && material_int < static_cast<int>(audio::kAudioMaterialCount)) {
+                    material = static_cast<audio::AudioMaterial>(material_int);
+                }
+            }
+        }
+
+        // Fill the hit. ResolveOcclusion will map the material to
+        // (absorption, damping); we don't need to set the explicit
+        // absorption/damping fields when material != Default.
+        outHit.hit       = true;
+        outHit.material  = material;
+        if (result.has("position")) {
+            const Vector3 hp = result["position"];
+            outHit.hitPoint = audio::Vec3{
+                static_cast<float>(hp.x),
+                static_cast<float>(hp.y),
+                static_cast<float>(hp.z)};
+            const Vector3 d = hp - v_from;
+            outHit.distance = static_cast<float>(d.length());
+        }
+        return true;
+    }
+
+private:
+    RID space_rid_;
+};
 
 class GoolAudioRuntime : public Node {
     GDCLASS(GoolAudioRuntime, Node);
@@ -297,16 +424,26 @@ public:
                                        "name", "spatialized", "looping",
                                        "min_distance", "max_distance",
                                        "loop_crossfade_ms",
-                                       "category", "target_bus_name"),
+                                       "category", "target_bus_name",
+                                       "occlusion_enabled"),
                               &GoolAudioRuntime::register_sound_definition,
                               DEFVAL(true), DEFVAL(false),
                               DEFVAL(1.0), DEFVAL(50.0), DEFVAL(0.0),
-                              DEFVAL(0), DEFVAL(String()));
+                              DEFVAL(0), DEFVAL(String()),
+                              DEFVAL(true));
         // Bus-name → BusId resolver. Returns -1 if no bus matches.
         // Useful for hosts that need to call other BusId-taking
         // bindings (set_bus_gain_db, set_effect_parameter) by name.
         ClassDB::bind_method(D_METHOD("find_bus_id_by_name", "name"),
                               &GoolAudioRuntime::find_bus_id_by_name);
+
+        // v0.31.0 (Phase 5.2): live occlusion controls.
+        ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"),
+                              &GoolAudioRuntime::set_occlusion_enabled);
+        ClassDB::bind_method(D_METHOD("set_occlusion_intensity", "intensity"),
+                              &GoolAudioRuntime::set_occlusion_intensity);
+        ClassDB::bind_method(D_METHOD("set_audio_world_space_rid", "rid"),
+                              &GoolAudioRuntime::set_audio_world_space_rid);
         ClassDB::bind_method(D_METHOD("load_sound_bank_from_json",
                                        "json_string", "gpak_path",
                                        "skip_validation"),
@@ -455,6 +592,54 @@ public:
                                 PropertyInfo(Variant::FLOAT, "loss_ratio")));
     }
 
+    // v0.31.0 (Phase 5.2): occlusion config plumbing shared between
+    // the two init paths. Reads/registers ProjectSettings, applies
+    // them to cfg, and constructs the GodotGeometryQuery dependency.
+    //
+    // Project settings registered (defaults applied on first run,
+    // editable in Project Settings → General → Gool → Occlusion):
+    //
+    //   gool/occlusion/enabled    bool    default true
+    //   gool/occlusion/intensity  float   default 0.7
+    //
+    // The settings are read on every init (re-init picks up changes
+    // made in the editor between runs). Live runtime changes from
+    // GDScript go through set_occlusion_enabled / set_occlusion_intensity,
+    // which write to the runtime directly without touching settings.
+    void _apply_occlusion_config(audio::AudioConfig&              cfg,
+                                   audio::AudioRuntimeDependencies& deps) {
+        ProjectSettings* ps = ProjectSettings::get_singleton();
+        if (ps != nullptr) {
+            // Enable flag.
+            const String enabled_key = "gool/occlusion/enabled";
+            if (!ps->has_setting(enabled_key)) {
+                ps->set_setting(enabled_key, Variant(true));
+                ps->set_initial_value(enabled_key, Variant(true));
+            }
+            cfg.enableOcclusion = static_cast<bool>(ps->get_setting(enabled_key));
+
+            // Intensity multiplier. Default 0.7 — "gentle but
+            // present" sweet spot; designers can dial up for
+            // cinematic levels or down for clarity-critical sounds.
+            const String intensity_key = "gool/occlusion/intensity";
+            if (!ps->has_setting(intensity_key)) {
+                ps->set_setting(intensity_key, Variant(0.7f));
+                ps->set_initial_value(intensity_key, Variant(0.7f));
+            }
+            cfg.occlusionIntensity =
+                static_cast<float>(static_cast<double>(ps->get_setting(intensity_key)));
+        }
+
+        // Construct the geometry query. Engine takes ownership via
+        // std::move into deps.geometryQuery; we keep a non-owning
+        // observer pointer so set_audio_world_space_rid (called from
+        // GoolListener3D.set_current) can later push the World3D
+        // space RID in.
+        auto query = std::make_unique<GodotGeometryQuery>();
+        geometry_query_ = query.get();
+        deps.geometryQuery = std::move(query);
+    }
+
     bool init(int sample_rate, int buffer_size) {
         if (initialized_) return true;
         runtime_ = std::make_unique<audio::AudioRuntime>();
@@ -466,11 +651,13 @@ public:
 
         audio::AudioRuntimeDependencies deps;
         deps.backend = std::make_unique<audio::MiniaudioBackend>();
+        _apply_occlusion_config(cfg, deps);
 
         const auto rc = runtime_->Initialize(cfg, std::move(deps));
         if (rc != audio::AudioResult::Success) {
             UtilityFunctions::push_error("GoolAudioRuntime: Initialize failed");
             runtime_.reset();
+            geometry_query_ = nullptr;
             return false;
         }
         audio::AudioListener listener;
@@ -513,12 +700,14 @@ public:
         runtime_ = std::make_unique<audio::AudioRuntime>();
         audio::AudioRuntimeDependencies deps;
         deps.backend = std::make_unique<audio::MiniaudioBackend>();
+        _apply_occlusion_config(cfg, deps);
 
         const auto rc = runtime_->Initialize(cfg, std::move(deps));
         if (rc != audio::AudioResult::Success) {
             UtilityFunctions::push_error(
                 "GoolAudioRuntime: Initialize failed (with bus config)");
             runtime_.reset();
+            geometry_query_ = nullptr;
             return false;
         }
         audio::AudioListener listener;
@@ -1155,12 +1344,20 @@ public:
                                     double min_distance, double max_distance,
                                     double loop_crossfade_ms,
                                     int category,
-                                    const String& target_bus_name) {
+                                    const String& target_bus_name,
+                                    bool occlusion_enabled) {
         if (!runtime_) return;
         audio::SoundDefinition def;
         def.soundId           = HashName(name);
         def.spatialized       = spatialized;
         def.looping           = looping;
+        // v0.31.0: per-sound occlusion opt-out. Default true (the
+        // sound participates in geometry queries). Set false for
+        // UI sounds, dialogue, narration, the player's own weapon
+        // foley — anything where physical occlusion would compromise
+        // readability or clarity. Music sounds already auto-opt-out
+        // via music_channel.cpp.
+        def.occlusionEnabled  = occlusion_enabled;
         // Category determines which bus the runtime routes to when
         // targetBus stays at kInvalidBusId. Hosts that don't pass
         // category get SFX (the most common default for game-audio
@@ -1202,6 +1399,29 @@ public:
         return (id == audio::kInvalidBusId)
             ? -1
             : static_cast<int>(id);
+    }
+
+    // v0.31.0 (Phase 5.2): live occlusion controls. Both safe to call
+    // at any time; the next OcclusionSystem::Update tick picks up the
+    // new value with the standard ~150 ms smoother.
+    void set_occlusion_enabled(bool enabled) {
+        if (!runtime_) return;
+        runtime_->SetOcclusionEnabled(enabled);
+    }
+
+    void set_occlusion_intensity(double intensity) {
+        if (!runtime_) return;
+        runtime_->SetOcclusionIntensity(static_cast<float>(intensity));
+    }
+
+    // Push the current World3D's space RID into the geometry query.
+    // Called by GoolListener3D when set_current(true) fires. Without
+    // a valid space RID the geometry query reports no hit (treating
+    // every sound as unobstructed), which is the safe fallback for
+    // scenes that don't have a GoolListener3D in the tree yet.
+    void set_audio_world_space_rid(const RID& rid) {
+        if (geometry_query_ == nullptr) return;
+        geometry_query_->SetSpaceRID(rid);
     }
 
     bool load_sound_bank_from_json(const String& json_string,
@@ -1701,6 +1921,12 @@ private:
     std::unique_ptr<audio::AudioRuntime> runtime_;
     std::unique_ptr<audio::SoundBank>     bank_;
     std::unique_ptr<audio::PakReader>     pak_;
+    // v0.31.0: non-owning observer into the engine-owned occlusion
+    // geometry query (the engine moves the unique_ptr into its
+    // AudioRuntimeDependencies during Initialize). Used by
+    // set_audio_world_space_rid to push the current World3D's space
+    // RID in after a GoolListener3D becomes current.
+    GodotGeometryQuery*                   geometry_query_ = nullptr;
     bool initialized_ = false;
 };
 

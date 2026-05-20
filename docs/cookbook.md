@@ -442,6 +442,171 @@ messages) is in
 For the engine-level API and helper functions, see
 [`include/audio_engine/sound_bank.h`](../include/audio_engine/sound_bank.h).
 
+## 12 — Occlusion through walls ✨ Convenience
+
+> *"Occlusion as a system capability should absolutely be
+> foundational. Occlusion behavior and intensity should be
+> contextually authored and scalable. If you enable harsh, fully
+> physicalized occlusion globally by default, games can quickly
+> become muddy, unintelligible, or frustrating from a gameplay
+> perspective. Real life acoustics are not always fun acoustics.
+> Players still need clarity, readability, and emotional emphasis."*
+>
+> — design intent for gool's occlusion system
+
+### What this is
+
+Sounds played by gool are automatically muffled when a wall is
+between the listener and the source. Concrete walls block harder
+than wooden ones. Curtains kill the highs more than the volume.
+Glass barely does anything. The same audio file plays through —
+the engine just applies a per-material absorption (gain reduction)
+and damping (low-pass filter) to it on the fly.
+
+This works as long as:
+
+1. Your scene has a `GoolListener3D` somewhere in the tree (it
+   already needs one for any spatialized audio at all). The
+   listener tells the audio engine which `World3D` to raycast
+   in.
+2. The colliders between sound sources and the listener are
+   tagged with the material they represent — same metadata that
+   `play_impact_sound` uses (see section 11). Untagged colliders
+   fall through to `MATERIAL_DEFAULT` (a neutral mid-range
+   absorption).
+
+That's it. No per-emitter wiring, no scene-level configuration,
+no manual raycasting. Drop your sound somewhere in the world; if
+a tagged wall is in the way, it sounds like there's a wall in
+the way.
+
+### The three knobs
+
+**Global enable.** Default `true`. Set under Project Settings →
+General → Gool → Occlusion → Enabled. Or toggle at runtime:
+
+```gdscript
+Gool.set_occlusion_enabled(false)  # accessibility menu, etc.
+```
+
+When disabled the engine stops raycasting; per-emitter occlusion
+state smooths back to flat over ~150 ms. Re-enabling resumes the
+same gentle ramp.
+
+**Global intensity multiplier.** Default `0.7`. Set under
+Project Settings → General → Gool → Occlusion → Intensity. Or at
+runtime via `Gool.set_occlusion_intensity(value)`. The full
+range:
+
+| Intensity | Feel | Use for |
+|---|---|---|
+| `0.0` | bypass — no audible occlusion | accessibility off |
+| `0.4`–`0.6` | conservative; clarity-first | competitive shooter gameplay |
+| `0.7` | **default** — present but not aggressive | most game content |
+| `1.0` | physically realistic per-material | immersive single-player |
+| `1.5`–`2.0` | exaggerated, surreal | horror, cinematic moments |
+
+The default of `0.7` honours the philosophy above — audible
+occlusion that doesn't compromise readability. Dial it up
+when you want acoustic realism to dominate; dial it down when
+players need to hear something critical no matter what.
+
+**Per-sound opt-out.** Default `true` (sound participates in
+occlusion). Pass `occlusion_enabled: false` when registering a
+sound that should never be muffled:
+
+```gdscript
+# A dialogue sound that must always be intelligible, regardless
+# of where the player or the speaker is.
+Gool.register_sound_definition(
+    "dialogue.tutorial.01",
+    true,                    # spatialized
+    false,                   # looping
+    1.0,                     # min_distance
+    100.0,                   # max_distance
+    0.0,                     # loop_crossfade_ms
+    Gool.CATEGORY_DIALOGUE,
+    "",                      # target_bus_name (default routing)
+    false                    # occlusion_enabled — OFF for clarity
+)
+
+# UI feedback: also opt-out. UI sounds aren't part of the
+# diegetic world and feel wrong when muffled by world geometry.
+Gool.register_sound_definition(
+    "ui.notification",
+    false,                   # NOT spatialized — UI is global
+    false, 1.0, 1.0, 0.0,
+    Gool.CATEGORY_UI,
+    "", false)
+```
+
+### Tagging colliders
+
+Identical to the impact-sound workflow in section 11. Either:
+
+1. **Inspector metadata** — add a `gool_audio_material` metadata
+   entry on the StaticBody3D/Area3D, value is one of the
+   `Gool.MATERIAL_*` constants (int).
+2. **GoolAudioMaterial resource** — assign a saved resource
+   with a `material` property as the metadata value. Useful when
+   many colliders share the same material; edit the resource
+   once and every reference updates.
+
+A collider with no metadata still occludes — it falls back to
+`MATERIAL_DEFAULT`, which has moderate absorption and damping.
+Players will still hear that *something* is in the way; the
+designer just hasn't told the engine what.
+
+### What about the per-emitter API?
+
+`SoundDefinition.occlusionEnabled` is per-*sound* (set at
+registration time), not per-emitter instance. That's the right
+granularity for the common cases:
+
+- "This UI bing should never occlude" → register once with
+  `occlusion_enabled=false`, done forever.
+- "Music shouldn't occlude" → music sounds auto-opt-out via
+  `music_channel.cpp`. Nothing to do.
+- "Dialogue should never occlude" → register dialogue sounds
+  with `occlusion_enabled=false`.
+
+If a single sound needs to occlude sometimes and not others
+(e.g. a player's own footstep when the camera is first-person
+vs. spectator-style), that's a per-emitter need. The descriptor
+struct supports it (`EmitterDescriptor.occlusionEnabled`) but
+the GDScript binding doesn't expose it yet. File an issue if
+you hit this; the binding is small.
+
+### Performance notes
+
+The engine raycasts at most `maxOcclusionChecksPerFrame` rays
+per frame (default 8), round-robin across active emitters. A
+scene with 32 emitters → each emitter's occlusion updates ~7 Hz,
+which the ~150 ms smoother absorbs invisibly. Bump the budget
+if you have very many emitters and want faster geometry
+response; lower it if profiler shows physics-query cost climbing.
+
+The query runs on Godot's main thread, against the listener's
+`World3D.space`. PhysicsServer3D's direct-state queries are
+safe from this context when Godot's 3D physics is configured to
+run on the main thread (the default). If you've enabled
+`physics/3d/run_on_separate_thread`, the raycast still works
+but stale-by-one-frame snapshots are possible — usually
+inaudible thanks to smoothing, but if it matters file an issue
+and we'll add a queued-update path.
+
+### Multiplayer
+
+Each peer evaluates occlusion against their own world geometry
+and their own listener. Two peers in the same scene will hear
+the same gunshot differently if a wall is between source and
+listener for one of them but not the other. No network state
+is exchanged for occlusion — it's purely a local rendering
+decision against locally-replicated geometry. This is what
+players expect ("I hear it muffled, my teammate doesn't,
+because they're on the other side of the wall") and matches
+how positional audio already works.
+
 ## Where to find more
 
 - [`docs/godot_quickstart.md`](godot_quickstart.md) — start here

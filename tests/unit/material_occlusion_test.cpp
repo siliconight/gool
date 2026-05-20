@@ -148,12 +148,94 @@ void TestLegacyMaterialAbsorptionStillWorks() {
     EXPECT(std::fabs(damping[1]    - 0.8f) < 0.02f);
 }
 
+// v0.31.0 — Phase 5.2: global occlusion intensity multiplier.
+//
+// The OcclusionSystem applies a configurable intensity multiplier to
+// the per-material (absorption, damping) values returned by the
+// geometry query. At intensity=1.0 the raw values pass through
+// (test parity with all pre-v0.31.0 behavior). At intensity=0 the
+// targets are zeroed regardless of material. At intensity=0.5 they
+// halve. Beyond 1.0 the values saturate at 1.0 progressively per
+// material.
+//
+// This test verifies the multiplier math at the OcclusionSystem
+// level by running ticks against the Concrete material at different
+// intensity settings and confirming the smoothed absorption / damping
+// outputs match expectations.
+
+void TestIntensityMultiplierScalesAbsorptionAndDamping() {
+    std::printf("[material_occlusion_test] intensity multiplier...\n");
+
+    constexpr uint32_t kMaxEmitters = 4;
+    MaterialQuery q(AudioMaterial::Concrete);
+    // Concrete's defaults: absorption=0.90, damping=0.75. These are
+    // the reference values we scale.
+    constexpr float kConcreteAbs = 0.90f;
+    constexpr float kConcreteDmp = 0.75f;
+
+    auto runWithIntensity = [&](float intensity)
+            -> std::pair<float, float> {
+        OcclusionSystem occ(kMaxEmitters, kMaxEmitters);
+        occ.SetGeometryQuery(&q);
+        occ.SetIntensity(intensity);
+
+        std::vector<Vec3>    pos(kMaxEmitters + 1);
+        std::vector<uint8_t> occupied(kMaxEmitters + 1, 0);
+        std::vector<float>   absorption(kMaxEmitters + 1, 0.0f);
+        std::vector<float>   damping(kMaxEmitters + 1, 0.0f);
+        occupied[1] = 1;
+        pos[1]      = {5.0f, 0.0f, 0.0f};
+
+        for (int i = 0; i < 30; ++i) {
+            occ.Update({0.0f, 0.0f, 0.0f}, pos.data(), occupied.data(),
+                        absorption.data(), damping.data(), 0.025f);
+        }
+        return {absorption[1], damping[1]};
+    };
+
+    // Intensity 1.0 — identity. Smoothed value should reach the raw
+    // material defaults (within smoother tolerance).
+    auto [abs10, dmp10] = runWithIntensity(1.0f);
+    std::printf("  intensity=1.0  abs=%.3f dmp=%.3f\n", abs10, dmp10);
+    EXPECT(std::fabs(abs10 - kConcreteAbs) < 0.03f);
+    EXPECT(std::fabs(dmp10 - kConcreteDmp) < 0.03f);
+
+    // Intensity 0.5 — both halved.
+    auto [abs05, dmp05] = runWithIntensity(0.5f);
+    std::printf("  intensity=0.5  abs=%.3f dmp=%.3f\n", abs05, dmp05);
+    EXPECT(std::fabs(abs05 - kConcreteAbs * 0.5f) < 0.03f);
+    EXPECT(std::fabs(dmp05 - kConcreteDmp * 0.5f) < 0.03f);
+
+    // Intensity 0 — both at floor.
+    auto [abs00, dmp00] = runWithIntensity(0.0f);
+    std::printf("  intensity=0.0  abs=%.3f dmp=%.3f\n", abs00, dmp00);
+    EXPECT(abs00 < 0.03f);
+    EXPECT(dmp00 < 0.03f);
+
+    // Intensity 1.5 — both should clamp at 1.0 (since concrete is
+    // already at 0.90 and 0.75; 0.90 * 1.5 = 1.35 → clamps to 1.0,
+    // 0.75 * 1.5 = 1.125 → clamps to 1.0).
+    auto [abs15, dmp15] = runWithIntensity(1.5f);
+    std::printf("  intensity=1.5  abs=%.3f dmp=%.3f\n", abs15, dmp15);
+    EXPECT(std::fabs(abs15 - 1.0f) < 0.03f);
+    EXPECT(std::fabs(dmp15 - 1.0f) < 0.03f);
+
+    // Intensity 3.1 — clamps inside SetIntensity to 3.0. Same as 1.5
+    // result post-clamp on output (already at 1.0 ceiling).
+    auto [abs31, dmp31] = runWithIntensity(3.1f);
+    std::printf("  intensity=3.1  abs=%.3f dmp=%.3f (clamped to 3.0 internally)\n",
+                abs31, dmp31);
+    EXPECT(std::fabs(abs31 - 1.0f) < 0.03f);
+    EXPECT(std::fabs(dmp31 - 1.0f) < 0.03f);
+}
+
 } // namespace
 
 int main() {
     std::printf("[material_occlusion_test] running...\n");
     TestMaterialsAreDistinct();
     TestLegacyMaterialAbsorptionStillWorks();
+    TestIntensityMultiplierScalesAbsorptionAndDamping();
     if (gFails == 0) {
         std::printf("[material_occlusion_test] OK\n");
         return 0;

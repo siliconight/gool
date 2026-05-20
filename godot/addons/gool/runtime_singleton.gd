@@ -676,11 +676,13 @@ func register_sound_definition(name: String, spatialized: bool = true,
 								 max_distance: float = 50.0,
 								 loop_crossfade_ms: float = 0.0,
 								 category: int = CATEGORY_SFX,
-								 target_bus_name: String = "") -> void:
+								 target_bus_name: String = "",
+								 occlusion_enabled: bool = true) -> void:
 	_runtime.register_sound_definition(name, spatialized, looping,
 										 min_distance, max_distance,
 										 loop_crossfade_ms,
-										 category, target_bus_name)
+										 category, target_bus_name,
+										 occlusion_enabled)
 
 ## Resolve a bus name to its BusId. Returns -1 if no bus matches.
 ## Use to bridge between code that knows bus names (config files,
@@ -691,6 +693,46 @@ func find_bus_id_by_name(name: String) -> int:
 	if not is_initialized():
 		return -1
 	return _runtime.find_bus_id_by_name(name)
+
+## Toggle occlusion globally at runtime.
+##
+## Useful for accessibility settings ("disable audio occlusion"
+## for players who find muffling disorienting) or for situations
+## where the entire game briefly needs flat acoustics (think
+## menu screens, cutscenes with critical dialogue).
+##
+## When disabled, the engine stops raycasting; per-emitter
+## occlusion smooths back to 0 over ~150 ms so there's no
+## discontinuity. Re-enabling resumes the same gentle ramp.
+##
+## The default (enabled=true) and the initial intensity come from
+## the project settings under Gool → Occlusion. Calling this
+## doesn't write back to project settings — it's a runtime
+## override for this session.
+func set_occlusion_enabled(enabled: bool) -> void:
+	if not is_initialized():
+		return
+	_runtime.set_occlusion_enabled(enabled)
+
+## Dial the global occlusion intensity multiplier.
+##
+##   0.0        bypass — audible occlusion off
+##   0.4-0.6    conservative, prioritises clarity
+##   0.7        default — present, not aggressive
+##   1.0        physically realistic per-material defaults
+##   1.5-2.0    exaggerated — surreal/horror, "the room is wrong"
+##
+## Applied as a multiplier on per-material absorption + damping
+## after the geometry query resolves a hit. Materials with strong
+## defaults (concrete) saturate first as intensity rises above 1.
+##
+## Safe to call mid-game — the ~150 ms smoother handles transitions
+## cleanly. Useful for dramatic moments: bump intensity during a
+## cutscene corridor, drop it during a critical conversation.
+func set_occlusion_intensity(intensity: float) -> void:
+	if not is_initialized():
+		return
+	_runtime.set_occlusion_intensity(intensity)
 
 func play_sound_at_location(name: String, position: Vector3) -> void:
 	_runtime.play_sound_at_location(name, position)

@@ -233,6 +233,11 @@ public:
                                               uint16_t paramId,
                                               float    value);
 
+    // v0.31.0 — live occlusion controls. Both flip atomically; the
+    // next OcclusionSystem::Update tick sees the new value.
+    void                  SetOcclusionEnabled(bool enabled);
+    void                  SetOcclusionIntensity(float intensity);
+
     // Decoded-file registration (game thread).
     AudioResult           RegisterSoundFromFile(AudioSoundId id, const char* path);
     AudioResult           RegisterSoundFromMemory(AudioSoundId             id,

@@ -71,6 +71,15 @@ func _ready() -> void:
 		await _runtime.ready_to_play
 	add_to_group(_LISTENER_GROUP)
 	_check_for_duplicates()
+	# v0.31.0 (Phase 5.2): hand the runtime our World3D's physics
+	# space so the occlusion geometry query knows which world to
+	# raycast in. Without this the geometry query reports no hit
+	# (safe fallback — sounds play unoccluded). Re-pushed on
+	# every _ready, so scene reloads / world swaps Just Work.
+	if _runtime.has_method("set_audio_world_space_rid"):
+		var world: World3D = get_world_3d()
+		if world != null:
+			_runtime.set_audio_world_space_rid(world.space)
 
 func _check_for_duplicates() -> void:
 	var listeners := get_tree().get_nodes_in_group(_LISTENER_GROUP)

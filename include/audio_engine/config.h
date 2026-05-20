@@ -120,6 +120,27 @@ struct AudioConfig {
     bool enableDoppler          = true;
     bool enableAirAbsorption    = true;
 
+    // Global scaling multiplier applied to per-material occlusion
+    // absorption + damping. The per-material defaults in
+    // AudioMaterialDefaults are tuned to be physically realistic — a
+    // concrete wall absorbs ~90% of broadband energy at intensity=1.0,
+    // which is correct but can feel aggressive in gameplay. The
+    // default of 0.7 ("gentle but present") gives audible occlusion
+    // without compromising readability of important sounds.
+    //
+    //   0.0       bypass — audible occlusion off, equivalent to
+    //             enableOcclusion=false but smoother to toggle
+    //   0.4-0.6   conservative, prioritises clarity (good for
+    //             gameplay-critical sounds in arena/competitive games)
+    //   0.7       default — present, not aggressive
+    //   1.0       physically realistic per-material values
+    //   1.5-2.0   exaggerated — surreal/horror, "the room is wrong"
+    //
+    // Applied per-emitter as a clamped multiplier on both absorption
+    // and damping values returned from the geometry query. See
+    // OcclusionSystem::Update.
+    float occlusionIntensity    = 0.7f;
+
     // Speed of sound in m/s used by the Doppler model. 343 is air at ~20 °C;
     // dial down for thin atmospheres or up for water (1480) if you want
     // more pronounced Doppler.

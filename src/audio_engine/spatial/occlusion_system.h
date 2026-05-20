@@ -27,6 +27,16 @@ public:
 
     void SetGeometryQuery(IAudioGeometryQuery* q) noexcept { geometry_ = q; }
 
+    // Global intensity multiplier applied to per-emitter absorption +
+    // damping. 1.0 = use raw values from the geometry query (physical
+    // reality). <1 attenuates (gentler, more gameplay-friendly).
+    // >1 exaggerates (clamped to [0,1] after multiplication, so very
+    // absorbent materials saturate). Default 1.0 in the system; the
+    // runtime pushes AudioConfig::occlusionIntensity here at init.
+    // Safe to call at any time — the change applies on the next
+    // budgeted raycast slice.
+    void SetIntensity(float intensity) noexcept;
+
     // Reset all per-emitter state. Called on initialization or when emitters
     // are bulk-cleared.
     void Reset();
@@ -57,6 +67,7 @@ private:
     uint32_t maxEmitters_      = 0;
     uint32_t maxRaycastsPerFrame_ = 0;
     uint32_t scheduleCursor_   = 1;     // next slot to raycast (1-based, slot 0 is null)
+    float    intensity_        = 1.0f;  // SetIntensity; multiplies post-resolve
 
     // Per-emitter target absorption + damping. Index by slot.
     std::vector<float> targetAbsorption_;

@@ -22,6 +22,131 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.31.0] - 2026-05-20 — Phase 5.2: occlusion through walls (it just works)
+
+Sounds now muffle when a wall is between them and the listener,
+out of the box, with no per-emitter wiring or scene-level
+configuration. The engine raycasts from listener to active
+emitters at a budgeted rate, reads the hit collider's
+`gool_audio_material` metadata (the same tagging path Phase 5.1
+already established), and applies per-material absorption + damping
+to the spatialized sound.
+
+The engine side of this — the DSP, smoothing, per-emitter target
+state, per-sound opt-out, AudioMaterialDefaults table — has been
+built since v0.21 era. What was missing was the Godot bridge: a
+concrete implementation of `IAudioGeometryQuery` that uses
+PhysicsServer3D for the raycast. v0.31.0 ships that bridge plus a
+designer-facing intensity dial.
+
+### The philosophy
+
+> *"Occlusion as a system capability should absolutely be
+> foundational. Occlusion behavior and intensity should be
+> contextually authored and scalable. Real life acoustics are not
+> always fun acoustics. Players still need clarity, readability,
+> and emotional emphasis."*
+
+Translated to defaults: occlusion is ON by default (the per-material
+DSP path lights up automatically), but intensity ships at 0.7 — the
+"gentle but present" sweet spot — not the physically realistic 1.0
+that would make a concrete bunker into a sensory deprivation chamber.
+Designers can dial up or down per project, or override at runtime
+for accessibility settings, cinematic moments, or clarity-critical
+scenes.
+
+### What changed
+
+**Engine.** New `AudioConfig::occlusionIntensity` field, default
+0.7. Applied as a per-emitter multiplier on absorption + damping
+inside `OcclusionSystem::Update` after `ResolveOcclusion`, clamped
+to [0,1]. `OcclusionSystem` gains a `SetIntensity` method for
+live updates. New `AudioRuntime::SetOcclusionEnabled` and
+`SetOcclusionIntensity` public methods (delegating through Impl).
+
+**Godot binding.** New `GodotGeometryQuery` class implementing
+`IAudioGeometryQuery` via `PhysicsServer3D::space_get_direct_state`
++ `PhysicsRayQueryParameters3D::create` + `intersect_ray`. Reads
+`gool_audio_material` metadata on the hit collider — accepts both
+the integer-constant form and the GoolAudioMaterial-resource form,
+matching the duck-typing of `material_from_collider` from v0.30.0.
+Engine takes ownership via `AudioRuntimeDependencies.geometryQuery`;
+the binding keeps a non-owning observer pointer for the world-RID
+push path.
+
+**Project settings.** Two new settings registered on first init,
+editable under Project Settings → General → Gool → Occlusion:
+
+- `gool/occlusion/enabled`    (bool, default true)
+- `gool/occlusion/intensity`  (float, default 0.7)
+
+Read at every `init()` / `init_with_config()` and applied to the
+AudioConfig before runtime initialization.
+
+**Listener wiring.** `GoolListener3D::_ready` now pushes its
+`World3D.space` RID into the runtime via the new
+`set_audio_world_space_rid` binding. Without this push the
+geometry query reports no hit (safe fallback — sounds play
+unoccluded), which is the right behavior for scenes that
+haven't placed a listener yet.
+
+**GDScript API.** Three new wrappers on the `Gool` autoload:
+
+- `Gool.set_occlusion_enabled(enabled: bool)` — runtime toggle.
+- `Gool.set_occlusion_intensity(intensity: float)` — runtime dial.
+- `Gool.register_sound_definition(..., occlusion_enabled: bool = true)`
+  — per-sound opt-out, default true. Pass false for UI sounds,
+  dialogue, narration, anything where physical occlusion would
+  compromise readability.
+
+### Designer docs
+
+New cookbook section 12 "Occlusion through walls (it just works)",
+opening with the design intent above. Covers the three knobs
+(global enable, intensity, per-sound opt-out), how to tag
+colliders (mirrors section 11), what happens with untagged
+geometry, performance budget notes, and the multiplayer story
+(each peer evaluates locally — no network sync needed).
+
+### Tests
+
+New `TestIntensityMultiplierScalesAbsorptionAndDamping` in
+`tests/unit/material_occlusion_test.cpp` covering identity (1.0),
+half (0.5), zero (0.0), saturating (1.5), and the internal
+clamp ceiling (3.1 → clamps to 3.0).
+
+### Touch summary
+
+- `include/audio_engine/config.h`: `occlusionIntensity` field
+- `src/audio_engine/spatial/occlusion_system.{h,cpp}`:
+  `SetIntensity` API + applied in Update
+- `src/audio_engine/runtime/audio_runtime.cpp` + audio_runtime_impl.h:
+  `SetOcclusionEnabled` / `SetOcclusionIntensity` public API +
+  init-time `SetIntensity` call
+- `include/audio_engine/audio_runtime.h`: declarations + docs
+- `godot/src/gool_godot.cpp`: `GodotGeometryQuery` class,
+  `_apply_occlusion_config` helper, project-settings registration,
+  three new bindings (`set_occlusion_enabled`,
+  `set_occlusion_intensity`, `set_audio_world_space_rid`),
+  `register_sound_definition` gains `occlusion_enabled` param
+- `godot/addons/gool/runtime_singleton.gd`: matching GDScript
+  wrappers
+- `godot/addons/gool/prefabs/gool_listener_3d.gd`: pushes world
+  space RID on ready
+- `docs/cookbook.md`: new section 12
+- `tests/unit/material_occlusion_test.cpp`: new intensity test
+
+### Known: AudioMaterialDefaults table tuning
+
+The per-material absorption + damping values (concrete 0.90/0.75,
+drywall 0.55/0.55, foliage 0.35/0.60, etc.) remain at their
+historical defaults from when the system was first stubbed.
+With the intensity multiplier shipping at 0.7 these defaults
+sit in a comfortable range, but a deeper tuning pass is on
+deck once there's enough in-game listening to judge them
+against. Same situation as the deferred reverb preset table
+tuning from v0.29.6.
+
 ## [0.30.2] - 2026-05-19 — Group-only JSON banks; HashName fallback in group resolution
 
 A small engine change to support the workflow where individual
@@ -14227,6 +14352,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.31.0]: https://github.com/siliconight/gool/releases/tag/v0.31.0
 [0.30.2]: https://github.com/siliconight/gool/releases/tag/v0.30.2
 [0.30.1]: https://github.com/siliconight/gool/releases/tag/v0.30.1
 [0.30.0]: https://github.com/siliconight/gool/releases/tag/v0.30.0

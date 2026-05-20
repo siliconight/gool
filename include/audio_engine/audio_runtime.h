@@ -537,6 +537,23 @@ public:
     AudioResult SetBusGainDb(BusId busId, float gainDb)
         AUDIO_REQUIRES(GameThread);
 
+    // v0.31.0 — live occlusion controls. Both flip atomically; the
+    // next OcclusionSystem::Update tick sees the new value. Use these
+    // for runtime toggles like "audio settings menu" (player turns
+    // occlusion off entirely) or "cinematic scene" (designer briefly
+    // pushes intensity to 1.5 for a heightened moment then back).
+    //
+    //   SetOcclusionEnabled(false): all per-emitter absorption +
+    //   damping are zeroed at the next Update; sounds resume their
+    //   unoccluded character with the standard ~150 ms smoother.
+    //
+    //   SetOcclusionIntensity(x): multiplier applied to per-material
+    //   absorption + damping after the geometry query resolves. See
+    //   AudioConfig::occlusionIntensity for the full semantics
+    //   table. Clamped to [0, 3].
+    void SetOcclusionEnabled(bool enabled) AUDIO_REQUIRES(GameThread);
+    void SetOcclusionIntensity(float intensity) AUDIO_REQUIRES(GameThread);
+
     // v0.27.0: per-bus mute / solo / effect-bypass setters.
     //
     // These map onto the engine's per-bus atomic bools (see BusGraph

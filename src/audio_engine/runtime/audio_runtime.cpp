@@ -211,6 +211,29 @@ AudioResult AudioRuntime::SetEffectParameter(BusId    busId,
     return impl_->SetEffectParameter(busId, effectIndex, paramId, value);
 }
 
+void AudioRuntime::SetOcclusionEnabled(bool enabled) {
+    impl_->SetOcclusionEnabled(enabled);
+}
+
+void AudioRuntime::SetOcclusionIntensity(float intensity) {
+    impl_->SetOcclusionIntensity(intensity);
+}
+
+void AudioRuntimeImpl::SetOcclusionEnabled(bool enabled) {
+    config_.enableOcclusion = enabled;
+    // When toggling off, the Update loop at the next tick skips
+    // the raycast pass entirely. The smoother continues running,
+    // which gently relaxes per-emitter occlusion back to 0 over
+    // ~150 ms — no click, no sudden tonal jump.
+}
+
+void AudioRuntimeImpl::SetOcclusionIntensity(float intensity) {
+    config_.occlusionIntensity = intensity;
+    if (occlusion_) {
+        occlusion_->SetIntensity(intensity);
+    }
+}
+
 void AudioRuntime::OnTickAdvanced(SimulationTick t, TimestampMs ms) {
     impl_->OnTickAdvanced(t, ms);
 }
@@ -477,6 +500,7 @@ AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,
     occlusion_    = std::make_unique<OcclusionSystem>(config.budget.maxActiveEmitters,
                                                         config.budget.maxOcclusionChecksPerFrame);
     occlusion_->SetGeometryQuery(geometry_.get());
+    occlusion_->SetIntensity(config.occlusionIntensity);
 
     // SPSC rings
     gameEvents_    = std::make_unique<util::SpscRing<AudioEvent>>(
