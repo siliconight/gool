@@ -151,11 +151,19 @@ var _ramp_to := {}
 #
 # Active only when apply_listener_eq=true AND Gool's
 # _listener_eq_bus_name is non-empty AND the zone's material is
-# non-neutral. Otherwise these stay empty and _process skips the
+# non-neutral. Otherwise these stay at 0 and _process skips the
 # listener-EQ apply step entirely.
+#
+# Six scalar floats (not a Dictionary) — only the three band
+# gains interpolate. Cutoff frequencies and Q are set once at
+# ramp start since they're inaudible at 0 dB gain.
 var _eq_active: bool = false
-var _eq_ramp_from := {}
-var _eq_ramp_to := {}
+var _eq_from_low: float = 0.0
+var _eq_from_mid: float = 0.0
+var _eq_from_high: float = 0.0
+var _eq_to_low: float = 0.0
+var _eq_to_mid: float = 0.0
+var _eq_to_high: float = 0.0
 
 # Engine effect parameter IDs (from include/audio_engine/bus.h
 # namespace EffectParameter). Copied here so the GDScript zone

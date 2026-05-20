@@ -22,6 +22,59 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.35.2] - 2026-05-20 — Patch: undeclared listener-EQ ramp state in reverb_zone.gd
+
+A third v0.35.0 parse error that escaped v0.35.1's fix pass.
+`reverb_zone.gd` references six scalar float members
+(`_eq_from_low`, `_eq_from_mid`, `_eq_from_high`, `_eq_to_low`,
+`_eq_to_mid`, `_eq_to_high`) throughout `_setup_eq_ramp_to_material`,
+`_setup_eq_ramp_to_neutral`, `_begin_ramp`, and `_process` — but
+declared two unrelated Dictionary members (`_eq_ramp_from` and
+`_eq_ramp_to`) that nothing ever uses. Result: any scene
+containing a `ReverbZone` fails to parse with "Identifier
+'_eq_to_low' not declared in the current scope."
+
+I had switched implementation approaches mid-write (Dictionary →
+scalars) and only updated the consuming code, not the
+declarations. v0.35.2 replaces the dead Dictionary fields with
+the six scalar floats actually referenced. No logic changes;
+the runtime behavior was already correct, the file just
+couldn't load.
+
+### Retrospective — three consecutive parse failures
+
+This is the third v0.35.x release shipped with a GDScript-side
+bug that the parser catches on file load:
+
+- v0.35.0: `kind_name == "Biquad"` instead of `"BiquadFilter"`
+  (auto-EQ silently disabled, runtime warning only)
+- v0.35.1: unresolved `MATERIAL_DEFAULT` / `MATERIAL_AIR`
+  identifiers (parse error, scene wouldn't load)
+- v0.35.2: declarations didn't match references for six
+  listener-EQ scalar fields (parse error, scene wouldn't load)
+
+The root cause is the same in each case: I write GDScript
+changes but my validation pipeline only exercises the C++ side
+of gool. The Godot parser would catch any of these in milliseconds;
+I don't get to run it.
+
+Going forward I'm tightening the GDScript pre-flight to: (a)
+extract every declaration in the changed file (var, const, func,
+signal), (b) extract every leading-underscore identifier
+reference, (c) verify each reference resolves either against
+the local declarations or against the autoload's known exposed
+surface, before shipping. Won't catch every class of bug but
+catches all three classes that bit v0.35.x.
+
+### Touch summary
+
+- `godot/addons/gool/prefabs/reverb_zone.gd`: replaced
+  `_eq_ramp_from`/`_eq_ramp_to` Dictionary declarations with
+  six scalar float fields (`_eq_from_low`, `_eq_from_mid`,
+  `_eq_from_high`, `_eq_to_low`, `_eq_to_mid`, `_eq_to_high`)
+  matching what the function bodies actually use
+- `CHANGELOG.md`: this entry and the retrospective
+
 ## [0.35.1] - 2026-05-20 — Patch: fixes to v0.35.0's GDScript surface
 
 Two bugs in v0.35.0's GDScript code that didn't surface until a
@@ -14900,6 +14953,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.35.2]: https://github.com/siliconight/gool/releases/tag/v0.35.2
 [0.35.1]: https://github.com/siliconight/gool/releases/tag/v0.35.1
 [0.35.0]: https://github.com/siliconight/gool/releases/tag/v0.35.0
 [0.34.0]: https://github.com/siliconight/gool/releases/tag/v0.34.0
