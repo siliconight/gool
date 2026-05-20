@@ -22,6 +22,62 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.35.1] - 2026-05-20 — Patch: fixes to v0.35.0's GDScript surface
+
+Two bugs in v0.35.0's GDScript code that didn't surface until a
+user actually ran the addon in Godot. Both are pure GDScript
+fixes — no engine changes. Anyone running v0.35.0 should upgrade.
+
+### Fix 1 — `kind_name` string mismatch
+
+`_setup_impact_eq` (v0.34.0) and `_setup_listener_eq` (v0.35.0)
+checked `kind_name == "Biquad"` for each effect on the EQ buses.
+The engine actually reports biquads as `"BiquadFilter"` (matching
+the `audio::EffectKind::BiquadFilter` enum value). The check
+always failed against correctly-authored buses, so both auto-EQ
+features silently disabled themselves with a misleading warning
+("expected 'Biquad'") on any project that wired up Phase 6.B or
+6.C.
+
+v0.35.1 corrects both checks to expect `"BiquadFilter"`. Auto-EQ
+now actually engages.
+
+### Fix 2 — Parse error in `reverb_zone.gd`
+
+The Phase 6.C addition to `reverb_zone.gd::_setup_eq_ramp_to_material`
+referenced bare `MATERIAL_DEFAULT` and `MATERIAL_AIR` identifiers
+in a neutral-material early-return check. Those constants live
+on the `Gool` autoload (`runtime_singleton.gd`); they aren't in
+scope inside the `ReverbZone` script. The whole file failed to
+parse, which broke the scene load chain — opening any scene
+containing a `ReverbZone` errored out before `_ready` could
+even fire.
+
+v0.35.1 uses the literal integer values (0 and 1) with a comment
+tying them back to the `@export_enum` declaration on the same
+class. Same source of truth, no cross-file constant lookup.
+
+### Lessons captured
+
+These are both fail-on-first-parse / fail-on-first-call issues
+that any GDScript editor would catch on file load — but the
+build pipeline I can run only exercises the C++ side of gool.
+Going forward I'll be more rigorous about (a) verifying enum
+string values against the actual C++ source when bridging
+between layers, and (b) checking that cross-file identifier
+references resolve in their target file's scope before
+shipping. Documented inline in the v0.35.1 cookbook section
+14 update.
+
+### Touch summary
+
+- `godot/addons/gool/runtime_singleton.gd`: two `kind_name`
+  checks changed from `"Biquad"` to `"BiquadFilter"`
+- `godot/addons/gool/prefabs/reverb_zone.gd`: neutral-material
+  check uses literal `0`/`1` instead of unresolved
+  `MATERIAL_DEFAULT`/`MATERIAL_AIR` identifiers
+- `CHANGELOG.md`: this entry
+
 ## [0.35.0] - 2026-05-20 — Phase 6.C: listener-space EQ on ReverbZone
 
 Extends `ReverbZone` with an optional listener-space EQ stage —
@@ -14844,6 +14900,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.35.1]: https://github.com/siliconight/gool/releases/tag/v0.35.1
 [0.35.0]: https://github.com/siliconight/gool/releases/tag/v0.35.0
 [0.34.0]: https://github.com/siliconight/gool/releases/tag/v0.34.0
 [0.33.0]: https://github.com/siliconight/gool/releases/tag/v0.33.0

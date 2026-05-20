@@ -293,7 +293,11 @@ func _setup_eq_ramp_to_material() -> void:
 	# entirely; the previous zone's coloring (if any) persists
 	# until another non-neutral zone overwrites or this zone
 	# exits.
-	if material == MATERIAL_DEFAULT or material == MATERIAL_AIR:
+	#
+	# Literals 0 and 1 match the @export_enum declaration above
+	# (Default:0, Air:1) — the Gool.MATERIAL_* constants live on
+	# the autoload and aren't in scope here.
+	if material == 0 or material == 1:
 		_eq_active = false
 		return
 	if _runtime._listener_eq_bus_name == "":
