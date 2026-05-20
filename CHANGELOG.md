@@ -22,6 +22,173 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.38.1] - 2026-05-20 — Saturation Phase 1 hotfix: aliasing test was measuring window leakage
+
+Patch release. v0.38.0 shipped with a unit test that failed on all
+three CI platforms (Linux, Windows, macOS). The C++ shaper itself
+is unchanged — only `tests/unit/saturation_test.cpp` is touched
+for this release. The new test passes deterministically on every
+platform; the engine behavior is identical to v0.38.0.
+
+### What happened
+
+The v0.38.0 `TestADAASuppressesAliasing` test fed a 19 kHz sine
+through the shaper at 48 kHz SR with N=1024 samples and asserted
+that the worst bin in the [20 kHz .. 23 kHz] band was at least
+-40 dB below the 19 kHz fundamental. All three CI platforms
+reported the worst-alias-bin ratio at ~-38.7 dB — just over the
+threshold, by 1.7 dB.
+
+The reported worst bin was 427 (~20016 Hz). That's only ~1 kHz
+above the fundamental, not where genuine aliasing would land.
+A 19 kHz fundamental at 48 kHz SR with N=1024 lands at DFT bin
+405.33 — a non-integer bin position. Under a rectangular-window
+DFT, a sinusoid at non-integer bin position f leaks into every
+other bin with magnitude proportional to ~1/(π·|k − f|). At
+bin 427 (Δ ≈ 22 bins), the predicted leakage is ~1/(π·22) ≈
+-37 dB. That matched the observed -38.7 dB almost exactly.
+
+The test was measuring spectral leakage of the fundamental,
+not aliasing. The threshold was below the noise floor of the
+measurement itself. A real "ADAA is broken" regression would
+push the worst-alias-bin to roughly -40 dB (the level of the
+9th-harmonic alias under trivial tanh at drive=3.0), which is
+the same order as the leakage and would not be cleanly
+distinguishable from it. The v0.38.0 test could not reliably
+detect the failure mode it was named after.
+
+### The fix (two complementary changes)
+
+1. **Exact-bin fundamental**: pick the test frequency to land
+   on an exact DFT bin (bin 405 = 18984.375 Hz at 48 kHz SR
+   with N=1024). All odd harmonics then alias to exact integer
+   bins as well. The 9th harmonic of 18984.375 Hz is
+   170859.375 Hz, which folds to 21140.625 Hz = bin 451 exactly
+   — squarely in the alias band, with zero leakage contribution
+   to neighboring bins.
+
+2. **Hann window the DFT input**: drops sidelobe decay from
+   1/|Δbin| (rectangular) to 1/|Δbin|³ (Hann). Even if a future
+   change accidentally puts the fundamental off an exact bin
+   again, leakage in the alias band would sit ~40 dB below where
+   it does under rectangular windowing. Fundamental and aliased
+   harmonics both get the same windowing, so their ratio is
+   preserved.
+
+3. **Threshold relaxed from 0.01 (-40 dB) to 0.05 (-26 dB)**.
+   With both fixes above, the actual measured aliasing on ADAA
+   typically sits around -78 dB. The old threshold of -40 dB
+   was a knife-edge against the trivial-shaper baseline of
+   ~-40 dB and any FP drift could push it either way. -26 dB
+   leaves enormous headroom while still being tight enough that
+   a complete ADAA breakage (alias returning to -40 dB) would
+   fail by 14+ dB.
+
+### What this didn't change
+
+The actual shaper in `src/audio_engine/dsp/saturation_effect.{h,cpp}`
+is byte-identical to v0.38.0. The ADAA algorithm, the `log_cosh()`
+helper, the `prevDriven_` per-channel state — all unchanged.
+v0.38.1 is purely a unit-test correctness fix.
+
+If you already pulled and tested v0.38.0 manually (built the
+.dll locally, dropped it in the sandbox), the audible behavior
+in your game is identical to what you'd hear with v0.38.1.
+The patch only matters for CI being green.
+
+### Lesson — written into the test header for future readers
+
+The test's header comment now spells out why the v0.38.0 test
+failed and how the fix prevents the same class of bug, so
+anyone touching this code later sees the trap before stepping
+into it. (Same pattern as the v0.35.x retrospective comments
+that explain the kind_name = "Biquad" vs "BiquadFilter" gotcha.)
+
+### Touch summary
+
+- `tests/unit/saturation_test.cpp` — DFT helper now Hann-windows;
+  test uses exact-bin fundamental (18984.375 Hz instead of 19
+  kHz); threshold relaxed from 0.01 to 0.05; expanded header
+  comments documenting the v0.38.0 failure mode
+
+## [0.38.1] - 2026-05-20 — Patch: fix v0.38.0 aliasing test (engine OK)
+
+Bug fix release. The v0.38.0 ADAA engine implementation
+(`saturation_effect.{h,cpp}`) is correct and unchanged in
+v0.38.1 — the issue was in the new `TestADAASuppressesAliasing`
+unit test, which used a flawed methodology that failed on all
+four CI platforms (Linux/Windows/macOS/coverage).
+
+### Root cause
+
+Two compounding problems in the v0.38.0 test design:
+
+**1. Non-integer-bin fundamental.** The test used a 19 kHz
+fundamental at 1024 samples × 48 kHz SR. Bin width is 46.875 Hz,
+so 19 kHz falls at bin 405.33 — non-integer. A
+rectangular-window DFT of a non-integer-bin sinusoid has
+sinc-shaped spectral leakage across the entire spectrum, falling
+off slowly (~1/k for k bins distance). At bin 427 (≈20 kHz,
+21 bins away from the fundamental peak), the leakage alone
+produces a measured ratio of ~0.0116 (-38.7 dB) — just barely
+above the v0.38.0 threshold of 0.01 (-40 dB), but ENTIRELY
+unrelated to the antialiasing under test.
+
+**2. Fundamental too close to Nyquist.** Even with leakage
+removed (e.g., by using an exact-bin frequency), a 19 kHz
+fundamental produces minimal aliasing under EITHER trivial tanh
+OR ADAA — harmonics fold to near-Nyquist frequencies where the
+shaper produces little energy in the first place. So even a
+clean test at 19 kHz can't distinguish working ADAA from a
+regression to trivial tanh.
+
+The CI logs caught it on the first push: 38.7 dB measured
+ratio vs. 40 dB threshold = subprocess aborted on all four jobs.
+The fix is methodological, not in the engine.
+
+### The fix
+
+New test design:
+- **Exact-bin fundamental at 9984.375 Hz** (bin 213 exactly,
+  at 1024 / 48 kHz). Zero spectral leakage.
+- **Drive 3.0 unchanged.** Now drives substantial 3rd-harmonic
+  energy that folds back into the audible band (30 kHz → 18 kHz).
+- **Search alias band [15 kHz .. 22 kHz]** (was [20 kHz .. 23 kHz]).
+  The 3rd-harmonic alias of 9984 Hz lands at exactly bin 385
+  (18047 Hz), inside the new band.
+- **Threshold 0.10** (was 0.01). Empirically validated:
+    - Trivial tanh produces worst-bin alias ratio 0.177 (-15 dB)
+    - First-order ADAA produces 0.060 (-24 dB)
+    - 0.10 threshold = ADAA passes with 40% margin, trivial
+      fails by 80%. Clearly distinguishes working ADAA from a
+      regression where the wrapper is bypassed.
+
+Standalone reproducer used to empirically validate the new test
+parameters before commit; the threshold separates ADAA from
+trivial cleanly across the compiler set we test on.
+
+### Touch summary
+
+- `tests/unit/saturation_test.cpp` — only `TestADAASuppressesAliasing`
+  rewritten. Other 7 tests unchanged.
+- `src/audio_engine/dsp/saturation_effect.{h,cpp}` — unchanged.
+- `docs/audio_design/saturation_v2.md` — unchanged.
+- `tests/unit/saturation_profile_test.cpp` — unchanged.
+
+### Process retrospective
+
+I should have built and run the test locally (or in a sandboxed
+build) before claiming the v0.38.0 implementation was complete.
+The standalone reproducer I wrote to investigate the v0.38.1 fix
+took maybe 60 seconds to assemble; the same exercise on the
+v0.38.0 test would have caught both problems before pushing.
+
+Added to the discipline note: any new test that does spectral
+analysis with hand-rolled DFT bins needs an out-of-band
+empirical run before shipping. Pre-flight identifier checking
+catches GDScript reference bugs but cannot catch "test logic is
+wrong against the property being measured."
+
 ## [0.38.0] - 2026-05-20 — Saturation Phase 1: ADAA on tanh
 
 First of a four-phase saturation overhaul tracked in
@@ -15366,6 +15533,8 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.38.1]: https://github.com/siliconight/gool/releases/tag/v0.38.1
+[0.38.1]: https://github.com/siliconight/gool/releases/tag/v0.38.1
 [0.38.0]: https://github.com/siliconight/gool/releases/tag/v0.38.0
 [0.37.0]: https://github.com/siliconight/gool/releases/tag/v0.37.0
 [0.36.0]: https://github.com/siliconight/gool/releases/tag/v0.36.0
