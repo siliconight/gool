@@ -833,6 +833,34 @@ func reverb_preset_for_material(material: int) -> Dictionary:
 		return {}
 	return _runtime.get_reverb_preset_for_material(material)
 
+## Return the engine's per-material EQ curve as a Dictionary with
+## keys: `low_gain_db`, `low_freq_hz`, `mid_gain_db`, `mid_freq_hz`,
+## `mid_q`, `high_gain_db`, `high_freq_hz`, plus a convenience
+## flag `is_neutral` (true for Air/Default materials where every
+## band gain is ~0 dB — consumers should skip EQ entirely in this
+## case rather than installing a no-op chain).
+##
+## These curves are the perceptual fingerprint of each material:
+## concrete's upper-mid bite at 1.5 kHz, wood's warm 500 Hz body,
+## curtain's broad HF cut, etc. Phase 6.A (this release) ships the
+## table; Phase 6.B will wire it into the impact playback path so
+## a sound played as an impact on Concrete automatically gets the
+## Concrete EQ applied. Phase 6.C will wire it into the listener-
+## space (reverb-zone) path so the room's material colors
+## everything you hear inside it.
+##
+## For now, designers apply the curve manually by setting up a
+## chain of 3 Biquad effects (LowShelf / Peaking / HighShelf) on
+## a bus and pushing the returned values via set_effect_parameter.
+## See docs/cookbook.md section 14 for the full walkthrough.
+##
+## Out-of-range material values fall through to the Default
+## (neutral) curve.
+func material_eq_for_material(material: int) -> Dictionary:
+	if not is_initialized():
+		return {}
+	return _runtime.get_material_eq_for_material(material)
+
 ## Resolve a Node's AudioMaterial. Checks two sources in order:
 ##
 ##   1. `gool_audio_material` metadata. Can be either an int

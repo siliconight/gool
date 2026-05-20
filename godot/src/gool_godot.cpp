@@ -445,6 +445,16 @@ public:
                                        "material"),
                               &GoolAudioRuntime::get_reverb_preset_for_material);
 
+        // v0.33.0 (Phase 6.A): per-material EQ curves. Returns the
+        // engine's MaterialEqByMaterial table value for a given
+        // AudioMaterial as a Dictionary with low/mid/high band
+        // parameters. Designers apply this manually for now via
+        // Biquad effects on a bus; v0.34.0+ will wire it directly
+        // into the impact and listener-space playback paths.
+        ClassDB::bind_method(D_METHOD("get_material_eq_for_material",
+                                       "material"),
+                              &GoolAudioRuntime::get_material_eq_for_material);
+
         // v0.31.0 (Phase 5.2): live occlusion controls.
         ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"),
                               &GoolAudioRuntime::set_occlusion_enabled);
@@ -1429,7 +1439,48 @@ public:
         out["decay"]      = static_cast<double>(p.decay);
         out["lf_damping"] = static_cast<double>(p.lfDamping);
         out["hf_damping"] = static_cast<double>(p.hfDamping);
-        out["diffusion"]  = static_cast<double>(p.diffusion);
+        out["diffusion"] = static_cast<double>(p.diffusion);
+        return out;
+    }
+
+    // v0.33.0 (Phase 6.A): material EQ curve lookup. Returns the
+    // engine's per-material 3-band EQ curve as a Dictionary —
+    // low shelf, mid peaking band, high shelf, each with the
+    // parameters needed to plug into a Biquad effect on a bus.
+    //
+    // Keys:
+    //   low_gain_db    shelf gain below low_freq_hz (cut or boost)
+    //   low_freq_hz    low shelf knee
+    //   mid_gain_db    peaking band gain around mid_freq_hz
+    //   mid_freq_hz    peaking band center
+    //   mid_q          peaking band Q (sharpness)
+    //   high_gain_db   shelf gain above high_freq_hz
+    //   high_freq_hz   high shelf knee
+    //   is_neutral     true if all three band gains are ~0 dB
+    //                  (Air, Default — consumers should skip the
+    //                  EQ stage entirely rather than spend cycles
+    //                  on a no-op)
+    //
+    // The is_neutral flag is computed engine-side to keep the
+    // designer-facing check trivial in GDScript ("if not
+    // curve.is_neutral: apply_it()") without re-implementing the
+    // epsilon comparison.
+    Dictionary get_material_eq_for_material(int material) const {
+        audio::AudioMaterial m = audio::AudioMaterial::Default;
+        if (material >= 0
+            && material < static_cast<int>(audio::kAudioMaterialCount)) {
+            m = static_cast<audio::AudioMaterial>(material);
+        }
+        const audio::MaterialEqCurve c = audio::MaterialEqByMaterial(m);
+        Dictionary out;
+        out["low_gain_db"]  = static_cast<double>(c.lowGainDb);
+        out["low_freq_hz"]  = static_cast<double>(c.lowFreqHz);
+        out["mid_gain_db"]  = static_cast<double>(c.midGainDb);
+        out["mid_freq_hz"]  = static_cast<double>(c.midFreqHz);
+        out["mid_q"]        = static_cast<double>(c.midQ);
+        out["high_gain_db"] = static_cast<double>(c.highGainDb);
+        out["high_freq_hz"] = static_cast<double>(c.highFreqHz);
+        out["is_neutral"]   = audio::MaterialEqIsNeutral(c);
         return out;
     }
 

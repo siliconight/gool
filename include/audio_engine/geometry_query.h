@@ -13,6 +13,7 @@
 
 #include "audio_engine/types.h"
 #include <algorithm>
+#include <cmath>
 
 namespace audio {
 
@@ -122,6 +123,122 @@ inline ReverbMaterialPreset ReverbPresetByMaterial(AudioMaterial m) noexcept {
         case AudioMaterial::Default:
         default:                      return { 0.50f, 0.10f, 0.30f, 0.625f };
     }
+}
+
+// v0.33.0 (Phase 6.A): per-material EQ curves.
+//
+// Each material carries a perceptual fingerprint — the frequency
+// contour that makes "concrete" sound like concrete and "wood"
+// sound like wood, beyond the gain reduction (occlusion) and
+// reverb tail (acoustic envelope) already covered in Phases 5.2
+// and 5.3. Phase 6.A defines those fingerprints as a 3-band EQ
+// curve per material; subsequent phases will wire them into:
+//
+//   6.B  the impact playback path — a sound played as an
+//        impact on Concrete gets the Concrete EQ applied at
+//        play time, even if the source .wav was authored
+//        material-neutral
+//   6.C  the reverb-zone path — the listener's current space
+//        colors what they hear (their ears are "inside" the
+//        material), via the same curves applied to a listener-
+//        space EQ bus
+//
+// The 3-band shape is deliberately small: a low shelf (boost or
+// cut everything below a knee), a peaking band (boost or cut a
+// region around a center frequency with a configurable Q), and
+// a high shelf (boost or cut above a knee). That's enough to
+// capture the perceptual character of every material in the
+// AudioMaterial enum without becoming an authoring nightmare.
+// Designers needing finer control can author multi-Biquad chains
+// on a bus directly via JSON or set_effect_parameter.
+//
+// Sign conventions: positive gains are boosts in dB, negative are
+// cuts. Q values around 0.7 are gentle, 1.0 is moderate, 1.5+ is
+// surgical. Frequencies in Hz.
+//
+// The presets here are STARTING POINTS designed to be audible but
+// not extreme. Concrete's upper-mid bite is real but not piercing;
+// foliage's broad cut is real but not telephone-y. Designers are
+// expected to override per-context, especially for stylized games.
+
+struct MaterialEqCurve {
+    float lowGainDb;    // shelf gain below lowFreqHz
+    float lowFreqHz;    // low shelf knee
+    float midGainDb;    // peaking band gain around midFreqHz
+    float midFreqHz;    // peaking band center
+    float midQ;         // peaking band Q (sharpness)
+    float highGainDb;   // shelf gain above highFreqHz
+    float highFreqHz;   // high shelf knee
+};
+
+inline MaterialEqCurve MaterialEqByMaterial(AudioMaterial m) noexcept {
+    switch (m) {
+        // Glass: bright, neutral mids. Slight HF lift gives the
+        // characteristic ring; small mid dip keeps it from feeling
+        // boxy.
+        case AudioMaterial::Glass:
+            return { 0.0f,  200.0f,  -1.5f, 1000.0f, 1.0f,  +1.0f, 8000.0f };
+
+        // Wood: warm low-mid body, soft top. Gentle low shelf
+        // boost + peaking band at 500 Hz captures the "thwack" of
+        // wood; HF cut removes the brittle edge that synthesized
+        // wood often has.
+        case AudioMaterial::Wood:
+            return { +2.0f, 250.0f,  +1.5f,  500.0f, 0.7f,  -1.5f, 6000.0f };
+
+        // Drywall: neutral, slightly damped. Subtle cuts at mid
+        // and high keep things flat and dulled — the "indoor
+        // residential" feel.
+        case AudioMaterial::Drywall:
+            return { 0.0f,  200.0f,  -1.0f, 1000.0f, 0.7f,  -1.0f, 8000.0f };
+
+        // Concrete: bright, hard, upper-mid "crack". Slight low
+        // shelf boost for body; the signature 1.5 kHz peaking
+        // band gives concrete its bite; HF lift adds the
+        // hardness that distinguishes it from drywall.
+        case AudioMaterial::Concrete:
+            return { +1.0f, 200.0f,  +2.5f, 1500.0f, 1.0f,  +2.0f, 6000.0f };
+
+        // Metal: hard, ringing, slightly nasal. Upper-mid peak
+        // captures the "clang"; bright HF gives the ringing
+        // overtones. Tighter Q than concrete — metal's
+        // resonance is more focused.
+        case AudioMaterial::Metal:
+            return { 0.0f,  200.0f,  +2.0f, 2000.0f, 1.5f,  +1.5f, 10000.0f };
+
+        // Curtain: very dulled, soft top. Broad mid cut + strong
+        // HF cut — the classic "thick fabric" sound. Asymmetric:
+        // low end is untouched (heavy fabric doesn't attenuate
+        // bass much).
+        case AudioMaterial::Curtain:
+            return { 0.0f,  200.0f,  -2.0f,  800.0f, 0.5f,  -4.0f, 4000.0f };
+
+        // Foliage: broadband softness, no specific resonance.
+        // Wide gentle cuts across mid + high. Lower Q than
+        // curtain because foliage is more chaotic — many leaves
+        // contribute slightly different absorption.
+        case AudioMaterial::Foliage:
+            return { 0.0f,  200.0f,  -1.5f, 1000.0f, 0.4f,  -2.0f, 6000.0f };
+
+        // Air and Default: no coloration. These return a
+        // null curve (all gains 0 dB); any consumer applying
+        // this should skip the EQ stage entirely.
+        case AudioMaterial::Air:
+        case AudioMaterial::Default:
+        default:
+            return { 0.0f,  200.0f,   0.0f, 1000.0f, 0.7f,   0.0f, 8000.0f };
+    }
+}
+
+// Helper: does this curve represent any meaningful EQ at all?
+// Used by consumers to skip the EQ stage entirely for
+// Air/Default and to avoid setting up Biquad chains that would
+// be 0 dB no-ops.
+inline bool MaterialEqIsNeutral(const MaterialEqCurve& c) noexcept {
+    constexpr float kEpsilonDb = 0.01f;
+    return std::abs(c.lowGainDb)  < kEpsilonDb
+        && std::abs(c.midGainDb)  < kEpsilonDb
+        && std::abs(c.highGainDb) < kEpsilonDb;
 }
 
 // Resolve the effective (absorption, damping) pair from an

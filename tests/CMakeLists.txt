@@ -32,6 +32,7 @@ add_executable(audio_engine_version_test                  unit/version_test.cpp)
 add_executable(audio_engine_memory_budget_test            unit/memory_budget_test.cpp)
 add_executable(audio_engine_aligned_float_buffer_test     unit/aligned_float_buffer_test.cpp)
 add_executable(audio_engine_material_occlusion_test       unit/material_occlusion_test.cpp)
+add_executable(audio_engine_material_eq_curve_test        unit/material_eq_curve_test.cpp)
 add_executable(audio_engine_thread_priority_test          unit/thread_priority_test.cpp)
 add_executable(audio_engine_global_parameter_test         unit/global_parameter_test.cpp)
 add_executable(audio_engine_sound_rtpc_test               unit/sound_rtpc_test.cpp)
@@ -41,7 +42,7 @@ add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitch
 
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
-foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry voice_mute_budget biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion)
+foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry voice_mute_budget biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion material_eq_curve)
     target_include_directories(audio_engine_${_t}_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)
@@ -82,6 +83,7 @@ target_link_libraries(audio_engine_version_test                   PRIVATE audio_
 target_link_libraries(audio_engine_memory_budget_test             PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_aligned_float_buffer_test      PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_material_occlusion_test        PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_material_eq_curve_test         PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_thread_priority_test           PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_global_parameter_test          PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_sound_rtpc_test                PRIVATE audio_engine::audio_engine)
@@ -123,6 +125,7 @@ add_test(NAME version_test                  COMMAND audio_engine_version_test)
 add_test(NAME memory_budget_test            COMMAND audio_engine_memory_budget_test)
 add_test(NAME aligned_float_buffer_test     COMMAND audio_engine_aligned_float_buffer_test)
 add_test(NAME material_occlusion_test       COMMAND audio_engine_material_occlusion_test)
+add_test(NAME material_eq_curve_test        COMMAND audio_engine_material_eq_curve_test)
 add_test(NAME thread_priority_test          COMMAND audio_engine_thread_priority_test)
 add_test(NAME global_parameter_test         COMMAND audio_engine_global_parameter_test)
 add_test(NAME sound_rtpc_test               COMMAND audio_engine_sound_rtpc_test)

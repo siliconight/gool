@@ -737,6 +737,177 @@ zone transition), then nothing until the next entry/exit. The
 underlying engine parameter changes are atomic writes; no
 audio-thread synchronization.
 
+## 14 — The sound of a material (Phase 6.A) 🛠 Foundational
+
+### Why a material has a sound
+
+Each material in the AudioMaterial taxonomy carries more than just
+the gain reduction (Phase 5.2 occlusion) and the reverb envelope
+(Phase 5.3 zones). It also has a perceptual *fingerprint* — the
+frequency contour that makes "concrete" sound like concrete and
+"wood" sound like wood, even when the source audio is identical.
+
+This is what Phase 6 (Acoustic Presence — dynamic EQ) is about.
+Phase 6.A ships the foundation: the per-material EQ curves
+themselves, expressed as 3-band tone shapes (low shelf + peak +
+high shelf). Subsequent phases will wire them into the playback
+path automatically:
+
+| Phase | What it does |
+|---|---|
+| **6.A (this)** | defines the curves, exposes them as a Dictionary, designers apply manually |
+| **6.B** (next) | wires curves into impact sounds — a bullet hitting concrete sounds *concrete* without designer setup |
+| **6.C** (later) | wires curves into reverb zones — being *inside* a wooden cabin colors everything you hear with the wood curve |
+| **6.D** (later) | realism multiplier (0..2) — dial back for clarity, push up for surreal/horror |
+
+### The curves, in plain terms
+
+Each material returns a 3-band EQ curve via
+`Gool.material_eq_for_material(material)`. The bands target
+specific frequency ranges that correspond to perceptual qualities
+designers usually think about:
+
+- **Low band** (~200–250 Hz) — body, warmth, weight
+- **Mid band** (~500 Hz–2 kHz) — character, bite, presence
+- **High band** (~4–10 kHz) — air, brightness, sparkle, sibilance
+
+Here's what each material's curve emphasizes:
+
+| Material | Low | Mid | High | Why |
+|---|---|---|---|---|
+| **Glass** | flat | slight cut @ 1k | gentle lift @ 8k | bright, neutral mids — the ring |
+| **Wood** | +2 dB body @ 250 | +1.5 dB warmth @ 500 | -1.5 dB top | warm low-mid thwack, no brittleness |
+| **Drywall** | flat | slight cut @ 1k | slight cut @ 8k | dulled, indoor-neutral |
+| **Concrete** | +1 dB body @ 200 | +2.5 dB bite @ 1.5k | +2 dB top @ 6k | bright hard crack — the most "present" material |
+| **Metal** | flat | +2 dB peak @ 2k | +1.5 dB ring @ 10k | clang + ringing overtones, narrower Q |
+| **Curtain** | flat | -2 dB broad mid cut | -4 dB strong HF cut | thick fabric — bass passes, top dies |
+| **Foliage** | flat | -1.5 dB broad cut | -2 dB HF cut | broadband softness, no specific resonance |
+| **Air / Default** | — | — | — | neutral, no coloration (curve.is_neutral == true) |
+
+These are STARTING POINTS chosen to be audible but not extreme.
+Designers will dial them in once 6.B/6.C ship and the curves
+become directly audible.
+
+### Reading a curve in GDScript
+
+```gdscript
+var curve = Gool.material_eq_for_material(Gool.MATERIAL_CONCRETE)
+# curve == {
+#     "low_gain_db":  1.0,  "low_freq_hz":  200.0,
+#     "mid_gain_db":  2.5,  "mid_freq_hz":  1500.0, "mid_q": 1.0,
+#     "high_gain_db": 2.0,  "high_freq_hz": 6000.0,
+#     "is_neutral": false
+# }
+
+if curve.is_neutral:
+    # Air / Default — every band is 0 dB. Skip the EQ stage
+    # entirely rather than installing a no-op chain.
+    return
+# else: apply the curve via Biquad effects (see below).
+```
+
+### Applying a curve right now: 3-biquad chain on a bus
+
+Until 6.B/6.C automate this, designers apply material EQ by
+authoring three Biquad effects on a bus and pushing the
+returned values via `set_effect_parameter`. The three biquads
+must be of types LowShelf, Peak, and HighShelf in that order.
+
+**Step 1: author the bus in `gool/config.json`** with the three
+biquad effects in place. The biquad type is structural — set
+once at config time — but cutoff/Q/gain are tunable at runtime.
+
+```json
+{
+  "name": "MaterialColor",
+  "parent": "Sfx",
+  "effects": [
+    { "kind": "biquad", "biquad_type": "lowshelf",
+      "cutoff_hz": 200, "q": 0.7, "biquad_gain_db": 0 },
+    { "kind": "biquad", "biquad_type": "peak",
+      "cutoff_hz": 1000, "q": 1.0, "biquad_gain_db": 0 },
+    { "kind": "biquad", "biquad_type": "highshelf",
+      "cutoff_hz": 8000, "q": 0.7, "biquad_gain_db": 0 }
+  ]
+}
+```
+
+Initial gains of 0 dB make the chain a no-op until the first
+material is applied — safe default.
+
+**Step 2: push curve values at runtime** when a material should
+color sounds on this bus. The three biquads are at chain
+indices 0, 1, 2 respectively:
+
+```gdscript
+func apply_material_eq(bus_name: String, material: int) -> void:
+    var c = Gool.material_eq_for_material(material)
+    if c.is_neutral:
+        # Reset all three to 0 dB — silently bypasses the chain.
+        Gool._runtime.set_effect_parameter(bus_name, 0, 12, 0.0)  # low gain
+        Gool._runtime.set_effect_parameter(bus_name, 1, 12, 0.0)  # mid gain
+        Gool._runtime.set_effect_parameter(bus_name, 2, 12, 0.0)  # high gain
+        return
+    # LowShelf at index 0
+    Gool._runtime.set_effect_parameter(bus_name, 0,  2, c.low_freq_hz)
+    Gool._runtime.set_effect_parameter(bus_name, 0, 12, c.low_gain_db)
+    # Peak at index 1
+    Gool._runtime.set_effect_parameter(bus_name, 1,  2, c.mid_freq_hz)
+    Gool._runtime.set_effect_parameter(bus_name, 1,  3, c.mid_q)
+    Gool._runtime.set_effect_parameter(bus_name, 1, 12, c.mid_gain_db)
+    # HighShelf at index 2
+    Gool._runtime.set_effect_parameter(bus_name, 2,  2, c.high_freq_hz)
+    Gool._runtime.set_effect_parameter(bus_name, 2, 12, c.high_gain_db)
+```
+
+(Param IDs: 2 = `Biquad_CutoffHz`, 3 = `Biquad_Q`, 12 =
+`Biquad_GainDb`. They live in `include/audio_engine/bus.h`'s
+`EffectParameter` namespace; copy these constants into your
+own GDScript if you want named symbols.)
+
+### When you'd do this manually
+
+For most designers, "apply material EQ manually" isn't something
+you'd reach for in v0.33.0 — 6.B/6.C will automate the common
+cases (impacts color themselves on hit, zones color the listener
+space). The manual path matters when:
+
+- You want EQ to follow a non-standard event (player crouches
+  behind a concrete pillar → push the concrete curve onto the
+  ambient bus).
+- You're prototyping a custom audio behavior that 6.B/6.C
+  won't cover.
+- You want to crossfade between two materials' curves smoothly
+  (lerp the gain values yourself; the cutoff frequencies don't
+  need to crossfade because they're frequency-domain anchors,
+  not amplitudes).
+
+### What's coming
+
+**Phase 6.B** will add automatic source-material EQ to the
+impact playback path. `Gool.play_impact_sound(name, position,
+material)` will route through a per-emitter EQ stage applying
+the material's curve, so the same `impact.generic.wav` sounds
+audibly different on Concrete vs Wood vs Foliage without the
+designer authoring per-material variants.
+
+**Phase 6.C** will add listener-space EQ to the `ReverbZone`
+prefab. When the listener is inside a Wood zone, all sound
+they hear is colored by the wood curve — modeling "your ears
+are inside a wooden box". Likely a new opt-in property on
+ReverbZone (`apply_listener_eq: bool`) since this is a
+stronger effect than reverb alone.
+
+**Phase 6.D** will add a realism multiplier (0..2) — same
+pattern as the v0.31.0 occlusion intensity dial. Gentle
+defaults (probably 0.5–0.7), with headroom for cinematic or
+surreal amplification.
+
+**Phase 6.E** (eventually) will be a designer authoring tool
+— inspector-side EQ curve editor on a `GoolAudioMaterial`
+resource, so studios can author custom material curves
+without writing code.
+
 ## Where to find more
 
 - [`docs/godot_quickstart.md`](godot_quickstart.md) — start here

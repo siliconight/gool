@@ -22,6 +22,132 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.33.0] - 2026-05-20 — Phase 6.A: per-material EQ curves (the foundation)
+
+Opens Phase 6 (Acoustic Presence — dynamic EQ) with the
+foundational data layer: per-material EQ curves describing each
+material's *perceptual fingerprint*, the frequency contour that
+makes "concrete" sound like concrete and "wood" sound like wood
+beyond what gain reduction (5.2 occlusion) and reverb envelope
+(5.3 zones) already cover.
+
+This release defines the curves and exposes them. Subsequent
+phases will consume them:
+
+- **6.B** — wire curves into the impact playback path
+  (Concrete impacts sound *concrete* without designer setup)
+- **6.C** — wire curves into the listener-space (reverb-zone)
+  path (being inside a wooden cabin colors everything you hear
+  with the wood curve)
+- **6.D** — realism multiplier (0..2) for cinematic / surreal
+  amplification
+- **6.E** — designer authoring tool for custom material curves
+
+Following the same constants-then-consumers pattern v0.30.0 used
+for the material taxonomy itself: ship the data layer first,
+layer DSP integration on top in focused subsequent releases.
+
+### What's in the table
+
+The 3-band shape is deliberately small — low shelf + peaking
+band + high shelf — enough to capture each material's perceptual
+character without becoming an authoring nightmare. Highlights:
+
+- **Concrete** — slight low body boost, signature +2.5 dB
+  "bite" at 1.5 kHz (Q=1.0), high-shelf lift @ 6 kHz. The most
+  present, hard-edged curve.
+- **Metal** — +2 dB peak at 2 kHz with tighter Q (1.5) for the
+  ringing overtones, +1.5 dB shelf at 10 kHz.
+- **Wood** — +2 dB low shelf @ 250 Hz, warm +1.5 dB @ 500 Hz
+  (Q=0.7), gentle HF cut. Warm low-mid body, no brittleness.
+- **Curtain** — broad mid cut, strong -4 dB HF cut. Thick
+  fabric sound — bass passes, top dies.
+- **Foliage** — broad mid + HF cuts at low Q. Broadband
+  softness with no specific resonance.
+- **Glass / Drywall / Metal** — distinct mid/high contours
+  matching their perceptual character (see cookbook 14 for the
+  full table).
+- **Air / Default** — neutral (every band at 0 dB).
+  `MaterialEqIsNeutral()` and the `is_neutral` Dictionary flag
+  let consumers skip the EQ stage entirely for these.
+
+All gains stay within ±4 dB to avoid extreme defaults; designers
+will dial in once 6.B/6.C make the curves directly audible.
+
+### New API surface
+
+**Engine** (`include/audio_engine/geometry_query.h`):
+
+- `struct MaterialEqCurve` — 7-field struct: `lowGainDb`,
+  `lowFreqHz`, `midGainDb`, `midFreqHz`, `midQ`, `highGainDb`,
+  `highFreqHz`.
+- `MaterialEqByMaterial(AudioMaterial)` — inline lookup
+  returning the per-material preset.
+- `MaterialEqIsNeutral(const MaterialEqCurve&)` — helper for
+  the skip-no-op-chain case (Air/Default).
+
+**Binding** (`godot/src/gool_godot.cpp`):
+
+- `GoolAudioRuntime::get_material_eq_for_material(int)` returns
+  a Dictionary with the seven curve parameters plus an
+  `is_neutral` convenience flag.
+
+**GDScript** (`godot/addons/gool/runtime_singleton.gd`):
+
+- `Gool.material_eq_for_material(material) -> Dictionary` —
+  designer-facing wrapper with full docstring.
+
+### Designer doc
+
+New cookbook section 14 "The sound of a material (Phase 6.A)"
+explains:
+
+- What the EQ curves represent in plain language (low =
+  body/warmth, mid = character/bite, high = air/brightness)
+- A per-material table with the curve highlights and why each
+  material's curve looks the way it does
+- How to apply a curve right now via a 3-biquad chain on a bus
+  (LowShelf → Peak → HighShelf, structural in JSON config,
+  runtime values via set_effect_parameter)
+- What's coming in 6.B/6.C/6.D/6.E so designers know how this
+  data layer will get consumed
+
+The cookbook explicitly tags this section "🛠 Foundational"
+rather than "✨ Convenience" — the curves are intentionally not
+yet auto-applied. That's deliberate scope discipline; 6.B/6.C
+will earn the ✨ tag.
+
+### Tests
+
+New `tests/unit/material_eq_curve_test.cpp` with five test
+functions: every material returns a curve, Air/Default are
+neutral (and the helper detects it), loud materials boost
+something, soft materials cut something, no two non-neutral
+materials are byte-identical. Wired into CTest.
+
+### Touch summary
+
+- `include/audio_engine/geometry_query.h`: `MaterialEqCurve`
+  struct + `MaterialEqByMaterial` lookup + `MaterialEqIsNeutral`
+  helper, plus `<cmath>` include for `std::abs`
+- `godot/src/gool_godot.cpp`: `get_material_eq_for_material`
+  binding + ClassDB registration
+- `godot/addons/gool/runtime_singleton.gd`:
+  `material_eq_for_material` wrapper
+- `docs/cookbook.md`: new section 14
+- `tests/unit/material_eq_curve_test.cpp`: new test
+- `tests/CMakeLists.txt`: wiring for the new test
+
+### What's not in this release (by design)
+
+- No DSP-side auto-application. Phase 6.A is data only;
+  consumers come in 6.B/6.C/6.D.
+- No GoolMaterialEqZone prefab. The reverb-zone analog will
+  arrive when 6.C wires the curves into a listener-space EQ
+  stage.
+- No realism multiplier. That's Phase 6.D.
+- No inspector EQ editor. That's Phase 6.E.
+
 ## [0.32.0] - 2026-05-20 — Phase 5.3: reverb zones that match the room
 
 Completes the Phase 5 material trilogy: the same `AudioMaterial`
@@ -14467,6 +14593,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.33.0]: https://github.com/siliconight/gool/releases/tag/v0.33.0
 [0.32.0]: https://github.com/siliconight/gool/releases/tag/v0.32.0
 [0.31.0]: https://github.com/siliconight/gool/releases/tag/v0.31.0
 [0.30.2]: https://github.com/siliconight/gool/releases/tag/v0.30.2
