@@ -47,6 +47,22 @@ var _voice_counter: int = 0
 const _IMPACT_EQ_BUS_SETTING := "gool/material_eq/impact_bus"
 var _impact_eq_bus_name: String = ""
 
+# v0.35.0 (Phase 6.C): per-material listener-space EQ state.
+#
+# Same one-shot detection pattern as the impact EQ above. A
+# ReverbZone with `apply_listener_eq = true` reads
+# `_listener_eq_bus_name` to know whether listener-space EQ is
+# available. If empty (the bus doesn't exist or doesn't match
+# the 3-biquad shape), zones silently skip the listener EQ ramp
+# and only the reverb portion of the zone applies.
+#
+# This is opt-in per ReverbZone, not per-runtime. Even with the
+# bus configured, no listener EQ happens unless a zone explicitly
+# requests it — listener-space coloring is editorially stronger
+# than reverb alone and shouldn't be automatic.
+const _LISTENER_EQ_BUS_SETTING := "gool/material_eq/listener_bus"
+var _listener_eq_bus_name: String = ""
+
 signal ready_to_play
 
 func _ready() -> void:
@@ -160,6 +176,10 @@ func _ready() -> void:
 	# (with a single warning) and impacts still play through
 	# their normal bus routing.
 	_setup_impact_eq()
+	# v0.35.0 (Phase 6.C): same one-shot check for the listener-
+	# space EQ bus. ReverbZones with apply_listener_eq=true will
+	# consult _listener_eq_bus_name to know whether to ramp.
+	_setup_listener_eq()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -718,6 +738,42 @@ func find_bus_id_by_name(name: String) -> int:
 		return -1
 	return _runtime.find_bus_id_by_name(name)
 
+## v0.35.0: forwarder for the engine's set_effect_parameter.
+## ReverbZone and the impact/listener EQ paths call this; ad-hoc
+## designer code can also use it directly. Signature mirrors the
+## C++ binding — takes bus_name (String), effect_index (chain
+## position 0-based), param_id (one of EffectParameter::*, see
+## include/audio_engine/bus.h), and value (float). Returns true
+## on success.
+##
+## (v0.32.0 / v0.34.0 note: this wrapper closes a hole where
+## ReverbZone called _runtime.set_effect_parameter through the
+## autoload's `_runtime` field — which was the autoload Node, not
+## the C++ runtime. The call would have errored at runtime when
+## a listener entered a zone. ReverbZone's existing call site is
+## unchanged; this wrapper makes it actually work.)
+func set_effect_parameter(bus_name: String, effect_index: int,
+							 param_id: int, value: float) -> bool:
+	if not is_initialized():
+		return false
+	return _runtime.set_effect_parameter(bus_name, effect_index,
+										   param_id, value)
+
+## v0.35.0: forwarder for the engine's get_bus_effects. Returns
+## an Array of Dictionaries describing each effect on the named
+## bus (kind, kind_name, params keyed by EffectParameter::* IDs).
+## Used by the auto-EQ setup paths to verify bus shape, and by
+## ReverbZone to discover the reverb effect's chain index.
+##
+## (Closes the same auto-load hole as set_effect_parameter — the
+## v0.32.0 ReverbZone called this through `_runtime` expecting
+## it to forward, but the autoload didn't expose it. Now it
+## does.)
+func get_bus_effects(bus_name: String) -> Array:
+	if not is_initialized():
+		return []
+	return _runtime.get_bus_effects(bus_name)
+
 ## Toggle occlusion globally at runtime.
 ##
 ## Useful for accessibility settings ("disable audio occlusion"
@@ -1016,10 +1072,15 @@ func _setup_impact_eq() -> void:
 	for i in range(3):
 		var e: Dictionary = effects[i]
 		var kind_name: String = String(e.get("kind_name", ""))
-		if kind_name != "Biquad":
+		# The engine's effect-kind enum is `BiquadFilter`; that's
+		# the literal string get_bus_effects returns in kind_name.
+		# A v0.34.0 bug checked for "Biquad" instead, which caused
+		# the auto-EQ to disable itself with a misleading warning
+		# on a correctly-authored bus. Fixed here.
+		if kind_name != "BiquadFilter":
 			push_warning(
 				"[gool] Phase 6.B impact EQ disabled: bus '%s' " % configured
-				+ "effect #%d is '%s', expected 'Biquad'. " % [i, kind_name]
+				+ "effect #%d is '%s', expected 'BiquadFilter'. " % [i, kind_name]
 				+ "The first three effects on the impact EQ bus must "
 				+ "be biquads in order LowShelf → Peak → HighShelf. "
 				+ "See docs/cookbook.md section 14."
@@ -1030,6 +1091,59 @@ func _setup_impact_eq() -> void:
 	# will use it on every impact from here on.
 	_impact_eq_bus_name = configured
 	GoolLog.info("runtime", "phase 6.B impact eq enabled",
+		{"bus": configured})
+
+# v0.35.0 (Phase 6.C): one-shot check at _ready for the listener-
+# space EQ bus. The bus is expected to sit between Sfx (and other
+# diegetic buses) and Master, with three biquads (LowShelf, Peak,
+# HighShelf in that order) as its effects, identical authoring
+# contract to the impact EQ bus.
+#
+# Result is cached in _listener_eq_bus_name. ReverbZones with
+# apply_listener_eq=true read this; if empty, they silently skip
+# the listener-EQ ramp and only the reverb portion of the zone
+# applies. Same graceful-degradation pattern as 6.B.
+func _setup_listener_eq() -> void:
+	if not ProjectSettings.has_setting(_LISTENER_EQ_BUS_SETTING):
+		ProjectSettings.set_setting(_LISTENER_EQ_BUS_SETTING, "ListenerEq")
+		ProjectSettings.set_initial_value(_LISTENER_EQ_BUS_SETTING, "ListenerEq")
+	var configured: String = ProjectSettings.get_setting(_LISTENER_EQ_BUS_SETTING, "ListenerEq")
+	if configured == "":
+		# Designer explicitly disabled listener-space EQ. No
+		# warning — opting out is a valid choice for projects
+		# that don't want this strong an editorial effect.
+		return
+
+	var effects: Array = _runtime.get_bus_effects(configured)
+	if effects.is_empty():
+		# Listener EQ bus not in config. This is the *expected*
+		# case for projects that haven't opted in to Phase 6.C
+		# yet — don't warn unless a ReverbZone actually requests
+		# listener EQ (handled in the zone's _ready). Stay quiet
+		# here.
+		return
+	if effects.size() < 3:
+		push_warning(
+			"[gool] Phase 6.C listener EQ disabled: bus '%s' " % configured
+			+ "has only %d effect(s); need at least 3 biquads. " % effects.size()
+			+ "See docs/cookbook.md section 14."
+		)
+		return
+	for i in range(3):
+		var e: Dictionary = effects[i]
+		var kind_name: String = String(e.get("kind_name", ""))
+		if kind_name != "BiquadFilter":
+			push_warning(
+				"[gool] Phase 6.C listener EQ disabled: bus '%s' " % configured
+				+ "effect #%d is '%s', expected 'BiquadFilter'. " % [i, kind_name]
+				+ "The first three effects on the listener EQ bus must "
+				+ "be biquads in order LowShelf → Peak → HighShelf. "
+				+ "See docs/cookbook.md section 14."
+			)
+			return
+
+	_listener_eq_bus_name = configured
+	GoolLog.info("runtime", "phase 6.C listener eq available",
 		{"bus": configured})
 
 ## Apply a material's 3-band EQ curve to a named bus. The bus must

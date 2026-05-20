@@ -22,6 +22,141 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.35.0] - 2026-05-20 — Phase 6.C: listener-space EQ on ReverbZone
+
+Extends `ReverbZone` with an optional listener-space EQ stage —
+when the listener is inside a Wood zone with `apply_listener_eq`
+enabled, every diegetic sound they hear gets the wood EQ curve,
+modeling "your ears are inside a wooden box." Reuses the v0.34.0
+3-biquad authoring contract, just on a separate `ListenerEq` bus
+that sits between Sfx (and other diegetic buses) and Master.
+
+### Opt-in design
+
+`apply_listener_eq` defaults to **false** on `ReverbZone`. The
+listener-space EQ is a stronger editorial effect than reverb
+alone, and shipping it as default-on would surprise existing
+projects. Designers opt in per-zone where they want the strong
+material-presence feel — cutscenes inside a distinctive space,
+horror/atmosphere moments, environments where players should
+*feel* the material rather than just hear it as ambient backdrop.
+
+### Authoring
+
+Same shape as the impact EQ bus (cookbook §14): a bus named
+`ListenerEq` with three biquads at chain indices 0/1/2 in order
+LowShelf → Peak → HighShelf. Re-parent your existing diegetic
+buses (Sfx, Ambience) under `ListenerEq` so the EQ stage is the
+last thing in the chain before Master. Music / UI / Dialogue /
+Voice stay directly under Master — non-diegetic sound shouldn't
+be colored by the player's physical environment.
+
+The `Gool` autoload checks the bus shape once at `_ready`
+(`_setup_listener_eq`). If the bus isn't configured, no warning
+fires — that's the expected case for projects not opted into
+6.C. The warning fires only when a `ReverbZone` with
+`apply_listener_eq=true` is loaded and the bus is mis-configured,
+on first entry attempt.
+
+### How the ramp works
+
+The listener EQ ramps in lockstep with the existing reverb
+parameter ramp using the same `transition_ms` (default 800 ms).
+Internally the zone runs a parallel gain ramp (low/mid/high
+biquad gains) alongside the reverb ramp; cutoff frequencies
+and Q values are set once at ramp start, not interpolated
+(they're inaudible at 0 dB gain anyway).
+
+On exit, gains ramp back to neutral (0 dB across all three
+bands). Cutoffs/Q are left at the last material's values —
+they won't affect the sound at neutral gains, and avoiding
+unnecessary parameter writes keeps the audio thread quieter.
+
+### Neutral-material behavior
+
+Zones with `material = MATERIAL_DEFAULT` or `MATERIAL_AIR` skip
+the EQ ramp entirely even when `apply_listener_eq=true`. This
+is deliberate: the listener EQ is a positive editorial choice,
+not a state every zone should reset. If a previous non-neutral
+zone set wood coloring, walking into a Default zone leaves the
+wood coloring active (just adds the Default zone's reverb on
+top). Walking *out* of any zone that previously ramped EQ does
+the proper ramp-back-to-neutral.
+
+### New API surface
+
+**`ReverbZone.apply_listener_eq: bool`** — new inspector
+property, default false. When true, the zone also drives the
+listener-EQ bus on entry/exit.
+
+**Project setting** `gool/material_eq/listener_bus` (default
+`"ListenerEq"`). Set to `""` to disable the listener-EQ
+feature globally — existing zones with `apply_listener_eq=true`
+silently skip the EQ ramp.
+
+### Bug fixes from v0.34.0 (caught while doing 6.C)
+
+While implementing 6.C, two v0.34.0 bugs surfaced from a user
+running the sandbox:
+
+**Wrong kind_name string.** `_setup_impact_eq` checked
+`kind_name == "Biquad"` for each effect, but the engine reports
+biquads as `"BiquadFilter"` (matching the `audio::EffectKind`
+enum value). The check always failed even on correctly-authored
+buses, so the auto-EQ disabled itself with a misleading warning
+on every project that wired up the 6.B feature. Fixed; the
+listener EQ check in 6.C uses the corrected string from the
+start.
+
+**Missing autoload wrappers.** The v0.32.0 `ReverbZone` called
+`_runtime.set_effect_parameter(...)` and `_runtime.get_bus_effects(...)`
+where `_runtime` was the `/root/Gool` autoload Node — but neither
+method had a wrapper on the autoload script. The calls errored
+at runtime (`Invalid call. Nonexistent function`) on the first
+listener entry. v0.35.0 adds the missing wrappers
+(`Gool.set_effect_parameter` and `Gool.get_bus_effects`) and
+the existing ReverbZone call sites now actually work. The
+v0.32.0 zone was nominally "shipping" — this release makes it
+genuinely functional.
+
+### Designer doc
+
+Cookbook section 14 updated:
+
+- Title bumped to "Phase 6.A + 6.B + 6.C", phase table extended
+- New subsection "Phase 6.C — listener-space EQ on ReverbZone"
+  with the strong-editorial-effect framing, the recommended bus
+  topology (ListenerEq between diegetic buses and Master), the
+  config JSON example, the zone inspector workflow
+- New subsection "Phase 6.C — what trades off" documenting
+  the shared-bus model + neutral-material persistence behavior
+- Updated "What you trade off" subsection (Phase 6.B section)
+  with a stronger, more findable deferral note for per-emitter
+  EQ — clarifies that it's intentional v0.34.0 design and the
+  trigger for graduating from deferred → scheduled
+
+### Touch summary
+
+- `godot/addons/gool/runtime_singleton.gd`: `_setup_listener_eq`
+  one-shot check at startup, `_listener_eq_bus_name` state, new
+  public wrappers `set_effect_parameter` and `get_bus_effects`
+  (closes the v0.32.0 ReverbZone runtime-error hole)
+- `godot/addons/gool/prefabs/reverb_zone.gd`: `apply_listener_eq`
+  export, parallel EQ gain ramp running alongside the reverb
+  ramp, biquad cutoff/Q one-shot setup, neutral-material skip
+- `docs/cookbook.md`: section 14 expanded for 6.C + stronger
+  per-emitter deferral note
+
+### What's not in this release
+
+- No per-emitter EQ. The bus-routing trade-off from 6.B still
+  applies and is intentional. Deferred until evidence demands
+  per-emitter; see cookbook §14 "What you trade off."
+- No realism multiplier. That's Phase 6.D.
+- No inspector EQ editor. That's Phase 6.E.
+- No zone-stack abstraction for overlapping ReverbZones (a
+  known v0.32.0 limitation; still applies in v0.35.0).
+
 ## [0.34.0] - 2026-05-20 — Phase 6.B: automatic per-material impact EQ
 
 Wires the v0.33.0 per-material EQ curves into the impact playback
@@ -14709,6 +14844,7 @@ Headlines:
   with autoload installation
 
 [Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[0.35.0]: https://github.com/siliconight/gool/releases/tag/v0.35.0
 [0.34.0]: https://github.com/siliconight/gool/releases/tag/v0.34.0
 [0.33.0]: https://github.com/siliconight/gool/releases/tag/v0.33.0
 [0.32.0]: https://github.com/siliconight/gool/releases/tag/v0.32.0

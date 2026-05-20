@@ -737,7 +737,7 @@ zone transition), then nothing until the next entry/exit. The
 underlying engine parameter changes are atomic writes; no
 audio-thread synchronization.
 
-## 14 — The sound of a material (Phase 6.A + 6.B) ✨ Convenience
+## 14 — The sound of a material (Phase 6.A + 6.B + 6.C) ✨ Convenience
 
 ### Why a material has a sound
 
@@ -752,14 +752,17 @@ Phase 6.A defined the per-material EQ curves as a 3-band shape
 (low shelf + peak + high shelf). Phase 6.B wires those curves
 into `play_impact_sound` automatically — the same `impact.generic.wav`
 now sounds audibly different on Concrete vs Wood vs Foliage with
-zero designer setup beyond the one-time bus authoring below.
+zero designer setup beyond the one-time bus authoring. Phase 6.C
+wires curves into `ReverbZone` so being *inside* a wooden cabin
+colors everything you hear with the wood curve — modeling "your
+ears are inside this material."
 
 | Phase | What it does |
 |---|---|
 | **6.A** (v0.33.0) | defines the curves, exposes them as a Dictionary |
-| **6.B** (v0.34.0, this) | auto-applies curves to impact sounds via the configured EQ bus |
-| **6.C** (next) | wires curves into reverb zones — being *inside* a wooden cabin colors everything you hear with the wood curve |
-| **6.D** (later) | realism multiplier (0..2) — dial back for clarity, push up for surreal/horror |
+| **6.B** (v0.34.0) | auto-applies curves to impact sounds via the configured EQ bus |
+| **6.C** (v0.35.0, this) | optional listener-space EQ on ReverbZone — coloring everything you hear inside a material |
+| **6.D** (next) | realism multiplier (0..2) — dial back for clarity, push up for surreal/horror |
 | **6.E** (later) | inspector EQ editor on a custom GoolAudioMaterial resource |
 
 ### The curves, in plain terms
@@ -942,6 +945,19 @@ for the overlapping tails. Practically rare; if it ever becomes
 audible in a real situation, the fix is a per-emitter EQ stage
 (planned for a future release if needed).
 
+> **Deferred: per-emitter EQ.** The bus-routing approach is
+> deliberately the v0.34.0 design. Per-emitter EQ would mean a
+> new per-voice DSP chain in the engine — multi-file engine
+> surgery touching `EmitterDescriptor`, `VoiceSource`, the
+> mixer, and the create-emitter path. The right time to do that
+> work is when there's evidence from real gameplay that the
+> shared-bus trade-off is audibly hurting something. Until then
+> it stays on the deferred list. If you hit a case where it
+> matters, file an issue describing the symptom (which
+> materials, what cadence, what the player should be hearing
+> vs. what they actually hear) and the per-emitter path
+> graduates from deferred to scheduled.
+
 ### When you'd reach for the manual API
 
 The manual `set_effect_parameter`-driven path from earlier in
@@ -961,13 +977,6 @@ this section is still the right tool when:
 
 ### What's coming
 
-**Phase 6.C** will add listener-space EQ to the `ReverbZone`
-prefab. When the listener is inside a Wood zone, all sound
-they hear is colored by the wood curve — modeling "your ears
-are inside a wooden box". Likely a new opt-in property on
-ReverbZone (`apply_listener_eq: bool`) since this is a
-stronger effect than reverb alone.
-
 **Phase 6.D** will add a realism multiplier (0..2) — same
 pattern as the v0.31.0 occlusion intensity dial. Gentle
 defaults (probably 0.5–0.7), with headroom for cinematic or
@@ -977,6 +986,100 @@ surreal amplification.
 — inspector-side EQ curve editor on a `GoolAudioMaterial`
 resource, so studios can author custom material curves
 without writing code.
+
+### Phase 6.C — listener-space EQ on ReverbZone
+
+Phase 6.C extends the material-aware `ReverbZone` (cookbook
+section 13) with an optional EQ stage that colors everything
+the listener hears while inside a zone. A Wood-marked zone with
+`apply_listener_eq = true` doesn't just reverb like a wooden
+room — it also runs every diegetic sound through the wood EQ
+curve, modeling "your ears are inside a wooden box."
+
+This is a **strong editorial effect** — more dramatic than
+reverb alone. The default is `apply_listener_eq = false`;
+opt in per-zone where you want it. Good fits: cutscenes inside
+a single distinctive space (a foliage clearing, a concrete
+bunker), atmospheric/horror moments where you want the
+environment to feel oppressive, or any zone where you want
+the player to *feel* the material rather than just hear it as
+backdrop.
+
+**Setup** is the same authoring contract as 6.B's impact EQ
+bus, just on a different bus — a `ListenerEq` bus with 3
+biquads in LowShelf → Peak → HighShelf order. Most natural
+placement is between Sfx (and other diegetic buses) and
+Master, so that the listener EQ is the *last* stage of the
+playback chain before output. That matches the acoustic order:
+source colored by impact EQ → reverbs in space → listener
+perceives through their own environmental coloring.
+
+```json
+{
+  "name": "ListenerEq",
+  "parent": "Master",
+  "effects": [
+    { "kind": "biquad", "biquad_type": "lowshelf",
+      "cutoff_hz": 200,  "q": 0.7, "biquad_gain_db": 0 },
+    { "kind": "biquad", "biquad_type": "peak",
+      "cutoff_hz": 1000, "q": 1.0, "biquad_gain_db": 0 },
+    { "kind": "biquad", "biquad_type": "highshelf",
+      "cutoff_hz": 8000, "q": 0.7, "biquad_gain_db": 0 }
+  ]
+}
+```
+
+Re-parent your existing diegetic buses (Sfx, Ambience) under
+`ListenerEq` rather than directly under Master. Music, UI,
+Dialogue, and Voice should *not* be re-parented — non-diegetic
+sound shouldn't get colored by the listener's physical space.
+
+**Project setting** `gool/material_eq/listener_bus` (default
+`"ListenerEq"`) — same opt-out pattern as 6.B. Set to `""` to
+disable the listener-EQ feature entirely (existing zones with
+`apply_listener_eq=true` will silently skip the EQ ramp).
+
+**Zone usage:**
+
+```gdscript
+# In the inspector, on a ReverbZone:
+material:            5         # Concrete
+apply_listener_eq:   true      # color everything you hear, too
+```
+
+That's the entire workflow. On listener entry, the zone ramps
+both reverb parameters *and* the listener EQ in lockstep over
+`transition_ms`. On exit, both ramp back to neutral.
+
+### Phase 6.C — what trades off
+
+The same shared-bus model as 6.B: listener EQ values are
+pushed to a single `ListenerEq` bus, so only one zone's EQ is
+active at a time. With multiple `apply_listener_eq=true` zones
+in proximity, the most recently entered wins (consistent with
+the rest of ReverbZone's overlapping-zone behavior, which we
+already document as a v0.32.0 known limitation).
+
+Neutral-material zones (`MATERIAL_DEFAULT`, `MATERIAL_AIR`)
+skip the EQ ramp entirely even when `apply_listener_eq=true`.
+A Default-material zone applies its reverb but doesn't touch
+the EQ bus — which means if another zone previously set EQ
+coloring, that coloring persists until another non-neutral
+zone overrides or this zone exits. This is intentional: the
+listener EQ is a positive editorial choice, not a state that
+every zone resets.
+
+### What's coming next
+
+**Phase 6.D** — realism multiplier (0..2) as a global dial,
+mirroring the v0.31.0 occlusion intensity pattern. Cinematic
+push-up to 1.5+ for surreal moments; pull back to 0.4 for
+gameplay-critical clarity.
+
+**Phase 6.E** — designer authoring tool for custom material
+curves. Likely a `GoolAudioMaterial` resource with an inspector
+EQ-curve editor, so studios can author their own materials
+beyond the built-in 9-entry taxonomy.
 
 ## Where to find more
 
