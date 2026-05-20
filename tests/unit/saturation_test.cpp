@@ -402,23 +402,39 @@ void TestADAASuppressesAliasing() {
 // Smoke test rather than full characterization. The shape correctness
 // is exercised by the ADAA aliasing test for Tanh, and the same code
 // path runs for the other modes through templated dispatch.
+//
+// v0.40.1 fix: the original v0.40.0 test asserted |out| < 1.0f for
+// every mode. That's wrong for Tube (asinh is unbounded — at scale
+// 2.4 with input 0.8, output ≈ 1.59) and Tape (the saturating shoulder
+// hits |out| == 1.0 exactly when |driven| ≥ 1, not strictly less).
+// Per-mode bounds now reflect each shape's actual range:
+//   Tanh:  bounded by |tanh| < 1
+//   Tube:  unbounded; asserts a generous |out| < 5 just to catch
+//          divergence (NaN, runaway feedback)
+//   Tape:  saturates exactly at |out| ≤ 1
+//   Diode: saturates exactly at |out| ≤ 2/3
 // =============================================================================
 void TestNewModesProcess() {
     std::printf("  [v0.40.0: Tube/Tape/Diode modes produce non-trivial output]\n");
-    const SaturationMode modes[] = {
-        SaturationMode::Tube,
-        SaturationMode::Tape,
-        SaturationMode::Diode,
-    };
-    const char* names[] = { "Tube", "Tape", "Diode" };
 
-    for (size_t i = 0; i < 3; ++i) {
+    struct Case {
+        SaturationMode mode;
+        const char*    name;
+        float          maxAbs;     // inclusive upper bound on |steady-state out|
+    };
+    const Case cases[] = {
+        { SaturationMode::Tube,  "Tube",  5.0f          },  // unbounded shape
+        { SaturationMode::Tape,  "Tape",  1.0f + 1e-5f  },  // saturates at ±1
+        { SaturationMode::Diode, "Diode", (2.0f/3.0f) + 1e-5f },  // saturates at ±2/3
+    };
+
+    for (const auto& c : cases) {
         SaturationConfig cfg;
         cfg.drive      = 0.7f;    // pure-ADAA region for all modes
         cfg.mix        = 1.0f;
         cfg.outputGain = 1.0f;
         cfg.bias       = 0.0f;
-        cfg.mode       = modes[i];
+        cfg.mode       = c.mode;
         SaturationEffect sat(cfg);
         sat.Prepare(kSampleRate, kChannels);
 
@@ -427,15 +443,14 @@ void TestNewModesProcess() {
         auto buf = ConstantBuffer(frames, input);
         sat.Process(buf.data(), frames, kChannels, nullptr, 0);
 
-        // The steady-state output should be visibly different from
-        // the dry input (the saturator is doing something), but
-        // bounded — none of the four shapes diverges. We check the
-        // last steady-state sample.
+        // Check the steady-state sample (last frame) — past any ADAA
+        // cold-start transient.
         const size_t lastIdx = (frames - 1) * kChannels;
         const float  out     = buf[lastIdx];
-        std::printf("    %-5s: in=%.3f → out=%.6f (|out|<1, out≠in)\n",
-                      names[i], input, out);
-        EXPECT(std::abs(out) < 1.0f);
+        std::printf("    %-5s: in=%.3f → out=%+.6f (bound |out|≤%.4f)\n",
+                      c.name, input, out, c.maxAbs);
+        EXPECT(std::isfinite(out));
+        EXPECT(std::abs(out) <= c.maxAbs);
         EXPECT(std::abs(out - input) > 0.01f);  // saturator is active
     }
 }

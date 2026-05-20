@@ -37,6 +37,13 @@ SaturationConfig ToRuntimeConfig(const EffectConfig& ec) {
     sc.mix        = ec.saturationMix;
     sc.outputGain = ec.saturationOutputGain;
     sc.bias       = ec.saturationBias;
+    // v0.40.0: saturationMode is a new uint8_t field on EffectConfig
+    // (default 0 = Tanh, matching pre-v0.40.0 behavior). Mirror the
+    // defensive range check from bus_graph.cpp here so a corrupt
+    // value falls back to Tanh rather than UB.
+    sc.mode = (ec.saturationMode <= 3)
+                ? static_cast<SaturationMode>(ec.saturationMode)
+                : SaturationMode::Tanh;
     return sc;
 }
 
@@ -57,10 +64,13 @@ void TestBusGlueProfile() {
     std::printf("  [profile] BusGlue:\n");
     auto ec = SaturationProfiles::BusGlue();
     EXPECT(ec.kind                 == EffectKind::Saturation);
-    EXPECT(ec.saturationDrive      == 1.5f);
+    // v0.40.0: profile now uses normalized 0..1 drive. 0.1667 maps to
+    // Tanh scale 1.5 = identical sound to pre-v0.40.0 drive=1.5.
+    EXPECT(std::abs(ec.saturationDrive - 0.1667f) < 1e-4f);
     EXPECT(ec.saturationMix        == 0.15f);
     EXPECT(ec.saturationOutputGain == 0.85f);
     EXPECT(ec.saturationBias       == 0.0f);
+    EXPECT(ec.saturationMode       == 0);   // Tanh default
     const float p = SmokePeakAfterSaturation(ec, 0.5f);
     std::printf("    peak after 0.5 input: %.4f (subtle change expected)\n", p);
     // Light glue: output should be very close to input (15 % wet,
@@ -72,10 +82,13 @@ void TestDialogueWarmthProfile() {
     std::printf("  [profile] DialogueWarmth:\n");
     auto ec = SaturationProfiles::DialogueWarmth();
     EXPECT(ec.kind                 == EffectKind::Saturation);
-    EXPECT(ec.saturationDrive      == 1.3f);
+    // v0.40.0: norm drive 0.10 = Tanh scale 1.3 (round-trip from pre-
+    // v0.40.0 drive=1.3).
+    EXPECT(std::abs(ec.saturationDrive - 0.10f) < 1e-4f);
     EXPECT(ec.saturationMix        == 0.10f);
     EXPECT(ec.saturationOutputGain == 0.9f);
     EXPECT(ec.saturationBias       == 0.05f);
+    EXPECT(ec.saturationMode       == 0);   // Tanh default
     // Asymmetric: bias != 0 means the DC-removal path runs. Verify
     // a zero input still produces zero output at steady-state (DC
     // removal works for the profile, not just for the unit test in
@@ -105,10 +118,12 @@ void TestWeaponBodyProfile() {
     std::printf("  [profile] WeaponBody:\n");
     auto ec = SaturationProfiles::WeaponBody();
     EXPECT(ec.kind                 == EffectKind::Saturation);
-    EXPECT(ec.saturationDrive      == 2.5f);
+    // v0.40.0: norm drive 0.5 = Tanh scale 2.5 (round-trip).
+    EXPECT(std::abs(ec.saturationDrive - 0.5f) < 1e-4f);
     EXPECT(ec.saturationMix        == 0.30f);
     EXPECT(ec.saturationOutputGain == 0.7f);
     EXPECT(ec.saturationBias       == 0.0f);
+    EXPECT(ec.saturationMode       == 0);   // Tanh default
     const float p = SmokePeakAfterSaturation(ec, 0.7f);
     std::printf("    peak after 0.7 input: %.4f (saturated body)\n", p);
     EXPECT(p > 0.0f && p < 1.0f);
@@ -118,10 +133,12 @@ void TestImpactCharacterProfile() {
     std::printf("  [profile] ImpactCharacter:\n");
     auto ec = SaturationProfiles::ImpactCharacter();
     EXPECT(ec.kind                 == EffectKind::Saturation);
-    EXPECT(ec.saturationDrive      == 4.0f);
+    // v0.40.0: norm drive 1.0 = Tanh scale 4.0 (round-trip; max Tanh).
+    EXPECT(std::abs(ec.saturationDrive - 1.0f) < 1e-4f);
     EXPECT(ec.saturationMix        == 0.45f);
     EXPECT(ec.saturationOutputGain == 0.55f);
     EXPECT(ec.saturationBias       == 0.10f);
+    EXPECT(ec.saturationMode       == 0);   // Tanh default
     const float p = SmokePeakAfterSaturation(ec, 0.8f);
     std::printf("    peak after 0.8 input: %.4f (heavy harmonic content)\n", p);
     EXPECT(p > 0.0f && p < 1.0f);
@@ -131,10 +148,14 @@ void TestTapeColorProfile() {
     std::printf("  [profile] TapeColor:\n");
     auto ec = SaturationProfiles::TapeColor();
     EXPECT(ec.kind                 == EffectKind::Saturation);
-    EXPECT(ec.saturationDrive      == 2.0f);
+    // v0.40.0: norm drive 0.3333 = Tanh scale 2.0 (round-trip).
+    EXPECT(std::abs(ec.saturationDrive - 0.3333f) < 1e-4f);
     EXPECT(ec.saturationMix        == 0.25f);
     EXPECT(ec.saturationOutputGain == 0.75f);
     EXPECT(ec.saturationBias       == 0.0f);
+    EXPECT(ec.saturationMode       == 0);   // Tanh default (despite the
+                                            // name; see profile comment
+                                            // re: SaturationMode::Tape)
     const float p = SmokePeakAfterSaturation(ec, 0.6f);
     std::printf("    peak after 0.6 input: %.4f\n", p);
     EXPECT(p > 0.0f && p < 1.0f);

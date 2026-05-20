@@ -22,6 +22,43 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.40.1] - 2026-05-20 — Hotfix: v0.40.0 CI test failures
+
+Two test-only bugs blocked v0.40.0 from going green on CI. The
+implementation itself was correct — Linux, Windows, macOS, ASAN,
+and TSAN all built cleanly — but two assertions in the test suite
+were wrong.
+
+### Fixed
+
+- `tests/unit/saturation_test.cpp::TestNewModesProcess`: the smoke
+  test for the v0.40.0 new modes asserted `|out| < 1.0f` for every
+  mode. That's incorrect for Tube (asinh is unbounded — at scale
+  2.4 with input 0.8 the output is ≈ 1.59) and for Tape (the
+  saturating shoulder hits |out| == 1.0 exactly when |driven| ≥ 1,
+  not strictly less). The test now uses per-mode bounds matching
+  each shape's actual range: Tanh < 1, Tube < 5 (catches
+  divergence/NaN), Tape ≤ 1 + ε, Diode ≤ 2/3 + ε. Also adds a
+  `std::isfinite` check that the original test was missing.
+- `tests/unit/saturation_profile_test.cpp`: five drive-value
+  assertions still expected pre-v0.40.0 unnormalized values
+  (1.5, 1.3, 2.5, 4.0, 2.0). Updated to the round-tripped
+  normalized values (0.1667, 0.10, 0.5, 1.0, 0.3333) that match
+  saturation_profiles.h after the v0.40.0 normalization. The
+  `ToRuntimeConfig` helper in the same file also now passes
+  `saturationMode` through to the `SaturationConfig`, matching
+  the production translation in `bus_graph.cpp`.
+
+### Changed
+
+- `src/audio_engine/dsp/saturation_effect.cpp::MapNormDriveToScale`:
+  Tube and Tape happen to share the same useful drive range (1..3
+  per saturation_v2.md §6.1), so clang-tidy's
+  `bugprone-branch-clone` correctly flagged the duplicate switch
+  branches. Collapsed via explicit fallthrough with a comment
+  explaining why the spec might diverge later. Behavior identical;
+  cleaner static-analysis output.
+
 ## [0.40.0] - 2026-05-20 — Saturation Phase 2: mode selector + four shapes + normalized drive
 
 The single-shape Tanh saturator becomes a four-mode engine. Tanh

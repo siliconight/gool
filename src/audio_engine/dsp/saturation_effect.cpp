@@ -150,11 +150,16 @@ inline double adaa1(double x, double x_prev, Shape f, Antiderivative F) noexcept
 // extreme territory anyway).
 inline double MapNormDriveToScale(SaturationMode m, double normDrive) noexcept {
     const double n = std::clamp(normDrive, 0.0, 1.0);
+    // Tube and Tape happen to share the same useful range (1..3) in
+    // saturation_v2.md §6.1, so the branches collapse; the spec is
+    // free to diverge later (e.g. Tape going wider). Clang-tidy's
+    // bugprone-branch-clone correctly flags the duplicate, so we
+    // combine them explicitly.
     switch (m) {
-        case SaturationMode::Tanh:  return 1.0 + 3.0 * n;   // 1..4
-        case SaturationMode::Tube:  return 1.0 + 2.0 * n;   // 1..3
-        case SaturationMode::Tape:  return 1.0 + 2.0 * n;   // 1..3
-        case SaturationMode::Diode: return 1.0 + 5.0 * n;   // 1..6
+        case SaturationMode::Tanh:                            return 1.0 + 3.0 * n;   // 1..4
+        case SaturationMode::Tube:  /* fallthrough */
+        case SaturationMode::Tape:                            return 1.0 + 2.0 * n;   // 1..3
+        case SaturationMode::Diode:                           return 1.0 + 5.0 * n;   // 1..6
     }
     return 1.0;
 }
