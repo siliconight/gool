@@ -1166,6 +1166,53 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 			all_ok = false
 	return all_ok
 
+## v0.43.0: capture the current bus parameter state into a
+## GoolMixSnapshot Resource. Pass the bus names you want captured
+## (typically the ones whose state you'll later restore — e.g.
+## ["Music", "LocalSfx", "RemoteSfx"]). Returns a fresh Resource
+## that can be saved via ResourceSaver or kept in memory for later
+## apply_mix_snapshot().
+##
+## Buses that don't exist in the graph are skipped with a
+## push_warning; the snapshot still captures the ones that do.
+## Returns null if the runtime isn't initialized.
+##
+## Usage:
+##   var combat := Gool.capture_mix_snapshot(
+##           PackedStringArray(["Music", "LocalSfx"]))
+##   # ... game runs, bus parameters change ...
+##   Gool.apply_mix_snapshot(combat)   # restore exact captured state
+##
+## Or author once and save as a .tres:
+##   var stealth := Gool.capture_mix_snapshot(
+##           PackedStringArray(["Music", "LocalSfx",
+##                              "RemoteSfx", "Dialogue"]))
+##   stealth.label = "stealth"
+##   ResourceSaver.save(stealth, "res://mixes/stealth.tres")
+func capture_mix_snapshot(bus_names: PackedStringArray) -> GoolMixSnapshot:
+	if not is_initialized():
+		return null
+	return GoolMixSnapshot.capture_from(bus_names)
+
+## v0.43.0: apply a previously-captured GoolMixSnapshot, restoring
+## every captured (bus, effect, param) triple in one call. Returns
+## true if every parameter applied successfully; false if any
+## individual set_effect_parameter failed (snapshot may be stale
+## relative to the current bus graph) or if the runtime isn't
+## initialized.
+##
+## Per-parameter changes go through gool's normal set_effect_parameter
+## path, which means most gain-type parameters ramp ~5 ms internally
+## at the C++ level. The perceived transition is smooth in practice
+## for ducking-sensitive parameters. If you need a guaranteed long
+## crossfade (e.g. 2-second mood shift), that's a Tier-2 capability
+## gool doesn't yet have — author intermediate snapshots and apply
+## them in sequence as a workaround.
+func apply_mix_snapshot(snap: GoolMixSnapshot) -> bool:
+	if not is_initialized() or snap == null:
+		return false
+	return snap.apply()
+
 ## v0.37.0: forwarder for the engine's set_master_volume_db.
 ## Sets the post-mixdown master volume in decibels. Used by the
 ## GoolAudioSettings persistence helper (Phase 4 settings menu)

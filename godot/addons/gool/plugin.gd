@@ -25,6 +25,13 @@ extends EditorPlugin
 const AUTOLOAD_NAME := "Gool"
 const AUTOLOAD_PATH := "res://addons/gool/runtime_singleton.gd"
 
+# v0.43.0: DialogueDirector is a second autoload owning NPC bark
+# queue/priority/per-speaker step-on logic. Registered alongside
+# Gool so callers can write `DialogueDirector.bark(...)` from any
+# script without per-scene wiring.
+const DIALOGUE_DIRECTOR_AUTOLOAD_NAME := "DialogueDirector"
+const DIALOGUE_DIRECTOR_AUTOLOAD_PATH := "res://addons/gool/dialogue_director.gd"
+
 const PREFAB_DIR := "res://addons/gool/prefabs/"
 
 # (class_name, base_node, script_path, icon_path)
@@ -52,6 +59,13 @@ const PREFABS := [
 	# development; shipping builds can leave it added with
 	# visible_at_startup=false + toggle_key bound to a hidden hotkey.
 	["GoolDebugOverlay",          "CanvasLayer", "gool_debug_overlay.gd",     "gool_debug_overlay.svg"],
+	# v0.43.0: convenience prefabs for L4D2-style shooter wiring.
+	# AudioMaterialTag is the inspector-friendly path to set a
+	# parent collision body's gool_audio_material metadata without
+	# making a .tres file. DialogueDirector is registered as a
+	# separate autoload (see DIALOGUE_DIRECTOR_AUTOLOAD_* above)
+	# rather than appearing here.
+	["AudioMaterialTag",          "Node",   "audio_material_tag.gd",          "audio_material_tag.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"
@@ -73,7 +87,10 @@ const DEFAULT_CONFIG := {
 		{ "name": "Master", "gain_db": 0.0 },
 
 		# Music bus: ducks under the local-player SFX so the player's
-		# own gun wins the mix.
+		# own gun wins the mix, AND ducks under Dialogue so NPC
+		# callouts ("TANK!") cut through the soundtrack. Two
+		# compressors in series — each sidechained to a different
+		# trigger bus.
 		{ "name": "Music",  "parent": "Master", "gain_db": -3.0,
 		  "effects": [
 			{ "kind": "compressor",
@@ -81,7 +98,14 @@ const DEFAULT_CONFIG := {
 			  "attack_ms": 5.0,  "release_ms": 250.0,
 			  "makeup_db": 0.0,
 			  "knee_width_db": 4.0,
-			  "sidechain_bus": "LocalSfx" }
+			  "sidechain_bus": "LocalSfx" },
+			{ "kind": "compressor",
+			  "threshold_db": -25.0, "ratio": 8.0,
+			  "attack_ms": 3.0,  "release_ms": 250.0,
+			  "makeup_db": 0.0,
+			  "knee_width_db": 4.0,
+			  "max_reduction_db": 12.0,
+			  "sidechain_bus": "Dialogue" }
 		  ] },
 
 		# Submix that holds both local + remote SFX. Per-tier
@@ -89,25 +113,52 @@ const DEFAULT_CONFIG := {
 		{ "name": "SfxAll", "parent": "Master" },
 
 		# Local-player SFX — your gun, your footsteps, your reload.
-		# No effects; flat path so the trigger signal for the
-		# sidechain compressors reaches them clean.
-		{ "name": "LocalSfx", "parent": "SfxAll" },
+		# Ducks under Dialogue so callouts cut through your own
+		# gunfire (the core L4D2 mix feel). Drives the sidechain
+		# triggers on Music + RemoteSfx — leave its trigger path
+		# clean (this compressor only ducks LocalSfx, doesn't
+		# alter what LocalSfx sends to the sidechains).
+		{ "name": "LocalSfx", "parent": "SfxAll",
+		  "effects": [
+			{ "kind": "compressor",
+			  "threshold_db": -22.0, "ratio": 6.0,
+			  "attack_ms": 3.0,  "release_ms": 200.0,
+			  "knee_width_db": 4.0,
+			  "max_reduction_db": 10.0,
+			  "sidechain_bus": "Dialogue" }
+		  ] },
 
 		# Remote-player SFX — teammate guns, NPC barks, ambient
 		# impacts. Ducks under LocalSfx so the local action wins
-		# over teammate action.
+		# over teammate action, AND ducks under Dialogue so
+		# callouts cut through teammate gunfire.
 		{ "name": "RemoteSfx", "parent": "SfxAll",
 		  "effects": [
 			{ "kind": "compressor",
 			  "threshold_db": -30.0, "ratio": 8.0,
 			  "attack_ms": 5.0,  "release_ms": 250.0,
-			  "sidechain_bus": "LocalSfx" }
+			  "sidechain_bus": "LocalSfx" },
+			{ "kind": "compressor",
+			  "threshold_db": -22.0, "ratio": 6.0,
+			  "attack_ms": 3.0,  "release_ms": 200.0,
+			  "knee_width_db": 4.0,
+			  "max_reduction_db": 10.0,
+			  "sidechain_bus": "Dialogue" }
 		  ] },
 
 		# Voice chat — separate bus, not ducked (intelligibility
 		# priority). If you want voice to also win over music,
 		# add it as a sidechain bus on Music's compressor.
 		{ "name": "Voice",   "parent": "Master", "gain_db": 0.0 },
+
+		# v0.43.0: Dialogue — NPC barks, callouts, narration.
+		# Drives ducking on Music + LocalSfx + RemoteSfx via the
+		# sidechain compressors above. Itself has no effects, so
+		# dialogue plays at full level uncolored. Route bark
+		# sounds in your sound bank with "bus": "Dialogue" — the
+		# DialogueDirector autoload calls Gool.play_3d which uses
+		# the sound's bank-defined bus.
+		{ "name": "Dialogue", "parent": "Master", "gain_db": 0.0 },
 
 		# Ambient world bed — quiet, doesn't trigger any ducker.
 		{ "name": "Ambient", "parent": "Master", "gain_db": -6.0 }
@@ -122,7 +173,7 @@ const DEFAULT_CONFIG := {
 		"voice":    "Voice",
 		"ambience": "Ambient",
 		"ui":       "Master",
-		"dialogue": "Voice"
+		"dialogue": "Dialogue"   # v0.43.0: now routes to the dedicated bus
 	}
 }
 
@@ -365,8 +416,15 @@ func _on_filesystem_changed() -> void:
 
 func _add_autoload() -> void:
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
+	# v0.43.0: DialogueDirector autoload. Registered AFTER Gool so
+	# the director's _ready() can safely reach the gool autoload.
+	add_autoload_singleton(DIALOGUE_DIRECTOR_AUTOLOAD_NAME,
+			DIALOGUE_DIRECTOR_AUTOLOAD_PATH)
 
 func _remove_autoload() -> void:
+	# Remove in reverse order — DialogueDirector first (it depends on
+	# Gool), then Gool itself.
+	remove_autoload_singleton(DIALOGUE_DIRECTOR_AUTOLOAD_NAME)
 	remove_autoload_singleton(AUTOLOAD_NAME)
 
 func _register_prefabs() -> void:

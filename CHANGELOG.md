@@ -22,6 +22,96 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.43.0] - 2026-05-21 — Three L4D2 convenience prefabs: AudioMaterialTag, DialogueDirector, GoolMixSnapshot
+
+Three drop-in pieces of "Godot dev shipping an L4D2-shape co-op
+shooter" infrastructure, each closing a specific friction point
+identified in the v0.42.0 framing pass. Same shape as previous
+prefab releases — additive, non-breaking, no engine code changes
+needed.
+
+### Added
+
+- **`AudioMaterialTag`** — drop-in Node prefab. Child of a
+  StaticBody3D / CSGShape3D / Area3D / etc; pick a material in the
+  inspector dropdown; the parent's `gool_audio_material` metadata
+  is set automatically. No `.tres` file authoring, no metadata-key
+  knowledge required. Updates immediately when the dropdown
+  changes (it's a `@tool` script). Covers the same 13 materials as
+  `Gool.MATERIAL_*` constants (Default through Liquid).
+- **`DialogueDirector`** — autoload (registered automatically by
+  the plugin) owning NPC bark queueing, per-speaker step-on
+  prevention, and priority-based interruption. Public API is one
+  call: `DialogueDirector.bark(speaker_id, sound_name, priority,
+  duration_s, position)`. Optional speaker registration
+  (`register_speaker(speaker_id, node)`) lets `bark()` skip the
+  position argument by tracking each speaker's `global_position`
+  automatically. Per-speaker collision policy is configurable
+  (`"interrupt_if_higher_priority"` default, `"always_interrupt"`,
+  `"drop_if_active"`). SFX ducking is NOT done inside the prefab —
+  it's the bus graph's job (see Default config change below).
+- **`GoolMixSnapshot`** — Resource class capturing whole-bus
+  effect parameter state into a savable `.tres`, with `apply()` to
+  restore. Tier 1: instant apply (gool's per-param 5ms internal
+  ramping handles smoothness for ducking-sensitive parameters in
+  practice). The FMOD/Wwise "snapshot" pattern adapted to gool's
+  parameter ID model. New autoload helpers: `Gool.capture_mix_snapshot
+  (bus_names)` and `Gool.apply_mix_snapshot(snap)`.
+
+### Changed
+
+- **Default `gool/config.json` bus topology** (only affects fresh
+  plugin enables — existing `gool/config.json` files are not
+  touched). Added a dedicated `Dialogue` bus as sibling of Music /
+  Voice / Ambient. Wired three new sidechain compressors so the
+  Dialogue bus drives ducking on Music, LocalSfx, and RemoteSfx —
+  the L4D2 mix signature where callouts ("TANK!") cut through both
+  gunfire and music. The existing LocalSfx → Music / LocalSfx →
+  RemoteSfx sidechain wiring is unchanged; the Dialogue ones are
+  layered on top as second compressors per bus.
+
+  `category_routing.dialogue` updated from `"Voice"` (joint with
+  voice chat) to `"Dialogue"` (dedicated bus). Voice chat (player
+  VOIP) still routes to the `Voice` bus and is intentionally not
+  ducked.
+
+  Three new compressors at modest DSP cost. Adopters with a
+  customized config.json get a templates snippet they can paste
+  in: `addons/gool/templates/dialogue_setup_example.json`.
+
+### Tests
+
+No new unit tests in this release. The three new prefabs are
+GDScript-only and exercise existing C++ paths (`set_effect_parameter`
+for snapshot apply; `play_3d` for DialogueDirector). The default
+config.json change is data, not code — exercised by existing
+config-loading tests via the standard plugin-enable path.
+
+### Migration
+
+No breaking changes. Existing prefabs and APIs are bit-identical
+to v0.42.0. Existing `gool/config.json` files are not modified —
+the bus-graph change only applies to fresh plugin enables.
+
+Adopters wanting the new L4D2 ducking behavior on an existing
+project: copy from `addons/gool/templates/dialogue_setup_example.json`
+into your own `gool/config.json` (add the Dialogue bus + the three
+sidechain compressors). Or delete `gool/config.json` and re-enable
+the plugin to get the new default — but only do this if you haven't
+customized your bus graph.
+
+See `docs/audio_design/dialogue_setup.md` for the full explainer
+on why ducking lives in the bus graph rather than the prefab, and
+how to tune the sidechain parameters for your project.
+
+### Why this is a minor (not patch) bump
+
+Three new public-API surfaces (`AudioMaterialTag` node, `DialogueDirector`
+autoload, `GoolMixSnapshot` Resource + two autoload helpers). New
+default config topology. By the project's SemVer rule, new public
+API additions = minor bump (0.42.0 → 0.43.0). Existing API is fully
+compatible.
+
 ## [0.42.0] - 2026-05-21 — Three new audio materials: Cardboard, Rubber, Liquid
 
 Material expansion release. Three new `AudioMaterial` enum values
@@ -15824,7 +15914,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.42.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.43.0...HEAD
+[0.43.0]: https://github.com/siliconight/gool/releases/tag/v0.43.0
 [0.42.0]: https://github.com/siliconight/gool/releases/tag/v0.42.0
 [0.41.1]: https://github.com/siliconight/gool/releases/tag/v0.41.1
 [0.41.0]: https://github.com/siliconight/gool/releases/tag/v0.41.0
