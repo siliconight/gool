@@ -22,6 +22,73 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.44.2] - 2026-05-21 — Three missing autoload wrappers (VoiceChatPlayer crash + GoolListener3D silent-failure + material EQ name mismatch)
+
+Audit follow-up to v0.44.1. The same name-mismatch / missing-
+wrapper bug pattern that caused v0.44.1 was lurking in three more
+places, surfaced by a cross-reference sweep of C++ bindings vs.
+autoload wrappers vs. prefab callsites. Same shape, same fix.
+
+### Fixed
+
+- **`VoiceChatPlayer.muted` / `.volume` setters would crash on first
+  use.** The prefab calls `_runtime.set_voice_source_muted(...)` and
+  `_runtime.set_voice_source_volume(...)` directly. The C++ bindings
+  existed; the autoload wrappers didn't. Result: setting either
+  `@export` property on a VoiceChatPlayer node (e.g. via a UI mute
+  toggle) triggered `Invalid call. Nonexistent function
+  'set_voice_source_muted' in base 'Node (runtime_singleton.gd)'`.
+  Wrappers added; both return `bool` matching the C++ side.
+
+- **GoolListener3D's physics-world RID handoff silently no-op'd.**
+  The prefab's `_ready()` calls
+  `if _runtime.has_method("set_audio_world_space_rid"): _runtime.set_audio_world_space_rid(world.space)`.
+  Because the autoload didn't wrap the method, the `has_method`
+  check returned false on the autoload Node and the call was
+  skipped — no error, no log, just silent. Net effect: the audio
+  runtime never knew which physics world to query for geometry-
+  based occlusion, and every scene using gool_listener_3d had
+  effectively-disabled occlusion. Wrapper added; the prefab's
+  guard now passes and the path activates.
+
+- **`Gool.get_material_eq_for_material()` would have crashed in the
+  exact same way as the reverb bug.** The autoload exposed it as
+  `material_eq_for_material` (no `get_` prefix), but the C++
+  binding, the convention, and any caller following the docs uses
+  `get_material_eq_for_material`. Renamed for consistency; old
+  name preserved as a deprecated alias for one release. Same
+  shape and rationale as v0.44.1's reverb fix.
+
+### Pattern note
+
+All three bugs surfaced during the v0.44.0 audition pass against
+the multiplayer_audio_sandbox. They share a root cause: the C++
+binding, the autoload wrapper, and the prefab callsite are three
+layers that evolved at different times, and naming consistency
+between them was never enforced by anything that ran at CI time.
+v0.45.0 will add a smoke-test sweep that instantiates each prefab,
+exercises each `@export` setter, and asserts no `Nonexistent
+function` errors fire — which would catch every bug of this
+class automatically.
+
+### Why this is a patch (not minor)
+
+Pure bug fixes restoring intended behavior. No new public API
+surface. The `get_material_eq_for_material` rename is paired
+with a no-cost backward-compat alias so zero existing callers
+break. Per the project's SemVer rule, patch.
+
+### Migration
+
+No breaking changes. `VoiceChatPlayer` and `GoolListener3D` now
+work as documented in scenes where they previously crashed or
+silently no-op'd; no code changes required on the consumer side.
+
+The `material_eq_for_material` → `get_material_eq_for_material`
+rename comes with a one-release alias so existing callers (if
+any) keep working. Migrate to the `get_`-prefixed canonical name
+before v0.46.0 when the alias is removed.
+
 ## [0.44.1] - 2026-05-21 — Fix: ReverbZone material-aware path crashed on entry
 
 One-line bug fix surfaced during the v0.44.0 audition. Any scene
@@ -16056,7 +16123,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.44.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.44.2...HEAD
+[0.44.2]: https://github.com/siliconight/gool/releases/tag/v0.44.2
 [0.44.1]: https://github.com/siliconight/gool/releases/tag/v0.44.1
 [0.44.0]: https://github.com/siliconight/gool/releases/tag/v0.44.0
 [0.43.0]: https://github.com/siliconight/gool/releases/tag/v0.43.0

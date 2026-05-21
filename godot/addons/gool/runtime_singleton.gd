@@ -1331,6 +1331,22 @@ func set_occlusion_intensity(intensity: float) -> void:
 		return
 	_runtime.set_occlusion_intensity(intensity)
 
+## v0.44.2: pass the physics world's space RID to the audio runtime
+## so geometry-query / raycast-based occlusion knows which physics
+## world to query.
+##
+## GoolListener3D._ready() calls this — but before v0.44.2 the
+## autoload had no wrapper, so the prefab's
+## `if _runtime.has_method("set_audio_world_space_rid"): ...` guard
+## returned false and the call was silently skipped. Net effect:
+## the RID was never set, occlusion queries had no physics world
+## to consult, and the feature silently no-op'd in every scene
+## using gool_listener_3d. This wrapper closes that loop.
+func set_audio_world_space_rid(rid: RID) -> void:
+	if not is_initialized():
+		return
+	_runtime.set_audio_world_space_rid(rid)
+
 func play_sound_at_location(name: String, position: Vector3) -> void:
 	_runtime.play_sound_at_location(name, position)
 
@@ -1471,10 +1487,23 @@ func reverb_preset_for_material(material: int) -> Dictionary:
 ##
 ## Out-of-range material values fall through to the Default
 ## (neutral) curve.
-func material_eq_for_material(material: int) -> Dictionary:
+##
+## v0.44.2 rename: previously exposed as `material_eq_for_material`
+## (no `get_` prefix), the same naming inconsistency that broke
+## ReverbZone's material-aware path in v0.44.1. Renamed for the
+## same reason — matches the C++ binding and every other gool
+## getter. The old name is preserved as a deprecated alias below
+## for one release; migrate calls to this `get_` form.
+func get_material_eq_for_material(material: int) -> Dictionary:
 	if not is_initialized():
 		return {}
 	return _runtime.get_material_eq_for_material(material)
+
+## DEPRECATED (v0.44.2): use get_material_eq_for_material instead.
+## Kept as a one-line alias for one release so any user code calling
+## the pre-v0.44.2 name still works. Will be removed in v0.46.0.
+func material_eq_for_material(material: int) -> Dictionary:
+	return get_material_eq_for_material(material)
 
 ## Resolve a Node's AudioMaterial. Checks two sources in order:
 ##
@@ -1862,6 +1891,25 @@ func get_voice_jitter_ms(player_id: int) -> float:
 
 func get_voice_packet_loss_ratio(player_id: int) -> float:
 	return _runtime.get_voice_packet_loss_ratio(player_id)
+
+## v0.44.2: mute/unmute a per-player VOIP voice source. Returns
+## true on success. Wrappers added to fix the VoiceChatPlayer
+## crash where the prefab called `_runtime.set_voice_source_muted`
+## (autoload-side) but the autoload had no such wrapper — the
+## C++ binding existed all along, just not surfaced through the
+## autoload that VoiceChatPlayer reaches through.
+func set_voice_source_muted(player_id: int, muted: bool) -> bool:
+	if not is_initialized():
+		return false
+	return _runtime.set_voice_source_muted(player_id, muted)
+
+## v0.44.2: set per-player VOIP voice-source volume (linear, 0.0–1.0+).
+## Returns true on success. Same backfill reason as
+## set_voice_source_muted above.
+func set_voice_source_volume(player_id: int, volume: float) -> bool:
+	if not is_initialized():
+		return false
+	return _runtime.set_voice_source_volume(player_id, volume)
 
 # ---- Replication / multiplayer ----
 
