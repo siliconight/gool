@@ -555,6 +555,7 @@ enum ToolsMenuItem {
 	NEW_FOLDER_BANK    = 1,
 	OPEN_QUICKSTART    = 2,
 	ADD_DEBUG_OVERLAY  = 3,   # v0.23.1
+	RUN_PREFAB_SMOKE_TEST = 4,  # v0.45.0
 }
 
 func _register_tools_menu() -> void:
@@ -568,6 +569,12 @@ func _register_tools_menu() -> void:
 	_tools_menu.add_separator()
 	_tools_menu.add_item("Open quickstart_3d.tscn (verify gool works)",
 		ToolsMenuItem.OPEN_QUICKSTART)
+	# v0.45.0: static-analysis smoke test that catches the
+	# missing-autoload-wrapper bug class. Runs in seconds, no F5
+	# needed. See addons/gool/tools/prefab_smoke_test.gd.
+	_tools_menu.add_separator()
+	_tools_menu.add_item("Run prefab smoke test (find missing autoload wrappers)",
+		ToolsMenuItem.RUN_PREFAB_SMOKE_TEST)
 	_tools_menu.id_pressed.connect(_on_tools_menu_pressed)
 	add_tool_submenu_item(TOOLS_MENU_NAME, _tools_menu)
 
@@ -597,6 +604,32 @@ func _on_tools_menu_pressed(id: int) -> void:
 				"res://addons/gool/templates/quickstart_3d.tscn")
 		ToolsMenuItem.ADD_DEBUG_OVERLAY:
 			_add_debug_overlay_to_current_scene()
+		ToolsMenuItem.RUN_PREFAB_SMOKE_TEST:
+			_run_prefab_smoke_test()
+
+# v0.45.0: run the static-analysis smoke test from the Tools menu.
+# Tool prints findings to the Output panel. Pure analysis — no F5
+# session needed.
+func _run_prefab_smoke_test() -> void:
+	var tool_script := load("res://addons/gool/tools/prefab_smoke_test.gd")
+	if tool_script == null:
+		push_error("[gool] prefab_smoke_test.gd not found")
+		return
+	var tool = tool_script.new()
+	var ok: bool = tool.run()
+	if ok:
+		_show_info_dialog(
+			"gool: prefab smoke test PASSED",
+			"All prefab callsites have matching autoload wrappers. "
+			+ "See the Output panel for details."
+		)
+	else:
+		_show_info_dialog(
+			"gool: prefab smoke test FAILED",
+			"Missing autoload wrapper(s) detected. See the Output "
+			+ "panel for the list of missing methods and where each "
+			+ "is called from. Same bug shape as v0.44.1 / v0.44.2."
+		)
 
 # v0.23.0: scene scaffolding command.
 #

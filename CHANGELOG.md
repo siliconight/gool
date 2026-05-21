@@ -22,6 +22,95 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.45.0] - 2026-05-21 — Hardening release: init guards + prefab smoke test
+
+Closes out the audit findings that surfaced during the v0.43.0 +
+v0.44.0 sandbox audition. v0.44.1 and v0.44.2 fixed the three
+crash/silent-failure bugs; this release covers (1) the broader
+class of "autoload method touches `_runtime.X(...)` without checking
+`is_initialized()` first" and (2) ships a static-analysis tool that
+prevents future bugs of the same shape from sneaking in.
+
+### Added
+
+- **`addons/gool/tools/prefab_smoke_test.gd`** — static-analysis
+  smoke test that parses every prefab + resource .gd file, finds
+  every `_runtime.X(...)` and `Gool.X(...)` callsite, and asserts
+  each X has a matching autoload wrapper. Catches the exact bug
+  class that broke v0.44.1 (reverb), v0.44.2 (VoiceChatPlayer,
+  GoolListener3D, material_eq).
+- **`Project ▸ Tools ▸ gool ▸ Run prefab smoke test`** — editor
+  menu item that runs the smoke test and shows a pass/fail dialog.
+  Detailed findings printed to the Output panel. Runs in seconds,
+  no F5 session needed.
+
+### Fixed (defensive — closes the unguarded-methods gap)
+
+- **21 autoload methods now guard with `is_initialized()`** before
+  touching `_runtime`. Pre-v0.45.0 these could crash with
+  "Attempt to call function 'X' in base 'null instance' on a null
+  instance" if called before the runtime was initialized — e.g.
+  from another autoload's `_ready()` that runs before Gool's,
+  or in a test/headless context where init() was deferred.
+
+  The 21 methods, by family:
+
+  Sound playback / emitters: `register_pcm_sound`,
+  `register_sound_definition`, `play_sound_at_location`,
+  `play_impact_sound`, `load_sound_bank_from_json`, `material_name`,
+  `create_emitter`, `destroy_emitter`, `set_emitter_transform`,
+  `set_emitter_playback_speed`, `set_listener_transform`.
+
+  Voice chat: `register_voice_source`, `submit_voice_packet`,
+  `get_voice_jitter_ms`, `get_voice_packet_loss_ratio`.
+
+  Replication: `on_tick_advanced`, `submit_event_local`,
+  `submit_replicated_event`, `cancel_predicted_event`,
+  `update_replicated_transform`, `make_prediction_id`.
+
+  Each guards via `if not is_initialized(): return <sentinel>`
+  where the sentinel matches the function's documented "failure"
+  value (0 for handle-returning ints, false for bools, "" for
+  Strings, 0.0 for floats, plain `return` for void). Callers that
+  ignore return values (most do, given the void surface) see no
+  behavioral change. Callers that check return values now reliably
+  see the sentinel instead of crashing.
+
+  The sandbox's own `audio_setup.gd` autoload was already working
+  around this by awaiting `get_tree().process_frame` before its
+  first gool call. With v0.45.0, that workaround is no longer
+  strictly necessary — though it's still good practice for
+  ordering reasons.
+
+### Why this is a minor (not patch)
+
+New public dev-facing tool (the smoke test + menu item) is a
+material API addition. The 21 init-guard additions are
+behavioral hardening that changes the failure mode from "crash"
+to "return sentinel" — technically a contract change for
+callers who specifically depend on the crash, which is no
+sensible caller in practice, but the rule cuts toward minor.
+
+### Migration
+
+No breaking changes for any sensible caller. If you were
+relying on autoload methods crashing as an init-order error
+signal, switch to checking `Gool.is_initialized()` explicitly
+before the call.
+
+The smoke test is opt-in (run it from the Tools menu); it
+doesn't affect runtime behavior. Recommended: run it once after
+every gool addon update, and once before every release of a
+project built on gool.
+
+### What's next
+
+v0.46.0 — intensity-driven music with stems/layers (the
+remaining big item from the L4D2-feedback roadmap). Defining
+feel feature: continuous "threat level" knob on
+MusicStateController that crossfades layered stems +
+auto-opens filters as intensity rises.
+
 ## [0.44.2] - 2026-05-21 — Three missing autoload wrappers (VoiceChatPlayer crash + GoolListener3D silent-failure + material EQ name mismatch)
 
 Audit follow-up to v0.44.1. The same name-mismatch / missing-
@@ -16123,7 +16212,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.44.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.45.0...HEAD
+[0.45.0]: https://github.com/siliconight/gool/releases/tag/v0.45.0
 [0.44.2]: https://github.com/siliconight/gool/releases/tag/v0.44.2
 [0.44.1]: https://github.com/siliconight/gool/releases/tag/v0.44.1
 [0.44.0]: https://github.com/siliconight/gool/releases/tag/v0.44.0

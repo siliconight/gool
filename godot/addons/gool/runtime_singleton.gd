@@ -763,6 +763,8 @@ func get_backend_description() -> String:
 
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
 						 sr: int = 48000, ch: int = 1) -> int:
+	if not is_initialized():
+		return 0
 	return _runtime.register_pcm_sound(name, samples, sr, ch)
 
 ## AudioFileFormat constants — pass to register_sound_from_bytes()
@@ -872,6 +874,8 @@ func register_sound_definition(name: String, spatialized: bool = true,
 								 category: int = CATEGORY_SFX,
 								 target_bus_name: String = "",
 								 occlusion_enabled: bool = true) -> void:
+	if not is_initialized():
+		return
 	_runtime.register_sound_definition(name, spatialized, looping,
 										 min_distance, max_distance,
 										 loop_crossfade_ms,
@@ -1348,6 +1352,8 @@ func set_audio_world_space_rid(rid: RID) -> void:
 	_runtime.set_audio_world_space_rid(rid)
 
 func play_sound_at_location(name: String, position: Vector3) -> void:
+	if not is_initialized():
+		return
 	_runtime.play_sound_at_location(name, position)
 
 ## Load a JSON sound bank into the runtime.
@@ -1377,6 +1383,8 @@ func play_sound_at_location(name: String, position: Vector3) -> void:
 func load_sound_bank_from_json(json_string: String,
 								 gpak_path: String = "",
 								 skip_validation: bool = false) -> bool:
+	if not is_initialized():
+		return false
 	return _runtime.load_sound_bank_from_json(
 			json_string, gpak_path, skip_validation)
 
@@ -1417,6 +1425,8 @@ const _MATERIAL_NAMES := [
 ## Returns `"Unknown"` for out-of-range values. Useful for debug
 ## overlays and logging.
 func material_name(material: int) -> String:
+	if not is_initialized():
+		return ""
 	if material >= 0 and material < _MATERIAL_NAMES.size():
 		return _MATERIAL_NAMES[material]
 	return "Unknown"
@@ -1569,6 +1579,8 @@ func material_from_collider(node: Node) -> int:
 ## For non-by_material groups (or plain sounds), `material` is
 ## ignored and behavior matches `play_sound_at_location`.
 func play_impact_sound(name: String, position: Vector3, material: int) -> void:
+	if not is_initialized():
+		return
 	# v0.34.0: push the material's EQ curve to the impact bus
 	# before play. The C++ method is a no-op for unrecognized
 	# bus configurations, but our _setup_impact_eq has already
@@ -1837,24 +1849,36 @@ func apply_material_eq_to_bus(bus_name: String, material: int) -> bool:
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
 					 fade_in_ms: float = 0.0) -> int:
+	if not is_initialized():
+		return 0
 	return _runtime.create_emitter(name, position, looping, fade_in_ms)
 
 func destroy_emitter(handle: int, fade_out_ms: float = 0.0) -> void:
+	if not is_initialized():
+		return
 	_runtime.destroy_emitter(handle, fade_out_ms)
 
 func set_emitter_transform(handle: int, position: Vector3,
 							  forward: Vector3, velocity: Vector3) -> void:
+	if not is_initialized():
+		return
 	_runtime.set_emitter_transform(handle, position, forward, velocity)
 
 func set_emitter_playback_speed(handle: int, speed: float,
 								   smoothing_ms: float = 50.0) -> void:
+	if not is_initialized():
+		return
 	_runtime.set_emitter_playback_speed(handle, speed, smoothing_ms)
 
 func set_listener_transform(position: Vector3, forward: Vector3,
 							  velocity: Vector3 = Vector3.ZERO) -> void:
+	if not is_initialized():
+		return
 	_runtime.set_listener_transform(position, forward, velocity)
 
 func register_voice_source(player_id: int) -> bool:
+	if not is_initialized():
+		return false
 	var ok: bool = _runtime.register_voice_source(player_id)
 	# v0.44.0: track registered player IDs so the editor's Live
 	# Stats panel can enumerate them for per-player jitter/loss
@@ -1882,14 +1906,20 @@ func submit_voice_packet(player_id: int, bytes: PackedByteArray,
 							sequence_number: int,
 							send_timestamp_ms: int,
 							arrival_timestamp_ms: int = -1) -> bool:
+	if not is_initialized():
+		return false
 	return _runtime.submit_voice_packet(
 		player_id, bytes, sequence_number,
 		send_timestamp_ms, arrival_timestamp_ms)
 
 func get_voice_jitter_ms(player_id: int) -> float:
+	if not is_initialized():
+		return 0.0
 	return _runtime.get_voice_jitter_ms(player_id)
 
 func get_voice_packet_loss_ratio(player_id: int) -> float:
+	if not is_initialized():
+		return 0.0
 	return _runtime.get_voice_packet_loss_ratio(player_id)
 
 ## v0.44.2: mute/unmute a per-player VOIP voice source. Returns
@@ -1914,12 +1944,16 @@ func set_voice_source_volume(player_id: int, volume: float) -> bool:
 # ---- Replication / multiplayer ----
 
 func on_tick_advanced(simulation_tick: int, server_time_ms: int) -> void:
+	if not is_initialized():
+		return
 	_runtime.on_tick_advanced(simulation_tick, server_time_ms)
 
 func submit_event_local(sound_name: String, position: Vector3,
 						  prediction_id: int = 0,
 						  priority: int = 128,
 						  timestamp_ms: int = 0) -> void:
+	if not is_initialized():
+		return
 	_runtime.submit_event_local(sound_name, position,
 								  prediction_id, priority, timestamp_ms)
 
@@ -1927,21 +1961,29 @@ func submit_replicated_event(sound_name: String, position: Vector3,
 							   simulation_tick: int = 0,
 							   server_time_ms: int = 0,
 							   priority: int = 128) -> void:
+	if not is_initialized():
+		return
 	_runtime.submit_replicated_event(sound_name, position,
 									   simulation_tick, server_time_ms,
 									   priority)
 
 func cancel_predicted_event(prediction_id: int,
 							   fade_out_ms: float = 50.0) -> void:
+	if not is_initialized():
+		return
 	_runtime.cancel_predicted_event(prediction_id, fade_out_ms)
 
 func update_replicated_transform(handle: int, position: Vector3,
 									forward: Vector3, velocity: Vector3,
 									simulation_tick: int) -> void:
+	if not is_initialized():
+		return
 	_runtime.update_replicated_transform(handle, position, forward,
 											velocity, simulation_tick)
 
 func make_prediction_id() -> int:
+	if not is_initialized():
+		return 0
 	return _runtime.make_prediction_id()
 
 # ---- v0.22.0: simplified one-shot networked SFX ------------------------
