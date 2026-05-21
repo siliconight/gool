@@ -22,6 +22,108 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.46.0] - 2026-05-21 — GoolMultiplayerBridge: transport-agnostic networking glue
+
+The next L4D2-roadmap item, designed to be flexible to whatever
+network backend the host project actually lands on. Bridge defaults
+to routing via Godot's `MultiplayerAPI` but every send / receive
+is overridable via signal hooks, so Steam P2P, ENet, a custom
+relay, or any hybrid plugs in without changing the API game code
+calls.
+
+### Added
+
+- **`GoolMultiplayerBridge`** autoload (registered automatically
+  by the plugin alongside Gool + DialogueDirector). Wires Godot's
+  `MultiplayerAPI` to gool's existing replication / VOIP primitives.
+  Three API tiers, each independently overridable:
+
+  Tier 1 — high-level (what game code calls):
+  - `fire_predicted_event(sound, position, priority) → prediction_id`
+  - `update_replicated_transform_networked(handle, transform, sim_tick)`
+  - `advance_tick(simulation_tick, server_time_ms)`
+  - `send_voice_packet_to_peer(peer_id, bytes, seq, ts_ms)`
+  - `capture_network_snapshot(buses) → GoolNetworkSnapshot`
+  - `apply_network_snapshot(snap)`
+
+  Tier 2 — low-level hooks for custom transports:
+  - `send_replicated_event` signal — bridge emits, your transport listens
+  - `send_replicated_transform` signal
+  - `send_voice_packet` signal
+  - `receive_replicated_event(...)` — your transport calls when packets arrive
+  - `receive_replicated_transform(...)`
+  - `receive_voice_packet(...)`
+
+  Tier 3 — auto behaviors:
+  - `transport_mode` ∈ AUTO | MULTIPLAYER_API | CUSTOM | DISABLED
+  - `auto_register_voice_sources` (default true)
+  - `route_voice_packets` (default true — disable for Steam)
+  - `staleness_threshold_ms` (default 250)
+
+- **`GoolNetworkSnapshot`** Resource class for host-migration
+  state sync. Parallel to `GoolMixSnapshot`. Captures simulation
+  tick, server time, registered voice player IDs, mix snapshot,
+  and music state name. Bridge surfaces `capture_network_snapshot()`
+  / `apply_network_snapshot()` helpers. Tier 1 — covers the cheap,
+  already-exposed state. Active-emitter rehydration and in-flight
+  prediction IDs are Tier 2 (need new C++ bindings) and deferred
+  to v0.47.0+.
+
+- **`docs/networking_bridge.md`** — explainer aimed at network
+  backend engineers. Maps the bridge's API to common backend
+  decisions (Steam P2P vs ENet vs custom, listen-server,
+  client prediction, host migration). Includes recipes for each
+  transport type.
+
+- **README section update** under "For network/infrastructure
+  engineers" — points at `docs/networking_bridge.md` and explains
+  the transport-agnostic design.
+
+### Design invariant honored throughout
+
+The firing client NEVER waits on a round trip before playing its
+own audio. `fire_predicted_event` always calls `Gool.submit_event_local`
+FIRST, then dispatches replication. Mirrors the existing
+`Gool.play_networked` invariant.
+
+### Relationship to existing `Gool.play_networked()`
+
+`Gool.play_networked` is kept as-is (the "one-call simple SFX"
+path — no prediction, just play-on-all-peers). Bridge's
+`fire_predicted_event` is the "predicted event with a returned
+prediction_id you can cancel later" path. Different use cases;
+both layers preserve local-first.
+
+### Explicit non-goals
+
+The bridge deliberately does NOT:
+- Decide which peer is host (your transport's job)
+- Validate replicated data (no anti-cheat — per the network arch
+  decision that cheating tolerance is acceptable)
+- Manage lobbies / matchmaking
+- Throttle replication rate (caller's choice)
+- Reach into MusicStateController for snapshot music-state field
+
+### Migration
+
+No breaking changes. The bridge autoload registers automatically
+when the gool addon is enabled — projects that don't use
+multiplayer never touch it. `Gool.play_networked` is unchanged.
+
+If you have a custom `multiplayer_bridge` autoload by the same
+name, rename yours (we now occupy `GoolMultiplayerBridge`).
+
+### What's next
+
+v0.47.0 candidate: sub-tick precision in `submit_replicated_event`
+(needs C++ binding extension once the network lead's sub-tick
+stamp system lands), Tier-2 host-migration state (active emitter
+enumeration), and `Gool.unregister_voice_source(peer_id)` binding
+so the bridge can do proper cleanup on peer disconnect.
+
+After that: intensity-driven music with stems/layers (deferred
+from v0.46.0 to v0.47.0 or later).
+
 ## [0.45.0] - 2026-05-21 — Hardening release: init guards + prefab smoke test
 
 Closes out the audit findings that surfaced during the v0.43.0 +
@@ -16212,7 +16314,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/siliconight/gool/releases/tag/v0.46.0
 [0.45.0]: https://github.com/siliconight/gool/releases/tag/v0.45.0
 [0.44.2]: https://github.com/siliconight/gool/releases/tag/v0.44.2
 [0.44.1]: https://github.com/siliconight/gool/releases/tag/v0.44.1

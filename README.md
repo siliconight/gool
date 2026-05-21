@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.45.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.46.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -488,6 +488,20 @@ thread.
 
 - **Determinism:** [`docs/determinism.md`](docs/determinism.md)
   — what's deterministic, what isn't, how to set up bit-identical replay
+- **Godot MultiplayerAPI integration:** the `GoolMultiplayerBridge`
+  autoload (v0.46.0) wires Godot's `MultiplayerAPI` to gool's
+  replication / VOIP primitives. Transport-agnostic — defaults to
+  routing through `MultiplayerAPI` (so `ENetMultiplayerPeer`,
+  `SteamMultiplayerPeer`, `WebRTCMultiplayerPeer` all work out of
+  the box), but switches to signal-based hooks when you set
+  `transport_mode = CUSTOM` so any non-Godot transport (Steam P2P
+  via raw Steamworks, your own UDP, a relay you control) can plug
+  in without touching gool internals. Preserves the 0ms-local-play
+  invariant: `fire_predicted_event` always plays locally first,
+  then dispatches replication. See
+  [`docs/networking_bridge.md`](docs/networking_bridge.md) for the
+  full rundown including transport recipes and host-migration
+  snapshot capture/apply.
 - **Bandwidth:** RPC filtering via the included `AudioRelevancyFilter`;
   per-event priority + late-event staleness
 - **Threading:** four roles enforced via Clang Thread Safety
