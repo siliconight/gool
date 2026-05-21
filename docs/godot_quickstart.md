@@ -183,6 +183,22 @@ is non-zero whenever something is audibly playing. If `peak` stays
 at 0.0 even while you expect sound, that's the diagnostic signal
 to investigate (see **Troubleshooting**).
 
+### Or, see it in-game
+
+Reading the Output panel works, but if you'd rather *watch* the
+engine while you play, drop a **GoolDebugOverlay** node anywhere
+in your scene tree.
+
+**Press F3 in-game to toggle the overlay on and off.**
+
+It shows the same `peak` and `voices` numbers from the Output
+log, plus a few more (callback rate, exception count, audio device
+name), rendered as a small HUD in the corner of the game view.
+Updates 4× a second; while hidden, the polling timer pauses so
+cost is effectively zero. Leaving the node in your scene through
+release is fine — your end users can press F3 themselves if they
+ever hit an audio issue and want to share what they see.
+
 ## Step 4 — Where to go next
 
 You've got the plumbing working. Now you can:

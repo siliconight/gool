@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.38.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.41.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -359,6 +359,10 @@ target.
 - Drag-and-drop Godot nodes (`AudioEmitter3D`, `VoiceChatPlayer`,
   `MusicStateController`, `ReverbZone`, `FootstepSurfacePlayer`,
   `NetworkedAudioEvent`, `NetworkedAudioEmitter3D`)
+- Built-in debug overlay (`GoolDebugOverlay`) — drop the node in,
+  **press F3 in-game** to see real-time engine health (peak,
+  active voices, callback rate, exceptions). No code, no
+  instrumentation, no leaving Godot.
 - JSON sound banks designers can edit without touching code
 - Hot reload — change `sounds.json` on disk, the runtime
   re-registers without restart

@@ -22,6 +22,101 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.41.0] - 2026-05-21 — Meat material + Compressor/EQ/Saturation preset libraries
+
+Two pieces of dev-facing work that compound the "easiest audio
+engine for Godot devs who aren't audio experts" value prop:
+
+1. A new `AudioMaterial::Meat` enum value for body shots on
+   creatures (aliens, zombies, mobsters) — soft, dense, wet
+   acoustic character distinct from the existing eight materials.
+2. Three new preset families on `GoolPresets` —
+   `COMPRESSOR_*`, `EQ_*`, `SATURATION_*` — alongside three new
+   `Gool.apply_*_preset()` helpers, mirroring the existing
+   `apply_reverb_preset` pattern shipped in v0.39.x. A dev can now
+   pick a named character for any of gool's four effects without
+   touching individual parameter IDs.
+
+### Added
+
+- **`AudioMaterial::Meat = 9`** in `include/audio_engine/geometry_query.h`,
+  with defaults across all three material-driven tables:
+  - Occlusion (`AudioMaterialDefaults`): absorption=0.65, damping=0.85
+    — soft + dense → high occlusion, wet → strong HF rolloff
+  - Reverb preset (`ReverbPresetByMaterial`): decay=0.10,
+    lf_damping=0.60, hf_damping=0.95, diffusion=0.85 — minimal
+    reflection, dark dead tail
+  - EQ curve (`MaterialEqByMaterial`): +1.5 dB low-shelf @ 250 Hz,
+    -1.0 dB peak @ 800 Hz Q=0.5, -3.5 dB high-shelf @ 5 kHz —
+    low body "thump", broad mid scoop, heavy HF cut
+  - `kAudioMaterialCount` bumped 9 → 10
+- **String parser**: `sound_bank.cpp` accepts `"Meat"` in
+  by_material group JSON.
+- **GDScript constant**: `Gool.MATERIAL_MEAT = 9` and the
+  `_MATERIAL_NAMES` lookup array now includes `"Meat"`. Inspector
+  docstring on `GoolAudioMaterial` lists Meat among the choices.
+- **Compressor presets** in `gool_presets.gd`, ported verbatim from
+  `docs/audio_design/sidechain_tuning.md`'s cookbook:
+  `COMPRESSOR_ACTION_SHOOTER` (default cinematic PvE),
+  `COMPRESSOR_CINEMATIC_EXPLOSION`, `COMPRESSOR_STEALTH_SINGLE_SHOT`,
+  `COMPRESSOR_HORDE_MODE`, `COMPRESSOR_TRANSPARENT`.
+- **EQ presets** in `gool_presets.gd`, designed against the
+  standard 3-biquad LowShelf/Peak/HighShelf shape gool's
+  ImpactEq / ListenerEq buses already use: `EQ_WARM`, `EQ_BRIGHT`,
+  `EQ_DISTANT`, `EQ_TELEPHONE`. Key names align with the internal
+  `MaterialEqCurve` struct so the layouts are reusable.
+- **Saturation presets** in `gool_presets.gd`, designed against the
+  v0.40.0 four-mode shape table: `SATURATION_TAPE_WARMTH` (mode=Tape),
+  `SATURATION_RADIO_CRUSH` (mode=Diode, pairs with `EQ_TELEPHONE`),
+  `SATURATION_AMP_DRIVE` (mode=Tanh).
+- **`Gool.apply_compressor_preset(bus_name, effect_index, preset)`**
+  in `runtime_singleton.gd`. Same shape as `apply_reverb_preset`:
+  dictionary-keyed by `gool/config.json` parameter names, partial
+  presets supported, unknown keys produce push_warning. Local
+  `PARAM_ID` const inside the function body avoids GoolPresets
+  class load-order coupling (same pattern apply_reverb_preset uses).
+- **`Gool.apply_eq_preset(bus_name, preset, low=0, mid=1, high=2)`**
+  in `runtime_singleton.gd`. Takes per-band effect indices because
+  EQ spans three biquad effects. The default indices match gool's
+  built-in EQ buses; users with custom EQ chains pass their own
+  band indices.
+- **`Gool.apply_saturation_preset(bus_name, effect_index, preset)`**
+  in `runtime_singleton.gd`. Mode field accepted as float (helper
+  coerces) so the preset dictionary stays homogeneous.
+- **Autoload forwarders missing since v0.22.7**:
+  `Gool.reset_render_peak()` and `Gool.get_backend_description()`.
+  The C++ bindings have existed since v0.22.7 but the GDScript
+  autoload didn't expose them; `GoolDebugOverlay._refresh` was
+  hitting "Nonexistent function" errors at runtime as a result.
+  Lessons-learned doc's "Autoload method existence" pattern,
+  caught when wiring the overlay into a downstream sandbox.
+
+### Changed
+
+- **README "Current version"** line was stale at 0.38.1; updated
+  to 0.41.0 to reflect actual state. Two patches got missed
+  updating it (0.39.0, 0.40.0, 0.40.1). The release procedure
+  now treats this line as part of the version triple sweep.
+
+### Tests
+
+- `tests/unit/material_eq_curve_test.cpp::TestMaterialsAreDistinctFromEachOther`:
+  Meat added to the per-material distinctness array, ensuring
+  the invariant that "designer-relevant materials don't share
+  EQ curves" still holds with the new value. Verified manually
+  that Meat's curve passes `CurveInPhysicalRange` (frequencies
+  in [20, 20000], gains in [-12, +12], Q in [0.1, 10]) and
+  `CurvesDifferent` against every other material.
+
+### Migration
+
+No breaking changes. Existing code that uses materials 0-8 continues
+to work bit-identically. The new `Meat` enum value is additive;
+existing sound banks that don't reference it are unaffected.
+
+Existing reverb presets in `GoolPresets` from v0.39.x are
+unchanged.
+
 ## [0.40.1] - 2026-05-20 — Hotfix: v0.40.0 CI test failures
 
 Two test-only bugs blocked v0.40.0 from going green on CI. The
@@ -15765,7 +15860,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.28.7...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/siliconight/gool/releases/tag/v0.41.0
 [0.38.1]: https://github.com/siliconight/gool/releases/tag/v0.38.1
 [0.38.1]: https://github.com/siliconight/gool/releases/tag/v0.38.1
 [0.38.0]: https://github.com/siliconight/gool/releases/tag/v0.38.0

@@ -686,6 +686,32 @@ func get_bus_stats() -> Array:
 		return []
 	return _runtime.get_bus_stats()
 
+## Reset the C++ render-thread peak-sample-amplitude counter. Pairs
+## with get_render_stats(): callers poll get_render_stats() to read
+## the peak accumulated since the last reset, then call this to start
+## a fresh window. Used by GoolDebugOverlay._refresh to produce
+## per-refresh-window peak readings instead of a monotonic since-
+## startup peak (which would only ever grow).
+##
+## No-op if the runtime isn't initialized or the backend isn't a
+## MiniaudioBackend (the C++ side handles those cases).
+func reset_render_peak() -> void:
+	if _runtime == null:
+		return
+	_runtime.reset_render_peak()
+
+## Human-readable description of the audio backend miniaudio
+## negotiated at init() time (e.g. "WASAPI / Speakers", "coreaudio
+## / MacBook Pro Speakers", "alsa / default"). Returns "" before
+## init or if the backend doesn't expose a name.
+##
+## Used by GoolDebugOverlay to show which device audio is actually
+## coming out of.
+func get_backend_description() -> String:
+	if _runtime == null:
+		return ""
+	return _runtime.get_backend_description()
+
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
 						 sr: int = 48000, ch: int = 1) -> int:
 	return _runtime.register_pcm_sound(name, samples, sr, ch)
@@ -834,6 +860,73 @@ func set_effect_parameter(bus_name: String, effect_index: int,
 	return _runtime.set_effect_parameter(bus_name, effect_index,
 										   param_id, value)
 
+## Apply a named preset Dictionary from GoolPresets (or any
+## Dictionary in the same shape) to a reverb effect on the named
+## bus. The preset's keys are the JSON parameter names ("decay",
+## "predelay_ms", "lf_damping", "hf_damping", "diffusion",
+## "wet_gain_db", "dry_gain_db"); each gets translated to the
+## C++ EffectParameter ID and applied via set_effect_parameter.
+##
+## Typical example:
+##   Gool.apply_reverb_preset("Sfx", 0, GoolPresets.REVERB_CATHEDRAL)
+##
+## Where 0 is the index of the reverb effect in the Sfx bus's
+## effects chain (use get_bus_effects() to discover it, or check
+## your gool/config.json). To switch presets at runtime, just call
+## again with a different preset — the C++ side smooths transitions
+## so the change won't click.
+##
+## Returns true if every parameter in the preset applied
+## successfully. Returns false if the runtime isn't initialized,
+## any set_effect_parameter call failed, or any preset key wasn't
+## a known reverb parameter. Unknown keys produce a warning so a
+## designer typo (e.g. "predelay" missing "_ms") doesn't fail
+## silently.
+##
+## You can pass a partial preset — only the keys present get
+## applied, others retain their current values. Useful for tweak
+## layering: apply a base preset, then call again with just
+## { "wet_gain_db": -6.0 } to dip it.
+func apply_reverb_preset(bus_name: String, effect_index: int,
+						   preset: Dictionary) -> bool:
+	if not is_initialized():
+		return false
+	# JSON key → EffectParameter ID. Mirrors GoolPresets._REVERB_PARAM_ID;
+	# duplicated as a local const so this method has no hard dependency
+	# on the GoolPresets class load order (the autoload runs early).
+	const PARAM_ID: Dictionary = {
+		"predelay_ms":  23,
+		"decay":         9,
+		"lf_damping":   24,
+		"hf_damping":   10,
+		"diffusion":    25,
+		"wet_gain_db":  11,
+		"dry_gain_db":  26,
+	}
+	var all_ok: bool = true
+	for key in preset:
+		var param_id: int = PARAM_ID.get(key, -1)
+		if param_id < 0:
+			push_warning(("[Gool] apply_reverb_preset: unknown key "
+					+ "'%s' on bus='%s' — expected one of: "
+					+ "predelay_ms, decay, lf_damping, hf_damping, "
+					+ "diffusion, wet_gain_db, dry_gain_db")
+					% [key, bus_name])
+			all_ok = false
+			continue
+		var value: float = float(preset[key])
+		var ok: bool = _runtime.set_effect_parameter(bus_name,
+				effect_index, param_id, value)
+		if not ok:
+			push_warning(("[Gool] apply_reverb_preset: "
+					+ "set_effect_parameter failed for bus='%s' "
+					+ "effect=%d param='%s' value=%f — check that "
+					+ "the bus exists and effect_index points at a "
+					+ "reverb effect (try get_bus_effects to inspect)")
+					% [bus_name, effect_index, key, value])
+			all_ok = false
+	return all_ok
+
 ## v0.35.0: forwarder for the engine's get_bus_effects. Returns
 ## an Array of Dictionaries describing each effect on the named
 ## bus (kind, kind_name, params keyed by EffectParameter::* IDs).
@@ -848,6 +941,230 @@ func get_bus_effects(bus_name: String) -> Array:
 	if not is_initialized():
 		return []
 	return _runtime.get_bus_effects(bus_name)
+
+## Apply a preset Dictionary to a sidechain-compressor effect on
+## a bus. `preset` keys are the same names used in `gool/config.json`
+## ("threshold_db", "ratio", "attack_ms", "release_ms",
+## "knee_width_db", "max_reduction_db", plus optional "makeup_db",
+## "mix_ratio", "sidechain_hpf_hz", "hold_ms", "detection_mode").
+##
+## Use the `GoolPresets.COMPRESSOR_*` constants for ready-made starting
+## points; the values come straight from
+## docs/audio_design/sidechain_tuning.md.
+##
+## Typical example:
+##   Gool.apply_compressor_preset("Music", 0,
+##           GoolPresets.COMPRESSOR_ACTION_SHOOTER)
+##
+## NOTE: this helper does NOT change the sidechain wiring — which
+## bus drives which compressor is set in the bus graph (in
+## `gool/config.json`) at build time, not at apply time. The preset
+## only tunes how aggressively the compressor responds.
+##
+## Same return semantics as apply_reverb_preset: true if every
+## value applied, false if any individual call failed or if the
+## runtime isn't initialized. Unknown keys produce push_warning
+## and are skipped; partial presets are valid.
+func apply_compressor_preset(bus_name: String, effect_index: int,
+								preset: Dictionary) -> bool:
+	if not is_initialized():
+		return false
+	# JSON key → EffectParameter ID. Mirrors GoolPresets._COMPRESSOR_PARAM_ID;
+	# duplicated as a local const so this method has no hard dependency on
+	# the GoolPresets class load order (same pattern apply_reverb_preset uses).
+	const PARAM_ID: Dictionary = {
+		"threshold_db":      4,
+		"ratio":             5,
+		"attack_ms":         6,
+		"release_ms":        7,
+		"makeup_db":         8,
+		"knee_width_db":    13,
+		"mix_ratio":        14,
+		"max_reduction_db": 15,
+		"sidechain_hpf_hz":16,
+		"hold_ms":         17,
+		"detection_mode":  18,
+	}
+	var all_ok: bool = true
+	for key in preset:
+		var param_id: int = PARAM_ID.get(key, -1)
+		if param_id < 0:
+			push_warning(("[Gool] apply_compressor_preset: unknown key "
+					+ "'%s' on bus='%s' — expected one of: %s")
+					% [key, bus_name, ", ".join(PARAM_ID.keys())])
+			all_ok = false
+			continue
+		var value: float = float(preset[key])
+		var ok: bool = _runtime.set_effect_parameter(bus_name,
+				effect_index, param_id, value)
+		if not ok:
+			push_warning(("[Gool] apply_compressor_preset: "
+					+ "set_effect_parameter failed for bus='%s' "
+					+ "effect=%d param='%s' value=%f — check that "
+					+ "the bus exists and effect_index points at a "
+					+ "compressor effect (try get_bus_effects to "
+					+ "inspect)") % [bus_name, effect_index, key, value])
+			all_ok = false
+	return all_ok
+
+## Apply a preset Dictionary to a 3-band EQ chain on a bus. Unlike
+## the other apply_*_preset helpers, EQ presets span MULTIPLE biquad
+## effects (one per band), so this helper takes per-band effect
+## indices instead of a single effect_index.
+##
+## The preset keys describe a logical EQ shape:
+##   low_gain_db, low_freq_hz       → applied to the lowshelf biquad
+##   mid_gain_db, mid_freq_hz, mid_q→ applied to the peak biquad
+##   high_gain_db, high_freq_hz     → applied to the highshelf biquad
+##
+## The default indices (low=0, mid=1, high=2) match gool's built-in
+## EQ buses (ImpactEq, ListenerEq) which use LowShelf/Peak/HighShelf
+## in that order. If your project has a custom EQ chain with a
+## different order or band count, pass the matching indices:
+##
+##   # Bus where lowshelf is at index 2, peak is at 0, highshelf at 1:
+##   Gool.apply_eq_preset("MyEq", GoolPresets.EQ_WARM, 2, 0, 1)
+##
+## Use the `GoolPresets.EQ_*` constants for ready-made starting points.
+##
+## Returns true if every band+parameter applied successfully. Missing
+## bands in the preset (e.g. a preset with only `mid_*` keys) are
+## fine — only present bands get applied. Per-band failures push_warning
+## and are counted toward the boolean return, same as the other
+## apply_*_preset helpers.
+func apply_eq_preset(bus_name: String, preset: Dictionary,
+					   low_effect_index: int = 0,
+					   mid_effect_index: int = 1,
+					   high_effect_index: int = 2) -> bool:
+	if not is_initialized():
+		return false
+	# JSON key → EffectParameter ID for biquad params, used per band.
+	# Mirrors GoolPresets._BIQUAD_PARAM_ID; local const for the same
+	# load-order reason as apply_reverb_preset.
+	const BIQUAD_PARAM_ID: Dictionary = {
+		"cutoff_hz":       2,    # Biquad_CutoffHz
+		"q":               3,    # Biquad_Q
+		"biquad_gain_db": 12,    # Biquad_GainDb
+	}
+	# Per-band sub-presets, in the {biquad_param: value} shape that
+	# BIQUAD_PARAM_ID can translate. We build them from the
+	# logical-shape keys (low_gain_db, low_freq_hz, ...) so the helper
+	# is forgiving about partial presets.
+	var low_band: Dictionary = {}
+	var mid_band: Dictionary = {}
+	var high_band: Dictionary = {}
+	if preset.has("low_freq_hz"):
+		low_band["cutoff_hz"] = float(preset["low_freq_hz"])
+	if preset.has("low_gain_db"):
+		low_band["biquad_gain_db"] = float(preset["low_gain_db"])
+	if preset.has("mid_freq_hz"):
+		mid_band["cutoff_hz"] = float(preset["mid_freq_hz"])
+	if preset.has("mid_q"):
+		mid_band["q"] = float(preset["mid_q"])
+	if preset.has("mid_gain_db"):
+		mid_band["biquad_gain_db"] = float(preset["mid_gain_db"])
+	if preset.has("high_freq_hz"):
+		high_band["cutoff_hz"] = float(preset["high_freq_hz"])
+	if preset.has("high_gain_db"):
+		high_band["biquad_gain_db"] = float(preset["high_gain_db"])
+
+	var all_ok: bool = true
+	all_ok = _apply_biquad_band(bus_name, low_effect_index,  low_band,
+			BIQUAD_PARAM_ID) and all_ok
+	all_ok = _apply_biquad_band(bus_name, mid_effect_index,  mid_band,
+			BIQUAD_PARAM_ID) and all_ok
+	all_ok = _apply_biquad_band(bus_name, high_effect_index, high_band,
+			BIQUAD_PARAM_ID) and all_ok
+
+	# Warn on unknown logical-shape keys (a typo like "low_gan_db" gets
+	# caught here, after the rest of the work is done).
+	const VALID_KEYS: Array = ["low_gain_db", "low_freq_hz",
+			"mid_gain_db", "mid_freq_hz", "mid_q",
+			"high_gain_db", "high_freq_hz"]
+	for key in preset:
+		if not VALID_KEYS.has(key):
+			push_warning(("[Gool] apply_eq_preset: unknown key '%s' "
+					+ "on bus='%s' — expected one of: %s")
+					% [key, bus_name, ", ".join(VALID_KEYS)])
+			all_ok = false
+	return all_ok
+
+# Internal: apply a {biquad_param_name: value} dict to a single
+# biquad effect. Called three times by apply_eq_preset, once per band.
+# Returns true if every value applied (or the dict was empty).
+func _apply_biquad_band(bus_name: String, effect_index: int,
+						   band: Dictionary,
+						   param_id_map: Dictionary) -> bool:
+	var all_ok: bool = true
+	for key in band:
+		var param_id: int = param_id_map.get(key, -1)
+		if param_id < 0:
+			push_warning(("[Gool] apply_eq_preset (internal): unknown "
+					+ "biquad key '%s' — bug in apply_eq_preset; "
+					+ "report this") % key)
+			all_ok = false
+			continue
+		var value: float = float(band[key])
+		var ok: bool = _runtime.set_effect_parameter(bus_name,
+				effect_index, param_id, value)
+		if not ok:
+			push_warning(("[Gool] apply_eq_preset: "
+					+ "set_effect_parameter failed for bus='%s' "
+					+ "effect=%d param='%s' value=%f — check that "
+					+ "the bus exists and effect_index points at a "
+					+ "biquad effect of the right type "
+					+ "(LowShelf/Peak/HighShelf)")
+					% [bus_name, effect_index, key, value])
+			all_ok = false
+	return all_ok
+
+## Apply a preset Dictionary to a saturation effect on a bus.
+## `preset` keys are the same names used in `gool/config.json`
+## ("drive", "mix", "output_gain", "bias", "mode"). Mode is an int
+## (0=Tanh, 1=Tube, 2=Tape, 3=Diode); pass it as a float in the
+## dictionary and the helper will coerce.
+##
+## Use the `GoolPresets.SATURATION_*` constants for ready-made
+## starting points.
+##
+## Typical example:
+##   Gool.apply_saturation_preset("Sfx", 1,
+##           GoolPresets.SATURATION_RADIO_CRUSH)
+##
+## Same return / warning semantics as apply_reverb_preset.
+func apply_saturation_preset(bus_name: String, effect_index: int,
+								preset: Dictionary) -> bool:
+	if not is_initialized():
+		return false
+	# Mirrors GoolPresets._SATURATION_PARAM_ID; same load-order pattern.
+	const PARAM_ID: Dictionary = {
+		"drive":        19,    # Saturation_Drive
+		"mix":          20,    # Saturation_Mix
+		"output_gain":  21,    # Saturation_OutputGain
+		"bias":         22,    # Saturation_Bias
+		"mode":         27,    # Saturation_Mode (int)
+	}
+	var all_ok: bool = true
+	for key in preset:
+		var param_id: int = PARAM_ID.get(key, -1)
+		if param_id < 0:
+			push_warning(("[Gool] apply_saturation_preset: unknown key "
+					+ "'%s' on bus='%s' — expected one of: %s")
+					% [key, bus_name, ", ".join(PARAM_ID.keys())])
+			all_ok = false
+			continue
+		var value: float = float(preset[key])
+		var ok: bool = _runtime.set_effect_parameter(bus_name,
+				effect_index, param_id, value)
+		if not ok:
+			push_warning(("[Gool] apply_saturation_preset: "
+					+ "set_effect_parameter failed for bus='%s' "
+					+ "effect=%d param='%s' value=%f — check that "
+					+ "the bus exists and effect_index points at a "
+					+ "saturation effect (try get_bus_effects to "
+					+ "inspect)") % [bus_name, effect_index, key, value])
+			all_ok = false
+	return all_ok
 
 ## v0.37.0: forwarder for the engine's set_master_volume_db.
 ## Sets the post-mixdown master volume in decibels. Used by the
@@ -972,10 +1289,11 @@ const MATERIAL_CONCRETE: int = 5
 const MATERIAL_METAL:    int = 6
 const MATERIAL_CURTAIN:  int = 7
 const MATERIAL_FOLIAGE:  int = 8
+const MATERIAL_MEAT:     int = 9   ## soft, dense, wet — creature bodies
 
 const _MATERIAL_NAMES := [
 	"Default", "Air", "Glass", "Wood", "Drywall",
-	"Concrete", "Metal", "Curtain", "Foliage",
+	"Concrete", "Metal", "Curtain", "Foliage", "Meat",
 ]
 
 ## Return the string name of an AudioMaterial, e.g.

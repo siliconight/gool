@@ -33,12 +33,13 @@ enum class AudioMaterial : uint8_t {
     Metal       = 6,    // strong absorption, less damping (rings more)
     Curtain     = 7,    // strong damping, modest absorption
     Foliage     = 8,    // diffuse, mostly damping
+    Meat        = 9,    // soft, dense, wet — bodies, creatures, fleshy props
 };
 
 // Number of values in AudioMaterial. Used to size per-material arrays
 // (e.g., the sound bank's by_material group buckets). Update whenever
 // AudioMaterial gains a new value.
-inline constexpr uint8_t kAudioMaterialCount = 9;
+inline constexpr uint8_t kAudioMaterialCount = 10;
 
 struct AudioOcclusionHit {
     bool  hit                 = false;
@@ -87,6 +88,7 @@ inline void AudioMaterialDefaults(AudioMaterial m,
         case AudioMaterial::Metal:    absorption = 0.70f; damping = 0.30f; break;
         case AudioMaterial::Curtain:  absorption = 0.30f; damping = 0.80f; break;
         case AudioMaterial::Foliage:  absorption = 0.35f; damping = 0.60f; break;
+        case AudioMaterial::Meat:     absorption = 0.65f; damping = 0.85f; break;
         case AudioMaterial::Default:
         default:                      absorption = 0.50f; damping = 0.50f; break;
     }
@@ -118,6 +120,7 @@ inline ReverbMaterialPreset ReverbPresetByMaterial(AudioMaterial m) noexcept {
         case AudioMaterial::Metal:    return { 0.80f, 0.00f, 0.10f, 0.40f };
         case AudioMaterial::Curtain:  return { 0.20f, 0.70f, 0.85f, 0.85f };
         case AudioMaterial::Foliage:  return { 0.30f, 0.40f, 0.85f, 0.95f };
+        case AudioMaterial::Meat:     return { 0.10f, 0.60f, 0.95f, 0.85f };
         // Air and Default both use a balanced "average room" preset.
         case AudioMaterial::Air:
         case AudioMaterial::Default:
@@ -219,6 +222,16 @@ inline MaterialEqCurve MaterialEqByMaterial(AudioMaterial m) noexcept {
         // contribute slightly different absorption.
         case AudioMaterial::Foliage:
             return { 0.0f,  200.0f,  -1.5f, 1000.0f, 0.4f,  -2.0f, 6000.0f };
+
+        // Meat: soft, dense, wet — body shots on creatures.
+        // Low shelf boost gives the "thump" of dense soft tissue;
+        // broad mid scoop because there's no resonant structure
+        // (irregular fleshy shape, water content); strong HF cut
+        // because wet surfaces absorb highs aggressively. Wider
+        // Q than curtain because flesh damps more chaotically
+        // than woven fabric.
+        case AudioMaterial::Meat:
+            return { +1.5f, 250.0f,  -1.0f,  800.0f, 0.5f,  -3.5f, 5000.0f };
 
         // Air and Default: no coloration. These return a
         // null curve (all gains 0 dB); any consumer applying

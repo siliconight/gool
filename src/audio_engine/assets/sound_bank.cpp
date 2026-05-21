@@ -430,6 +430,7 @@ bool ParseAudioMaterial(const std::string& s, AudioMaterial& out) {
     if (s == "Metal")    { out = AudioMaterial::Metal;    return true; }
     if (s == "Curtain")  { out = AudioMaterial::Curtain;  return true; }
     if (s == "Foliage")  { out = AudioMaterial::Foliage;  return true; }
+    if (s == "Meat")     { out = AudioMaterial::Meat;     return true; }
     return false;
 }
 

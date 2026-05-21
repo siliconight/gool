@@ -215,6 +215,7 @@ Three new `EffectParameter::*` enum values. Existing `Reverb_RoomSize` and
 | `Metal`    | 0.80 | 0.00 | 0.10 | 0.40 | specular; long bright tail |
 | `Curtain`  | 0.20 | 0.70 | 0.85 | 0.85 | heavy absorption everywhere |
 | `Foliage`  | 0.30 | 0.40 | 0.85 | 0.95 | high-freq scatter + absorb |
+| `Meat`     | 0.10 | 0.60 | 0.95 | 0.85 | soft + wet; minimal reflection, dead tail |
 | `Default`  | 0.50 | 0.10 | 0.30 | 0.625 | sensible average |
 
 Initial values; designer-overridable per-instance. Lives in

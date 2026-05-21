@@ -11,7 +11,7 @@
 #      res://materials/audio/concrete.tres).
 #   2. Set `material` to one of the Gool.MATERIAL_* constants
 #      (Default, Air, Glass, Wood, Drywall, Concrete, Metal,
-#      Curtain, Foliage). The inspector shows the value as an
+#      Curtain, Foliage, Meat). The inspector shows the value as an
 #      int but you can match it against the constants in code.
 #   3. In your level scene, select a CollisionObject3D / Area3D /
 #      StaticBody3D representing a surface. In its inspector,
@@ -47,6 +47,6 @@ extends Resource
 
 ## The AudioMaterial value. Use one of the Gool.MATERIAL_*
 ## constants (Default=0, Air=1, Glass=2, Wood=3, Drywall=4,
-## Concrete=5, Metal=6, Curtain=7, Foliage=8). Out-of-range
+## Concrete=5, Metal=6, Curtain=7, Foliage=8, Meat=9). Out-of-range
 ## values are treated as MATERIAL_DEFAULT at lookup time.
 @export var material: int = 0
