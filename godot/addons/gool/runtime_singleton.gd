@@ -1280,20 +1280,24 @@ func load_sound_bank_from_json(json_string: String,
 ## metadata to one of these constants in the inspector, or assigning
 ## a GoolAudioMaterial resource to the node. `material_from_collider`
 ## reads either path.
-const MATERIAL_DEFAULT:  int = 0   ## unknown / fallback
-const MATERIAL_AIR:      int = 1   ## pass-through (no surface)
-const MATERIAL_GLASS:    int = 2
-const MATERIAL_WOOD:     int = 3
-const MATERIAL_DRYWALL:  int = 4
-const MATERIAL_CONCRETE: int = 5
-const MATERIAL_METAL:    int = 6
-const MATERIAL_CURTAIN:  int = 7
-const MATERIAL_FOLIAGE:  int = 8
-const MATERIAL_MEAT:     int = 9   ## soft, dense, wet — creature bodies
+const MATERIAL_DEFAULT:   int = 0   ## unknown / fallback
+const MATERIAL_AIR:       int = 1   ## pass-through (no surface)
+const MATERIAL_GLASS:     int = 2
+const MATERIAL_WOOD:      int = 3
+const MATERIAL_DRYWALL:   int = 4
+const MATERIAL_CONCRETE:  int = 5
+const MATERIAL_METAL:     int = 6
+const MATERIAL_CURTAIN:   int = 7
+const MATERIAL_FOLIAGE:   int = 8
+const MATERIAL_MEAT:      int = 9   ## soft, dense, wet — creature bodies
+const MATERIAL_CARDBOARD: int = 10  ## light, porous, papery — boxes
+const MATERIAL_RUBBER:    int = 11  ## dense, soft, dead — tires, mats
+const MATERIAL_LIQUID:    int = 12  ## wet surface — water, blood, slime
 
 const _MATERIAL_NAMES := [
 	"Default", "Air", "Glass", "Wood", "Drywall",
 	"Concrete", "Metal", "Curtain", "Foliage", "Meat",
+	"Cardboard", "Rubber", "Liquid",
 ]
 
 ## Return the string name of an AudioMaterial, e.g.

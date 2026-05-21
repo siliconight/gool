@@ -22,6 +22,140 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.42.0] - 2026-05-21 — Three new audio materials: Cardboard, Rubber, Liquid
+
+Material expansion release. Three new `AudioMaterial` enum values
+threaded through every per-material driven table (occlusion, reverb
+preset, EQ curve) plus the JSON parser, GDScript constants, and the
+material distinctness test. Same shape as v0.41.0's Meat addition;
+non-breaking — existing materials 0-9 unchanged bit-for-bit.
+
+### Added
+
+- **`AudioMaterial::Cardboard = 10`** — light, porous, papery; boxes,
+  packaging, prop materials. Sits between Wood (more reflective) and
+  Curtain (much more absorptive) on the spectrum of soft materials.
+  - Occlusion: `absorption=0.50, damping=0.65`
+  - Reverb: `{ decay=0.25, lf=0.30, hf=0.75, diffusion=0.75 }`
+  - EQ: low `-0.5 dB @ 250 Hz`, mid `-0.5 dB @ 1500 Hz Q=0.6`,
+    high `-2.0 dB @ 7000 Hz` — gentle papery damping, no resonance
+- **`AudioMaterial::Rubber = 11`** — dense, soft, dead; tires, floor
+  mats, grip surfaces. The most acoustically dead material gool now
+  ships (highest combined absorption + damping in the set).
+  - Occlusion: `absorption=0.75, damping=0.85`
+  - Reverb: `{ decay=0.08, lf=0.65, hf=0.90, diffusion=0.80 }`
+  - EQ: low `+0.5 dB @ 300 Hz`, mid `-1.5 dB @ 1200 Hz Q=0.7`,
+    high `-4.0 dB @ 5000 Hz` — slight low-mid thud, broad mid scoop,
+    strong HF kill
+- **`AudioMaterial::Liquid = 12`** — wet surface; water, blood, slime,
+  mud. The per-material complement to the per-space `REVERB_UNDERWATER`
+  preset — that's "the player is submerged," this is "the player struck
+  a liquid surface."
+  - Occlusion: `absorption=0.60, damping=0.95`
+  - Reverb: `{ decay=0.15, lf=0.30, hf=0.98, diffusion=0.70 }`
+  - EQ: low `+2.5 dB @ 200 Hz`, mid `-1.0 dB @ 600 Hz Q=0.5`,
+    high `-6.0 dB @ 4000 Hz` — pronounced "gloopy thunk", extreme HF cut
+- **`kAudioMaterialCount` bumped 10 → 13.**
+- **JSON parser support**: `sound_bank.cpp` accepts `"Cardboard"`,
+  `"Rubber"`, `"Liquid"` in by_material group JSON.
+- **GDScript constants**: `Gool.MATERIAL_CARDBOARD = 10`,
+  `Gool.MATERIAL_RUBBER = 11`, `Gool.MATERIAL_LIQUID = 12`. The
+  `_MATERIAL_NAMES` lookup array extended; inspector docstring on
+  `GoolAudioMaterial` lists the new values.
+
+### Tests
+
+- `tests/unit/material_eq_curve_test.cpp::TestMaterialsAreDistinctFromEachOther`:
+  Cardboard, Rubber, and Liquid added to the per-material
+  distinctness array. Verified manually that each curve passes
+  `CurveInPhysicalRange` (frequencies in [20, 20000], gains in
+  [-12, +12], Q in [0.1, 10]) and `CurvesDifferent` against every
+  other non-neutral material — including Meat (closest neighbor
+  in design space).
+- `TestEveryMaterialReturnsSomeCurve` now iterates 13 materials
+  instead of 10, picking up the three new cases automatically via
+  the bumped `kAudioMaterialCount`.
+
+### Migration
+
+No breaking changes. Existing code that uses materials 0-9 continues
+to work bit-identically. The three new enum values are additive;
+existing sound banks that don't reference them are unaffected. JSON
+configs that referenced unknown material strings before this release
+returned `Default` (0) via the parser's fallback path — that behavior
+is unchanged.
+
+### Design notes
+
+These three round out the "soft / wet / damped" half of the material
+spectrum (Curtain, Foliage, Meat, Cardboard, Rubber, Liquid), giving
+designers a denser palette for non-hard surfaces. The hard-surface
+half (Glass, Wood, Drywall, Concrete, Metal) was already well-covered
+since v0.4.
+
+Liquid is intentionally NOT the same as the existing `REVERB_UNDERWATER`
+preset. Materials describe "what is the surface that produced this
+sound's reflections / occluded this sound's transmission" — that's a
+per-surface property. Space presets describe "what does the listener
+hear because of the environment surrounding them" — that's a per-zone
+property. The two work together: a swimming-pool ReverbZone can use
+`REVERB_UNDERWATER` AND have its tile walls registered as `Liquid` or
+`Glass` for impacts.
+
+## [0.41.1] - 2026-05-21 — CHANGELOG audit cleanup
+
+Documentation-only release. No engine, binding, prefab, or test
+changes — the C++ binary and GDScript addon are byte-identical
+to v0.41.0.
+
+### Fixed
+
+- **Two duplicate body entries removed.** `## [0.28.0]` appeared
+  twice (lines 3396 and 3482); the first was a v0.28.1 patch-style
+  narrative ("godot-cpp Variant doesn't construct from int or
+  const char*") misfiled under a v0.28.0 feature-release header.
+  Its substantive content was already captured in
+  `docs/engineering/lessons_learned.md` per its own text — no
+  information loss. `## [0.38.1]` also appeared twice (lines 353
+  and 442); the first described an earlier-attempted methodology
+  (18984.375 Hz fundamental, threshold 0.05) that didn't fully
+  match the shipped `saturation_test.cpp` code (which uses the
+  9984.375 Hz / threshold 0.10 approach from entry B). The
+  Hann-windowing point that was only in entry A but is in the
+  shipped code was folded into the surviving entry B as a new
+  bullet under "The fix".
+- **Duplicate tag link removed.** `[0.38.1]:` appeared on two
+  consecutive lines at the bottom of CHANGELOG; the second
+  duplicate was deleted.
+- **Three missing tag links backfilled.** `[0.39.0]:`,
+  `[0.40.0]:`, and `[0.40.1]:` had body entries but no
+  corresponding `[X.Y.Z]: https://github.com/...` link line at
+  the bottom of CHANGELOG. Clicking those version headers in the
+  rendered changelog now resolves to the GitHub release page
+  instead of producing a broken link.
+
+### Audit invariants now holding
+
+Re-running the structural audit script across the whole CHANGELOG:
+
+- Every `## [X.Y.Z]` body header appears exactly once
+- Every `[X.Y.Z]:` tag link appears exactly once
+- Every body header has a matching tag link, and vice versa
+- 136 unique releases catalogued (was: 135 unique with 2
+  duplicates and 3 missing tag links)
+
+### Why a patch release for docs
+
+By the SemVer rule the project uses (patch = bug fixes + doc
+updates), a CHANGELOG cleanup is a textbook patch. No code
+behavior changes, no API surface changes — but the file is a
+canonical historical record, and the structural integrity of the
+record is itself a deliverable. Future automated tooling that
+parses CHANGELOG.md for release notes (the GitHub Release
+auto-notes step in `release.yml`, for one) is now reliable; with
+the duplicates it could have surfaced confusing notes for an
+unrelated release.
+
 ## [0.41.0] - 2026-05-21 — Meat material + Compressor/EQ/Saturation preset libraries
 
 Two pieces of dev-facing work that compound the "easiest audio
@@ -350,95 +484,6 @@ this back to the release checklist.
   GDScript runtime singleton handles legacy binaries (those
   without the new key) gracefully.
 
-## [0.38.1] - 2026-05-20 — Saturation Phase 1 hotfix: aliasing test was measuring window leakage
-
-Patch release. v0.38.0 shipped with a unit test that failed on all
-three CI platforms (Linux, Windows, macOS). The C++ shaper itself
-is unchanged — only `tests/unit/saturation_test.cpp` is touched
-for this release. The new test passes deterministically on every
-platform; the engine behavior is identical to v0.38.0.
-
-### What happened
-
-The v0.38.0 `TestADAASuppressesAliasing` test fed a 19 kHz sine
-through the shaper at 48 kHz SR with N=1024 samples and asserted
-that the worst bin in the [20 kHz .. 23 kHz] band was at least
--40 dB below the 19 kHz fundamental. All three CI platforms
-reported the worst-alias-bin ratio at ~-38.7 dB — just over the
-threshold, by 1.7 dB.
-
-The reported worst bin was 427 (~20016 Hz). That's only ~1 kHz
-above the fundamental, not where genuine aliasing would land.
-A 19 kHz fundamental at 48 kHz SR with N=1024 lands at DFT bin
-405.33 — a non-integer bin position. Under a rectangular-window
-DFT, a sinusoid at non-integer bin position f leaks into every
-other bin with magnitude proportional to ~1/(π·|k − f|). At
-bin 427 (Δ ≈ 22 bins), the predicted leakage is ~1/(π·22) ≈
--37 dB. That matched the observed -38.7 dB almost exactly.
-
-The test was measuring spectral leakage of the fundamental,
-not aliasing. The threshold was below the noise floor of the
-measurement itself. A real "ADAA is broken" regression would
-push the worst-alias-bin to roughly -40 dB (the level of the
-9th-harmonic alias under trivial tanh at drive=3.0), which is
-the same order as the leakage and would not be cleanly
-distinguishable from it. The v0.38.0 test could not reliably
-detect the failure mode it was named after.
-
-### The fix (two complementary changes)
-
-1. **Exact-bin fundamental**: pick the test frequency to land
-   on an exact DFT bin (bin 405 = 18984.375 Hz at 48 kHz SR
-   with N=1024). All odd harmonics then alias to exact integer
-   bins as well. The 9th harmonic of 18984.375 Hz is
-   170859.375 Hz, which folds to 21140.625 Hz = bin 451 exactly
-   — squarely in the alias band, with zero leakage contribution
-   to neighboring bins.
-
-2. **Hann window the DFT input**: drops sidelobe decay from
-   1/|Δbin| (rectangular) to 1/|Δbin|³ (Hann). Even if a future
-   change accidentally puts the fundamental off an exact bin
-   again, leakage in the alias band would sit ~40 dB below where
-   it does under rectangular windowing. Fundamental and aliased
-   harmonics both get the same windowing, so their ratio is
-   preserved.
-
-3. **Threshold relaxed from 0.01 (-40 dB) to 0.05 (-26 dB)**.
-   With both fixes above, the actual measured aliasing on ADAA
-   typically sits around -78 dB. The old threshold of -40 dB
-   was a knife-edge against the trivial-shaper baseline of
-   ~-40 dB and any FP drift could push it either way. -26 dB
-   leaves enormous headroom while still being tight enough that
-   a complete ADAA breakage (alias returning to -40 dB) would
-   fail by 14+ dB.
-
-### What this didn't change
-
-The actual shaper in `src/audio_engine/dsp/saturation_effect.{h,cpp}`
-is byte-identical to v0.38.0. The ADAA algorithm, the `log_cosh()`
-helper, the `prevDriven_` per-channel state — all unchanged.
-v0.38.1 is purely a unit-test correctness fix.
-
-If you already pulled and tested v0.38.0 manually (built the
-.dll locally, dropped it in the sandbox), the audible behavior
-in your game is identical to what you'd hear with v0.38.1.
-The patch only matters for CI being green.
-
-### Lesson — written into the test header for future readers
-
-The test's header comment now spells out why the v0.38.0 test
-failed and how the fix prevents the same class of bug, so
-anyone touching this code later sees the trap before stepping
-into it. (Same pattern as the v0.35.x retrospective comments
-that explain the kind_name = "Biquad" vs "BiquadFilter" gotcha.)
-
-### Touch summary
-
-- `tests/unit/saturation_test.cpp` — DFT helper now Hann-windows;
-  test uses exact-bin fundamental (18984.375 Hz instead of 19
-  kHz); threshold relaxed from 0.01 to 0.05; expanded header
-  comments documenting the v0.38.0 failure mode
-
 ## [0.38.1] - 2026-05-20 — Patch: fix v0.38.0 aliasing test (engine OK)
 
 Bug fix release. The v0.38.0 ADAA engine implementation
@@ -479,6 +524,11 @@ The fix is methodological, not in the engine.
 New test design:
 - **Exact-bin fundamental at 9984.375 Hz** (bin 213 exactly,
   at 1024 / 48 kHz). Zero spectral leakage.
+- **Hann window the DFT input.** Even with an exact-bin
+  fundamental, future changes might shift the bin choice; Hann
+  windowing drops sidelobe decay from ~1/|Δbin| (rectangular) to
+  ~1/|Δbin|³, leaving ~40 dB more headroom in the alias band if
+  that happens.
 - **Drive 3.0 unchanged.** Now drives substantial 3rd-harmonic
   energy that folds back into the audible band (30 kHz → 18 kHz).
 - **Search alias band [15 kHz .. 22 kHz]** (was [20 kHz .. 23 kHz]).
@@ -3392,92 +3442,6 @@ the file consistent with itself.
 
 What v0.28.1 missed: the actual MSVC errors at line 96 and 1119.
 See v0.28.2 entry above for the post-mortem.
-
-## [0.28.0] - 2026-05-17 — Phase 3.3c-1: live effect parameter control (substrate)
-
-### What went wrong
-
-v0.28.0 shipped Phase 3.3c-1 (effect chain introspection +
-scripting API). The `audio_engine` C++ side compiled cleanly in
-the local sandbox at v0.28.0. The GDExtension build — which
-links `gool_godot.cpp` against godot-cpp — failed at the same
-step on all three platforms in CI (Linux, macOS, Windows;
-job #76 of the nightly workflow). Identical failure pattern is
-a strong tell of a binding-side bug rather than a flaky test or
-a platform-specific issue.
-
-### Root cause
-
-godot-cpp's `Variant` doesn't have constructors for `int` or
-`const char*`. v0.28.0's `get_bus_effects` did:
-
-```cpp
-d["kind"]      = static_cast<int>(kind);                  // ✗ no int ctor
-d["kind_name"] = _gool_effect_kind_name(kind);            // ✗ no const char* ctor
-out[static_cast<int>(paramId)] = rt->GetEffectParameter(...); // ✗ int key
-```
-
-The local sandbox can't catch this — it doesn't link against
-godot-cpp. The engine-only compile of `audio_engine` (which is
-what the sandbox verifies) is necessary but not sufficient.
-
-### Fix
-
-Match the existing pattern from `get_bus_stats` (line 633,
-shipped v0.24.0 and ever since): explicit `int64_t` for integer
-values/keys, explicit `String(...)` wrap for `const char*`.
-
-```cpp
-d["kind"]      = static_cast<int64_t>(kind);
-d["kind_name"] = String(_gool_effect_kind_name(kind));
-out[static_cast<int64_t>(paramId)] = rt->GetEffectParameter(...);
-```
-
-Three lines changed in `godot/src/gool_godot.cpp`. Engine code
-untouched. No API surface change — same `Gool.get_bus_effects`
-return shape, same `Gool.set_effect_parameter` signature.
-
-### Files touched
-
-- `godot/src/gool_godot.cpp` — 3 lines fixed (kind cast,
-  kind_name wrap, paramId cast in the helper lambda)
-- `docs/engineering/lessons_learned.md` — new section "godot-cpp's
-  Variant doesn't construct from `int` or `const char*`" under
-  C++ portability, with before/after examples and a
-  recommendation to add a local godot-cpp build to the pre-ship
-  workflow for binding-touching releases
-- `CHANGELOG.md` — this entry
-- `tests/unit/version_test.cpp` — pinned to 0.28.1
-- `README.md`, `CMakeLists.txt`, `include/audio_engine/version.h`
-  — version bump
-
-### Lessons captured
-
-Added to `docs/engineering/lessons_learned.md`:
-- The specific Variant overload restrictions in godot-cpp
-- Why godot-cpp is strict here (truncation safety for int;
-  explicit UTF-8 vs Latin-1 choice for char*)
-- A recommendation for binding-touching releases: set up a local
-  godot-cpp build and run the GDExtension compile before shipping,
-  not just the engine-only compile
-
-### Verified
-
-- All 35 audio-engine C++ source files compile clean at 0.28.1
-- `version_test` reports `0.28.1`
-- `bus_graph_test` still passes
-- All four GDScript pre-ship sweeps clean
-- The three offending lines in `gool_godot.cpp` now match the
-  pattern of the existing `get_bus_stats` code that's been
-  building cleanly in CI since v0.24.0
-
-### Why not just retag v0.28.0
-
-The lessons doc rule: never reuse a version number. v0.28.0 was
-pushed to GitHub as a tag, even though it CI-failed. Reusing the
-number means a checkout of "v0.28.0" returns different code
-depending on when you cloned. Patch bump is cleaner — and
-captures the failure trail honestly in CHANGELOG.
 
 ## [0.28.0] - 2026-05-17 — Phase 3.3c-1: live effect parameter control (substrate)
 
@@ -15860,9 +15824,13 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/siliconight/gool/releases/tag/v0.42.0
+[0.41.1]: https://github.com/siliconight/gool/releases/tag/v0.41.1
 [0.41.0]: https://github.com/siliconight/gool/releases/tag/v0.41.0
-[0.38.1]: https://github.com/siliconight/gool/releases/tag/v0.38.1
+[0.40.1]: https://github.com/siliconight/gool/releases/tag/v0.40.1
+[0.40.0]: https://github.com/siliconight/gool/releases/tag/v0.40.0
+[0.39.0]: https://github.com/siliconight/gool/releases/tag/v0.39.0
 [0.38.1]: https://github.com/siliconight/gool/releases/tag/v0.38.1
 [0.38.0]: https://github.com/siliconight/gool/releases/tag/v0.38.0
 [0.37.0]: https://github.com/siliconight/gool/releases/tag/v0.37.0

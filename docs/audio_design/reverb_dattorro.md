@@ -216,6 +216,9 @@ Three new `EffectParameter::*` enum values. Existing `Reverb_RoomSize` and
 | `Curtain`  | 0.20 | 0.70 | 0.85 | 0.85 | heavy absorption everywhere |
 | `Foliage`  | 0.30 | 0.40 | 0.85 | 0.95 | high-freq scatter + absorb |
 | `Meat`     | 0.10 | 0.60 | 0.95 | 0.85 | soft + wet; minimal reflection, dead tail |
+| `Cardboard`| 0.25 | 0.30 | 0.75 | 0.75 | light + porous; short tail, papery damping |
+| `Rubber`   | 0.08 | 0.65 | 0.90 | 0.80 | dense + dead; the most absorptive non-Liquid material |
+| `Liquid`   | 0.15 | 0.30 | 0.98 | 0.70 | wet surface; near-total HF kill, sloshy LF |
 | `Default`  | 0.50 | 0.10 | 0.30 | 0.625 | sensible average |
 
 Initial values; designer-overridable per-instance. Lives in

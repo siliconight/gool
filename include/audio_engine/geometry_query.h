@@ -34,12 +34,15 @@ enum class AudioMaterial : uint8_t {
     Curtain     = 7,    // strong damping, modest absorption
     Foliage     = 8,    // diffuse, mostly damping
     Meat        = 9,    // soft, dense, wet — bodies, creatures, fleshy props
+    Cardboard   = 10,   // light, porous, papery — boxes, packaging
+    Rubber      = 11,   // dense, soft, dead — tires, mats, grip surfaces
+    Liquid      = 12,   // wet surface — water, blood, slime, mud
 };
 
 // Number of values in AudioMaterial. Used to size per-material arrays
 // (e.g., the sound bank's by_material group buckets). Update whenever
 // AudioMaterial gains a new value.
-inline constexpr uint8_t kAudioMaterialCount = 10;
+inline constexpr uint8_t kAudioMaterialCount = 13;
 
 struct AudioOcclusionHit {
     bool  hit                 = false;
@@ -89,6 +92,9 @@ inline void AudioMaterialDefaults(AudioMaterial m,
         case AudioMaterial::Curtain:  absorption = 0.30f; damping = 0.80f; break;
         case AudioMaterial::Foliage:  absorption = 0.35f; damping = 0.60f; break;
         case AudioMaterial::Meat:     absorption = 0.65f; damping = 0.85f; break;
+        case AudioMaterial::Cardboard:absorption = 0.50f; damping = 0.65f; break;
+        case AudioMaterial::Rubber:   absorption = 0.75f; damping = 0.85f; break;
+        case AudioMaterial::Liquid:   absorption = 0.60f; damping = 0.95f; break;
         case AudioMaterial::Default:
         default:                      absorption = 0.50f; damping = 0.50f; break;
     }
@@ -121,6 +127,9 @@ inline ReverbMaterialPreset ReverbPresetByMaterial(AudioMaterial m) noexcept {
         case AudioMaterial::Curtain:  return { 0.20f, 0.70f, 0.85f, 0.85f };
         case AudioMaterial::Foliage:  return { 0.30f, 0.40f, 0.85f, 0.95f };
         case AudioMaterial::Meat:     return { 0.10f, 0.60f, 0.95f, 0.85f };
+        case AudioMaterial::Cardboard:return { 0.25f, 0.30f, 0.75f, 0.75f };
+        case AudioMaterial::Rubber:   return { 0.08f, 0.65f, 0.90f, 0.80f };
+        case AudioMaterial::Liquid:   return { 0.15f, 0.30f, 0.98f, 0.70f };
         // Air and Default both use a balanced "average room" preset.
         case AudioMaterial::Air:
         case AudioMaterial::Default:
@@ -232,6 +241,36 @@ inline MaterialEqCurve MaterialEqByMaterial(AudioMaterial m) noexcept {
         // than woven fabric.
         case AudioMaterial::Meat:
             return { +1.5f, 250.0f,  -1.0f,  800.0f, 0.5f,  -3.5f, 5000.0f };
+
+        // Cardboard: light, porous, papery — boxes, packaging.
+        // Subtle low cut (no body / mass), gentle mid scoop (no
+        // resonance), moderate high rolloff (papery damping).
+        // Between Wood (more reflective) and Curtain (much more
+        // absorptive) on the spectrum of soft materials. Wider
+        // Q than Foliage because cardboard's flat surfaces produce
+        // more uniform absorption than leaves' chaotic geometry.
+        case AudioMaterial::Cardboard:
+            return { -0.5f, 250.0f,  -0.5f, 1500.0f, 0.6f,  -2.0f, 7000.0f };
+
+        // Rubber: dense, soft, dead — tires, floor mats, grip
+        // surfaces. Slight low-mid thud (rubber has mass) but a
+        // broad mid scoop (no resonant structure) and the strongest
+        // HF cut in the set short of Liquid (rubber kills brightness).
+        // The most acoustically dead material gool ships — designed
+        // for "this surface eats sound" interactions like footsteps
+        // on tire walls or impacts against rubber padding.
+        case AudioMaterial::Rubber:
+            return { +0.5f, 300.0f,  -1.5f, 1200.0f, 0.7f,  -4.0f, 5000.0f };
+
+        // Liquid: wet surface — water, blood, slime, mud. Strong low
+        // shelf boost gives the "gloopy thunk" of impacting fluid;
+        // gentle low-mid scoop; extreme HF cut starting at 4 kHz
+        // because water absorbs highs faster than any solid in the
+        // set. Complements (does NOT duplicate) the existing
+        // REVERB_UNDERWATER space preset — that's "the player is
+        // submerged"; this is "the player struck a liquid surface."
+        case AudioMaterial::Liquid:
+            return { +2.5f, 200.0f,  -1.0f,  600.0f, 0.5f,  -6.0f, 4000.0f };
 
         // Air and Default: no coloration. These return a
         // null curve (all gains 0 dB); any consumer applying

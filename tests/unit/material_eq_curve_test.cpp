@@ -123,13 +123,16 @@ void TestMaterialsAreDistinctFromEachOther() {
     std::printf("[material_eq_curve_test] non-Default materials distinct\n");
     // Spot-check the materials a designer would most likely care
     // to distinguish: Glass / Wood / Concrete / Metal / Curtain /
-    // Foliage / Meat. (Air and Default are intentionally identical
-    // because both should be neutral.)
+    // Foliage / Meat / Cardboard / Rubber / Liquid. (Air and
+    // Default are intentionally identical because both should be
+    // neutral.)
     const AudioMaterial mats[] = {
         AudioMaterial::Glass, AudioMaterial::Wood,
         AudioMaterial::Drywall, AudioMaterial::Concrete,
         AudioMaterial::Metal, AudioMaterial::Curtain,
         AudioMaterial::Foliage, AudioMaterial::Meat,
+        AudioMaterial::Cardboard, AudioMaterial::Rubber,
+        AudioMaterial::Liquid,
     };
     constexpr size_t kN = sizeof(mats) / sizeof(mats[0]);
     for (size_t i = 0; i < kN; ++i) {
