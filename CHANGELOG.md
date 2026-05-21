@@ -22,6 +22,92 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.44.0] - 2026-05-21 — Live Stats panel in the editor mixer dock
+
+The "silent-disaster prevention" release. Adds a compact
+observability strip below the bus strips in `GoolMixerDock` that
+surfaces engine health data — voice count, master peak, dropouts,
+per-player VOIP jitter — without making the dev build their own
+visualizer or read the console log. Pure GDScript; no C++ changes
+required (no recompile needed if you're already on v0.43.x's
+binary).
+
+### Added
+
+- **`GoolMixerDock` Live Stats panel.** New always-visible row at
+  the bottom of the dock showing:
+  - **`Voices`** — current active voice count (engine-wide)
+  - **`Emitters`** — active emitter pool count
+  - **`Master`** — post-master-gain peak in dB (-∞ when silent)
+  - **`Pre-mix peak`** — pre-master peak in dB (useful to spot
+    source-side clipping even when master gain is pulled down)
+  - **`Drops`** — accumulated render-thread exception count
+  - **`Voice chat`** sub-row (only visible when registered VOIP
+    players exist) showing per-player jitter (ms) and packet
+    loss (%) — driven by the existing `Gool.get_voice_jitter_ms`
+    and `Gool.get_voice_packet_loss_ratio` C++ bindings.
+- **`gool:render_stats` debugger channel.** Engine-wide render
+  stats are now pushed over the EngineDebugger bridge at the
+  same 30 Hz cadence as `gool:bus_stats` (the bus-meter channel
+  the mixer dock has used since v0.25.0). Payload format mirrors
+  `Gool.get_render_stats()` with an additional `voice_chat`
+  sub-dict mapping `player_id → {jitter_ms, packet_loss}`. The
+  editor-side `GoolDebuggerPlugin` caches it and exposes via
+  `get_latest_render_stats()`.
+- **`Gool.get_known_voice_player_ids()`** autoload helper. Returns
+  the IDs of all players passed to `Gool.register_voice_source`
+  since the autoload started. Used by the Live Stats panel to
+  enumerate voice players for the per-player jitter display.
+  GDScript-side bookkeeping; no C++ change.
+
+### Why this is a minor (not patch) bump
+
+Two new public API surfaces (`get_known_voice_player_ids` autoload
+helper, `gool:render_stats` debugger channel) plus a UI change to
+a shipping editor dock. New public API additions = minor bump per
+the project's SemVer rule.
+
+### Why no compressor-reduction display
+
+The user's L4D2 feedback explicitly called out "what's currently
+ducked" as a wanted observability. We're NOT shipping that in
+v0.44.0 because exposing it requires a new C++ API:
+`get_compressor_reductions(bus_name) -> { sidechain_bus →
+current_reduction_db }`. The data exists internally on the C++
+side but isn't yet bound. That's a Tier 2 follow-up — sketched
+for v0.44.1 or v0.45.0 depending on prioritization.
+
+What we ship today: the basics (voice count, peak levels, drops,
+VOIP health) all wired into the dock without new C++ code, so the
+adopter sees value immediately with the same binary they're
+running. "What's ducked" follows when the C++ exposure lands.
+
+### Migration
+
+No breaking changes. The Live Stats panel appears automatically
+when the addon is loaded. Existing dock features (bus strips,
+faders, S/M/B, Fx panels, effect editing) are unchanged. The new
+debugger channel is additive — older binaries that don't send
+`gool:render_stats` produce empty panel labels ("—" placeholders)
+rather than failing.
+
+The `gool:bus_stats` channel and its `get_latest_bus_stats()`
+getter are bit-identical to v0.43.0. The dock continues to read
+from both channels independently.
+
+### Performance
+
+Panel update cost is trivial — a handful of `Label.text` writes
+per `_poll` tick (30 Hz). The voice-chat sub-row rebuilds its
+child Label nodes only when the set of registered players changes
+(set inequality, not value inequality), so per-tick cost is also
+just text writes once the row is initialized.
+
+Game-side cost: one `get_render_stats()` call + one
+`EngineDebugger.send_message` every ~33 ms when a debugger is
+attached. Gated by `EngineDebugger.is_active()`, so zero cost in
+exported builds and headless runs.
+
 ## [0.43.0] - 2026-05-21 — Three L4D2 convenience prefabs: AudioMaterialTag, DialogueDirector, GoolMixSnapshot
 
 Three drop-in pieces of "Godot dev shipping an L4D2-shape co-op
@@ -15914,7 +16000,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.43.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/siliconight/gool/releases/tag/v0.44.0
 [0.43.0]: https://github.com/siliconight/gool/releases/tag/v0.43.0
 [0.42.0]: https://github.com/siliconight/gool/releases/tag/v0.42.0
 [0.41.1]: https://github.com/siliconight/gool/releases/tag/v0.41.1

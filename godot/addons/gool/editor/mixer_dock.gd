@@ -126,6 +126,28 @@ var _debugger_plugin: EditorDebuggerPlugin = null
 var _config_model: GoolConfigModel = null
 var _mtime_conflict_dialog: ConfirmationDialog = null
 
+# v0.44.0: Live Stats panel — compact health-monitoring strip
+# below the bus strips showing engine-wide observability data
+# (voice count, master peak, dropouts, per-player VOIP jitter).
+# Always-visible at the bottom of the dock when an F5 session is
+# providing data; shows "—" placeholders otherwise. See the
+# v0.44.0 CHANGELOG entry for the rationale: "Stats are exposed
+# but a non-audio Godot dev won't build their own visualizer."
+var _stats_panel: PanelContainer = null
+# Map of label key → Label node. Keys: "voices", "emitters",
+# "master_peak", "peak_amplitude", "drops". Updated each _poll.
+var _stats_labels: Dictionary = {}
+# Voice-chat health sub-row. Hidden when no voice players are
+# registered; populated from the engine's voice_chat dict in
+# render_stats. Children are dynamically rebuilt when the set of
+# registered players changes.
+var _voice_chat_row: HBoxContainer = null
+# Cached set of player_ids whose voice-chat labels are currently
+# built into _voice_chat_row. Reused to detect player-set changes
+# so we only rebuild children when the set actually changes (not
+# every 30 Hz poll).
+var _voice_chat_players_cached: PackedInt32Array = PackedInt32Array()
+
 
 # ---- Plugin lifecycle ------------------------------------------------
 
@@ -179,6 +201,12 @@ func _ready() -> void:
 	# Strips are visible at editor time; live data comes later
 	# when F5 starts (via debugger plugin).
 	_load_static_layout_from_config()
+
+	# v0.44.0: Live Stats panel below the strip area. Always built
+	# (so the layout is stable regardless of whether F5 is running);
+	# shows "—" placeholders when no data is available.
+	_stats_panel = _build_stats_panel()
+	root_vbox.add_child(_stats_panel)
 
 	# v0.28.4: pre-build (but hide) the mtime conflict dialog so it's
 	# ready to pop the instant the model emits external_change_detected.
@@ -335,6 +363,10 @@ func _poll() -> void:
 			if _config_model != null:
 				count_at_rest = _config_model.get_effects(s.bus_name).size()
 			s.set_effect_count(count_at_rest)
+		# v0.44.0: reset Live Stats labels to placeholders when no
+		# F5 session is providing data. Without this, the panel
+		# would keep showing stale numbers from the previous session.
+		_update_stats_panel()
 		return
 
 	# If the runtime's reported bus list differs from our config-based
@@ -377,6 +409,12 @@ func _poll() -> void:
 		var effects_v: Variant = d.get("effects", [])
 		var effects_arr: Array = effects_v if effects_v is Array else []
 		_strips[i].set_effect_count(effects_arr.size())
+
+	# v0.44.0: refresh the Live Stats panel from the render-stats
+	# debugger channel. Cheap — just label.text writes; only the
+	# voice-chat row does any child manipulation, and only when the
+	# set of registered players changes (which is rare).
+	_update_stats_panel()
 
 
 # Runtime topology differs from config — build strips from runtime
@@ -879,6 +917,190 @@ func _remove_panel_from_column(col: VBoxContainer) -> void:
 		if child is _EffectsPanel:
 			child.queue_free()
 			return
+
+
+# ---- Live Stats panel (v0.44.0) --------------------------------------
+#
+# Compact observability strip below the bus strips. Shows engine
+# health from the gool:render_stats debugger channel: voice count,
+# emitter count, master peak (dB), pre-mixer peak (dB), dropout
+# count, and per-player VOIP jitter health when voice chat is
+# active.
+#
+# Rendering cost is trivial — Label.text writes on a handful of
+# Labels, only on _poll (30 Hz). The voice-chat row only rebuilds
+# its children when the registered-player set changes, which is
+# rare in typical sessions.
+#
+# Design choice — single-line, always-visible:
+# We considered a collapsible expand-on-demand panel. Rejected
+# because the L4D2-shaped dev needs to SEE the numbers without
+# clicking — silent-disaster prevention is the value prop, and an
+# expandable panel adds the "did I remember to expand it?" failure
+# mode. Single line, always visible, takes ~30 pixels of vertical
+# space below the strips.
+#
+# Known limitations (Tier 2, not in v0.44.0):
+# - No per-bus compressor-reduction display ("how much is bus X
+#   being ducked right now?"). Needs a new C++ API to expose
+#   current reduction-in-dB per compressor. The L4D2-relevant
+#   answer is in the bus_stats payload (we have peak_linear per
+#   bus already) but the *cause* of reduction isn't exposed yet.
+# - No active-voice list with per-voice metadata (priority, age,
+#   source emitter). The count is shown; the list isn't.
+# - No eviction counter over a rolling window. Drops counter is
+#   shown but isn't broken out by reason.
+
+func _build_stats_panel() -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 2)
+	panel.add_child(vbox)
+
+	# Row 1: general health
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 18)
+	vbox.add_child(row)
+
+	# "Live" label as the leader cue; same dimmed text style as
+	# the no-config empty label for visual consistency.
+	var leader := Label.new()
+	leader.text = "Live"
+	leader.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+	row.add_child(leader)
+
+	_stats_labels = {}
+	_stats_labels["voices"]        = _add_stats_field(row, "Voices: —")
+	_stats_labels["emitters"]      = _add_stats_field(row, "Emitters: —")
+	_stats_labels["master_peak"]   = _add_stats_field(row, "Master: — dB")
+	_stats_labels["peak_amplitude"]= _add_stats_field(row, "Pre-mix peak: — dB")
+	_stats_labels["drops"]         = _add_stats_field(row, "Drops: —")
+
+	# Row 2: voice-chat health, hidden until any players show up
+	_voice_chat_row = HBoxContainer.new()
+	_voice_chat_row.add_theme_constant_override("separation", 12)
+	_voice_chat_row.visible = false
+	vbox.add_child(_voice_chat_row)
+
+	return panel
+
+# Add a fixed-width-ish Label to the parent HBox and return it.
+# All stat labels share style so the row visually scans as one.
+func _add_stats_field(parent: HBoxContainer, initial_text: String) -> Label:
+	var lbl := Label.new()
+	lbl.text = initial_text
+	parent.add_child(lbl)
+	return lbl
+
+# Called from _poll() at 30 Hz. Reads the cached render_stats
+# from the debugger plugin and updates the labels. When the
+# session isn't running (or hasn't sent stats yet), the dict is
+# empty and we show "—" placeholders so the dock visibly conveys
+# "no live data" rather than stale numbers.
+func _update_stats_panel() -> void:
+	if _stats_labels.is_empty():
+		# Panel not built yet — defensive guard, _ready may not have
+		# completed before the first _poll fires in some editor states.
+		return
+	if _debugger_plugin == null:
+		_set_stats_placeholders()
+		return
+	var rs: Dictionary = _debugger_plugin.get_latest_render_stats()
+	if rs.is_empty():
+		_set_stats_placeholders()
+		return
+
+	# Voices and emitters: direct integer fields from get_render_stats.
+	_stats_labels["voices"].text = "Voices: %d" % int(rs.get("active_voices", 0))
+	_stats_labels["emitters"].text = "Emitters: %d" % int(rs.get("active_emitters", 0))
+
+	# Master peak (post-mixer, what's actually leaving the engine).
+	# Convert linear → dB; clamp the floor at -inf for display.
+	var mp_lin: float = float(rs.get("mixer_peak", 0.0))
+	_stats_labels["master_peak"].text = "Master: %s" % _format_db(mp_lin)
+
+	# Pre-mixer peak (peak_amplitude is the raw render-thread peak
+	# before master gain). Useful to spot clipping at the source
+	# even when master gain is pulled down.
+	var pa_lin: float = float(rs.get("peak_amplitude", 0.0))
+	_stats_labels["peak_amplitude"].text = "Pre-mix peak: %s" % _format_db(pa_lin)
+
+	# Dropout / exception count — runs as a monotonic counter,
+	# so a non-zero value indicates the engine has hit at least
+	# one exception since the session started. Worth surfacing
+	# prominently because audio dropouts are otherwise silent.
+	_stats_labels["drops"].text = "Drops: %d" % int(rs.get("exception_count", 0))
+
+	# Voice chat sub-row: rebuild when the player set changes,
+	# update text every tick otherwise.
+	var vc: Dictionary = rs.get("voice_chat", {})
+	_update_voice_chat_row(vc)
+
+func _set_stats_placeholders() -> void:
+	_stats_labels["voices"].text         = "Voices: —"
+	_stats_labels["emitters"].text       = "Emitters: —"
+	_stats_labels["master_peak"].text    = "Master: — dB"
+	_stats_labels["peak_amplitude"].text = "Pre-mix peak: — dB"
+	_stats_labels["drops"].text          = "Drops: —"
+	if _voice_chat_row != null:
+		_voice_chat_row.visible = false
+
+func _format_db(linear: float) -> String:
+	# Clamp tiny values to "-∞" rather than displaying e.g. "-120.0
+	# dB" — visually noisy and not useful information.
+	if linear <= 0.00001:
+		return "-∞ dB"
+	var db: float = linear_to_db(linear)
+	return "%.1f dB" % db
+
+# Sync the voice-chat row to the current set of registered VOIP
+# players. Rebuilds child labels only when the player set changes
+# (set inequality, not value inequality — values change every tick
+# and rebuilding for those would be wasteful).
+func _update_voice_chat_row(vc: Dictionary) -> void:
+	if vc.is_empty():
+		_voice_chat_row.visible = false
+		_voice_chat_players_cached = PackedInt32Array()
+		# Defer freeing children — cheap to leave them in the hidden
+		# parent, and rebuilding on every show/hide would churn.
+		return
+
+	# Detect player-set change
+	var current_players := PackedInt32Array()
+	for pid in vc.keys():
+		current_players.append(int(pid))
+	current_players.sort()
+	if current_players != _voice_chat_players_cached:
+		# Rebuild children with the new set
+		for child in _voice_chat_row.get_children():
+			child.queue_free()
+		var leader := Label.new()
+		leader.text = "Voice chat"
+		leader.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+		_voice_chat_row.add_child(leader)
+		for pid in current_players:
+			var lbl := Label.new()
+			lbl.name = "player_%d" % pid
+			_voice_chat_row.add_child(lbl)
+		_voice_chat_players_cached = current_players
+
+	# Update each player's label text
+	_voice_chat_row.visible = true
+	for pid in current_players:
+		var lbl := _voice_chat_row.get_node_or_null("player_%d" % pid) as Label
+		if lbl == null:
+			continue
+		var pdata: Dictionary = vc.get(pid, {})
+		# Some engines send the dict keyed by int, some by string-ish.
+		# Defensive: also try the string key if int didn't hit.
+		if pdata.is_empty():
+			pdata = vc.get(str(pid), {})
+		var jitter: float = float(pdata.get("jitter_ms", 0.0))
+		var loss: float = float(pdata.get("packet_loss", 0.0))
+		lbl.text = "Player %d: %.0f ms / %.0f%% loss" \
+				% [pid, jitter, loss * 100.0]
 
 
 # ---- _BusStrip widget ------------------------------------------------

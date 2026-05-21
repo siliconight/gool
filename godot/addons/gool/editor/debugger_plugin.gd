@@ -27,6 +27,12 @@ extends EditorDebuggerPlugin
 var _latest_stats: Array = []
 var _current_session_id: int = -1
 
+# v0.44.0: cache for the engine-wide render-stats payload sent
+# over the gool:render_stats channel. Single Dictionary (not Array
+# of per-bus dicts like _latest_stats) because render stats are
+# engine-wide. Empty {} when no session is running.
+var _latest_render_stats: Dictionary = {}
+
 # Diagnostic counters. Printed at session lifecycle events so
 # we can see in Output whether stats are actually arriving.
 var _capture_count: int = 0
@@ -74,6 +80,14 @@ func _capture(message: String, data: Array, session_id: int) -> bool:
 				print("[gool] receiving bus stats from session %d (%d strips)"
 						% [session_id, _latest_stats.size()])
 		return true
+	# v0.44.0: engine-wide render stats for the Live Stats panel.
+	# Same cadence and session as bus_stats; cached separately so
+	# the mixer dock can read both independently.
+	if message == "gool:render_stats":
+		if data.size() >= 1 and data[0] is Dictionary:
+			_latest_render_stats = data[0]
+			_current_session_id = session_id
+		return true
 	return false
 
 
@@ -81,6 +95,14 @@ func _capture(message: String, data: Array, session_id: int) -> bool:
 # most recent stats, or [] when no session is running.
 func get_latest_bus_stats() -> Array:
 	return _latest_stats
+
+## v0.44.0: polled by the mixer dock's Live Stats panel. Returns
+## the most recent engine-wide render stats, or {} when no session
+## is running. Shape matches Gool.get_render_stats() plus an
+## additional "voice_chat" sub-dict mapping player_id → {jitter_ms,
+## packet_loss}.
+func get_latest_render_stats() -> Dictionary:
+	return _latest_render_stats
 
 
 # Fired when the session ends (F8, game crash, etc). Only clear
@@ -92,6 +114,7 @@ func _on_session_stopped(session_id: int) -> void:
 			% [session_id, _capture_count])
 	if session_id == _current_session_id:
 		_latest_stats = []
+		_latest_render_stats = {}
 		_current_session_id = -1
 		_capture_count = 0
 

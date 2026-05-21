@@ -31,6 +31,13 @@ var _music_state: String = ""
 # voice playback for the same player works without state coordination.
 var _voice_counter: int = 0
 
+# v0.44.0: track registered voice player IDs so the editor's Live
+# Stats panel can enumerate them for per-player jitter / packet-loss
+# display. Appended on successful register_voice_source; never
+# auto-removed in this release (host code that wants to remove a
+# player after disconnect can do so manually if needed).
+var _known_voice_player_ids: Array = []
+
 # v0.34.0 (Phase 6.B): per-material impact EQ state.
 #
 # The autoload checks once at _ready whether the configured bus
@@ -438,6 +445,13 @@ func _process(delta: float) -> void:
 		if _debugger_emit_accum >= _DEBUGGER_EMIT_INTERVAL:
 			_debugger_emit_accum = 0.0
 			_emit_bus_stats_to_debugger()
+			# v0.44.0: also emit engine-wide render stats so the editor
+			# mixer dock's new Live Stats panel can show voice count,
+			# master peak, callback rate, dropouts, and per-player VOIP
+			# jitter. Separate channel from bus_stats because the shape
+			# is engine-wide rather than per-bus; consumers cache them
+			# independently.
+			_emit_render_stats_to_debugger()
 
 # Push the current bus-stats array as a debugger message. The
 # editor side (GoolDebuggerPlugin) listens for "gool:bus_stats".
@@ -478,6 +492,41 @@ func _emit_bus_stats_to_debugger() -> void:
 			else:
 				s["effects"] = _runtime.get_bus_effects(bn)
 	EngineDebugger.send_message("gool:bus_stats", [stats])
+
+# v0.44.0: Push engine-wide render stats over the same debugger
+# channel pattern as bus_stats. Editor side (GoolDebuggerPlugin)
+# listens for "gool:render_stats". Payload is a single Dictionary
+# with the keys returned by Gool.get_render_stats() (active_voices,
+# active_emitters, mixer_peak, master_gain, callback_invocations,
+# frames_rendered, peak_amplitude, exception_count, ...) plus an
+# additional `voice_chat` sub-dict mapping player_id → {jitter_ms,
+# packet_loss}. Editor's Live Stats panel reads from the cache.
+#
+# Same safety pattern as _emit_bus_stats_to_debugger: early-out if
+# no debugger is attached, so this is free in exported builds and
+# headless runs.
+func _emit_render_stats_to_debugger() -> void:
+	if not EngineDebugger.is_active():
+		return
+	if _runtime == null:
+		return
+	var stats: Dictionary = _runtime.get_render_stats()
+	if stats.is_empty():
+		return
+	# Augment with VOIP jitter for any players the engine knows
+	# about. The has_method guard handles binaries that predate the
+	# voice-source enumeration API — those just get an empty
+	# voice_chat dict and the editor panel hides the section.
+	var voice_chat: Dictionary = {}
+	if _runtime.has_method("get_known_voice_player_ids"):
+		var ids: Array = _runtime.get_known_voice_player_ids()
+		for pid in ids:
+			voice_chat[pid] = {
+				"jitter_ms": get_voice_jitter_ms(int(pid)),
+				"packet_loss": get_voice_packet_loss_ratio(int(pid)),
+			}
+	stats["voice_chat"] = voice_chat
+	EngineDebugger.send_message("gool:render_stats", [stats])
 
 func _log_render_stats() -> void:
 	var stats: Dictionary = _runtime.get_render_stats()
@@ -1764,7 +1813,28 @@ func set_listener_transform(position: Vector3, forward: Vector3,
 	_runtime.set_listener_transform(position, forward, velocity)
 
 func register_voice_source(player_id: int) -> bool:
-	return _runtime.register_voice_source(player_id)
+	var ok: bool = _runtime.register_voice_source(player_id)
+	# v0.44.0: track registered player IDs so the editor's Live
+	# Stats panel can enumerate them for per-player jitter/loss
+	# display. Tracked only on successful registration to avoid
+	# stale entries if the C++ side rejected the call.
+	if ok and not _known_voice_player_ids.has(player_id):
+		_known_voice_player_ids.append(player_id)
+	return ok
+
+## v0.44.0: returns the player IDs the autoload knows about
+## (i.e. that have been passed to register_voice_source since
+## the singleton started). Used by the editor's Live Stats panel
+## to enumerate per-player VOIP health.
+##
+## Note: this is a GDScript-side tracking list, not a query of
+## the engine's actual voice-source state. If a host calls
+## _runtime.register_voice_source directly (bypassing this
+## autoload), those IDs won't appear here. All gool docs route
+## through Gool.register_voice_source, so this is the canonical
+## path for production code.
+func get_known_voice_player_ids() -> Array:
+	return _known_voice_player_ids.duplicate()
 
 func submit_voice_packet(player_id: int, bytes: PackedByteArray,
 							sequence_number: int,
