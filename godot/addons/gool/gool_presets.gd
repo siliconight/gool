@@ -21,7 +21,7 @@
 #
 #   - MATERIAL presets (already built in): "the bullet hit concrete",
 #     selected automatically by the AudioMaterial of the collider.
-#     Surfaced via Gool.reverb_preset_for_material(material).
+#     Surfaced via Gool.get_reverb_preset_for_material(material).
 #
 # Both write to the same six reverb parameters. They don't conflict
 # because you typically apply one or the other for a given bus —

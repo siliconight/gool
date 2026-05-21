@@ -1419,7 +1419,7 @@ func material_name(material: int) -> String:
 ##
 ## Example — push the concrete preset onto the Sfx bus's reverb:
 ##
-##     var preset = Gool.reverb_preset_for_material(Gool.MATERIAL_CONCRETE)
+##     var preset = Gool.get_reverb_preset_for_material(Gool.MATERIAL_CONCRETE)
 ##     # Effect index 0 = first effect in the chain (the reverb in
 ##     # the standard gool config). set_effect_parameter takes the
 ##     # bus NAME, not its BusId.
@@ -1430,10 +1430,23 @@ func material_name(material: int) -> String:
 ##
 ## Out-of-range material values fall through to the Default
 ## preset ("average room").
-func reverb_preset_for_material(material: int) -> Dictionary:
+##
+## v0.44.1 rename: previously exposed as `reverb_preset_for_material`
+## (no `get_` prefix), which didn't match the C++ binding name OR
+## the ReverbZone prefab's callsite — so material-aware ReverbZones
+## (material != 0) tripped a "Nonexistent function" error at runtime.
+## The old name is preserved as a deprecated alias below for one
+## release; migrate calls to this `get_` form.
+func get_reverb_preset_for_material(material: int) -> Dictionary:
 	if not is_initialized():
 		return {}
 	return _runtime.get_reverb_preset_for_material(material)
+
+## DEPRECATED (v0.44.1): use get_reverb_preset_for_material instead.
+## Kept as a one-line alias for one release so any user code calling
+## the pre-v0.44.1 name still works. Will be removed in v0.46.0.
+func reverb_preset_for_material(material: int) -> Dictionary:
+	return get_reverb_preset_for_material(material)
 
 ## Return the engine's per-material EQ curve as a Dictionary with
 ## keys: `low_gain_db`, `low_freq_hz`, `mid_gain_db`, `mid_freq_hz`,

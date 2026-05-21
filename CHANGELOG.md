@@ -22,6 +22,62 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.44.1] - 2026-05-21 — Fix: ReverbZone material-aware path crashed on entry
+
+One-line bug fix surfaced during the v0.44.0 audition. Any scene
+containing a ReverbZone with `material != 0` (i.e. using the
+material-aware preset path instead of the manual-parameter path)
+would crash on zone entry with:
+
+    Invalid call. Nonexistent function 'get_reverb_preset_for_material'
+    in base 'Node (runtime_singleton.gd)'.
+
+### Root cause
+
+Three-layer naming inconsistency, latent since the material-aware
+ReverbZone path landed:
+
+- C++ binding (`gool_godot.cpp`): `get_reverb_preset_for_material` ✓
+- `ReverbZone.gd` callsite: calls `get_reverb_preset_for_material` ✓
+- Autoload wrapper (`runtime_singleton.gd`): defined as
+  `reverb_preset_for_material` (no `get_` prefix) ✗
+
+The autoload wrapper was the odd one out. ReverbZone routes the call
+through the autoload (`_runtime = get_node_or_null("/root/Gool")`),
+so the missing `get_`-prefixed wrapper on the autoload broke the
+chain even though both endpoints had the correct name.
+
+The bug was invisible in scenes that only used the manual-parameter
+ReverbZone path (every example in `examples/` defaults material to
+0). It tripped the moment a real consumer used material-aware
+zones — which is exactly what the audition surfaced.
+
+### Fix
+
+Renamed the autoload wrapper to `get_reverb_preset_for_material`,
+matching the C++ binding and ReverbZone callsite naming. The
+old name `reverb_preset_for_material` is kept as a one-line
+deprecated alias for one release so any user code calling the
+pre-v0.44.1 name still works; will be removed in v0.46.0.
+
+Also updated the docstring example in `runtime_singleton.gd`
+and the cross-reference comment in `gool_presets.gd` to use the
+correct name.
+
+### Why this is a patch (not minor)
+
+Bug fix that restores intended behavior; no new API surface. The
+new name is the canonical one going forward; the old name is an
+alias (zero breakage). Per the project's SemVer rule, patch.
+
+### Migration
+
+If your code was somehow calling the pre-v0.44.1 name directly
+(unlikely, given the latent bug made the material-aware path
+non-functional), nothing breaks — both names work in v0.44.1.
+Migrate to `Gool.get_reverb_preset_for_material(...)` before
+v0.46.0 when the alias is removed.
+
 ## [0.44.0] - 2026-05-21 — Live Stats panel in the editor mixer dock
 
 The "silent-disaster prevention" release. Adds a compact
@@ -16000,7 +16056,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.44.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.44.1...HEAD
+[0.44.1]: https://github.com/siliconight/gool/releases/tag/v0.44.1
 [0.44.0]: https://github.com/siliconight/gool/releases/tag/v0.44.0
 [0.43.0]: https://github.com/siliconight/gool/releases/tag/v0.43.0
 [0.42.0]: https://github.com/siliconight/gool/releases/tag/v0.42.0
