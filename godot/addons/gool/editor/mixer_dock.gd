@@ -348,6 +348,16 @@ var _debugger_plugin: EditorDebuggerPlugin = null
 #     ConfirmationDialog with Reload / Overwrite / Cancel
 var _config_model: GoolConfigModel = null
 var _mtime_conflict_dialog: ConfirmationDialog = null
+# v0.53.0: TabContainer at the dock root. Hosts the Mixer tab
+# (everything from v0.52.0 and earlier) plus the new Sound Bank
+# tab. Future tabs (Materials, Bus Hierarchy view, etc.) hang
+# off this same container.
+var _tab_container: TabContainer = null
+# v0.53.0: Sound Bank panel instance. Lazily loaded so a parse
+# failure in sound_bank_panel.gd doesn't take down the dock.
+# Type left as Node (Variant) rather than a concrete class so
+# we don't have to forward-declare the class name.
+var _sound_bank_panel: Node = null
 
 # v0.44.0: Live Stats panel — compact health-monitoring strip
 # below the bus strips showing engine-wide observability data
@@ -389,10 +399,26 @@ func set_debugger_plugin(p: EditorDebuggerPlugin) -> void:
 func _ready() -> void:
 	custom_minimum_size = Vector2(0, STRIP_HEIGHT + 24)
 
+	# v0.53.0: TabContainer at the dock root, hosting:
+	#   1. "Mixer" — the existing toolbar + strip area + stats panel
+	#      (formerly the direct contents of the dock)
+	#   2. "Sound Bank" — the new sound bank browser panel
+	#
+	# TabContainer uses each direct child Node's .name property as
+	# the tab label, so we set them explicitly. Future tabs (Bus
+	# Hierarchy view, Materials catalog, etc.) hang off this same
+	# TabContainer.
+	_tab_container = TabContainer.new()
+	_tab_container.anchor_right = 1.0
+	_tab_container.anchor_bottom = 1.0
+	_tab_container.tab_changed.connect(_on_tab_changed)
+	add_child(_tab_container)
+
 	var root_vbox := VBoxContainer.new()
-	root_vbox.anchor_right = 1.0
-	root_vbox.anchor_bottom = 1.0
-	add_child(root_vbox)
+	root_vbox.name = "Mixer"
+	root_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_tab_container.add_child(root_vbox)
 
 	# v0.51.0: themed toolbar — banner with a title on the left, the
 	# Save Mix to Config action on the right. Replaces the v0.48.0
@@ -511,6 +537,22 @@ func _ready() -> void:
 	_mtime_conflict_dialog.confirmed.connect(_on_mtime_dialog_reload)
 	_mtime_conflict_dialog.custom_action.connect(_on_mtime_dialog_custom_action)
 	add_child(_mtime_conflict_dialog)
+
+	# v0.53.0: instantiate the Sound Bank panel as the second tab.
+	# Loaded dynamically rather than `preload`ed so a parse-time
+	# issue in sound_bank_panel.gd doesn't take down the whole dock.
+	# If the load fails (file missing, parse error), the Mixer tab
+	# still works and we log a warning.
+	var bank_script := load("res://addons/gool/editor/sound_bank_panel.gd")
+	if bank_script != null:
+		_sound_bank_panel = bank_script.new()
+		_sound_bank_panel.name = "Sound Bank"
+		_sound_bank_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_sound_bank_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		_tab_container.add_child(_sound_bank_panel)
+	else:
+		push_warning("[gool] mixer dock: sound_bank_panel.gd "
+				+ "failed to load — Mixer tab still available")
 
 
 func _process(delta: float) -> void:
@@ -1291,6 +1333,23 @@ func _on_model_external_change_detected(pending_dirty_buses: Array) -> void:
 		+ "with the dock's current state."
 	)
 	_mtime_conflict_dialog.popup_centered()
+
+
+# v0.53.0: tab-switch handler. When the user clicks over to the
+# Sound Bank tab, kick off a fresh rescan so banks added since
+# the last view (or since dock startup) show up automatically.
+# Cheap when no banks exist; bounded by project size when they do.
+func _on_tab_changed(tab_idx: int) -> void:
+	if _tab_container == null or _sound_bank_panel == null:
+		return
+	# Tab indices match the order children were added: 0 = Mixer,
+	# 1 = Sound Bank. Refresh only the Sound Bank tab.
+	if tab_idx <= 0:
+		return
+	var tab_node: Node = _tab_container.get_tab_control(tab_idx)
+	if tab_node == _sound_bank_panel \
+			and _sound_bank_panel.has_method("rescan_and_rebuild"):
+		_sound_bank_panel.rescan_and_rebuild()
 
 
 func _on_mtime_dialog_reload() -> void:

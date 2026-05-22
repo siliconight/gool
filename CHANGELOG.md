@@ -22,7 +22,141 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.52.0] - 2026-05-22 — Bus hierarchy indenting + Effect chain flow diagram
+## [0.53.0] - 2026-05-22 — Multi-tab dock + Sound Bank panel
+
+### Added
+
+- **TabContainer at the dock root.** The mixer dock is no longer
+  single-purpose. A `TabContainer` now wraps the dock contents,
+  hosting:
+  - **Mixer** (tab 0): everything from v0.52.0 and earlier — the
+    bus strip area, toolbar, Live Stats panel. No change to any
+    of this; existing workflows are identical.
+  - **Sound Bank** (tab 1): the new browser/audition panel
+    (see below).
+
+  Future tabs (Materials catalog, Bus Hierarchy tree view, etc.)
+  hang off this same container — the frame is now in place for
+  any future per-domain dock panels.
+
+  Implementation: new `_tab_container: TabContainer` at the root,
+  replacing the direct `add_child(root_vbox)`. Each tab's title
+  comes from the Node's `.name` property (Godot convention).
+  Tab change is connected to a handler that refreshes the Sound
+  Bank when it becomes visible.
+
+  Backward compatibility: zero. The Mixer tab is the default
+  selected tab, so users opening the dock see exactly what they
+  saw in v0.52.0. The TabContainer chrome itself adds ~20px of
+  vertical space for the tab labels.
+
+- **Sound Bank panel** — new `addons/gool/editor/sound_bank_panel.gd`
+  (~750 lines). A discovery + audition browser for every
+  `GoolSoundBank` / `GoolFolderSoundBank` resource in the project.
+  Closes the "I want to hear what `gunshot_remote` sounds like
+  without F5'ing the whole game" gap.
+
+  Features:
+  - **Discovery.** Walks `res://` for `.tres` files (skipping
+    `addons/`, `.godot/`, `build/`, `dist/`, hidden dirs). For
+    each candidate, peeks the first 256 bytes to find the
+    `[gd_resource type=…]` header and checks against the known
+    bank class names. Only matching files get a full `load()` —
+    cheap rejection of every non-bank `.tres` in the project so
+    initial scan is fast even on large projects.
+  - **Bank groups.** Each discovered bank renders as a
+    collapsible group with a header (basename + path subtitle +
+    entry count + "folder" / "base" type indicator + Inspect
+    button) and a body of entry rows. First bank is expanded by
+    default; expansion state persists across rebuilds within
+    the panel's lifetime.
+  - **Entry rows.** Each sound shows: indented name (primary
+    text), category column (SFX / Voice / Music / Ambience / UI
+    / Dialogue), loop indicator (⟲ when looping), duration
+    (formatted as `1.2s`, `45s`, or `1:23` depending on
+    magnitude), and a ▶ Play button.
+  - **Audition.** A single `AudioStreamPlayer` (bus 0 = Master)
+    handles all audition. Click ▶ on any row → that sound plays.
+    Click ▶ on a different row → previous stops, new one starts.
+    Click ▶ on the active row → stops it. A bottom "Now playing"
+    bar shows the currently auditioning sound + name + bank
+    file, plus a Stop button. **Audition bypasses gool's
+    engine** — uses Godot's AudioStreamPlayer directly. This is
+    the right trade-off: gool isn't running in the editor, and
+    designers want to hear the source material anyway. For full-
+    pipeline auditioning (reverb, sidechain ducking, etc.) they
+    still F5. This is documented in the panel's tooltip.
+  - **Filter.** Search box at top filters entries by name
+    (case-insensitive contains). Empty filter shows all. Bank
+    groups with no matching entries display "no entries match
+    the filter" inline.
+  - **Rescan.** Toolbar button re-walks the project. Also auto-
+    triggered when the tab becomes visible (so banks added since
+    last view get picked up without manual refresh).
+  - **Inspect.** Per-bank button opens the bank resource in the
+    Godot inspector so the designer can edit it without leaving
+    the dock.
+  - **Empty state.** When no banks are found, renders a centered
+    onboarding card explaining how to create one. Same visual
+    language as v0.51.0's empty-state for the mixer.
+
+  The panel's chrome uses the v0.51.0 theme helpers (delegating
+  via `_ensure_dock()` to find the parent mixer dock's
+  `_theme_color` / `_theme_accent` / `_build_chrome_stylebox`),
+  so it inherits the same EditorTheme-aware look as the rest of
+  the dock. Falls back to safe defaults if instantiated outside
+  a mixer dock context.
+
+### Changed
+
+- `_ready()` in mixer_dock.gd refactored to put `root_vbox`
+  inside the TabContainer rather than directly under the dock.
+  All children of `root_vbox` (toolbar, strip area, stats panel)
+  are unchanged. Anchor-based sizing on `root_vbox` replaced
+  with `SIZE_EXPAND_FILL` flags since TabContainer manages tab
+  child sizing.
+
+### Notes
+
+- I cannot render the dock to verify visuals. Things that could
+  plausibly look wrong:
+  - The tab strip might not theme correctly on Light mode (Godot
+    `TabContainer` uses its own styleboxes — we don't override
+    them).
+  - The audition button icon (▶ / ■) is a text glyph, not an
+    actual icon — should render in any font, but rendering on
+    macOS / Windows / Linux varies in glyph shape.
+  - Long sound names might push the duration column off-screen
+    in a narrow dock — there's no truncation logic, just
+    `size_flags_horizontal = SIZE_EXPAND_FILL` on the name label
+    and a fixed-width category/duration column.
+  - First scan on very large projects (>10k .tres files) might
+    have noticeable latency; the header-peek optimization makes
+    this much cheaper than `load()`ing every .tres but it's not
+    instant.
+- Bank discovery is one-shot per Rescan, not file-watcher based.
+  If you add a new bank while the dock is open, click Rescan in
+  the Sound Bank toolbar (or switch tabs to trigger the auto-
+  rescan).
+- The `class_name GoolSoundBankPanel` declaration adds the panel
+  to Godot's global class registry. This means it can be
+  referenced from other scripts (e.g. a custom editor extension)
+  but also means a parse error in `sound_bank_panel.gd` would
+  break the dock's load chain. The `load()` is wrapped in a null
+  check + warning so the Mixer tab still works if the panel
+  fails to parse.
+
+### Backward compatibility
+
+- No source-level breaks. No API changes.
+- TabContainer wrapping is transparent to users: the Mixer tab
+  is the default selected tab.
+- All v0.52.0 features (hierarchy indenting, effect flow
+  diagram) work unchanged inside the Mixer tab.
+- The Sound Bank panel is purely additive — projects without
+  any sound banks get a friendly empty state, not an error.
+
+
 
 ### Added
 
@@ -17011,7 +17145,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.52.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/siliconight/gool/releases/tag/v0.53.0
 [0.52.0]: https://github.com/siliconight/gool/releases/tag/v0.52.0
 [0.51.0]: https://github.com/siliconight/gool/releases/tag/v0.51.0
 [0.50.0]: https://github.com/siliconight/gool/releases/tag/v0.50.0
