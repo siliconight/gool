@@ -93,6 +93,14 @@ var _last_callback_count: int = 0
 var _last_frame_count: int = 0
 var _last_poll_time_ms: int = 0
 
+# v0.54.1: timestamp of the first refresh that observed
+# `not _runtime.is_initialized()`. Used to display elapsed wait
+# time in the "starting up" message, and to escalate to a
+# troubleshooting hint if init takes pathologically long. Reset
+# to 0 once init completes so a future re-init (e.g. soft reset)
+# gets a fresh count.
+var _wait_started_at_ms: int = 0
+
 # Cached runtime reference. Avoid re-resolving the autoload every
 # tick.
 var _runtime: Node = null
@@ -219,12 +227,45 @@ func _refresh() -> void:
 		_resize_panel_to_label()
 		return
 	if not _runtime.is_initialized():
-		_label.text = (
-			"gool — initializing...\n"
-			+ "(autoload found, runtime not yet ready)"
-		)
+		# v0.54.1: redesigned "still warming up" message.
+		# Old message ("gool — initializing... (autoload found, runtime
+		# not yet ready)") was engineer-speak that read like "the
+		# system is half-broken." In reality, native init normally
+		# takes 50-200ms and the user sees this for at most one poll
+		# cycle (~250ms).
+		#
+		# New message:
+		#  - Plain-English status line ("starting up")
+		#  - Animated dots so the overlay visibly shows polling is
+		#    alive — distinguishes "still waiting, normal" from
+		#    "dock froze, abnormal" without any wait-bar visuals
+		#  - Elapsed counter once we're past the normal-init window
+		#    (>= 0.5s) so the user has a number to gauge against
+		#  - Troubleshooting escalation past 3s — by then init has
+		#    almost certainly failed and the user wants to know
+		#    where to look
+		if _wait_started_at_ms == 0:
+			_wait_started_at_ms = Time.get_ticks_msec()
+		var elapsed_ms: int = Time.get_ticks_msec() - _wait_started_at_ms
+		var elapsed_s: float = elapsed_ms / 1000.0
+		# 1 → 2 → 3 → 1 dots, cycling at ~3 Hz (one dot per 333 ms)
+		var dot_count: int = 1 + int((elapsed_ms / 333) % 3)
+		var dots: String = ".".repeat(dot_count)
+		var msg: String = "gool: starting up%s" % dots
+		if elapsed_s >= 0.5:
+			msg += "\n%.1fs" % elapsed_s
+		if elapsed_s >= 3.0:
+			msg += " — taking longer than expected"
+			msg += "\nCheck the Output panel for errors."
+		_label.text = msg
 		_resize_panel_to_label()
 		return
+
+	# Reset the wait timer now that init has completed. A future
+	# re-init (soft reset, device change, scene reload) gets a
+	# clean elapsed count rather than continuing from the original
+	# startup time.
+	_wait_started_at_ms = 0
 
 	var stats: Dictionary = _runtime.get_render_stats()
 	var now_ms: int = Time.get_ticks_msec()

@@ -22,7 +22,82 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.54.0] - 2026-05-22 — Mixer toolbar Tree/Flat toggle (hierarchy indenting now opt-in)
+## [0.54.1] - 2026-05-22 — Debug overlay: friendlier "starting up" message
+
+### Changed
+
+- **`addons/gool/prefabs/gool_debug_overlay.gd` — replaced the
+  cryptic init-state message.**
+
+  Before:
+  ```
+  gool — initializing...
+  (autoload found, runtime not yet ready)
+  ```
+
+  After (during normal sub-second init):
+  ```
+  gool: starting up.
+  gool: starting up..
+  gool: starting up...
+  ```
+
+  After (at 1.2s — past the normal window):
+  ```
+  gool: starting up..
+  1.2s
+  ```
+
+  After (at 3.5s — likely actually stuck):
+  ```
+  gool: starting up...
+  3.5s — taking longer than expected
+  Check the Output panel for errors.
+  ```
+
+  The original message was engineer-speak ("autoload found, runtime
+  not yet ready") that read like the system was half-broken when in
+  fact it's the normal startup state. Native init typically takes
+  50-200ms; with the overlay's 4 Hz polling rate the user sees the
+  message for at most one cycle (~250ms), but the old wording made
+  that brief glimpse alarming.
+
+  New behavior:
+  - **Plain-English status** — "starting up" instead of jargon.
+  - **Animated dots cycle 1→2→3 at 3 Hz** — visible liveness cue;
+    distinguishes "still waiting, normal" from "dock froze" without
+    any wait-bar visuals.
+  - **Elapsed counter appears at 0.5s+** — gives the user a number
+    to gauge against, but stays out of the way during normal init.
+  - **Troubleshooting hint at 3s+** — by that point init has almost
+    certainly failed and the user wants to know where to look.
+  - **Wait timer resets on init completion** — so a future re-init
+    (soft reset, device change, scene reload — all currently
+    hypothetical, but cheap to support) gets a clean elapsed count.
+
+### Added
+
+- `_wait_started_at_ms` state variable on `GoolDebugOverlay` —
+  timestamp of first refresh that observed uninitialized state.
+  Reset to 0 once `_runtime.is_initialized()` returns true.
+
+### Notes
+
+- This is purely an overlay-cosmetics fix. The runtime init path
+  itself is unchanged; nothing about how or when gool initializes
+  has been touched. If init was fast before, it's exactly as fast
+  now. If init was slow before, the overlay will now tell you
+  honestly rather than implying everything's broken.
+- The 0.5s / 3s thresholds are tuned by feel. If they prove wrong
+  (3s is too tight on slow machines, or 0.5s is too aggressive
+  for the "stay quiet during normal init" goal), they're trivial
+  constants to adjust.
+
+### Backward compatibility
+
+- No API changes. No config changes. Cosmetic only.
+
+
 
 ### Changed
 
@@ -17216,7 +17291,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.1...HEAD
+[0.54.1]: https://github.com/siliconight/gool/releases/tag/v0.54.1
 [0.54.0]: https://github.com/siliconight/gool/releases/tag/v0.54.0
 [0.53.0]: https://github.com/siliconight/gool/releases/tag/v0.53.0
 [0.52.0]: https://github.com/siliconight/gool/releases/tag/v0.52.0
