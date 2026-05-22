@@ -140,7 +140,23 @@ void TestReverbEffectShorterRoomDecaysFaster() {
     big.Prepare  (kSampleRate, 2);
     small.Prepare(kSampleRate, 2);
 
-    constexpr uint32_t kFrames = kSampleRate / 2;   // 0.5 s
+    // v0.58.0: render 1.0 s instead of 0.5 s; the v0.57.0 tank fix
+    // means tank circulations are now ~70-83 ms each (the actual
+    // delay-line lengths) rather than zero-delay. So meaningful
+    // big-vs-small decay separation requires multiple circulations.
+    // Pre-v0.57.0 the broken tank looped at sample rate, so at 400 ms
+    // the small (decay=0.30) was already dead while big (0.95) was
+    // still alive — a 1.5x ratio assertion was easy. Post-fix, the
+    // 400 ms window is still buildup-region-dominated for both
+    // (~5 circulations), where the decay-independent diffuser energy
+    // dominates and the ratio is only ~1.3x.
+    //
+    // Window sweep at decay 0.95 vs 0.30:
+    //   400-500 ms  ratio 1.33  (old window — FAILS post-fix)
+    //   500-600 ms  ratio 1.53
+    //   700-800 ms  ratio 1.83
+    //   800-1000 ms ratio 2.2x  (new window — comfortable margin)
+    constexpr uint32_t kFrames = kSampleRate;       // 1.0 s
     std::vector<float> b1(kFrames * 2, 0.0f);
     std::vector<float> b2(kFrames * 2, 0.0f);
     b1[0] = b1[1] = 1.0f;
@@ -153,14 +169,17 @@ void TestReverbEffectShorterRoomDecaysFaster() {
     }
 
     // Compare RMS in the late window: the larger room should still have
-    // more energy left at 400 ms than the smaller one.
-    const uint32_t late0 = kSampleRate * 4 / 10;     // 400 ms
-    const uint32_t late1 = kSampleRate * 5 / 10;     // 500 ms
+    // more energy left at 800-1000 ms than the smaller one. Window
+    // chosen so the diffuser-driven early field has fully decayed and
+    // we're measuring the tank-driven sustain that differentiates
+    // big from small.
+    const uint32_t late0 = kSampleRate * 8 / 10;     // 800 ms
+    const uint32_t late1 = kSampleRate;              // 1000 ms
     const float bigLate   = Rms(b1.data() + late0 * 2, (late1 - late0) * 2);
     const float smallLate = Rms(b2.data() + late0 * 2, (late1 - late0) * 2);
 
-    std::printf("  decay@400ms: bigRoom rms=%.5f  smallRoom rms=%.5f\n",
-                bigLate, smallLate);
+    std::printf("  decay@800-1000ms: bigRoom rms=%.5f  smallRoom rms=%.5f  ratio=%.2fx\n",
+                bigLate, smallLate, smallLate > 0 ? bigLate / smallLate : 0.0);
     EXPECT(bigLate > smallLate * 1.5f);
 }
 
