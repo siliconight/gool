@@ -22,7 +22,118 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.57.0] - 2026-05-22 — Reverb tank delay-line fix (root cause of metallic harshness) + natural HF damping default
+## [0.58.0] - 2026-05-22 — Saturation Phase 3: auto-compensation + DC blocker + param smoothing
+
+Closes Phase 3 of `docs/audio_design/saturation_v2.md`. Phase 4 (tone
+filter) remains; will land as v0.59.0.
+
+### Added
+
+- **Per-mode auto-compensation table.** Drive sweeps no longer change
+  perceived loudness — they change CHARACTER only. The table values
+  are wet-RMS / dry-RMS ratios for a unit-amplitude sine input
+  through each shape at five drive breakpoints (0.0, 0.25, 0.5,
+  0.75, 1.0), pre-computed offline by Simpson's-rule integration of
+  `f(sin(t)·driveScale)²`. Process multiplies wet by
+  `1.0 / lookup(mode, drive)` so a designer setting drive higher
+  hears only the harmonic-content change, not "louder + more
+  saturated" as a confounded perceptual delta.
+
+  Per-mode compensation at max drive (norm 1.0):
+  - Tanh: 1/1.293 ≈ -2.2 dB (modest)
+  - Tube: 1/2.255 ≈ -7.1 dB (asinh's unbounded shoulder is loud)
+  - Tape: 1/1.342 ≈ -2.6 dB
+  - Diode: 1/0.917 ≈ +0.8 dB (cubic clamp at ±2/3 caps loudness)
+
+- **Per-channel one-pole DC blocker.** Replaces the pre-v0.58.0
+  static `f(bias·driveScale)` subtraction. Filter is
+  `y[n] = (x[n] - x[n-1]) + R·y[n-1]` per channel with R chosen at
+  Prepare for a ~30 Hz HPF (≈0.996 at 48 kHz). Handles AUTOMATED
+  bias correctly — the static version went stale when bias was
+  changing, the blocker actively tracks any DC drift.
+
+- **Per-buffer parameter smoothing on drive/mix/bias.** `OnParameter`
+  now writes to target fields; `Process` ramps active values toward
+  targets once per buffer (smoothing coefficient 0.25, ~80 ms to
+  ~85% step response on typical buffer sizes). Removes the
+  zipper-noise that pre-v0.58.0 had on rapid fader moves / automation
+  curves. `outputGain` and `mode` are NOT smoothed — gain is the
+  obvious case where immediate response is wanted; modes can't be
+  smoothed since the shape function literally changes.
+
+  Readback (`Drive()`, `Mix()`, `Bias()`, `GetParameter`) returns the
+  TARGET value (what the user set), not the active smoothed state —
+  matches pre-v0.58.0 semantics for "get returns what you set".
+
+### Changed
+
+- **`outputGain` clamped to 0..2.** Previously unbounded above. With
+  the auto-compensation table handling drive-level changes, output
+  gain is now a pure post-trim that designers set to taste; 0..2
+  covers any useful gain trim while preventing values that would
+  drive into clipping after compensation.
+
+### Tests updated
+
+- `TestUnityDriveMatchesTanh`: checks first-frame compensated output
+  (`tanh(input) / 0.8135`) instead of every-frame raw tanh. Constant
+  input through the DC blocker would converge toward 0; first frame
+  is pre-decay.
+- `TestMaxDriveCompressesPeaks`: peak bound updated to
+  `tanh(4) / 1.293 ≈ 0.773` to reflect compensation; lower bound
+  loosened from 0.99 to 0.7 (the compensation makes the peak
+  considerably below the raw-shape level by design).
+- `TestMixInterpolatesLinearly`: checks first-frame compensated
+  wet rather than steady-state value; uses interpolated compensation
+  factor at drive=0.6667.
+- `TestRuntimeParameterChanges`: runs 40 warmup buffers after
+  parameter changes so the per-buffer smoother converges; asserts
+  first-frame compensated output with looser tolerance (5%) to
+  cover any residual smoother and DC-blocker settling.
+
+`TestBiasDoesNotIntroduceDc` passes unchanged (DC blocker makes it
+stricter, not looser). `TestSymmetryWithoutBias` is unaffected
+(symmetry holds through both compensation and DC blocker since both
+are linear-time-invariant operations). `TestADAASuppressesAliasing`
+uses sine input → no DC, no constant-input issue, still works.
+
+### Notes
+
+- Existing reverb/saturation configs may sound subtly different — a
+  config using saturation at high drive will now be **quieter** (the
+  compensation factor that previously had to be hand-dialed into
+  `output_gain` is now baked in). If a preset was tuned by ear to
+  pre-v0.58.0 levels, the same setting will sound less loud
+  post-v0.58.0. Recommended user action: leave drive/mix/bias
+  alone; turn UP `output_gain` to taste. Existing presets in
+  `gool_presets.gd` were tuned against the unconfounded behavior
+  and may need re-balancing; flagged for v0.59.x.
+- The compensation table assumes sine reference and bias=0. Pink
+  noise would give slightly different numbers (under 1 dB
+  difference) but isn't worth the cost of pink-noise generation
+  during the offline calibration.
+- DC blocker is unconditional (active even at bias=0) per the
+  design doc's "handles automated bias" intent — a bias-conditional
+  version was considered but rejected because it would re-engage
+  the static-then-blocker switching artifact during automation.
+  Real signals (music, voice, SFX) are zero-mean so the blocker is
+  a no-op on them. Tests using constant DC inputs were updated to
+  check first-frame output (pre-blocker-decay) or use sine signals.
+- Phase 4 (tone filter, `Saturation_Tone` ID 28) deferred to
+  v0.59.0. Independent of Phase 3 per the roadmap.
+
+### Backward compatibility
+
+- No API changes. No config schema changes.
+- Audio behavior changes (intentional and designed): perceived
+  loudness now constant across drive sweeps. Output level
+  consistency across drive sweeps is the explicit design goal.
+- `outputGain` values > 2 in existing configs clamp to 2. If anyone
+  was using values much higher than that, the clamp will sound
+  quieter; the recommended action is to leave drive higher and
+  use the now-effective auto-comp.
+
+
 
 ### Fixed
 
@@ -17789,7 +17900,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/siliconight/gool/releases/tag/v0.58.0
 [0.57.0]: https://github.com/siliconight/gool/releases/tag/v0.57.0
 [0.56.1]: https://github.com/siliconight/gool/releases/tag/v0.56.1
 [0.56.0]: https://github.com/siliconight/gool/releases/tag/v0.56.0

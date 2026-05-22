@@ -38,15 +38,18 @@
 //   * `mix`          - parallel dry/wet blend. 0 = bypass (default,
 //                      makes adding the effect to a bus a no-op).
 //                      Subtle glue lives in 0.10–0.30.
-//   * `outputGain`   - post-shaper gain trim. Phase 3 will add an
-//                      auto-compensation table so output level stays
-//                      consistent across drive sweeps; for now this
-//                      is the only level-control surface, rule of
-//                      thumb 1.0/sqrt(driveScale).
-//   * `bias`         - DC offset added before shaping, then DC-
-//                      corrected out of the wet path. 0 = symmetric
-//                      (odd harmonics only); non-zero introduces
-//                      even harmonics. Range -1..1. Per-mode
+//   * `outputGain`   - post-shaper trim, applied AFTER the v0.58.0
+//                      auto-compensation. With Phase 3 landed, this
+//                      is now a pure post-trim that the user sets to
+//                      taste; the auto-compensation table keeps the
+//                      wet path at consistent loudness across drive
+//                      sweeps so a fader move on `outputGain` only
+//                      changes level, never character. Range 0..2.
+//   * `bias`         - DC offset added before shaping. The DC term
+//                      that this introduces at the shaper output is
+//                      removed by a per-channel one-pole DC blocker
+//                      (v0.58.0; replaces the v0.40.0 static
+//                      subtraction). Range -1..1. Per-mode
 //                      semantics for Diode TBD (see saturation_v2.md
 //                      §13 open question); v0.40.0 treats it as
 //                      pre-shaper DC offset for all modes,
@@ -55,10 +58,18 @@
 //                      0 (Tanh), which makes existing config files
 //                      sound identical to pre-v0.40.0 binaries.
 //
-// Per-channel state: one double (`x[n-1]`) per channel. Allocated in
-// Prepare() and zero-initialized. No envelope follower, no ring
-// buffers. Parameter changes are instantaneous; smooth automation
-// will land in Phase 3 (one-pole smoothers on drive/mix/bias).
+// Per-channel state (allocated in Prepare, zero-init):
+//   * `prevDriven_[c]`     — ADAA's x[n-1] in driven-input domain (double)
+//   * `dcBlockerY1_[c]`    — v0.58.0 DC-blocker output history (float)
+//   * `dcBlockerX1_[c]`    — v0.58.0 DC-blocker input history (float)
+//
+// Parameter smoothing (v0.58.0): drive, mix, and bias are smoothed
+// from their target values toward `current` values once per buffer
+// with a ~20 ms time constant, removing the zipper-noise on rapid
+// automation that pre-v0.58.0 had. Smoothing is per-buffer rather
+// than per-sample because each buffer is short enough (typical
+// 256–512 samples at 48 kHz = ~5–10 ms) that per-buffer steps are
+// imperceptible while saving work in the hot path.
 //
 // Anti-aliasing (v0.38.0 Phase 1, extended to all modes in v0.40.0):
 //   First-order ADAA per Parker, Zavalishin, Le Bivic, DAFX 2016. At
@@ -118,10 +129,15 @@ public:
     float GetParameter(uint16_t paramId) const noexcept override;
 
     // Diagnostics.
-    float          Drive()      const noexcept { return drive_; }
-    float          Mix()        const noexcept { return mix_; }
+    // v0.58.0: drive/mix/bias accessors return the TARGET value (what
+    // was set via constructor or OnParameter), not the active smoothed
+    // value. Process uses the smoothed value internally; readback
+    // here gives users predictable "what I asked for" semantics
+    // matching pre-v0.58.0 behavior.
+    float          Drive()      const noexcept { return targetDrive_; }
+    float          Mix()        const noexcept { return targetMix_; }
     float          OutputGain() const noexcept { return outputGain_; }
-    float          Bias()       const noexcept { return bias_; }
+    float          Bias()       const noexcept { return targetBias_; }
     SaturationMode Mode()       const noexcept { return mode_; }
 
 private:
@@ -129,11 +145,25 @@ private:
     // mapping (driveScale = 1 + N_mode · drive_) happens inside Process
     // every buffer. Storing the normalized form means OnParameter
     // / GetParameter / API consumers see a consistent 0..1 surface.
+    //
+    // v0.58.0: drive_/mix_/bias_ are the SMOOTHED values used by
+    // Process. targetDrive_/targetMix_/targetBias_ hold the most
+    // recent value set via OnParameter or the constructor; once per
+    // buffer, Process ramps current toward target with a ~20 ms
+    // time constant. outputGain_ and mode_ are NOT smoothed (output
+    // gain is post-comp and would just delay the obvious effect;
+    // mode changes can't be smoothed meaningfully since the shape
+    // function literally changes).
     float          drive_;
     float          mix_;
     float          outputGain_;
     float          bias_;
     SaturationMode mode_;
+
+    float          targetDrive_;     // v0.58.0
+    float          targetMix_;       // v0.58.0
+    float          targetBias_;      // v0.58.0
+    float          smoothCoef_;      // v0.58.0; ~1 - exp(-bufFrames/(SR·tau))
 
     // v0.38.0: per-channel ADAA state — the previous post-driveScale
     // sample value x[n-1] = (dry[n-1] + bias) · driveScale. Resized
@@ -153,6 +183,18 @@ private:
     // OnParameter is called from the control thread; in practice
     // mode changes always happen between buffers.
     std::vector<double> prevDriven_;
+
+    // v0.58.0: per-channel one-pole DC blocker state. Replaces the
+    // pre-v0.58.0 static f(bias·driveScale) subtraction, which went
+    // stale during bias automation. Filter is y[n] = wet[n] -
+    // wet[n-1] + R·y[n-1]; R is computed in Prepare from sample
+    // rate to give a ~30 Hz HPF (~25 µs phase shift at midband,
+    // imperceptible). State is zero-initialized; the DC blocker
+    // settles in ~30 ms at 48 kHz which is below the noise floor
+    // for any reasonable input.
+    std::vector<float>  dcBlockerY1_;
+    std::vector<float>  dcBlockerX1_;
+    float               dcBlockerR_ = 0.995f;   // recomputed in Prepare
 };
 
 } // namespace audio
