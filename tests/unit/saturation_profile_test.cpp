@@ -94,18 +94,22 @@ void TestDialogueWarmthProfile() {
     // removal works for the profile, not just for the unit test in
     // saturation_test).
     //
-    // v0.38.0: ADAA's first sample on a zero buffer uses the cold-
-    // start state x[n-1]=0, but the new sample x[n]=bias*drive is
-    // nonzero — so the first sample's ADAA output differs slightly
-    // from the steady-state tanh(bias*drive) that the dcRemove
-    // subtraction is calibrated to. Result: one sample of small
-    // residue per channel before steady-state takes over. Measure
-    // max|output| over the steady-state region only (skip frame 0).
+    // v0.58.0: the static f(bias·driveScale) subtraction was replaced
+    // with a per-channel one-pole DC blocker (R≈0.996 at 48 kHz, ~30 Hz
+    // HPF, ~5.2 ms time constant). The blocker takes ~85 ms to settle
+    // below 1e-6. saturation_test.cpp::TestBiasDoesNotIntroduceDc()
+    // was updated to a 8192-frame buffer with a 4096-frame skip; this
+    // profile-test assertion needed the same treatment but was missed
+    // in the v0.58.0 / v0.58.1 sweep — the pre-v0.58.0 256/skip-4
+    // window measured residual DC from the blocker mid-decay, not its
+    // steady-state floor, and CI caught it once the surrounding ADAA
+    // changes settled into release. Match the saturation_test pattern.
     SaturationEffect fx(ToRuntimeConfig(ec));
     fx.Prepare(kSampleRate, kChannels);
-    std::vector<float> buf(256 * kChannels, 0.0f);
-    fx.Process(buf.data(), 256, kChannels, nullptr, 0);
-    constexpr size_t kSkipFrames = 4;
+    constexpr uint32_t kSettleFrames = 8192;   // ~170 ms @ 48 kHz
+    constexpr size_t   kSkipFrames   = 4096;   // ~85 ms — past 7τ for R=0.996
+    std::vector<float> buf(kSettleFrames * kChannels, 0.0f);
+    fx.Process(buf.data(), kSettleFrames, kChannels, nullptr, 0);
     float maxAbs = 0.0f;
     for (size_t i = kSkipFrames * kChannels; i < buf.size(); ++i) {
         maxAbs = std::max(maxAbs, std::abs(buf[i]));

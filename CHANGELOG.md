@@ -22,7 +22,19 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.58.1] - 2026-05-22 — CI test fixes (reverb late window + saturation Phase 3 test rewrites)
+## [0.58.2] - 2026-05-22 — saturation_profile_test: DC blocker settling window (CI test fix)
+
+Patch release. No engine code changes. Single test file updated to match v0.58.0 DSP behavior.
+
+### Fixed
+
+- **`saturation_profile_test::TestDialogueWarmthProfile`** was still measuring DC residue against a 256-frame buffer with a 4-frame skip — the assertion window that worked against the pre-v0.58.0 static `f(bias·driveScale)` subtraction. v0.58.0 replaced that subtraction with a per-channel one-pole DC blocker (R≈0.996 at 48 kHz, ~30 Hz HPF, ~5.2 ms time constant), and the sibling `saturation_test::TestBiasDoesNotIntroduceDc` was updated in lockstep to use an 8192-frame buffer with a 4096-frame skip. The profile test was missed in that sweep, so CI reported `max|output|: 0.00623739 (expect ≈ 0)` — the DC blocker mid-decay rather than its steady-state floor. Test now matches the sibling: 8192 frames, skip 4096 (~85 ms post-settle, past 7τ for R=0.996). Reproduced the failure on the unmodified test against the current engine, confirmed the fix passes with `max|output|: 0.00000000`. Affects all six CI jobs that ran the suite (coverage / asan+ubsan / tsan / engine-linux / engine-macos / engine-windows); MSVC reported the same assertion as exit code `0xc0000409` (STATUS_STACK_BUFFER_OVERRUN, which CRT raises on `abort()` in release builds).
+
+### Known not-fixed in this release
+
+- The clang-tidy job is gated by `--warnings-as-errors='*'` and surfaces ~60 errors across 14 files at v0.58.1: `cppcoreguidelines-init-variables` (the repeated `double f; long long i; bool ii;` snippet in `sound_bank.cpp` accounts for 24 of them), `cppcoreguidelines-pro-type-reinterpret-cast` in canonical binary I/O paths, `cert-err33-c` on `snprintf`/`fwrite` returns, `bugprone-incorrect-roundings` (`int(x + 0.5f)`), `bugprone-suspicious-include` on the stb single-TU pattern, `modernize-deprecated-headers` (`<errno.h>` → `<cerrno>`), and a few one-offs. None ship audio defects to users. Triage policy (per-NOLINT vs `.clang-tidy` exclusion vs genuine fix) belongs in v0.58.3 once we decide which checks are intentional violations and which are real bugs masquerading as style nits. See `docs/engineering/clang_tidy_triage.md` (to be written) before that release.
+
+
 
 Patch release. No DSP behavior changes — only test code adjusted to
 match the post-v0.57.0 / post-v0.58.0 audio behavior. v0.57.0 and
