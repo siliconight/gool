@@ -75,6 +75,222 @@ const COLOR_FADER_TRACK := Color(0.20, 0.22, 0.26)
 const COLOR_FADER_HANDLE := Color(0.65, 0.72, 0.85)
 const COLOR_FADER_HANDLE_ACTIVE := Color(0.78, 0.88, 0.95)
 
+# v0.51.0: theme-aware chrome colors. Custom-drawn meters keep their
+# literal palette (audio convention: green/yellow/red at fixed dB
+# thresholds is the same in every DAW regardless of editor theme).
+# But the dock's chrome — toolbar, empty state, stats panel, dividers —
+# should follow the editor theme so the dock looks integrated rather
+# than grafted on.
+#
+# Each helper returns the editor-theme color if available, falling
+# back to the hardcoded dark-theme equivalent. Safe to call before
+# EditorInterface is ready (returns fallback).
+func _theme_color(name: String, fallback: Color) -> Color:
+	if not Engine.is_editor_hint():
+		return fallback
+	var theme := EditorInterface.get_editor_theme() if EditorInterface else null
+	if theme == null:
+		return fallback
+	if theme.has_color(name, "Editor"):
+		return theme.get_color(name, "Editor")
+	return fallback
+
+func _theme_accent() -> Color:
+	return _theme_color("accent_color", Color(0.42, 0.65, 0.95))
+
+func _theme_panel_bg() -> Color:
+	return _theme_color("dark_color_1", Color(0.13, 0.14, 0.16))
+
+func _theme_panel_bg_alt() -> Color:
+	return _theme_color("dark_color_2", Color(0.16, 0.17, 0.20))
+
+func _theme_separator() -> Color:
+	return _theme_color("contrast_color_1", Color(0.30, 0.32, 0.36))
+
+func _theme_text_primary() -> Color:
+	return _theme_color("font_color", Color(0.88, 0.90, 0.93))
+
+func _theme_text_secondary() -> Color:
+	return _theme_color("font_color_disabled", Color(0.55, 0.58, 0.62))
+
+# Build a flat, themed StyleBox suitable for toolbar/panel chrome.
+# Slightly raised feel (no shadow, just a clean fill + subtle border)
+# matching modern editor tools. Used by the v0.51.0 toolbar + empty
+# state + stats card backgrounds.
+func _build_chrome_stylebox(extra_padding: int = 8) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = _theme_panel_bg_alt()
+	sb.border_color = _theme_separator()
+	sb.border_width_left = 1
+	sb.border_width_right = 1
+	sb.border_width_top = 1
+	sb.border_width_bottom = 1
+	sb.corner_radius_top_left = 4
+	sb.corner_radius_top_right = 4
+	sb.corner_radius_bottom_left = 4
+	sb.corner_radius_bottom_right = 4
+	sb.content_margin_left = extra_padding
+	sb.content_margin_right = extra_padding
+	sb.content_margin_top = max(4, extra_padding - 2)
+	sb.content_margin_bottom = max(4, extra_padding - 2)
+	return sb
+
+# v0.51.0: build the empty-state onboarding card. Returns a Control
+# (CenterContainer) that takes the full strip area and centers a
+# card inside it. The card holds a heading, body copy, and two
+# action buttons: "Create default config" / "Use FPS template".
+#
+# References to the heading + body labels are stashed in metadata
+# so _set_empty_state_message() can update the text without
+# rebuilding the card.
+func _build_empty_state_card() -> Control:
+	var center := CenterContainer.new()
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	center.custom_minimum_size = Vector2(360, 200)
+
+	var card := PanelContainer.new()
+	card.add_theme_stylebox_override("panel", _build_chrome_stylebox(20))
+	center.add_child(card)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 12)
+	card.add_child(vbox)
+
+	var heading := Label.new()
+	heading.text = "No config found"
+	heading.add_theme_color_override("font_color", _theme_text_primary())
+	heading.add_theme_font_size_override("font_size", 16)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(heading)
+
+	var body := Label.new()
+	body.text = (
+			"gool needs a res://gool/config.json to define its bus topology. "
+			+ "Create one to get started.")
+	body.add_theme_color_override("font_color", _theme_text_secondary())
+	body.add_theme_font_size_override("font_size", 12)
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.custom_minimum_size = Vector2(320, 0)
+	vbox.add_child(body)
+
+	# Small spacer before the action row
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 4)
+	vbox.add_child(spacer)
+
+	var action_row := HBoxContainer.new()
+	action_row.add_theme_constant_override("separation", 8)
+	action_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(action_row)
+
+	var create_default_btn := Button.new()
+	create_default_btn.text = "Create default config"
+	create_default_btn.tooltip_text = (
+			"Write a minimal gool/config.json with Master + Music + Sfx + "
+			+ "Voice buses. Good starting point for any project.")
+	create_default_btn.pressed.connect(_on_create_default_config_pressed)
+	action_row.add_child(create_default_btn)
+
+	var use_fps_btn := Button.new()
+	use_fps_btn.text = "Use FPS template"
+	use_fps_btn.tooltip_text = (
+			"Copy addons/gool/templates/config_fps.json into res://gool/. "
+			+ "Includes the v0.47.0 reverb chain + sidechain ducking pre-wired "
+			+ "for FPS-style mixes.")
+	use_fps_btn.pressed.connect(_on_use_fps_template_pressed)
+	action_row.add_child(use_fps_btn)
+
+	# Cache references on metadata so _set_empty_state_message can
+	# find them without traversing the tree.
+	center.set_meta("heading_label", heading)
+	center.set_meta("body_label", body)
+	return center
+
+# v0.51.0: update the empty-state card's title + body without
+# rebuilding. Safe to call before _ready() completes; falls through
+# to nothing if the card isn't built yet.
+func _set_empty_state_message(heading_text: String, body_text: String) -> void:
+	if _empty_label == null:
+		return
+	if _empty_label.has_meta("heading_label"):
+		var h: Label = _empty_label.get_meta("heading_label")
+		if h != null:
+			h.text = heading_text
+	if _empty_label.has_meta("body_label"):
+		var b: Label = _empty_label.get_meta("body_label")
+		if b != null:
+			b.text = body_text
+
+# v0.51.0: action handlers for the empty-state buttons.
+#
+# Create default config writes a minimal viable bus topology. It's
+# small but valid — Master / Music / Sfx / Voice — so the dock can
+# render strips immediately and the user can iterate.
+#
+# Use FPS template copies the shipping config_fps.json into the
+# project. Adds the full reverb chain + sidechain ducking + Dialogue
+# routing recommended for FPS projects.
+func _on_create_default_config_pressed() -> void:
+	var path: String = "res://gool/config.json"
+	var dir := DirAccess.open("res://")
+	if dir == null:
+		push_error("[gool] mixer dock: cannot open res:// for writing")
+		return
+	if not dir.dir_exists("gool"):
+		dir.make_dir("gool")
+	var cfg: Dictionary = {
+		"sample_rate": 48000,
+		"buffer_size": 512,
+		"buses": [
+			{ "name": "Master", "gain_db": 0.0 },
+			{ "name": "Music",  "parent": "Master", "gain_db": -3.0 },
+			{ "name": "Sfx",    "parent": "Master", "gain_db": 0.0 },
+			{ "name": "Voice",  "parent": "Master", "gain_db": 0.0 },
+		],
+		"category_routing": {
+			"music": "Music",
+			"sfx": "Sfx",
+			"voice": "Voice",
+		},
+	}
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		push_error("[gool] mixer dock: cannot open %s for writing" % path)
+		return
+	f.store_string(JSON.stringify(cfg, "  "))
+	f.close()
+	print("[gool] mixer dock: wrote default config to %s" % path)
+	# Reload the model from disk so the dock rebuilds.
+	if _config_model != null:
+		_config_model.load_from_disk()
+	_load_static_layout_from_config()
+
+func _on_use_fps_template_pressed() -> void:
+	var src: String = "res://addons/gool/templates/config_fps.json"
+	var dst: String = "res://gool/config.json"
+	if not FileAccess.file_exists(src):
+		push_warning("[gool] mixer dock: FPS template not found at %s" % src)
+		return
+	var dir := DirAccess.open("res://")
+	if dir == null:
+		push_error("[gool] mixer dock: cannot open res:// for writing")
+		return
+	if not dir.dir_exists("gool"):
+		dir.make_dir("gool")
+	var text: String = FileAccess.get_file_as_string(src)
+	var f := FileAccess.open(dst, FileAccess.WRITE)
+	if f == null:
+		push_error("[gool] mixer dock: cannot open %s for writing" % dst)
+		return
+	f.store_string(text)
+	f.close()
+	print("[gool] mixer dock: copied FPS template → %s" % dst)
+	if _config_model != null:
+		_config_model.load_from_disk()
+	_load_static_layout_from_config()
+
 # Meter display range — minimum dBFS visible.
 const DB_METER_FLOOR: float = -60.0
 const DB_METER_CEIL: float = 6.0
@@ -87,7 +303,7 @@ const CONFIG_PATH: String = "res://gool/config.json"
 # ---- State -----------------------------------------------------------
 
 var _strip_container: HBoxContainer = null
-var _empty_label: Label = null
+var _empty_label: Control = null
 var _strips: Array = []  # of _BusStrip
 # v0.28.3: each strip lives inside a VBoxContainer column so the
 # effects panel can stack below the strip without disturbing
@@ -137,6 +353,14 @@ var _stats_panel: PanelContainer = null
 # Map of label key → Label node. Keys: "voices", "emitters",
 # "master_peak", "peak_amplitude", "drops". Updated each _poll.
 var _stats_labels: Dictionary = {}
+# v0.51.0: parallel map of card key → Control (the per-stat
+# card containing the label + value + optional meter/sparkline).
+# Used by _update_card_meter / _update_card_sparkline to find the
+# child widgets without tree traversal.
+var _stats_cards: Dictionary = {}
+# v0.51.0: "LIVE" leader label on the stats row. Color pulses to
+# accent when data is flowing, dims when poll returns empty.
+var _stats_leader: Label = null
 # Voice-chat health sub-row. Hidden when no voice players are
 # registered; populated from the engine's voice_chat dict in
 # render_stats. Children are dynamically rebuilt when the set of
@@ -163,21 +387,55 @@ func _ready() -> void:
 	root_vbox.anchor_bottom = 1.0
 	add_child(root_vbox)
 
-	# v0.48.0: toolbar above the strip area. Hosts the Save Mix to
-	# Config button — a complement to the existing debounced auto-
-	# save (v0.28.4). Auto-save writes patched edits in place to
-	# preserve formatting; overwrite_disk() does a clean full
-	# rewrite from the in-memory model. Useful when:
-	#   - config.json formatting got corrupted by external edits
-	#   - dev wants to "commit" the current mix as a known-good
-	#     baseline regardless of what's on disk
-	#   - external tools (git merge, search-replace) left config
-	#     in an ambiguous state and dev wants the model's view
-	var toolbar := HBoxContainer.new()
-	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	toolbar.add_theme_constant_override("separation", 8)
-	root_vbox.add_child(toolbar)
+	# v0.51.0: themed toolbar — banner with a title on the left, the
+	# Save Mix to Config action on the right. Replaces the v0.48.0
+	# plain HBox of [Button + Label] which used Godot defaults and
+	# stuck out as unstyled vs the custom-drawn strips below.
+	#
+	# Visual recipe:
+	#   - PanelContainer with chrome stylebox (matches editor theme)
+	#   - Section title "Mixer" + monospace path subtitle (de-emphasized)
+	#   - Spacer takes remaining width
+	#   - Save button right-aligned, themed flat
+	var toolbar_panel := PanelContainer.new()
+	toolbar_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar_panel.add_theme_stylebox_override("panel", _build_chrome_stylebox(10))
+	root_vbox.add_child(toolbar_panel)
 
+	var toolbar := HBoxContainer.new()
+	toolbar.add_theme_constant_override("separation", 12)
+	toolbar_panel.add_child(toolbar)
+
+	# Left: title block (heading + monospace path)
+	var title_block := VBoxContainer.new()
+	title_block.add_theme_constant_override("separation", 2)
+	toolbar.add_child(title_block)
+
+	var title_label := Label.new()
+	title_label.text = "Mixer"
+	title_label.add_theme_color_override("font_color", _theme_text_primary())
+	title_label.add_theme_font_size_override("font_size", 14)
+	title_block.add_child(title_label)
+
+	var path_label := Label.new()
+	path_label.text = "res://gool/config.json"
+	path_label.add_theme_color_override("font_color", _theme_text_secondary())
+	path_label.add_theme_font_size_override("font_size", 11)
+	# Monospace gives the path a "code" feel that scans as
+	# "file path, not prose" — same convention Godot's own
+	# inspector uses for resource paths.
+	var mono := ThemeDB.fallback_font
+	if mono != null:
+		path_label.add_theme_font_override("font", mono)
+	title_block.add_child(path_label)
+
+	# Spacer pushes the action button to the right edge.
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(spacer)
+
+	# Right: themed save button. flat=true + manual stylebox keeps
+	# the focus on the strips below rather than the toolbar shouting.
 	var save_button := Button.new()
 	save_button.text = "Save Mix to Config"
 	save_button.tooltip_text = (
@@ -189,13 +447,6 @@ func _ready() -> void:
 	save_button.pressed.connect(_on_save_mix_to_config_pressed)
 	toolbar.add_child(save_button)
 
-	# Path indicator so devs can see where they're writing to.
-	var path_label := Label.new()
-	path_label.text = "→ res://gool/config.json"
-	path_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-	path_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	toolbar.add_child(path_label)
-
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -205,9 +456,11 @@ func _ready() -> void:
 	_strip_container.add_theme_constant_override("separation", int(STRIP_GAP))
 	scroll.add_child(_strip_container)
 
-	_empty_label = Label.new()
-	_empty_label.text = "  No gool/config.json found.\n  Mixer is unavailable until a config is present."
-	_empty_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+	# v0.51.0: themed empty state. Replaces the bare-Label
+	# "No gool/config.json found" with a centered card containing
+	# a heading, body copy, and two action buttons. First-time
+	# users land here; the actions need to be obvious + recoverable.
+	_empty_label = _build_empty_state_card()
 	_strip_container.add_child(_empty_label)
 
 	# v0.28.4 (Phase 3.3c-3): instantiate the persistence model and
@@ -287,12 +540,18 @@ func _load_static_layout_from_config() -> void:
 	# was already called in _ready before this function fires for the
 	# first time, so this is safe at startup too.
 	if _config_model == null:
-		_empty_label.text = "  No gool/config.json found.\n  Mixer is unavailable until a config is present."
+		_set_empty_state_message(
+				"No config found",
+				"gool needs a res://gool/config.json to define its bus topology. "
+				+ "Create one to get started.")
 		_empty_label.visible = true
 		return
 	var buses: Array = _config_model.get_buses()
 	if buses.is_empty():
-		_empty_label.text = "  No gool/config.json found, or it's empty.\n  Add buses to see them here."
+		_set_empty_state_message(
+				"Config is empty",
+				"res://gool/config.json was loaded but has no buses defined. "
+				+ "Add buses to see them here.")
 		_empty_label.visible = true
 		return
 	_rebuild_strips_from_config(buses)
@@ -1003,33 +1262,54 @@ func _remove_panel_from_column(col: VBoxContainer) -> void:
 #   shown but isn't broken out by reason.
 
 func _build_stats_panel() -> PanelContainer:
+	# v0.51.0: themed stats panel. Per-stat "cards" with uppercase
+	# label / monospace value / optional inline meter or sparkline.
+	# Replaces v0.44.0's row of plain "Voices: 12" Labels.
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_theme_stylebox_override("panel", _build_chrome_stylebox(10))
 
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 2)
+	vbox.add_theme_constant_override("separation", 6)
 	panel.add_child(vbox)
 
-	# Row 1: general health
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 18)
+	row.add_theme_constant_override("separation", 24)
 	vbox.add_child(row)
 
-	# "Live" label as the leader cue; same dimmed text style as
-	# the no-config empty label for visual consistency.
-	var leader := Label.new()
-	leader.text = "Live"
-	leader.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-	row.add_child(leader)
+	# Leader label — small caps "LIVE" in accent color when data is
+	# flowing, dim when idle. Stat card values switch to placeholders
+	# when idle so the leader doubles as a "data freshness" cue.
+	_stats_leader = Label.new()
+	_stats_leader.text = "LIVE"
+	_stats_leader.add_theme_color_override("font_color", _theme_text_secondary())
+	_stats_leader.add_theme_font_size_override("font_size", 10)
+	row.add_child(_stats_leader)
 
 	_stats_labels = {}
-	_stats_labels["voices"]        = _add_stats_field(row, "Voices: —")
-	_stats_labels["emitters"]      = _add_stats_field(row, "Emitters: —")
-	_stats_labels["master_peak"]   = _add_stats_field(row, "Master: — dB")
-	_stats_labels["peak_amplitude"]= _add_stats_field(row, "Pre-mix peak: — dB")
-	_stats_labels["drops"]         = _add_stats_field(row, "Drops: —")
+	_stats_cards = {}
 
-	# Row 2: voice-chat health, hidden until any players show up
+	# Voices: count + 0..max meter. Max is the spatial-emitter budget
+	# from config.h (64). Bar fills as the count climbs; user spots
+	# saturation visually.
+	_stats_cards["voices"] = _build_stat_card(row, "VOICES", true, false)
+	_stats_labels["voices"] = _stats_cards["voices"].get_meta("value_label")
+
+	_stats_cards["emitters"] = _build_stat_card(row, "EMITTERS", true, false)
+	_stats_labels["emitters"] = _stats_cards["emitters"].get_meta("value_label")
+
+	# Master peak gets the sparkline — at-a-glance "is it pumping?"
+	# without watching numbers tick.
+	_stats_cards["master_peak"] = _build_stat_card(row, "MASTER", false, true)
+	_stats_labels["master_peak"] = _stats_cards["master_peak"].get_meta("value_label")
+
+	_stats_cards["peak_amplitude"] = _build_stat_card(row, "PRE-MIX", false, false)
+	_stats_labels["peak_amplitude"] = _stats_cards["peak_amplitude"].get_meta("value_label")
+
+	_stats_cards["drops"] = _build_stat_card(row, "DROPS", false, false)
+	_stats_labels["drops"] = _stats_cards["drops"].get_meta("value_label")
+
+	# Voice-chat sub-row — same hidden-until-needed behavior as v0.44.0.
 	_voice_chat_row = HBoxContainer.new()
 	_voice_chat_row.add_theme_constant_override("separation", 12)
 	_voice_chat_row.visible = false
@@ -1037,13 +1317,74 @@ func _build_stats_panel() -> PanelContainer:
 
 	return panel
 
-# Add a fixed-width-ish Label to the parent HBox and return it.
-# All stat labels share style so the row visually scans as one.
-func _add_stats_field(parent: HBoxContainer, initial_text: String) -> Label:
-	var lbl := Label.new()
-	lbl.text = initial_text
-	parent.add_child(lbl)
-	return lbl
+# v0.51.0: build a single stat "card" — small uppercase label
+# stacked above the value, with an optional meter or sparkline
+# below. Cards stash references to their value Label, meter, and
+# sparkline in metadata so the update path can find them without
+# tree traversal.
+func _build_stat_card(parent: HBoxContainer, label_text: String,
+		with_meter: bool, with_sparkline: bool) -> Control:
+	var card := VBoxContainer.new()
+	card.add_theme_constant_override("separation", 2)
+	parent.add_child(card)
+
+	var label := Label.new()
+	label.text = label_text
+	label.add_theme_color_override("font_color", _theme_text_secondary())
+	label.add_theme_font_size_override("font_size", 9)
+	card.add_child(label)
+
+	var value := Label.new()
+	value.text = "—"
+	value.add_theme_color_override("font_color", _theme_text_primary())
+	value.add_theme_font_size_override("font_size", 14)
+	# Try to use the monospace font from the editor theme; falls
+	# back to default if not available. Monospace gives numbers a
+	# uniform column width — so "100" and "0" don't shift the
+	# layout as they change.
+	var mono := _theme_color_get_mono_font()
+	if mono != null:
+		value.add_theme_font_override("font", mono)
+	card.add_child(value)
+
+	# Bottom row: meter or sparkline (whichever was requested).
+	if with_meter:
+		var meter := ProgressBar.new()
+		meter.show_percentage = false
+		meter.max_value = 100.0
+		meter.value = 0.0
+		meter.custom_minimum_size = Vector2(72, 4)
+		card.add_child(meter)
+		card.set_meta("meter", meter)
+	elif with_sparkline:
+		var spark := _PeakSparkline.new()
+		spark.custom_minimum_size = Vector2(72, 12)
+		spark.theme_color = _theme_accent()
+		card.add_child(spark)
+		card.set_meta("sparkline", spark)
+	else:
+		# Spacer to align card heights regardless of meter/spark
+		# presence. 4px matches ProgressBar default thickness.
+		var pad := Control.new()
+		pad.custom_minimum_size = Vector2(0, 4)
+		card.add_child(pad)
+
+	card.set_meta("value_label", value)
+	card.set_meta("text_label", label)
+	return card
+
+# Pull a monospace font from the editor theme. Returns null if
+# nothing usable is available; callers fall back to the default
+# sans font.
+func _theme_color_get_mono_font() -> Font:
+	if not Engine.is_editor_hint():
+		return null
+	var theme := EditorInterface.get_editor_theme() if EditorInterface else null
+	if theme == null:
+		return null
+	if theme.has_font("source", "EditorFonts"):
+		return theme.get_font("source", "EditorFonts")
+	return null
 
 # Called from _poll() at 30 Hz. Reads the cached render_stats
 # from the debugger plugin and updates the labels. When the
@@ -1064,25 +1405,57 @@ func _update_stats_panel() -> void:
 		return
 
 	# Voices and emitters: direct integer fields from get_render_stats.
-	_stats_labels["voices"].text = "Voices: %d" % int(rs.get("active_voices", 0))
-	_stats_labels["emitters"].text = "Emitters: %d" % int(rs.get("active_emitters", 0))
+	# v0.51.0: card label is "VOICES", so the value is just the number
+	# (no redundant "Voices:" prefix). Push meter ratio against the
+	# configured spatial/active emitter budgets — 64 and 128 by default
+	# (AudioRuntimeBudget from config.h).
+	var voices: int = int(rs.get("active_voices", 0))
+	var emitters: int = int(rs.get("active_emitters", 0))
+	_stats_labels["voices"].text = "%d" % voices
+	_stats_labels["emitters"].text = "%d" % emitters
+	_update_card_meter("voices", float(voices) / 64.0)
+	_update_card_meter("emitters", float(emitters) / 128.0)
 
 	# Master peak (post-mixer, what's actually leaving the engine).
 	# Convert linear → dB; clamp the floor at -inf for display.
+	# v0.51.0: also push to the sparkline so the master card shows a
+	# rolling 30-second trace.
 	var mp_lin: float = float(rs.get("mixer_peak", 0.0))
-	_stats_labels["master_peak"].text = "Master: %s" % _format_db(mp_lin)
+	_stats_labels["master_peak"].text = _format_db(mp_lin)
+	_update_card_sparkline("master_peak", mp_lin)
+	# Tint the master peak red when clipping (> 0 dBFS) — at-a-glance
+	# danger cue without having to read the number.
+	if mp_lin > 1.0:
+		_stats_labels["master_peak"].add_theme_color_override(
+				"font_color", COLOR_RED)
+	else:
+		_stats_labels["master_peak"].add_theme_color_override(
+				"font_color", _theme_text_primary())
 
 	# Pre-mixer peak (peak_amplitude is the raw render-thread peak
 	# before master gain). Useful to spot clipping at the source
 	# even when master gain is pulled down.
 	var pa_lin: float = float(rs.get("peak_amplitude", 0.0))
-	_stats_labels["peak_amplitude"].text = "Pre-mix peak: %s" % _format_db(pa_lin)
+	_stats_labels["peak_amplitude"].text = _format_db(pa_lin)
 
 	# Dropout / exception count — runs as a monotonic counter,
 	# so a non-zero value indicates the engine has hit at least
 	# one exception since the session started. Worth surfacing
 	# prominently because audio dropouts are otherwise silent.
-	_stats_labels["drops"].text = "Drops: %d" % int(rs.get("exception_count", 0))
+	# v0.51.0: tint red when nonzero so it can't be missed at a glance.
+	var drops: int = int(rs.get("exception_count", 0))
+	_stats_labels["drops"].text = "%d" % drops
+	if drops > 0:
+		_stats_labels["drops"].add_theme_color_override(
+				"font_color", COLOR_RED)
+	else:
+		_stats_labels["drops"].add_theme_color_override(
+				"font_color", _theme_text_primary())
+
+	# Leader: pulse to accent color when data is fresh (the v0.51.0
+	# cue that this row is live). Stays dim when poll returns empty.
+	if _stats_leader != null:
+		_stats_leader.add_theme_color_override("font_color", _theme_accent())
 
 	# Voice chat sub-row: rebuild when the player set changes,
 	# update text every tick otherwise.
@@ -1090,13 +1463,49 @@ func _update_stats_panel() -> void:
 	_update_voice_chat_row(vc)
 
 func _set_stats_placeholders() -> void:
-	_stats_labels["voices"].text         = "Voices: —"
-	_stats_labels["emitters"].text       = "Emitters: —"
-	_stats_labels["master_peak"].text    = "Master: — dB"
-	_stats_labels["peak_amplitude"].text = "Pre-mix peak: — dB"
-	_stats_labels["drops"].text          = "Drops: —"
+	_stats_labels["voices"].text         = "—"
+	_stats_labels["emitters"].text       = "—"
+	_stats_labels["master_peak"].text    = "—"
+	_stats_labels["peak_amplitude"].text = "—"
+	_stats_labels["drops"].text          = "—"
+	# v0.51.0: zero out meters + reset clip-warning tints when going idle
+	_update_card_meter("voices", 0.0)
+	_update_card_meter("emitters", 0.0)
+	for k in ["master_peak", "drops"]:
+		if _stats_labels.has(k):
+			_stats_labels[k].add_theme_color_override(
+					"font_color", _theme_text_primary())
+	if _stats_leader != null:
+		_stats_leader.add_theme_color_override(
+				"font_color", _theme_text_secondary())
 	if _voice_chat_row != null:
 		_voice_chat_row.visible = false
+
+# v0.51.0: helper to update a stat card's optional inline meter.
+# Ratio 0..1 maps to 0..100 on the ProgressBar. Clamped because
+# voice count CAN exceed the budget for a frame (drops happen
+# immediately after) and the visual should peg at full, not
+# wrap or hide.
+func _update_card_meter(card_key: String, ratio: float) -> void:
+	if not _stats_cards.has(card_key):
+		return
+	var card: Control = _stats_cards[card_key]
+	if not card.has_meta("meter"):
+		return
+	var meter: ProgressBar = card.get_meta("meter")
+	if meter != null:
+		meter.value = clamp(ratio, 0.0, 1.0) * 100.0
+
+# v0.51.0: helper to push a sample into a stat card's sparkline.
+func _update_card_sparkline(card_key: String, linear_value: float) -> void:
+	if not _stats_cards.has(card_key):
+		return
+	var card: Control = _stats_cards[card_key]
+	if not card.has_meta("sparkline"):
+		return
+	var spark = card.get_meta("sparkline")
+	if spark != null and spark.has_method("push_sample"):
+		spark.push_sample(linear_value)
 
 func _format_db(linear: float) -> String:
 	# Clamp tiny values to "-∞" rather than displaying e.g. "-120.0
@@ -2435,3 +2844,62 @@ class _EffectsPanel extends PanelContainer:
 	# Stable composite key for the control/label maps.
 	func _key(effect_idx: int, param_id: int) -> String:
 		return str(effect_idx) + ":" + str(param_id)
+
+
+# v0.51.0: tiny rolling-history sparkline for the master peak card.
+# Renders a polyline of the last N samples behind/below the dB
+# number. Samples are pushed each _poll (~30 Hz) so a 60-sample
+# buffer covers ~2 seconds — short enough to feel responsive,
+# long enough to read a pumping compressor's shape at a glance.
+class _PeakSparkline extends Control:
+	const _BUFFER_SIZE: int = 60
+	const _DB_FLOOR: float = -36.0
+	const _DB_CEIL: float = 6.0
+
+	var _samples: PackedFloat32Array = PackedFloat32Array()
+	var theme_color: Color = Color(0.42, 0.65, 0.95)
+
+	func _ready() -> void:
+		_samples.resize(_BUFFER_SIZE)
+		for i in range(_BUFFER_SIZE):
+			_samples[i] = _DB_FLOOR
+
+	# Push one linear-domain sample. Converted to dB and clamped to
+	# the visible range. Oldest sample is dropped.
+	func push_sample(linear_value: float) -> void:
+		if _samples.is_empty():
+			_ready()
+		var db: float
+		if linear_value <= 0.00001:
+			db = _DB_FLOOR
+		else:
+			db = linear_to_db(linear_value)
+		db = clamp(db, _DB_FLOOR, _DB_CEIL)
+		# Shift left, append newest at the tail.
+		for i in range(_BUFFER_SIZE - 1):
+			_samples[i] = _samples[i + 1]
+		_samples[_BUFFER_SIZE - 1] = db
+		queue_redraw()
+
+	func _draw() -> void:
+		var w: float = size.x
+		var h: float = size.y
+		if w < 4.0 or h < 2.0:
+			return
+		# Faint baseline at 0 dBFS so users have a "clip line" cue.
+		var zero_y: float = h * (1.0 - (0.0 - _DB_FLOOR) / (_DB_CEIL - _DB_FLOOR))
+		var baseline_color: Color = theme_color
+		baseline_color.a = 0.20
+		draw_line(Vector2(0, zero_y), Vector2(w, zero_y),
+				baseline_color, 1.0)
+		# Polyline of samples
+		var pts := PackedVector2Array()
+		var step: float = w / float(_BUFFER_SIZE - 1)
+		for i in range(_BUFFER_SIZE):
+			var db: float = _samples[i]
+			var norm: float = (db - _DB_FLOOR) / (_DB_CEIL - _DB_FLOOR)
+			var y: float = h * (1.0 - norm)
+			pts.append(Vector2(i * step, y))
+		if pts.size() >= 2:
+			# Use draw_polyline (anti-aliased) for the trace.
+			draw_polyline(pts, theme_color, 1.5, true)

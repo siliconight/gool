@@ -22,7 +22,113 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.50.0] - 2026-05-22 — Tier 3 polish: performance budgets doc + FPS scene smoke test
+## [0.51.0] - 2026-05-22 — Mixer dock visual refresh
+
+### Added
+
+- **Theme-aware chrome** — the mixer dock now pulls its chrome
+  colors (toolbar background, panel fills, separators, text)
+  from `EditorInterface.get_editor_theme()` instead of using
+  hardcoded RGB triples. The dock auto-adapts to the editor's
+  Light theme, Dark theme, and any custom themes. The custom-
+  drawn bus strip meters keep their literal palette (green /
+  yellow / red at fixed dB thresholds — same in every DAW
+  regardless of editor theme).
+
+  Implementation: new helper functions `_theme_color()`,
+  `_theme_accent()`, `_theme_panel_bg()`, `_theme_panel_bg_alt()`,
+  `_theme_separator()`, `_theme_text_primary()`,
+  `_theme_text_secondary()`. Each returns the editor theme value
+  if available, falls back to the v0.50.0-era hardcoded value
+  if not (so the dock still renders sensibly outside the editor).
+
+- **Redesigned toolbar**. The v0.48.0 `[Save Mix to Config]`
+  button + path label was a plain HBox using Godot defaults that
+  stuck out as unstyled. Now it's a themed `PanelContainer`
+  banner with:
+  - Section heading **"Mixer"** at 14px in primary text color
+  - Monospace `res://gool/config.json` subtitle at 11px in
+    secondary text color (the path scans as "file path, not
+    prose" — same convention Godot's own inspector uses)
+  - Right-aligned save button
+  - Rounded corners + subtle border via `StyleBoxFlat`
+
+- **Onboarding empty state**. The bare-Label "No gool/config.json
+  found" message has been replaced with a centered card
+  containing:
+  - **"No config found"** heading
+  - Body copy explaining what's needed
+  - **`[Create default config]`** button — writes a minimal valid
+    config.json with Master/Music/Sfx/Voice buses to get the dock
+    rendering immediately
+  - **`[Use FPS template]`** button — copies
+    `addons/gool/templates/config_fps.json` into
+    `res://gool/config.json`, giving the user the full FPS-ready
+    bus topology with reverb chain + sidechain ducking pre-wired
+
+  First-time users now have a clear path forward instead of a
+  static error message.
+
+- **Redesigned Live Stats panel as stat cards**. Each stat
+  (VOICES / EMITTERS / MASTER / PRE-MIX / DROPS) is now its own
+  vertical card:
+  - Small uppercase label (9px, secondary color)
+  - Large value (14px, monospace so columns stay aligned as
+    numbers change)
+  - Inline meter (ProgressBar) for VOICES and EMITTERS showing
+    fullness against the configured budget (64 spatial / 128
+    active emitters from `AudioRuntimeBudget`)
+  - **Sparkline for MASTER** — a 60-sample rolling history of the
+    master peak over the last ~2 seconds, rendered as an
+    anti-aliased polyline. At-a-glance "is the mix pumping?"
+    without watching the number tick. Baseline marker at 0 dBFS
+    so clipping events are visually unmistakable.
+  - Red text tint when MASTER > 0 dBFS or DROPS > 0 (silent
+    disaster prevention — drops are otherwise invisible)
+  - **LIVE** leader label pulses to accent color when fresh data
+    is flowing, dims when poll returns empty
+
+  Implementation: new `_PeakSparkline` inner class (top-level
+  alongside `_BusStrip` and `_EffectsPanel`). New
+  `_build_stat_card` helper. State is stashed in meta on each
+  card so `_update_card_meter` and `_update_card_sparkline` can
+  find the inner widgets without tree traversal.
+
+### Changed
+
+- `_empty_label` type changed from `Label` to `Control` (it's
+  now a `CenterContainer` holding a `PanelContainer` card). The
+  two callsites that set `.text` directly were rewritten to
+  call the new `_set_empty_state_message(heading, body)` helper.
+  No external API change — the field is private.
+
+### Backward compatibility
+
+- All changes are visual-layer only. No public API surface
+  changes, no behavior changes to runtime audio, no config
+  schema changes.
+- The custom-drawn bus strips themselves are unchanged — the
+  Pro Tools-style meter coloring, fader behavior, S/M/B
+  buttons, and Fx panel work identically to v0.50.0.
+- Hardcoded color constants (`COLOR_BG`, `COLOR_TEXT`, etc.)
+  are kept for the bus strip's internal _draw paths — only
+  the chrome (toolbar, empty state, stats panel) uses theme-
+  aware colors.
+
+### Notes
+
+- I cannot directly render the dock to verify visuals, so this
+  release is built from code-reading the existing structure.
+  If anything looks wrong (clipping, off-center placement,
+  unexpected colors), report it and I'll fix it.
+- Items deferred from the v0.50.0 audit response:
+  - Bus hierarchy indenting (parent/child buses visually grouped)
+  - Effect chain flow diagram (instead of plain parameter list)
+  - Sound bank panel (audition .wav from the dock)
+  - Multi-tab dock structure
+  These are bigger features and each would be its own release.
+
+
 
 ### Added
 
@@ -16788,7 +16894,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.50.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/siliconight/gool/releases/tag/v0.51.0
 [0.50.0]: https://github.com/siliconight/gool/releases/tag/v0.50.0
 [0.49.0]: https://github.com/siliconight/gool/releases/tag/v0.49.0
 [0.48.0]: https://github.com/siliconight/gool/releases/tag/v0.48.0
