@@ -22,7 +22,56 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.56.0] - 2026-05-22 — Reverb DSP fixes (metallic ringing) + Glass/Metal material EQ brightness
+## [0.56.1] - 2026-05-22 — Sound Bank panel: visible audition-routing explainer
+
+### Changed
+
+- **Sound Bank panel now shows a persistent explainer card at
+  the top** describing where audition audio routes and what to
+  check if nothing plays. Pre-v0.56.1 this info lived only in
+  the source code header and the play-button hover tooltip,
+  meaning if a designer pressed play and got silence they had
+  no visible hint where to look.
+
+  Common cause of "play does nothing": Godot's editor audio is
+  muted via the speaker toggle in the main toolbar. The dock's
+  audition goes through Godot's `AudioStreamPlayer` (NOT gool's
+  mixer — gool only runs at F5), so that mute affects audition
+  even though gool's engine state is irrelevant. The explainer
+  now states this explicitly:
+
+  > Audition plays through Godot's editor audio, NOT gool's mixer.
+  > You're previewing the raw sample — to hear it through your bus
+  > chain (reverb, compression, etc.), press F5.
+  > No sound? Check that Godot's editor audio is unmuted (speaker
+  > toggle in the main toolbar).
+
+- **Play-button tooltip text simplified** to match the explainer
+  vocabulary. Was "Audition via AudioStreamPlayer (not gool's
+  pipeline)" — engineering-internal language. Now "Play (routes
+  through Godot's editor audio — see panel top)" — points
+  back to the visible explainer for context.
+
+### Notes
+
+- Driven by a user reporting "pressing play on the sound banks
+  doesn't play any audio" — turned out to be the Godot editor
+  audio mute toggle. The bug was the gool dock not telling them
+  where to look; v0.56.1 closes that gap.
+- The audition-via-Godot mechanism itself is unchanged. Spinning
+  up gool's full pipeline for editor-time auditioning would be
+  expensive and tangle a lot of state; raw-sample preview is the
+  intentional design. The explainer just makes the design
+  visible instead of hidden.
+
+### Backward compatibility
+
+- UI-only change. No API, no behavior, no config schema change.
+- The new card adds vertical space to the Sound Bank tab. On
+  very narrow docks the lines wrap; copy was written to stay
+  readable when wrapped.
+
+
 
 ### Fixed
 
@@ -17634,7 +17683,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.56.1...HEAD
+[0.56.1]: https://github.com/siliconight/gool/releases/tag/v0.56.1
 [0.56.0]: https://github.com/siliconight/gool/releases/tag/v0.56.0
 [0.55.0]: https://github.com/siliconight/gool/releases/tag/v0.55.0
 [0.54.3]: https://github.com/siliconight/gool/releases/tag/v0.54.3

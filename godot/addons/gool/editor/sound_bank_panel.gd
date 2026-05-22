@@ -127,6 +127,13 @@ func _ready() -> void:
 
 	_root_vbox.add_child(_build_toolbar())
 	_root_vbox.add_child(_build_search_row())
+	# v0.56.1: persistent routing explainer. Without it, the user
+	# only finds out the audition goes through Godot's editor audio
+	# (not gool's mixer) by hovering the play button. When nothing
+	# plays — usually because Godot's editor sound is muted — there
+	# was no visible hint about where to look. This card surfaces
+	# both pieces of info up-front.
+	_root_vbox.add_child(_build_routing_explainer())
 
 	# Bank list goes inside a scroll container so very large
 	# projects with many banks remain scannable.
@@ -280,6 +287,53 @@ func _build_now_playing_bar() -> Control:
 	stop_btn.tooltip_text = "Stop the current audition"
 	stop_btn.pressed.connect(_stop_audition)
 	row.add_child(stop_btn)
+
+	return panel
+
+
+# v0.56.1: persistent explainer card shown at the top of the
+# panel. Surfaces two things designers were finding out the hard
+# way: (1) audition runs through Godot's editor audio output, not
+# gool's mixer, so they won't hear reverb / compression / etc.
+# applied by their gool bus chain — they need F5 for full pipeline
+# auditioning. (2) If they hear nothing at all, Godot's editor
+# audio is probably muted via the toolbar toggle. Without this
+# card, both pieces of info were only visible in the play
+# button's hover tooltip.
+func _build_routing_explainer() -> Control:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel",
+			_get_chrome_stylebox(8))
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 2)
+	panel.add_child(col)
+
+	var line1 := Label.new()
+	line1.text = (
+			"Audition plays through Godot's editor audio, "
+			+ "NOT gool's mixer.")
+	line1.add_theme_color_override("font_color", _get_text_primary())
+	line1.add_theme_font_size_override("font_size", 11)
+	col.add_child(line1)
+
+	var line2 := Label.new()
+	line2.text = (
+			"You're previewing the raw sample — to hear it through "
+			+ "your bus chain (reverb, compression, etc.), press F5.")
+	line2.add_theme_color_override("font_color", _get_text_secondary())
+	line2.add_theme_font_size_override("font_size", 11)
+	line2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(line2)
+
+	var line3 := Label.new()
+	line3.text = (
+			"No sound? Check that Godot's editor audio is unmuted "
+			+ "(speaker toggle in the main toolbar).")
+	line3.add_theme_color_override("font_color", _get_text_secondary())
+	line3.add_theme_font_size_override("font_size", 11)
+	line3.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(line3)
 
 	return panel
 
@@ -551,7 +605,7 @@ func _build_entry_row(bank_path: String, bank, sound_name: String,
 	play_btn.text = ICON_STOP if is_playing else ICON_PLAY
 	play_btn.tooltip_text = (
 			"Stop" if is_playing else
-			"Audition via AudioStreamPlayer (not gool's pipeline)")
+			"Play (routes through Godot's editor audio — see panel top)")
 	play_btn.custom_minimum_size = Vector2(28, 0)
 	play_btn.pressed.connect(_on_play_pressed.bind(
 			bank_path, sound_name, stream))
