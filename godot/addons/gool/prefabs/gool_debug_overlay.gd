@@ -69,9 +69,14 @@ var background_opacity: float = 0.6
 # override per-project if you want to match your HUD style.
 @export var text_color: Color = Color(0.95, 0.95, 0.95)
 
-# Use a monospace font for column alignment. False uses Godot's
-# default proportional font — slightly easier to read but values
-# jitter as digits change width.
+# When true, use the bundled Ubuntu Regular font (v0.59.1+) shipped
+# under res://addons/gool/fonts/. When false, inherit the host
+# project's theme font — useful when the project already standardizes
+# on Roboto/Inter/etc. and you want the HUD to match. The property
+# name is a v0.37.0 holdover; pre-v0.59.1 this loaded
+# `ThemeDB.fallback_font` which advertised itself as monospace but was
+# actually proportional Noto. Ubuntu Regular is proportional with
+# tabular figures, which keeps numeric columns aligned.
 @export var monospace: bool = true
 
 # ─── private state ────────────────────────────────────────────
@@ -195,11 +200,33 @@ func _build_ui() -> void:
 	_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_label.add_theme_color_override("font_color", text_color)
 	if monospace:
-		# Use Godot's built-in monospace font ("res://...") — if not
-		# available, falls back to default. We don't ship a custom
-		# font with the addon to keep the archive small.
-		var font := ThemeDB.fallback_font
-		_label.add_theme_font_override("font", font)
+		# v0.59.1: load the bundled Ubuntu Regular font shipped under
+		# res://addons/gool/fonts/. Pre-v0.59.1 this branch loaded
+		# ThemeDB.fallback_font with a comment claiming it was the
+		# monospace built-in — in practice that fallback is Noto, a
+		# proportional font, so column alignment was already
+		# approximate. The new Ubuntu Regular has tabular figures and
+		# pins typography across hosts so HUD screenshots from
+		# different machines and Godot versions look identical.
+		#
+		# `load()` + `ResourceLoader.exists()` rather than `preload()`
+		# so the overlay degrades gracefully if someone stripped the
+		# /fonts/ subdir to shrink their addon footprint — falls
+		# through to the host theme's default font in that case
+		# instead of hard-erroring at script parse time.
+		#
+		# Note on the `monospace` export name: it's a v0.37.0 holdover.
+		# Ubuntu Regular is technically proportional (letters vary in
+		# width) but its digits are tabular (fixed-width), which is
+		# what matters for the numeric columns in the stats display.
+		# When `monospace = false`, the overlay falls through to the
+		# host theme's UI font — useful if your project has its own
+		# Roboto/Inter/etc. and wants the HUD to match.
+		const FONT_PATH := "res://addons/gool/fonts/Ubuntu-Regular.ttf"
+		if ResourceLoader.exists(FONT_PATH):
+			var font: Font = load(FONT_PATH)
+			if font != null:
+				_label.add_theme_font_override("font", font)
 	_label.position = Vector2(8, 6)
 	_label.text = "gool debug overlay\n(waiting for first refresh...)"
 	_bg_panel.add_child(_label)

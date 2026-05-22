@@ -22,6 +22,43 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.59.1] - 2026-05-22 — Bundled Ubuntu font for runtime UI (addon-side polish)
+
+Ships the **Ubuntu Font Family** (UFL-1.0) with the gool addon so the runtime UI prefabs render with stable, predictable typography across hosts. Pure addon-side change — no C++ engine code touched, no API changes, no DSP behavior changes.
+
+### Added
+
+- `godot/addons/gool/fonts/Ubuntu-Regular.ttf` — default body face. ~292 KB.
+- `godot/addons/gool/fonts/Ubuntu-Medium.ttf` — bundled for future headers/labels. ~278 KB.
+- `godot/addons/gool/fonts/Ubuntu-Bold.ttf` — bundled for future emphasis (warnings, peaks). ~264 KB.
+- `godot/addons/gool/fonts/Ubuntu-Italic.ttf` — bundled for future hint text. ~319 KB.
+- `godot/addons/gool/fonts/UFL.txt` — Ubuntu Font Licence v1.0, full text.
+- `godot/addons/gool/fonts/README.md` — what each weight is for + license summary + why the four-weight subset (not all eight).
+
+Total /fonts/ payload: **~1.2 MB**. Editor docks (`mixer_dock.gd`, `sound_bank_panel.gd`) deliberately do **not** load these fonts — they continue inheriting the Godot editor theme so they integrate visually with the host editor.
+
+### Changed
+
+- `godot/addons/gool/prefabs/gool_debug_overlay.gd` — `monospace=true` branch now loads `res://addons/gool/fonts/Ubuntu-Regular.ttf` instead of `ThemeDB.fallback_font`. Uses `ResourceLoader.exists()` + `load()` rather than `preload()` so the overlay degrades gracefully (falls through to the host theme's default font) if a user strips `/fonts/` from the addon to shrink their archive. The `monospace` export property name is preserved for backward-compat with existing `.tscn` files using the prefab; its docstring is updated to reflect the v0.59.1 semantics ("use bundled gool font" vs. "inherit host theme font"). Pre-v0.59.1, that branch's claim of using a built-in monospace font was inaccurate — Godot's fallback font is proportional (Noto), so column alignment in the stats display was already approximate. Ubuntu Regular has tabular figures (fixed-width digits) which keeps the numeric columns aligned in practice.
+
+- `godot/addons/gool/prefabs/gool_audio_settings_panel.gd` — adds a small `_apply_gool_font_theme()` helper that builds a `Theme` with `default_font = Ubuntu-Regular` and assigns it to the panel root in `_build_ui()`. Theme inheritance pushes Ubuntu down to every Label, Button, SpinBox, and HSlider inside the panel without needing per-control overrides. Same `load()` + `exists()` graceful-degradation pattern as the overlay.
+
+### Not changed (deliberately)
+
+- **Editor docks.** `godot/addons/gool/editor/mixer_dock.gd` and `godot/addons/gool/editor/sound_bank_panel.gd` continue to inherit `EditorInterface.get_editor_theme()`. A custom font on an editor dock fights the host editor visually. Editor-side typography belongs to the editor, not to gool.
+- **C++ engine code.** No changes. v0.59.1 is purely a runtime addon polish release.
+- **CHANGELOG of all tests passing.** All v0.59.0 tests (saturation, profile, bus_config_loader, integration_kitchen_sink, version) continue to pass unchanged; v0.59.1 doesn't touch any code they exercise.
+
+### Deferred to v0.59.x+
+
+- **Medium-weight header treatment** for the overlay (e.g. render `gool 0.59.1` and `device: WASAPI / ...` lines in Ubuntu Medium, the rest in Ubuntu Regular). The fonts are bundled and ready; the overlay's current single-Label structure would need to split into a VBox of two labels with separate font overrides. Easy follow-up but doesn't change the v0.59.1 user benefit.
+- **Project-wide gool theme resource.** Could ship a `res://addons/gool/resources/gool_theme.tres` that the addon's prefabs all opt into by default, so users get a coherent gool look without per-prefab font wiring. Adds complexity for marginal benefit; revisit if/when a third runtime UI prefab needs the same fonts.
+
+### License notes
+
+The Ubuntu Font Licence (UFL) is permissive for embedding and redistribution. It applies only to the .ttf files themselves — it does not extend to the gool addon's Apache-2.0 code, which merely uses the fonts to render text. Detailed license context is in `godot/addons/gool/fonts/README.md`. Users redistributing the gool addon must continue to ship `UFL.txt` alongside the .ttf files (which the v0.59.1 archive does by default).
+
+
 ## [0.59.0] - 2026-05-22 — Saturation Phase 4: tone tilt (closes saturation_v2.md arc)
 
 Adds the final piece of the saturation roadmap documented in `docs/audio_design/saturation_v2.md` §9. Phases 1 (ADAA, v0.38.0), 2 (multi-mode, v0.40.0), and 3 (auto-compensation + DC blocker + parameter smoothing, v0.58.0) shipped earlier; v0.59.0 closes the arc with a tone-tilt parameter that changes saturation **character** without acting as an EQ.
@@ -79,6 +116,7 @@ Fully backward compatible:
 - **"Sat" presets** (material/intent-based bundles like `radio_comms`, `broken_speaker`, `tube_warmth`, `tape_glue`) — design doc §13.6 open question. Defer until there's actual sound-design demand; the existing five `saturation_profiles.h` profiles are the right size for the user audience right now.
 
 
+## [0.58.2] - 2026-05-22 — saturation_profile_test: DC blocker settling window (CI test fix)
 
 Patch release. No engine code changes. Single test file updated to match v0.58.0 DSP behavior.
 

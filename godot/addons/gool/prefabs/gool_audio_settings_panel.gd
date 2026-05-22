@@ -86,6 +86,14 @@ func _build_editor_placeholder() -> void:
 	add_child(label)
 
 func _build_ui() -> void:
+	# v0.59.1: set a Theme on the panel root with Ubuntu Regular as
+	# the default font. Theme inheritance means every Label, Button,
+	# SpinBox, HSlider, etc. inside this panel renders in Ubuntu
+	# without needing per-control overrides. Skipped silently if the
+	# font file is missing (e.g. someone stripped /fonts/ from the
+	# addon to save space); descendants fall back to the host theme.
+	_apply_gool_font_theme()
+
 	# Outer: scroll container so the panel works in small windows
 	# or with future expansion (more sections).
 	var scroll := ScrollContainer.new()
@@ -142,6 +150,24 @@ func _add_section_header(parent: Node, text: String) -> void:
 	label.text = text
 	label.add_theme_font_size_override("font_size", 18)
 	parent.add_child(label)
+
+# v0.59.1: build a small Theme with Ubuntu Regular as the
+# default_font and assign it to self. Theme inheritance pushes the
+# font down to every themed descendant (Labels, Buttons, sliders'
+# label parts, etc.) without per-node overrides. ResourceLoader's
+# `exists()` check keeps this graceful if someone has stripped the
+# /fonts/ subdir to shrink their addon footprint; in that case we
+# silently fall back to the host theme.
+func _apply_gool_font_theme() -> void:
+	const FONT_PATH := "res://addons/gool/fonts/Ubuntu-Regular.ttf"
+	if not ResourceLoader.exists(FONT_PATH):
+		return
+	var font: Font = load(FONT_PATH)
+	if font == null:
+		return
+	var th := Theme.new()
+	th.default_font = font
+	self.theme = th
 
 func _add_db_slider_row(parent: Node, label_text: String,
 						 section: String, key: String) -> void:
