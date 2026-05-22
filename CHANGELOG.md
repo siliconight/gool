@@ -22,7 +22,78 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.53.0] - 2026-05-22 — Multi-tab dock + Sound Bank panel
+## [0.54.0] - 2026-05-22 — Mixer toolbar Tree/Flat toggle (hierarchy indenting now opt-in)
+
+### Changed
+
+- **Hierarchy indenting (v0.52.0) is now off by default.** The
+  v0.52.0 release indented child bus strips below their parents
+  to visualize the bus topology. This worked OK for shallow
+  configs (Master → Sfx → LocalSfx) but produced visibly
+  misaligned strip rows on real FPS configs with deeper chains
+  like ImpactEq → Sfx → ListenerEq → Master, where the
+  depth-3 strip ended up ~84px below the depth-0 Master strip
+  and the row no longer scanned as a mixer.
+
+  Pro DAWs (FMOD Studio, Wwise, Pro Tools, REAPER) keep mixer
+  strips in a flat horizontal row and put bus hierarchy in a
+  separate tree pane. v0.54.0 follows that convention by
+  default — strips align in a single horizontal row regardless
+  of parent/child relationships in config.json.
+
+  v0.52.0 indenting behavior is preserved as an opt-in mode.
+
+### Added
+
+- **Mixer toolbar Tree/Flat toggle.** A new CheckButton labeled
+  **"Tree"** sits in the mixer toolbar, just left of the Save
+  button:
+  - **Unchecked (default)**: flat mode. Strips render in
+    config.json order with no padding.
+  - **Checked**: tree mode. Bus list is topologically sorted
+    (parents before children) and each column gets a top spacer
+    sized to `depth × HIERARCHY_INDENT_PX` so children visually
+    hang below their parents. Same logic as v0.52.0.
+
+  Preference is persisted to `EditorSettings` under
+  `gool/mixer_dock/hierarchy_mode_tree` so it survives editor
+  restarts. New helpers `_load_hierarchy_pref()` and
+  `_save_hierarchy_pref(value)` handle the read/write; both are
+  null-safe outside the editor.
+
+  Toggle handler (`_on_hierarchy_toggle_toggled`) updates the
+  state var, writes the pref, and calls
+  `_load_static_layout_from_config()` to trigger a clean
+  rebuild — the layout switch is immediate, no editor reload
+  needed.
+
+### Notes
+
+- This is a UX correction, not a feature pivot. The v0.52.0
+  changelog framed indenting as a "readability improvement";
+  in practice it traded one kind of readability (topology
+  visible) for another (mixer strips visibly aligned) and the
+  trade was wrong by default. Users who liked the v0.52.0
+  behavior can flip the toggle and have it back, including
+  across editor restarts.
+- The `_topologically_sort_buses` and `_compute_bus_depths`
+  helpers from v0.52.0 are unchanged — they're just not called
+  unless tree mode is on. Both ship in case other code (a
+  future Bus Hierarchy tab off the v0.53.0 TabContainer, say)
+  wants the data.
+
+### Backward compatibility
+
+- No source-level breaks.
+- Behavior change: visible. Users opening v0.54.0 will see a
+  flat mixer row by default where v0.52.0 / v0.53.0 showed
+  indented strips. This is the intended fix.
+- Users who set the EditorSettings pref to true (e.g. via the
+  toolbar toggle, then editor restart) get the v0.52.0
+  behavior back.
+- No config.json schema changes. No public API changes.
+
+
 
 ### Added
 
@@ -17145,7 +17216,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/siliconight/gool/releases/tag/v0.54.0
 [0.53.0]: https://github.com/siliconight/gool/releases/tag/v0.53.0
 [0.52.0]: https://github.com/siliconight/gool/releases/tag/v0.52.0
 [0.51.0]: https://github.com/siliconight/gool/releases/tag/v0.51.0

@@ -46,7 +46,18 @@ const STRIP_GAP: float = 4.0
 # offsets the strip column down by this many pixels so the topology
 # is visible at a glance. Capped at depth 3 in _rebuild_strips_from_config
 # so pathologically deep configs don't push strips off-screen.
+#
+# v0.54.0: defaults to OFF — horizontal mixer rows in pro DAWs
+# (FMOD, Wwise, Pro Tools, REAPER) keep strips flat and put
+# hierarchy in a separate tree pane. The v0.52.0 default of "on"
+# made multi-level configs look misaligned. Now gated behind the
+# toolbar's [Tree] CheckButton; preference persists via EditorSettings.
 const HIERARCHY_INDENT_PX: float = 28.0
+
+# v0.54.0: EditorSettings key for persisting the hierarchy-mode
+# toggle across editor sessions. Scoped under gool/mixer_dock/ so
+# future per-dock prefs can sit alongside.
+const SETTING_HIERARCHY_MODE: String = "gool/mixer_dock/hierarchy_mode_tree"
 
 # v0.28.3: extra vertical room reserved when an effects panel is
 # open. Sized for a typical 2–3 effect bus (e.g. Compressor + Reverb
@@ -358,6 +369,15 @@ var _tab_container: TabContainer = null
 # Type left as Node (Variant) rather than a concrete class so
 # we don't have to forward-declare the class name.
 var _sound_bank_panel: Node = null
+# v0.54.0: hierarchy display mode. False = flat (default, matches
+# pro DAW convention); True = tree (children indented under
+# parents, the v0.52.0 default). Toggled via the toolbar CheckButton
+# and persisted to EditorSettings under SETTING_HIERARCHY_MODE.
+var _hierarchy_mode_tree: bool = false
+# v0.54.0: reference to the toolbar's hierarchy CheckButton, cached
+# so the button's pressed state can be set programmatically when
+# the saved pref is loaded.
+var _hierarchy_toggle: CheckButton = null
 
 # v0.44.0: Live Stats panel — compact health-monitoring strip
 # below the bus strips showing engine-wide observability data
@@ -466,6 +486,24 @@ func _ready() -> void:
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_child(spacer)
+
+	# v0.54.0: hierarchy display toggle. CheckButton "Tree" — checked
+	# means "indent child buses under parents (v0.52.0 behavior)";
+	# unchecked is the new default "flat row" mode that matches pro
+	# DAW convention. Preference persists via EditorSettings so it
+	# survives editor restarts.
+	_hierarchy_mode_tree = _load_hierarchy_pref()
+	_hierarchy_toggle = CheckButton.new()
+	_hierarchy_toggle.text = "Tree"
+	_hierarchy_toggle.button_pressed = _hierarchy_mode_tree
+	_hierarchy_toggle.focus_mode = Control.FOCUS_NONE
+	_hierarchy_toggle.tooltip_text = (
+			"Tree mode: indent child buses under parents to visualize "
+			+ "the bus topology.\n\nFlat mode (default): strips in a "
+			+ "single horizontal row, matching pro DAW convention.\n\n"
+			+ "Preference is saved across editor sessions.")
+	_hierarchy_toggle.toggled.connect(_on_hierarchy_toggle_toggled)
+	toolbar.add_child(_hierarchy_toggle)
 
 	# Right: themed save button. flat=true + manual stylebox keeps
 	# the focus on the strips below rather than the toolbar shouting.
@@ -660,8 +698,17 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 	#                       │        │  │         │
 	#                       │   ─    │  │    ─    │
 	#                       └────────┘  └─────────┘
-	var sorted_buses: Array = _topologically_sort_buses(buses)
-	var depth_map: Dictionary = _compute_bus_depths(buses)
+	# v0.54.0: only sort + compute depths when tree mode is on. Flat
+	# mode uses config.json order verbatim with no padding — strips
+	# render in a single horizontal row.
+	var sorted_buses: Array
+	var depth_map: Dictionary
+	if _hierarchy_mode_tree:
+		sorted_buses = _topologically_sort_buses(buses)
+		depth_map = _compute_bus_depths(buses)
+	else:
+		sorted_buses = buses
+		depth_map = {}
 
 	for d in sorted_buses:
 		var bus_name: String = String(d.get("name", "(unnamed)"))
@@ -685,17 +732,17 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 4)
 
-		# v0.52.0: hierarchy indenting. Add a top spacer sized to
-		# depth × INDENT_PX_VERT. depth 0 (root) = no offset; depth
-		# 1 = one level of vertical hang; etc. Capped at depth 3
-		# to prevent runaway indent in pathologically deep configs.
-		var depth: int = int(depth_map.get(bus_name, 0))
-		depth = clampi(depth, 0, 3)
-		if depth > 0:
-			var top_pad := Control.new()
-			top_pad.custom_minimum_size = Vector2(0, depth * HIERARCHY_INDENT_PX)
-			top_pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			col.add_child(top_pad)
+		# v0.52.0: hierarchy indenting. Only applied in tree mode
+		# (v0.54.0). depth 0 (root) = no offset; depth 1 = one level
+		# of vertical hang; etc. Capped at depth 3 to prevent runaway
+		# indent in pathologically deep configs.
+		if _hierarchy_mode_tree:
+			var depth: int = clampi(int(depth_map.get(bus_name, 0)), 0, 3)
+			if depth > 0:
+				var top_pad := Control.new()
+				top_pad.custom_minimum_size = Vector2(0, depth * HIERARCHY_INDENT_PX)
+				top_pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				col.add_child(top_pad)
 
 		col.add_child(strip)
 		_strip_container.add_child(col)
@@ -1313,6 +1360,52 @@ func _on_save_mix_to_config_pressed() -> void:
 		_refresh_dirty_indicators()
 	else:
 		push_warning("[gool] Save Mix to Config: overwrite_disk returned error %d" % result)
+
+
+# v0.54.0: hierarchy mode toggle. CheckButton "Tree" emits toggled
+# when the user clicks; we update state, persist to EditorSettings,
+# and rebuild strips from the config model so the new layout takes
+# effect immediately.
+func _on_hierarchy_toggle_toggled(button_pressed: bool) -> void:
+	if _hierarchy_mode_tree == button_pressed:
+		return  # idempotent — no-op if state already matches
+	_hierarchy_mode_tree = button_pressed
+	_save_hierarchy_pref(button_pressed)
+	# Rebuild from the model. _load_static_layout_from_config does
+	# the right thing — reads the current bus list and feeds it to
+	# _rebuild_strips_from_config, which now consults
+	# _hierarchy_mode_tree to decide whether to sort + pad.
+	_load_static_layout_from_config()
+
+
+# v0.54.0: read the persisted hierarchy-mode preference from
+# EditorSettings. Safe in non-editor contexts (returns false).
+# Falls back to the v0.54.0 default (flat) if the setting isn't
+# present or EditorSettings isn't reachable.
+func _load_hierarchy_pref() -> bool:
+	if not Engine.is_editor_hint():
+		return false
+	if EditorInterface == null:
+		return false
+	var es = EditorInterface.get_editor_settings()
+	if es == null:
+		return false
+	if not es.has_setting(SETTING_HIERARCHY_MODE):
+		return false
+	return bool(es.get_setting(SETTING_HIERARCHY_MODE))
+
+
+# v0.54.0: persist the hierarchy-mode preference to EditorSettings.
+# No-op outside the editor.
+func _save_hierarchy_pref(value: bool) -> void:
+	if not Engine.is_editor_hint():
+		return
+	if EditorInterface == null:
+		return
+	var es = EditorInterface.get_editor_settings()
+	if es == null:
+		return
+	es.set_setting(SETTING_HIERARCHY_MODE, value)
 
 
 # External-change conflict (disk mtime advanced since last load).
