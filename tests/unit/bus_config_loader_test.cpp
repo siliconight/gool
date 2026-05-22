@@ -307,6 +307,42 @@ void TestSaturationModeAndMigration() {
 }
 
 // =============================================================================
+// 3b. v0.59.0 Phase 4: saturation tone tilt JSON key.
+//
+//   a) `"tone"` is accepted as a number and round-trips into
+//      EffectConfig.saturationTone.
+//   b) Out-of-range values are clamped at load time (-1..+1).
+//   c) Absent `tone` key defaults to 0.0 (Phase 4 bypass — existing
+//      configs sound identical to pre-v0.59.0).
+// =============================================================================
+void TestSaturationToneTilt() {
+    std::printf("  [v0.59.0: saturation tone tilt JSON key]\n");
+
+    constexpr std::string_view js = R"({
+        "buses": [
+            { "name": "Master",
+              "effects": [
+                { "kind": "saturation", "drive": 0.5, "tone":  0.5 },
+                { "kind": "saturation", "drive": 0.5, "tone": -1.0 },
+                { "kind": "saturation", "drive": 0.5, "tone":  2.0 },
+                { "kind": "saturation", "drive": 0.5, "tone": -5.0 },
+                { "kind": "saturation", "drive": 0.5             }
+              ] }
+        ]
+    })";
+    auto r = BusConfigLoader::ParseFromJson(js);
+    EXPECT_OK(r);
+    const auto& m = r.busGraph.buses[kBusMaster];
+    EXPECT(m.effectCount == 5);
+    EXPECT(std::abs(m.effects[0].saturationTone -  0.5f) < 1e-6f);
+    EXPECT(std::abs(m.effects[1].saturationTone - -1.0f) < 1e-6f);
+    EXPECT(std::abs(m.effects[2].saturationTone -  1.0f) < 1e-6f);   // clamped +
+    EXPECT(std::abs(m.effects[3].saturationTone - -1.0f) < 1e-6f);   // clamped -
+    EXPECT(m.effects[4].saturationTone == 0.0f);                     // default
+    std::printf("    tone parsed: 0.5, -1.0, clamp(+1), clamp(-1), default(0) OK\n");
+}
+
+// =============================================================================
 // 4. Engine integration: parsed config Initialize()s a real runtime.
 // =============================================================================
 void TestEndToEndInitialize() {
@@ -507,6 +543,7 @@ int main() {
     TestMultiTierDuckingShape();
     TestAllEffectKinds();
     TestSaturationModeAndMigration();
+    TestSaturationToneTilt();         // v0.59.0 Phase 4
     TestEndToEndInitialize();
     TestMalformedJsonReportsLine();
     TestUnknownEffectKind();

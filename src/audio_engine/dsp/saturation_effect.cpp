@@ -230,10 +230,14 @@ inline void ProcessOneMode(float* output, uint32_t frames, uint32_t channels,
                            std::vector<double>& prevDriven,
                            std::vector<float>&  dcY1,
                            std::vector<float>&  dcX1,
+                           std::vector<float>&  toneLpPre,
+                           std::vector<float>&  toneLpPost,
                            double driveScale, double bias,
                            float  mix, float invMix, float outG,
                            double adaaCoeff, double compensation,
                            float  dcBlockR,
+                           float  toneGainPre, float toneGainPost,
+                           float  toneLpC,
                            Shape f, Antiderivative F) noexcept {
     // v0.58.0: compensation gain is applied to the wet path so drive
     // sweeps don't change perceived loudness. invCompensation = 1.0 /
@@ -249,10 +253,36 @@ inline void ProcessOneMode(float* output, uint32_t frames, uint32_t channels,
     // where x is the post-compensation wet sample). R is set in
     // Prepare from sample rate. State is per-channel.
 
+    // v0.59.0: Phase 4 tone tilt. When toneGainPre == 0 (the common
+    // case — tone slider untouched), the shelf code paths are skipped
+    // entirely. This keeps the existing v0.58.x cost profile when the
+    // feature isn't used. When toneGainPre != 0, two one-pole LP
+    // filters run alongside the existing math:
+    //   pre :  driven_in = dry + g_pre · (dry - LP_pre(dry))
+    //   post:  wet_out   = wetRaw + g_post · (wetRaw - LP_post(wetRaw))
+    // The de-emphasis g_post = (1/A - 1) is the algebraic inverse of
+    // pre g_pre = (A - 1); on dry-equivalent material the two stages
+    // cancel modulo the LP's finite step response. The interesting
+    // effect happens BETWEEN: the shaper sees a tonally-tilted input,
+    // so its harmonic generation profile changes. tone > 0 → HF
+    // drives shaper harder (brighter saturation); tone < 0 → LF
+    // drives harder (darker, more body).
+    const bool toneActive = (toneGainPre != 0.0f);
+
     for (uint32_t fr = 0; fr < frames; ++fr) {
         for (uint32_t c = 0; c < channels; ++c) {
             const uint32_t idx    = fr * channels + c;
-            const float    dry    = output[idx];
+            const float    dryRaw = output[idx];
+
+            // v0.59.0: pre-emphasis high shelf. Skip entirely when
+            // tone is at its default (0).
+            float dry = dryRaw;
+            if (toneActive) {
+                toneLpPre[c] += toneLpC * (dryRaw - toneLpPre[c]);
+                const float hf = dryRaw - toneLpPre[c];
+                dry = dryRaw + toneGainPre * hf;
+            }
+
             const double   driven = (static_cast<double>(dry) + bias) * driveScale;
 
             // Always compute the trivial shape (cheap; needed for the
@@ -265,17 +295,33 @@ inline void ProcessOneMode(float* output, uint32_t frames, uint32_t channels,
                 yShaped = oneMinusAdaa * yTrivial + adaaCoeff * yAdaa;
             }
 
-            // Apply auto-compensation, then post-trim. Then run
-            // through the per-channel DC blocker BEFORE mixing with
-            // dry — otherwise dry energy gets HPF'd too, which is not
-            // what we want.
-            const float wetRaw = static_cast<float>(
+            // Apply auto-compensation, then post-trim.
+            float wetRaw = static_cast<float>(
                 yShaped * invCompensation * static_cast<double>(outG));
+
+            // v0.59.0: de-emphasis high shelf (algebraic inverse of
+            // pre-emphasis). Runs on the wet path; the DC blocker
+            // downstream takes care of any residual DC the shelf
+            // pair couldn't cancel on signals that landed at the
+            // shaper's bias point.
+            if (toneActive) {
+                toneLpPost[c] += toneLpC * (wetRaw - toneLpPost[c]);
+                const float hf = wetRaw - toneLpPost[c];
+                wetRaw = wetRaw + toneGainPost * hf;
+            }
+
+            // DC blocker runs on the de-emphasized wet path BEFORE
+            // mixing with dry — otherwise dry energy gets HPF'd too.
             const float dcY = (wetRaw - dcX1[c]) + dcBlockR * dcY1[c];
             dcX1[c] = wetRaw;
             dcY1[c] = dcY;
 
-            output[idx]    = dry * invMix + dcY * mix;
+            // Important: the dry path mixed in below is the ORIGINAL
+            // dryRaw, NOT the pre-emphasized dry. The shelf pair lives
+            // entirely on the wet path. If we mixed the pre-emphasized
+            // dry, we'd be EQ'ing the dry signal too, which is not the
+            // intended semantics.
+            output[idx]    = dryRaw * invMix + dcY * mix;
             prevDriven[c]  = driven;
         }
     }
@@ -294,7 +340,12 @@ SaturationEffect::SaturationEffect(const SaturationConfig& cfg)
       targetDrive_(std::clamp(cfg.drive, 0.0f, 1.0f)),
       targetMix_(std::clamp(cfg.mix, 0.0f, 1.0f)),
       targetBias_(std::clamp(cfg.bias, -1.0f, 1.0f)),
-      smoothCoef_(1.0f) {}  // overwritten in Prepare; 1.0 = no smoothing
+      smoothCoef_(1.0f),    // overwritten in Prepare; 1.0 = no smoothing
+      // v0.59.0: Phase 4 tone tilt. Clamped -1..+1; default 0 means
+      // the shelf filters bypass entirely on the fast path. Active
+      // and target init to the same value (no smoothing on cold start).
+      tone_(std::clamp(cfg.tone, -1.0f, 1.0f)),
+      targetTone_(std::clamp(cfg.tone, -1.0f, 1.0f)) {}
 
 void SaturationEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
     // v0.38.0: ADAA requires per-channel state for x[n-1]. Size to the
@@ -328,6 +379,29 @@ void SaturationEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
     // computed from runtime buffer size because actual buffer
     // sizes vary per call; this gets us close enough.
     smoothCoef_ = 0.25f;
+
+    // v0.59.0: Phase 4 tone-tilt shelf coefficient. We implement the
+    // ±6 dB high shelf as a sum of x with the high-frequency residue
+    // (x - LP(x)), scaled by (A - 1). The LP is a single one-pole at
+    // ~1 kHz, common to both pre and post stages topology-wise but
+    // with independent state per stage (the inputs differ). The
+    // coefficient is computed from sample rate so the cutoff stays
+    // ~1 kHz regardless of host SR.
+    //   a = 1 - exp(-2π·fc/SR), with fc = 1 kHz
+    // At 48 kHz this gives a ≈ 0.1226. Clamped to a safe range so
+    // misconfigured sample rates (or pathologically small SR) can't
+    // produce a coefficient > 1, which would diverge.
+    constexpr float kToneCutoffHz = 1000.0f;
+    constexpr float kTwoPi_       = 6.28318530717958647692f;
+    const float aTone = 1.0f - std::exp(-kTwoPi_ * kToneCutoffHz
+                                        / static_cast<float>(sampleRate));
+    toneLpCoef_ = std::clamp(aTone, 0.001f, 0.999f);
+
+    // v0.59.0: per-channel pre/de-emphasis filter state. Zero-init;
+    // settles in ~3·τ ≈ 0.5 ms at fc=1 kHz which is below perceptual
+    // threshold for any realistic enable/disable.
+    toneLpPre_.assign(channels, 0.0f);
+    toneLpPost_.assign(channels, 0.0f);
 }
 
 void SaturationEffect::Process(float* output, uint32_t frames, uint32_t channels,
@@ -346,6 +420,9 @@ void SaturationEffect::Process(float* output, uint32_t frames, uint32_t channels
     drive_ += smoothCoef_ * (targetDrive_ - drive_);
     mix_   += smoothCoef_ * (targetMix_   - mix_);
     bias_  += smoothCoef_ * (targetBias_  - bias_);
+    // v0.59.0: tone is smoothed the same way. Slow knob automation
+    // therefore steps the shelf-coefficient recompute once per buffer.
+    tone_  += smoothCoef_ * (targetTone_  - tone_);
 
     // Bypass when fully dry — saves all per-sample work on every bus
     // that has the effect installed but turned off (the default
@@ -365,6 +442,11 @@ void SaturationEffect::Process(float* output, uint32_t frames, uint32_t channels
         dcBlockerY1_.assign(channels, 0.0f);
         dcBlockerX1_.assign(channels, 0.0f);
     }
+    // v0.59.0: tone LP state — same defensive resize.
+    if (toneLpPre_.size() != channels) {
+        toneLpPre_.assign(channels, 0.0f);
+        toneLpPost_.assign(channels, 0.0f);
+    }
 
     // Snapshot parameters to locals. drive_/mix_/bias_ have just been
     // updated by the smoother above; reading once into locals means a
@@ -381,6 +463,24 @@ void SaturationEffect::Process(float* output, uint32_t frames, uint32_t channels
     const double         compensation = LookupCompensation(mode, normDrive);
     const float          dcR          = dcBlockerR_;
 
+    // v0.59.0: Phase 4 tone shelf factors. The shelf is implemented as
+    //   HS(x) = x + (A - 1) · (x - LP(x))
+    // where A = 10^(g_dB/20) and g_dB = tone · 6 dB. Pre-emphasis uses
+    // A; de-emphasis uses 1/A (algebraic inverse — on dry-equivalent
+    // material the two stages cancel, modulo the LP's finite step
+    // response). When |tone| < ε we set both factors to 0 and the
+    // inner loop's `if (toneGainPre != 0.0f)` skips both LP updates
+    // and the shelf math entirely — same compute as pre-v0.59.0.
+    float       toneGainPre   = 0.0f;
+    float       toneGainPost  = 0.0f;
+    const float toneLpC       = toneLpCoef_;
+    if (std::abs(tone_) > 1e-5f) {
+        const float gdb = tone_ * 6.0f;
+        const float A   = std::pow(10.0f, gdb / 20.0f);
+        toneGainPre  = A - 1.0f;          // pre-emphasis: boost HF by A
+        toneGainPost = (1.0f / A) - 1.0f; // de-emphasis: boost HF by 1/A
+    }
+
     // Per-mode dispatch. Each branch instantiates the templated
     // inner loop with its mode's shape pair; the compiler inlines f
     // and F, so dispatch cost is one switch per buffer (negligible).
@@ -388,29 +488,37 @@ void SaturationEffect::Process(float* output, uint32_t frames, uint32_t channels
         case SaturationMode::Tanh:
             ProcessOneMode(output, frames, channels, prevDriven_,
                             dcBlockerY1_, dcBlockerX1_,
+                            toneLpPre_, toneLpPost_,
                             driveScale, bias, mix, invMix, outG,
                             adaaCoeff, compensation, dcR,
+                            toneGainPre, toneGainPost, toneLpC,
                             f_tanh, F_tanh);
             break;
         case SaturationMode::Tube:
             ProcessOneMode(output, frames, channels, prevDriven_,
                             dcBlockerY1_, dcBlockerX1_,
+                            toneLpPre_, toneLpPost_,
                             driveScale, bias, mix, invMix, outG,
                             adaaCoeff, compensation, dcR,
+                            toneGainPre, toneGainPost, toneLpC,
                             f_tube, F_tube);
             break;
         case SaturationMode::Tape:
             ProcessOneMode(output, frames, channels, prevDriven_,
                             dcBlockerY1_, dcBlockerX1_,
+                            toneLpPre_, toneLpPost_,
                             driveScale, bias, mix, invMix, outG,
                             adaaCoeff, compensation, dcR,
+                            toneGainPre, toneGainPost, toneLpC,
                             f_tape, F_tape);
             break;
         case SaturationMode::Diode:
             ProcessOneMode(output, frames, channels, prevDriven_,
                             dcBlockerY1_, dcBlockerX1_,
+                            toneLpPre_, toneLpPost_,
                             driveScale, bias, mix, invMix, outG,
                             adaaCoeff, compensation, dcR,
+                            toneGainPre, toneGainPost, toneLpC,
                             f_diode, F_diode);
             break;
     }
@@ -454,6 +562,10 @@ void SaturationEffect::OnParameter(uint16_t paramId, float value) noexcept {
             }
             break;
         }
+        case EffectParameter::Saturation_Tone:
+            // v0.59.0: tone tilt -1..+1, smoothed via target.
+            targetTone_ = std::clamp(value, -1.0f, 1.0f);
+            break;
         default:
             break;
     }
@@ -471,6 +583,8 @@ float SaturationEffect::GetParameter(uint16_t paramId) const noexcept {
         case EffectParameter::Saturation_Bias:       return targetBias_;
         case EffectParameter::Saturation_Mode:
             return static_cast<float>(static_cast<int>(mode_));
+        // v0.59.0: tone tilt -1..+1.
+        case EffectParameter::Saturation_Tone:       return targetTone_;
         default:                                     return 0.0f;
     }
 }

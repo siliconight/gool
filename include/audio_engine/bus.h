@@ -177,6 +177,13 @@ struct EffectConfig {
     float saturationOutputGain  = 1.0f;
     float saturationBias        = 0.0f;
     uint8_t saturationMode      = 0;       // 0=Tanh, 1=Tube, 2=Tape, 3=Diode (v0.40.0)
+    // v0.59.0: Phase 4 tone tilt. -1..+1, default 0 (filter bypassed).
+    // Negative values pre-cut highs (lows drive shaper harder → darker);
+    // positive values pre-boost highs (HF drives shaper harder →
+    // brighter). De-emphasis post-shaper restores tonal balance on
+    // dry-equivalent material so the net is character change, not
+    // EQ change. See docs/audio_design/saturation_v2.md §9.
+    float saturationTone        = 0.0f;
 };
 
 // v0.40.0: shape mode selector for the multi-character saturation
@@ -245,8 +252,11 @@ namespace EffectParameter {
     // (saturation_v2.md §5) claims ID 26 as the first free slot but
     // that was written before v0.29.5 took 26 for Reverb_DryGainDb;
     // ID 27 is the actual first-free at the time of v0.40.0 cut. ID
-    // 28 is reserved for Saturation_Tone in Phase 4.
+    // 28 ships as Saturation_Tone in v0.59.0 Phase 4.
     constexpr uint16_t Saturation_Mode          = 27;
+    // v0.59.0: Saturation Phase 4 — tone tilt. -1..+1, smoothed
+    // alongside drive/mix/bias. See saturation_v2.md §9.
+    constexpr uint16_t Saturation_Tone          = 28;
 }
 
 // ---- Bus configuration ----------------------------------------------------

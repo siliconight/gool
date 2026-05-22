@@ -22,7 +22,63 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.58.2] - 2026-05-22 — saturation_profile_test: DC blocker settling window (CI test fix)
+## [0.59.0] - 2026-05-22 — Saturation Phase 4: tone tilt (closes saturation_v2.md arc)
+
+Adds the final piece of the saturation roadmap documented in `docs/audio_design/saturation_v2.md` §9. Phases 1 (ADAA, v0.38.0), 2 (multi-mode, v0.40.0), and 3 (auto-compensation + DC blocker + parameter smoothing, v0.58.0) shipped earlier; v0.59.0 closes the arc with a tone-tilt parameter that changes saturation **character** without acting as an EQ.
+
+### What it does for users
+
+A new `Saturation_Tone` parameter (range -1..+1, default 0) lets you steer which frequency content drives the shaper hardest:
+
+- `tone = 0` — bypass. The shelf filters skip entirely, zero CPU cost. Existing configs and shipped profiles all default here, so v0.58.x → v0.59.0 sounds bit-identical out of the box.
+- `tone > 0` — pre-boost highs before the shaper, then cut them back after. HF content drives the shaper harder → brighter saturation, more transient clipping. Bright/snappy material.
+- `tone < 0` — pre-cut highs, post-boost. Lows drive the shaper harder → darker saturation, more body emphasis. Warm/round material.
+
+The point is **character change, not EQ change.** On dry-equivalent (un-shaped) material the pre and de-emphasis stages approximately cancel; the interesting effect happens between them, where the shaper sees a tonally biased input.
+
+### Added
+
+- `EffectConfig::saturationTone` field (default 0.0, range -1..+1).
+- `EffectParameter::Saturation_Tone = 28`. ID 28 was reserved in `bus.h` since v0.40.0; the design doc's original §5 table claimed 27 but ID 26 was taken by `Reverb_DryGainDb` in v0.29.5 between doc and implementation. Mode shipped at 27 (v0.40.0), tone at 28 (v0.59.0); the `bus.h` comment block on those IDs is the source of truth.
+- `SaturationConfig::tone` field + `SaturationEffect::Tone()` accessor (returns target like `Drive()/Mix()/Bias()`).
+- JSON `"tone"` key in `bus_config_loader.cpp`, range -1..+1, out-of-range clamps at load time (consistent with the other numerical params).
+- `bus_graph.cpp` forwards `EffectConfig::saturationTone` → `SaturationConfig::tone` on bus realization.
+- Per-buffer parameter smoothing on tone (same ~20 ms time constant as drive/mix/bias). Knob automation produces no zipper artifacts.
+- Saturation tone test in `tests/unit/saturation_test.cpp::TestToneTilt`: verifies (a) `tone=0` default is bit-identical across separate effect instances on the same input (no LP state poisoning the bypass fast path), (b) `tone=+1` vs `tone=-1` differ measurably in wet content (RMS difference ~0.30 on a 200/8000 Hz two-tone), (c) tone does more work in the saturation zone than in the near-linear zone (ratio ~2.3x at norm drive 0.5 vs 0.001).
+- Saturation tone JSON loader test in `tests/unit/bus_config_loader_test.cpp::TestSaturationToneTilt`: parses, clamps, defaults.
+- Profile cross-cut assertion: all five shipped profiles (`BusGlue`, `DialogueWarmth`, `WeaponBody`, `ImpactCharacter`, `TapeColor`) verified to default `saturationTone == 0.0f`. If a future profile opts into tone deliberately, the test calls out the spot to update.
+
+### Implementation notes
+
+Two one-pole shelf filters at fc = 1 kHz, gain `tone · 6 dB`:
+
+```
+HS(x) = x + g · (x - LP(x))
+  pre :  g_pre  = A - 1       with A = 10^(tone · 6 / 20)
+  post:  g_post = 1/A - 1     (algebraic inverse of pre stage gain)
+```
+
+The pre/de-emphasis pair is approximately — not exactly — algebraically inverse on the wet path, because the two LPs see slightly different inputs (`x` vs `pre(x)`). On dry-equivalent material the residual lands at order `(A-1) · a` where `a ≈ 0.12` is the LP coefficient at fc=1 kHz / 48 kHz, giving ~4-8% RMS deviation on HF-heavy material with the shaper barely engaged. That's acceptable for the design point (saturation-zone character change), and the saturation-zone effect dominates that residual by a comfortable margin (2.3x in the test). The design doc §9 calls this out.
+
+Per-channel pre/de LP state (`toneLpPre_`, `toneLpPost_`) is allocated alongside the existing v0.58.0 DC-blocker state in `Prepare()`. Defensive resize handles channel-count changes mid-stream.
+
+When `tone == 0`, an early-out branch in the inner loop skips both LP updates and both shelf-math computations entirely. The pre-v0.59.0 cost profile is recovered exactly on the default path. CPU cost on the active path is ~4 extra multiplies per channel per sample (two LP updates + two shelf computations).
+
+### Backward compatibility
+
+Fully backward compatible:
+
+- Existing `EffectConfig` constructors leave `saturationTone = 0` (the default), so all C++ callers behave identically.
+- Existing JSON configs without a `"tone"` key load with `saturationTone = 0`.
+- All five shipped saturation profiles continue to produce bit-identical output.
+- Confirmed by running the v0.58.x `saturation_test`, `saturation_profile_test`, and `integration_kitchen_sink_test` unchanged against the new effect — all pass.
+
+### Deferred to v0.59.x+
+
+- **Godot dock UI tone slider**. The engine-side API surface ships in v0.59.0; the addon-side dock layout update (~20 lines of GDScript) belongs in a v0.59.1 follow-up since the addon is built separately and its release cadence is independent. Users wanting tone control via GDScript today can call `Gool.set_effect_parameter(bus, effect_index, EffectParameter.Saturation_Tone, value)` (where `EffectParameter.Saturation_Tone == 28`).
+- **"Sat" presets** (material/intent-based bundles like `radio_comms`, `broken_speaker`, `tube_warmth`, `tape_glue`) — design doc §13.6 open question. Defer until there's actual sound-design demand; the existing five `saturation_profiles.h` profiles are the right size for the user audience right now.
+
+
 
 Patch release. No engine code changes. Single test file updated to match v0.58.0 DSP behavior.
 

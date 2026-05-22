@@ -146,10 +146,10 @@ State per channel: one ADAA delay sample (`x[n-1]`), one pre-emphasis filter sta
 | 18 | `Saturation_Mix` | `mix` | 0..1 | 0.0 | parallel blend, unchanged |
 | 19 | `Saturation_OutputGain` | `output_gain` | 0..2 | 1.0 | post-trim only; auto-comp is always on internally |
 | 20 | `Saturation_Bias` | `bias` | -1..1 | 0.0 | asymmetry; semantics change slightly per mode |
-| 26 | `Saturation_Mode` | `mode` | discrete 0..3 | 0 (`Tanh`) | new — see §6 |
-| 27 | `Saturation_Tone` | `tone` | -1..1 | 0.0 | new — pre/de-emphasis tilt, 0 = bypass filter |
+| 27 | `Saturation_Mode` | `mode` | discrete 0..3 | 0 (`Tanh`) | new — see §6 |
+| 28 | `Saturation_Tone` | `tone` | -1..1 | 0.0 | new in v0.59.0 — pre/de-emphasis tilt, 0 = bypass filter |
 
-Param ID 26 is the first free slot after the v0.29.2 reverb additions (which consume 23, 24, 25). Param ID 27 immediately follows. No conflicts with the reverb's alias retention for old `Reverb_RoomSize` (9) and `Reverb_Damping` (10).
+Param ID 26 was the first free slot when this doc was written, but v0.29.5 took 26 for `Reverb_DryGainDb`; `Saturation_Mode` therefore shipped at ID 27 (v0.40.0) and `Saturation_Tone` at ID 28 (v0.59.0). The `bus.h` comment block on those IDs is the source of truth and tracks the actual numbering.
 
 ### 5.1 Soft migration
 
@@ -343,11 +343,15 @@ The same incremental approach we used for reverb (avoid a single mega-release, s
 - Add one-pole smoothers on drive/mix/bias to fix zipper noise on automation
 - `output_gain` becomes pure post-trim; bound 0..2
 
-### Phase 4: Tone filter (v0.30.3)
-- Add `Saturation_Tone` parameter (ID 27)
+### Phase 4: Tone filter (v0.30.3 → shipped as v0.59.0)
+- Add `Saturation_Tone` parameter (ID 28 — see bus.h comment about
+  the ID 26→27 shift)
 - Implement the pre/de-emphasis high-shelf pair
-- Update dock layout to include tone slider
-- Optional: material preset table for environmental saturation presets ("radio_comms", "broken_speaker", "tube_warmth", "tape_glue"). Probably overkill for now; revisit when there's actual demand from sound design.
+- Update dock layout to include tone slider [DEFERRED to addon-side
+  work; tracked separately]
+- Optional: material preset table for environmental saturation presets ("radio_comms", "broken_speaker", "tube_warmth", "tape_glue"). Probably overkill for now; revisit when there's actual demand from sound design. [STILL DEFERRED]
+
+**v0.59.0 shipping notes.** Implemented as a topologically-clean one-pole shelf-split pair: `HS(x) = x + g · (x - LP(x))` per stage, with pre-emphasis `g_pre = A − 1` and de-emphasis `g_post = 1/A − 1` where `A = 10^(tone·6/20)`. The two stages cancel approximately on dry-equivalent material (the LP's see slightly different inputs, leaving a residual at ~the order of `(A-1)·a` where `a` is the LP coefficient ≈ 0.12 at fc=1 kHz / SR=48 kHz). The intended effect — different shaper input balance at non-zero drive — dominates by ~2.3x in the saturation zone vs the near-linear zone (see `saturation_test::TestToneTilt`). Both filters skip entirely on the `tone == 0` fast path so existing configs and profiles pay zero CPU cost for Phase 4.
 
 Phases 1-4 are independent — each is a useful release on its own. Phase 1 is the highest priority by far (audible aliasing is a real problem; the rest are improvements).
 

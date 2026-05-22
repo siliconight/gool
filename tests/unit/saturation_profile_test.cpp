@@ -180,6 +180,18 @@ void TestProfilesAreSelfContained() {
     EXPECT(v.reverbDecay         == 0.5f);   // v0.29.0 Dattorro default
     EXPECT(v.compressorMixRatio  == 1.0f);
 
+    // v0.59.0: all shipped profiles must default to tone=0 so adding
+    // Phase 4 to the engine doesn't silently change how existing
+    // profile-using projects sound. New profiles or per-project
+    // tuning can opt into tone explicitly. Spot-checked here on
+    // all five profiles; if a future profile sets tone != 0
+    // deliberately, update this assertion alongside that change.
+    EXPECT(SaturationProfiles::BusGlue().saturationTone         == 0.0f);
+    EXPECT(SaturationProfiles::DialogueWarmth().saturationTone  == 0.0f);
+    EXPECT(SaturationProfiles::WeaponBody().saturationTone      == 0.0f);
+    EXPECT(SaturationProfiles::ImpactCharacter().saturationTone == 0.0f);
+    EXPECT(SaturationProfiles::TapeColor().saturationTone       == 0.0f);
+
     std::printf("    OK\n");
 }
 

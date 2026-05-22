@@ -57,11 +57,28 @@
 //   * `mode`         - SaturationMode enum (0..3, see bus.h). Default
 //                      0 (Tanh), which makes existing config files
 //                      sound identical to pre-v0.40.0 binaries.
+//   * `tone`         - v0.59.0 Phase 4 tone tilt, range -1..+1, default
+//                      0 (filter bypassed — fast path). Implements a
+//                      pre-emphasis / de-emphasis high-shelf pair at
+//                      ~1 kHz with gain = `tone · 6 dB`. The de-
+//                      emphasis filter is the algebraic inverse of the
+//                      pre-emphasis filter, so on dry-equivalent
+//                      (un-shaped) material the net tonal balance is
+//                      preserved within filter ringing. The interesting
+//                      effect happens BETWEEN the two filters, where
+//                      the shaper sees a tonally biased signal:
+//                      `tone > 0` lets HF content drive the shaper
+//                      harder (brighter saturation, more transient
+//                      clipping); `tone < 0` lets lows drive the
+//                      shaper harder (darker saturation, more body
+//                      emphasis). See saturation_v2.md §9.
 //
 // Per-channel state (allocated in Prepare, zero-init):
 //   * `prevDriven_[c]`     — ADAA's x[n-1] in driven-input domain (double)
 //   * `dcBlockerY1_[c]`    — v0.58.0 DC-blocker output history (float)
 //   * `dcBlockerX1_[c]`    — v0.58.0 DC-blocker input history (float)
+//   * `toneLpPre_[c]`      — v0.59.0 pre-emphasis one-pole LP state (float)
+//   * `toneLpPost_[c]`     — v0.59.0 de-emphasis one-pole LP state (float)
 //
 // Parameter smoothing (v0.58.0): drive, mix, and bias are smoothed
 // from their target values toward `current` values once per buffer
@@ -70,6 +87,11 @@
 // than per-sample because each buffer is short enough (typical
 // 256–512 samples at 48 kHz = ~5–10 ms) that per-buffer steps are
 // imperceptible while saving work in the hot path.
+//
+// v0.59.0: tone is also smoothed via the same target/current
+// mechanism. A tone-knob automation curve from -1 to +1 over a
+// half second therefore steps once per buffer, not once per sample,
+// keeping the shelf-coefficient recompute outside the inner loop.
 //
 // Anti-aliasing (v0.38.0 Phase 1, extended to all modes in v0.40.0):
 //   First-order ADAA per Parker, Zavalishin, Le Bivic, DAFX 2016. At
@@ -113,6 +135,9 @@ struct SaturationConfig {
     float          outputGain = 1.0f;
     float          bias       = 0.0f;
     SaturationMode mode       = SaturationMode::Tanh;   // v0.40.0
+    // v0.59.0: Phase 4 tone tilt. -1..+1, default 0 (filter bypassed).
+    // See saturation_effect.h class doc and saturation_v2.md §9.
+    float          tone       = 0.0f;
 };
 
 class SaturationEffect final : public IDspEffect {
@@ -139,6 +164,8 @@ public:
     float          OutputGain() const noexcept { return outputGain_; }
     float          Bias()       const noexcept { return targetBias_; }
     SaturationMode Mode()       const noexcept { return mode_; }
+    // v0.59.0: tone tilt (-1..+1). Returns target like Drive/Mix/Bias.
+    float          Tone()       const noexcept { return targetTone_; }
 
 private:
     // drive_ is the NORMALIZED 0..1 value; the per-mode useful-range
@@ -164,6 +191,17 @@ private:
     float          targetMix_;       // v0.58.0
     float          targetBias_;      // v0.58.0
     float          smoothCoef_;      // v0.58.0; ~1 - exp(-bufFrames/(SR·tau))
+
+    // v0.59.0: Phase 4 tone tilt. tone_ is the smoothed active value
+    // used by Process; targetTone_ is the most-recent target from
+    // OnParameter/constructor. Smoothed alongside drive/mix/bias.
+    // Range -1..+1.
+    float          tone_;
+    float          targetTone_;
+    // v0.59.0: one-pole low-pass coefficient for the shelf-split
+    // filters (1 - exp(-2π·fc/SR), fc = 1 kHz). Set in Prepare from
+    // sample rate; constant once Prepare runs.
+    float          toneLpCoef_ = 0.0f;
 
     // v0.38.0: per-channel ADAA state — the previous post-driveScale
     // sample value x[n-1] = (dry[n-1] + bias) · driveScale. Resized
@@ -195,6 +233,15 @@ private:
     std::vector<float>  dcBlockerY1_;
     std::vector<float>  dcBlockerX1_;
     float               dcBlockerR_ = 0.995f;   // recomputed in Prepare
+
+    // v0.59.0: per-channel one-pole LP state for the tone shelf
+    // filters. The shelf is implemented as
+    //   HS(x) = x + (A - 1) · (x - LP(x))
+    // with one LP per stage. Two separate states: pre-emphasis LP
+    // tracks the input signal; de-emphasis LP tracks the post-shaper
+    // wet signal. Zero-init on Prepare; converges in ~30 ms at fc=1 kHz.
+    std::vector<float>  toneLpPre_;
+    std::vector<float>  toneLpPost_;
 };
 
 } // namespace audio

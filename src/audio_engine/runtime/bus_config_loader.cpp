@@ -324,6 +324,15 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
                 else if (m == "diode") fx.saturationMode = 3;
                 else { err = "unknown saturation mode '" + m + "'"; errLine = s.line(); return false; }
             }
+            // v0.59.0: Phase 4 tone tilt. Range -1..+1, default 0.
+            // Out-of-range values clamp at load time rather than
+            // erroring — same forgiving behavior as numerical params
+            // above; the C++ side also clamps defensively.
+            else if (key == "tone")               {
+                if (!s.parseNumber(n, err, errLine)) return false;
+                const float raw = static_cast<float>(n);
+                fx.saturationTone = raw < -1.0f ? -1.0f : (raw > 1.0f ? 1.0f : raw);
+            }
             // Tolerate unknown keys for forward-compat.
             else { if (!s.skipValue(err, errLine)) return false; }
         }

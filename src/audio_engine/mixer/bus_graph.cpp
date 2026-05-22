@@ -265,6 +265,10 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                 sc.mode = (ec.saturationMode <= 3)
                             ? static_cast<SaturationMode>(ec.saturationMode)
                             : SaturationMode::Tanh;
+                // v0.59.0: Phase 4 tone tilt. EffectConfig defaults
+                // to 0.0 so callers that don't set it get the bypass
+                // fast path identical to pre-v0.59.0 behavior.
+                sc.tone = ec.saturationTone;
                 fx = std::make_unique<SaturationEffect>(sc);
             } break;
         }
