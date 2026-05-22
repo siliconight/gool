@@ -225,6 +225,21 @@ void ReverbEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
         inputDiffuser_[i].Reset();
     }
 
+    // v0.56.0: scale modulation depth by sample-rate ratio so the
+    // LFO sweep covers the same time-domain depth at any SR.
+    // Pre-v0.56.0, kModDepthSamples (8.0f) was applied verbatim —
+    // at the 29761 Hz reference SR that's 269 µs of sweep, but at
+    // 48 kHz it shrinks to 167 µs (~62% of Dattorro's intended
+    // depth). The modulated allpasses exist specifically to break
+    // up the static-delay metallic ring; under-modulating at
+    // 48 kHz brought the ringing back. This was the root cause of
+    // the v0.55.0-era "metallic, ringing" reverb complaint.
+    const float sampleRateRatio =
+        static_cast<float>(sampleRate_) / kRefSampleRate;
+    const float modDepthScaled = kModDepthSamples * sampleRateRatio;
+    const uint32_t modDepthScaledInt =
+        static_cast<uint32_t>(modDepthScaled + 0.5f);
+
     // Tank half A.
     {
         TankHalf& A = tank_[0];
@@ -232,11 +247,11 @@ void ReverbEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
             ScaleDelay(kModApBaseRefA, sampleRate_));
         const uint32_t modBufLen =
             static_cast<uint32_t>(A.modAP.baseDelay)
-            + static_cast<uint32_t>(kModDepthSamples) * 2u
+            + modDepthScaledInt * 2u
             + 4u;
         A.modAP.line.buf.assign(modBufLen, 0.0f);
         A.modAP.gain = kModApGain;
-        A.modAP.modDepth = kModDepthSamples;
+        A.modAP.modDepth = modDepthScaled;
         A.modAP.lfoIncr  = kModLfoHzA / static_cast<float>(sampleRate_);
         A.modAP.lfoPhase = 0.0f;
 
@@ -260,11 +275,11 @@ void ReverbEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
             ScaleDelay(kModApBaseRefB, sampleRate_));
         const uint32_t modBufLen =
             static_cast<uint32_t>(B.modAP.baseDelay)
-            + static_cast<uint32_t>(kModDepthSamples) * 2u
+            + modDepthScaledInt * 2u
             + 4u;
         B.modAP.line.buf.assign(modBufLen, 0.0f);
         B.modAP.gain = kModApGain;
-        B.modAP.modDepth = kModDepthSamples;
+        B.modAP.modDepth = modDepthScaled;
         B.modAP.lfoIncr  = kModLfoHzB / static_cast<float>(sampleRate_);
         B.modAP.lfoPhase = 0.25f;   // start 90° offset from half A
 

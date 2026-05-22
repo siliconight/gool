@@ -185,11 +185,15 @@ struct MaterialEqCurve {
 
 inline MaterialEqCurve MaterialEqByMaterial(AudioMaterial m) noexcept {
     switch (m) {
-        // Glass: bright, neutral mids. Slight HF lift gives the
-        // characteristic ring; small mid dip keeps it from feeling
-        // boxy.
+        // Glass: bright, neutral mids, characteristic ring.
+        // v0.56.0: previously +1 dB @ 8 kHz HF — under-delivered
+        // on the verbal "bright" intent and was actually less
+        // bright than concrete. Slight low cut (no acoustic body),
+        // small mid dip (just neutralizes boxiness rather than
+        // scooping), strong HF lift at a lower knee so the boost
+        // is audible across more of the perceivable HF spectrum.
         case AudioMaterial::Glass:
-            return { 0.0f,  200.0f,  -1.5f, 1000.0f, 1.0f,  +1.0f, 8000.0f };
+            return { -0.5f, 200.0f,  -0.5f, 1000.0f, 1.0f,  +3.5f, 6000.0f };
 
         // Wood: warm low-mid body, soft top. Gentle low shelf
         // boost + peaking band at 500 Hz captures the "thwack" of
@@ -215,8 +219,15 @@ inline MaterialEqCurve MaterialEqByMaterial(AudioMaterial m) noexcept {
         // captures the "clang"; bright HF gives the ringing
         // overtones. Tighter Q than concrete — metal's
         // resonance is more focused.
+        // v0.56.0: previously +1.5 dB @ 10 kHz HF — the knee was
+        // so high most of the audible "ring" sat below the shelf
+        // and got no boost. Bumped to +4 dB at 7 kHz so the boost
+        // actually lands in the perceptual ring range. Now
+        // substantially brighter than concrete, which matches
+        // physical reality (metal on impact rings far brighter
+        // than concrete). Mid peak unchanged.
         case AudioMaterial::Metal:
-            return { 0.0f,  200.0f,  +2.0f, 2000.0f, 1.5f,  +1.5f, 10000.0f };
+            return { 0.0f,  200.0f,  +2.0f, 2000.0f, 1.5f,  +4.0f, 7000.0f };
 
         // Curtain: very dulled, soft top. Broad mid cut + strong
         // HF cut — the classic "thick fabric" sound. Asymmetric:

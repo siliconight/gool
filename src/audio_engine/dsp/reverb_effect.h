@@ -203,7 +203,18 @@ private:
     float decay_      = 0.5f;
     float lfDamping_  = 0.0f;
     float hfDamping_  = 0.3f;
-    float diffusion_  = 0.625f;
+    // v0.56.0: default bumped 0.625 → 1.0. The diffusion parameter
+    // multiplies the input-diffuser allpass gains (Dattorro's
+    // published 0.75 for AP1/AP2 and 0.625 for AP3/AP4) in
+    // RecomputeDiffusion. At the previous 0.625 default, actual
+    // gains became 0.47 and 0.39 — far below Dattorro's spec,
+    // producing under-diffused early reflections that read as
+    // "echoey" or "fluttery" stacked on the v0.55.0-era metallic
+    // ringing. At 1.0 the user gets Dattorro's full input-diffuser
+    // shape out of the box. Existing configs that explicitly set
+    // diffusion=0.625 still get the previous under-diffused
+    // behavior (their choice; respected).
+    float diffusion_  = 1.0f;
     float dryGainDb_  = 0.0f;
     float wetGainDb_  = 0.0f;
 

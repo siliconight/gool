@@ -22,7 +22,104 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.55.0] - 2026-05-22 — Out-of-box quietness: opt-in features no longer warn-storm on fresh installs
+## [0.56.0] - 2026-05-22 — Reverb DSP fixes (metallic ringing) + Glass/Metal material EQ brightness
+
+### Fixed
+
+- **Reverb modulation depth now scales with sample rate.** This
+  is the root cause of the "metallic, ringing" character that's
+  been a known issue. The Dattorro plate's modulated allpasses
+  exist specifically to break up the static-delay metallic ring;
+  at the reference 29761 Hz sample rate, the 8-sample modulation
+  depth gives ±269 µs of LFO sweep. Pre-v0.56.0, that same 8
+  samples was used verbatim at any SR — so at 48 kHz the actual
+  sweep collapsed to ±167 µs (~62% of Dattorro's intended depth).
+  The under-modulated tank then ringed audibly, exactly the
+  metallic character the modulation was designed to prevent.
+
+  Fix: in `ReverbEffect::Prepare`, compute `sampleRateRatio =
+  sampleRate_ / kRefSampleRate` and apply it to both the
+  per-tank-half `modAP.modDepth` field AND the modulation
+  buffer length. At 48 kHz the modDepth is now ~13 samples
+  (same 269 µs as Dattorro intended); at 96 kHz, ~26 samples.
+
+  Delay-line lengths verified faithful to Dattorro (142/107/379/277
+  input diffuser, 4453/3720/4217/3163 tank delays, 1800/2656
+  tank APs, 672/908 modAP base). Schroeder allpass writeback
+  bug already fixed pre-session (v0.29.4). No nonlinearities
+  anywhere in the chain (pure allpass/delay/multiply, the damping
+  shelf is linear one-pole IIR), so aliasing/foldover wasn't the
+  source. Pure temporal-randomization deficit.
+
+- **Default `diffusion` parameter raised from 0.625 to 1.0.**
+  `RecomputeDiffusion` multiplies Dattorro's published input-
+  diffuser allpass gains (0.75 for AP1/AP2, 0.625 for AP3/AP4)
+  by the `diffusion` parameter. At the previous 0.625 default,
+  actual gains became 0.47 and 0.39 — far below Dattorro's
+  spec. Under-diffused early reflections read as "echoey" or
+  "fluttery," stacking on top of the metallic ring from the
+  modulation bug. At the new 1.0 default the user gets Dattorro's
+  published input-diffuser shape out of the box. Existing
+  configs that explicitly set `diffusion: 0.625` continue to
+  produce the previous under-diffused behavior (their choice
+  is respected).
+
+- **Glass material EQ now actually bright.** Pre-v0.56.0 values:
+  `low=0, mid=-1.5 @ 1 kHz Q1, high=+1 @ 8 kHz` — comments
+  promised "bright, neutral mids, characteristic ring" but the
+  numbers delivered less HF lift than concrete (`+2 @ 6 kHz`)
+  and a noticeable mid scoop. New values: `low=-0.5, mid=-0.5
+  @ 1 kHz Q1, high=+3.5 @ 6 kHz` — slight low cut (no acoustic
+  body), gentle mid neutrality (not a scoop), strong HF lift
+  with knee moved to 6 kHz so more of the audible HF gets
+  boosted. Now substantially brighter than concrete, matching
+  physical reality (glass on impact rings brighter than concrete).
+
+- **Metal material EQ now actually ringing.** Pre-v0.56.0 values:
+  `low=0, mid=+2 @ 2 kHz Q1.5, high=+1.5 @ 10 kHz` — the +1.5
+  dB HF boost at a 10 kHz knee meant most of the audible "ring"
+  band (5–8 kHz) sat below the shelf and got no boost at all.
+  New values: `low=0, mid=+2 @ 2 kHz Q1.5, high=+4 @ 7 kHz` —
+  +4 dB HF boost with the knee lowered to 7 kHz so the ring
+  overtones actually get the lift. Mid clang preserved.
+
+### Notes
+
+- All four fixes driven by user audio notes: "we need to deharsh
+  the reverb — the harshness is metallic and ringing" and "make
+  the glass and metal material brighter like the concrete." The
+  diagnostic angles the user suggested (delay-line lengths,
+  diffusion stages, feedback matrix, aliasing/nonlinear) were
+  exactly the right framework — bug 1 is the feedback-matrix
+  resonance their LFO modulation was designed to break up, bug 2
+  is the diffusion stage under-strength.
+- I cannot hear the changes from inside this container, so the
+  values are principled (DSP-theoretic Dattorro-faithfulness +
+  matching the verbal intent in the existing comments) rather
+  than ear-tuned. If after listening the reverb is still too
+  bright or the materials are now too aggressive, the specific
+  numbers are straightforward to tune further — the structural
+  fixes are what unlocks the tuning.
+- The `hf_damping` default (currently 0.3) is another knob that
+  affects perceived brightness of the reverb tail. Deferred from
+  this release — changing it would alter the tail character of
+  every existing config that uses the default. If after this
+  release the tail is still too bright, that's the next knob to
+  consider.
+
+### Backward compatibility
+
+- No API changes. No config schema changes.
+- Audio behavior changes (intentional): the reverb sounds
+  different (less metallic ringing) at any SR ≠ 29761 Hz,
+  which is basically every project. Default-config users get
+  better-diffused early reflections. Glass and metal impacts
+  sound brighter.
+- Existing configs that explicitly set `diffusion`, glass EQ
+  override values, or metal EQ override values continue to use
+  those literal values. Only the defaults changed.
+
+
 
 ### Changed
 
@@ -17537,7 +17634,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/siliconight/gool/releases/tag/v0.56.0
 [0.55.0]: https://github.com/siliconight/gool/releases/tag/v0.55.0
 [0.54.3]: https://github.com/siliconight/gool/releases/tag/v0.54.3
 [0.54.2]: https://github.com/siliconight/gool/releases/tag/v0.54.2
