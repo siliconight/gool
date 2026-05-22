@@ -171,6 +171,15 @@ var _occupied: bool = false
 # "we haven't found a reverb effect on the bus; zone is inert."
 var _effect_index: int = -1
 
+# v0.55.0: dedupe set for the "bus has no effects (or doesn't
+# exist)" warning. Shared across all ReverbZone instances via
+# `static var` — without this, N zones × M state-change refreshes
+# produced N×M identical warnings (a scene with 5 reverb zones
+# all pointing at a misconfigured "Sfx" bus easily hit 40+ in
+# the first F5 second). Keys are bus_name strings, values true.
+# Lifetime is the scene-tree/editor session.
+static var _warned_missing_buses: Dictionary = {}
+
 # v0.47.0: bus-chain slot indices for the optional pre/post EQ
 # biquads. -1 means "not present in the bus chain at the expected
 # adjacent slot; skip this side of the EQ shaping." Discovery
@@ -284,9 +293,16 @@ func _ready() -> void:
 func _locate_reverb_effect() -> void:
 	var effects: Array = _runtime.get_bus_effects(bus_name)
 	if effects.is_empty():
-		push_warning("ReverbZone: bus '%s' has no effects (or doesn't exist). " % bus_name
-				+ "Zone is inert. Add a Reverb effect to the bus in your gool config, "
-				+ "or set `bus_name` to a bus that has one.")
+		# v0.55.0: rate-limit the missing-bus warning across all
+		# ReverbZone instances. Previously, N zones × M state-change
+		# refreshes produced N×M identical warnings. Now each
+		# unique bus_name warns once per session.
+		if not _warned_missing_buses.has(bus_name):
+			_warned_missing_buses[bus_name] = true
+			push_warning("ReverbZone: bus '%s' has no effects (or doesn't exist). " % bus_name
+					+ "Zone is inert. Add a Reverb effect to the bus in your gool config, "
+					+ "or set `bus_name` to a bus that has one. "
+					+ "(Further warnings for this bus suppressed.)")
 		return
 	for i in range(effects.size()):
 		var e: Dictionary = effects[i]

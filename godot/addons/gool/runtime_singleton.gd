@@ -26,6 +26,22 @@ var _runtime: Node = null
 # log. Set true on first warn, never reset (init only happens
 # once per process lifetime, so re-init isn't a real scenario).
 var _play_networked_warning_emitted: bool = false
+
+# v0.55.0: bus-name cache built from cfg_dict at init time. Used
+# by has_bus() and register_sound_definition's pre-check, so we
+# can detect missing target_bus_name values without triggering
+# the C++ side's "unknown bus" log on every miss. Keys are bus
+# names (String), values are true. The empty dict represents
+# "init hasn't run yet or no buses configured"; has_bus returns
+# false in both cases.
+var _known_bus_names: Dictionary = {}
+
+# v0.55.0: dedupe set for register_sound_definition's "missing
+# target_bus_name" warning. Each missing bus name warns once
+# per session — without this, a project that registers 8 impact
+# sounds all targeting the same missing bus produces 8 identical
+# warnings.
+var _warned_missing_target_buses: Dictionary = {}
 var _ready_emitted: bool = false
 
 # Lazy-instantiated GoolMusicChannel for the play_music_state facade.
@@ -226,6 +242,15 @@ func _ready() -> void:
 		GoolLog.info("runtime", "audio device unknown",
 			{"reason": "backend doesn't expose name"})
 	_ready_emitted = true
+
+	# v0.55.0: cache the bus names declared in the user's config so
+	# downstream code (register_sound_definition, ReverbZone, the
+	# Phase 6 EQ setup) can do cheap existence checks WITHOUT
+	# triggering the C++ side's "unknown bus" log on each miss. The
+	# cache is read-only after init; if the user reloads the config
+	# at runtime (rare), they'll need to call _rebuild_known_buses.
+	_rebuild_known_buses(cfg_dict)
+
 	# v0.34.0 (Phase 6.B): set up automatic per-material EQ for
 	# impact sounds. Reads the configured impact-EQ bus name from
 	# project settings, verifies its effect chain matches the 3-
@@ -717,6 +742,34 @@ func _exit_tree() -> void:
 func is_initialized() -> bool:
 	return _runtime != null and _runtime.is_initialized()
 
+
+# v0.55.0: cheap bus-existence check. Reads from a cache built at
+# init time, NOT from the C++ runtime — the C++ side logs "unknown
+# bus" when queried for a missing bus, which is exactly the noise
+# we want to avoid in graceful-degradation paths. Returns false if
+# init hasn't run yet or if the bus isn't in the cache.
+func has_bus(bus_name: String) -> bool:
+	return _known_bus_names.has(bus_name)
+
+
+# v0.55.0: rebuild _known_bus_names from the parsed config dict.
+# Called from _ready after init succeeds. Tolerates malformed
+# buses entries (missing name, non-string name) by skipping them
+# silently — those would have been caught at init time by the C++
+# side's stricter parse.
+func _rebuild_known_buses(cfg_dict: Dictionary) -> void:
+	_known_bus_names.clear()
+	var buses_v: Variant = cfg_dict.get("buses", [])
+	if not (buses_v is Array):
+		return
+	var buses: Array = buses_v
+	for b_v in buses:
+		if not (b_v is Dictionary):
+			continue
+		var n: String = String(b_v.get("name", ""))
+		if n != "":
+			_known_bus_names[n] = true
+
 # Returns the engine version as a Dictionary:
 #   { "major": int, "minor": int, "patch": int,
 #     "full":  String, "commit": String }
@@ -900,10 +953,27 @@ func register_sound_definition(name: String, spatialized: bool = true,
 								 occlusion_enabled: bool = true) -> void:
 	if not is_initialized():
 		return
+	# v0.55.0: pre-check target_bus_name against the cache to avoid
+	# the C++ side's "unknown bus" log when it's missing. Without
+	# this, registering 8 impact sounds all targeting a missing
+	# ImpactEq bus produces 8 identical warnings; one per missing
+	# bus name is enough.
+	var resolved_target: String = target_bus_name
+	if target_bus_name != "" and not has_bus(target_bus_name):
+		if not _warned_missing_target_buses.has(target_bus_name):
+			_warned_missing_target_buses[target_bus_name] = true
+			push_warning(
+				"[gool] register_sound_definition: target_bus_name '%s' "
+				% target_bus_name
+				+ "doesn't exist in res://gool/config.json. Sounds "
+				+ "targeting this bus will fall back to category routing. "
+				+ "(Further warnings for this bus suppressed.)"
+			)
+		resolved_target = ""
 	_runtime.register_sound_definition(name, spatialized, looping,
 										 min_distance, max_distance,
 										 loop_crossfade_ms,
-										 category, target_bus_name,
+										 category, resolved_target,
 										 occlusion_enabled)
 
 ## v0.49.0: Dictionary-based form of register_sound_definition.
@@ -1877,10 +1947,10 @@ func _apply_custom_material_eq_to_bus(bus_name: String, eq: Dictionary) -> void:
 func _setup_impact_eq() -> void:
 	# Register the project setting on first run so it appears
 	# editable under Project Settings → General → Gool → Material Eq.
-	# Default "ImpactEq" matches the bus name shipped in the
-	# default gool config; empty string disables the auto-EQ
-	# behavior entirely (designers can opt out without touching
-	# their bus graph).
+	# Default "ImpactEq" is the conventional name for the EQ bus,
+	# but the FEATURE is opt-in: you opt in by adding a bus with
+	# that name + the right 3-biquad shape to your gool config.
+	# Just leaving the default doesn't enable it.
 	if not ProjectSettings.has_setting(_IMPACT_EQ_BUS_SETTING):
 		ProjectSettings.set_setting(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
 		ProjectSettings.set_initial_value(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
@@ -1891,18 +1961,27 @@ func _setup_impact_eq() -> void:
 		# coloring through some other mechanism).
 		return
 
-	# Verify the bus exists with the right shape.
+	# v0.55.0: cheap existence check via the cached bus list. The
+	# pre-v0.55.0 path called _runtime.get_bus_effects(configured)
+	# immediately, which triggers the C++ side's "unknown bus" log
+	# on every fresh install (no project ships with an ImpactEq bus
+	# by default — not even the FPS template). Now we use the cache
+	# and stay silent when the bus is missing, matching the v0.35.0
+	# listener_eq graceful-degradation pattern. The feature being
+	# opt-in means missing-bus is the EXPECTED default state, not
+	# a configuration error worth warning about.
+	if not has_bus(configured):
+		return
+
+	# Bus exists — now verify its effect chain matches the contract.
+	# If the chain is misshapen (wrong count, wrong kinds), THAT is
+	# a real misconfiguration worth a warning: the designer added
+	# the bus on purpose but got the contract wrong.
 	var effects: Array = _runtime.get_bus_effects(configured)
 	if effects.is_empty():
-		push_warning(
-			"[gool] Phase 6.B impact EQ disabled: bus '%s' " % configured
-			+ "not found in the gool config (or has no effects). "
-			+ "Add a bus with 3 biquads (LowShelf → Peak → HighShelf) "
-			+ "to enable automatic per-material impact coloring. "
-			+ "See docs/cookbook.md section 14 for the authoring "
-			+ "contract. Set gool/material_eq/impact_bus to '' to "
-			+ "suppress this warning."
-		)
+		# Bus exists in config but has no effects yet. Same opt-in
+		# logic: stay quiet. Designer either hasn't finished adding
+		# the chain or wants the bus for some other purpose.
 		return
 	if effects.size() < 3:
 		push_warning(
@@ -1956,13 +2035,19 @@ func _setup_listener_eq() -> void:
 		# that don't want this strong an editorial effect.
 		return
 
+	# v0.55.0: same cache-based pre-check as _setup_impact_eq. The
+	# GDScript already stayed silent when the bus was missing, but
+	# the C++ side's get_bus_effects() call would still log
+	# "unknown bus" each time. Now we skip the C++ call entirely
+	# when the bus isn't in the cache.
+	if not has_bus(configured):
+		return
+
 	var effects: Array = _runtime.get_bus_effects(configured)
 	if effects.is_empty():
-		# Listener EQ bus not in config. This is the *expected*
-		# case for projects that haven't opted in to Phase 6.C
-		# yet — don't warn unless a ReverbZone actually requests
-		# listener EQ (handled in the zone's _ready). Stay quiet
-		# here.
+		# Bus exists in config but has no effects yet. Same opt-in
+		# logic: stay quiet — designer hasn't finished setup or
+		# wants the bus for some other purpose.
 		return
 	if effects.size() < 3:
 		push_warning(

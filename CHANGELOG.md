@@ -22,7 +22,112 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.54.3] - 2026-05-22 — config_model: verify-before-write, defensive _format_number
+## [0.55.0] - 2026-05-22 — Out-of-box quietness: opt-in features no longer warn-storm on fresh installs
+
+### Changed
+
+- **`_setup_impact_eq` no longer warns when the ImpactEq bus is
+  absent.** The Phase 6.B material-EQ feature is documented as
+  opt-in (add a bus named `ImpactEq` with a 3-biquad chain to
+  enable), but the v0.34.0 setup function fired a multi-line
+  push_warning every time gool initialized in a project that
+  hadn't opted in. Since **no shipping default config** —
+  including v0.51.0's "Create default config", v0.48.0's
+  `templates/config_fps.json`, and plugin.gd's `DEFAULT_CONFIG`
+  — actually includes an ImpactEq bus, *every* fresh gool
+  install hit this warning on first F5.
+
+  Fix: match the existing `_setup_listener_eq` graceful-
+  degradation pattern. Missing bus = expected state (opt-out),
+  stay silent. Misshapen bus (exists but wrong effect count or
+  kinds) = real misconfiguration, still warn. Only when the
+  designer has actually opted in does gool care about the
+  contract.
+
+- **`_setup_impact_eq` and `_setup_listener_eq` no longer trigger
+  the C++ "unknown bus" log on the bus-existence check.** Both
+  used to call `_runtime.get_bus_effects(name)` directly, which
+  logs `unknown bus 'X'` on the C++ side when the bus isn't in
+  the config. That log was a separate noise source on top of the
+  GDScript-level warnings (which `_setup_listener_eq` had
+  already silenced correctly). Now both use the new `has_bus()`
+  query (see below) which reads from a GDScript-side cache and
+  doesn't touch the runtime.
+
+- **`register_sound_definition` rate-limits "target_bus_name not
+  found" warnings to one per missing bus per session.** Pre-
+  v0.55.0, the runtime emitted the warning every call. A
+  project that registers 8 impact-sound variants all targeting
+  the same missing bus produced 8 identical warnings, which
+  drowns out the actual first-cause warning in the log.
+
+  Implementation: in the autoload's `register_sound_definition`
+  wrapper, pre-check the target_bus_name against the cached bus
+  list. If missing, warn ONCE per session and pass `""` to the
+  C++ side so it falls back to category routing silently.
+  Existing behavior for valid target_bus_name is unchanged.
+
+- **`ReverbZone._locate_reverb_effect` rate-limits the same
+  way.** Pre-v0.55.0, every zone instance × every state-change
+  refresh fired a fresh push_warning when the bus had no
+  effects. A scene with 5 reverb zones pointing at a
+  misconfigured bus would easily produce 40+ identical warnings
+  in the first F5 second. Now the warning fires once per
+  bus_name per scene-tree-session using a `static var`
+  dedupe map shared across all instances.
+
+### Added
+
+- **`Gool.has_bus(name) -> bool`** — cheap, log-free existence
+  check for a bus declared in the user's config. Reads from
+  `_known_bus_names` cache (populated at init time from the
+  parsed cfg_dict). Returns false when init hasn't run or the
+  bus isn't declared. Use this anywhere you'd otherwise check
+  `_runtime.get_bus_effects(name).is_empty()` and the empty
+  case is "expected absence" not "configuration error" —
+  has_bus avoids the C++ unknown-bus log.
+
+- **`_rebuild_known_buses(cfg_dict)`** — internal helper that
+  populates the cache. Called from `_ready` after init succeeds.
+  Tolerates malformed buses entries silently (those would have
+  been caught by the C++ side's stricter parse at init time).
+
+### Notes
+
+- This release was prompted by a user pointing out that gool's
+  job is to "work for all Godot games" — i.e., not produce
+  warning storms on a fresh install in any reasonable project.
+  Looking at a screenshot of the typical first-F5 output through
+  that lens, the noise came from three places: impact-EQ warning
+  storm (now silent), ReverbZone bus-missing warning cascade
+  (now rate-limited), and register_sound_definition cascade
+  (now rate-limited). The "untyped variable" GDScript reload
+  warnings visible in the same screenshot remain — they're
+  cosmetic and live in many small spots; will address in a
+  follow-up polish release.
+- `has_bus()` is now a public-API surface and a sensible primitive
+  for anyone building gool integration tooling. Document
+  accordingly in any future audit.
+- The cache is read-only after init. If your project loads a
+  different config at runtime (a possible but uncommon flow),
+  call `_rebuild_known_buses` after the model reload. The
+  mixer dock's reload path doesn't currently do this — if you
+  swap configs in the editor and then expect the missing-bus
+  warnings to update, that won't work yet. Out of scope for
+  this release.
+
+### Backward compatibility
+
+- No API changes. New public method `has_bus()` is additive.
+- Behavior change: warnings that used to fire are now silent
+  (the impact-EQ case) or rate-limited (ReverbZone, register
+  cascade). Strict improvement — no scenario depended on the
+  warning volume.
+- The Phase 6.B feature itself works identically when opted in
+  (bus exists with correct shape) — only the noise on the
+  opt-out path is gone.
+
+
 
 ### Fixed
 
@@ -17432,7 +17537,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.3...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/siliconight/gool/releases/tag/v0.55.0
 [0.54.3]: https://github.com/siliconight/gool/releases/tag/v0.54.3
 [0.54.2]: https://github.com/siliconight/gool/releases/tag/v0.54.2
 [0.54.1]: https://github.com/siliconight/gool/releases/tag/v0.54.1
