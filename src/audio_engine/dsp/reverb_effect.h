@@ -202,7 +202,20 @@ private:
     float predelayMs_ = 30.0f;
     float decay_      = 0.5f;
     float lfDamping_  = 0.0f;
-    float hfDamping_  = 0.3f;
+    // v0.57.0: default bumped 0.3 → 0.45. The HF damping shelf is
+    // a one-pole lowpass inside the tank feedback loop; at the
+    // previous default of 0.3, hfCoef_ resolved to ~0.715, putting
+    // the per-circulation cutoff near 9.6 kHz at 48 kHz SR —
+    // basically transparent. The tank then preserved nearly all
+    // HF energy across many circulations, exposing the resonant
+    // structure as audible metallic ring. Real acoustic spaces
+    // absorb HF faster than LF on every wall reflection; 0.45 puts
+    // the per-pass cutoff at ~6.4 kHz (~4.5 kHz effective after one
+    // full figure-8 lap), in the natural-room range. Bright
+    // synthetic tails still set 0.0–0.2 explicitly; dark / damped
+    // spaces still set 0.6+. Existing configs that explicitly set
+    // hf_damping are unchanged.
+    float hfDamping_  = 0.45f;
     // v0.56.0: default bumped 0.625 → 1.0. The diffusion parameter
     // multiplies the input-diffuser allpass gains (Dattorro's
     // published 0.75 for AP1/AP2 and 0.625 for AP3/AP4) in
