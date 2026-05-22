@@ -41,6 +41,13 @@ const STRIP_WIDTH: float = 96.0
 const STRIP_HEIGHT: float = 362.0  # v0.28.3: +22 for FX_BAND below readout
 const STRIP_GAP: float = 4.0
 
+# v0.52.0: vertical offset per nesting depth for bus hierarchy
+# indenting. Each level of nesting (child of a child of root, etc.)
+# offsets the strip column down by this many pixels so the topology
+# is visible at a glance. Capped at depth 3 in _rebuild_strips_from_config
+# so pathologically deep configs don't push strips off-screen.
+const HIERARCHY_INDENT_PX: float = 28.0
+
 # v0.28.3: extra vertical room reserved when an effects panel is
 # open. Sized for a typical 2–3 effect bus (e.g. Compressor + Reverb
 # at ~280px combined including the panel header and stylebox
@@ -588,7 +595,33 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 	_strips.clear()
 	_columns.clear()
 	_expanded_bus = ""
-	for d in buses:
+
+	# v0.52.0: hierarchy-aware ordering + indenting. Buses in
+	# config.json can be in any order; we re-sort so parents appear
+	# before their children (topological order). Then each column's
+	# top padding is set to depth × INDENT_PX so child strips visibly
+	# "hang" below their parents in the horizontal layout, making
+	# the bus topology readable at a glance.
+	#
+	# Example: with Master / Sfx (child of Master) / LocalSfx (child
+	# of Sfx) / RemoteSfx (child of Sfx) / Music (child of Master):
+	#
+	#  ┌Master┐  ┌Music ┐
+	#  │      │  │      │
+	#  │ ─    │  │ ─    │
+	#  └──────┘  └──────┘
+	#              ┌ Sfx ┐
+	#              │     │
+	#              │ ─   │
+	#              └─────┘
+	#                       ┌LocalSfx┐  ┌RemoteSfx┐
+	#                       │        │  │         │
+	#                       │   ─    │  │    ─    │
+	#                       └────────┘  └─────────┘
+	var sorted_buses: Array = _topologically_sort_buses(buses)
+	var depth_map: Dictionary = _compute_bus_depths(buses)
+
+	for d in sorted_buses:
 		var bus_name: String = String(d.get("name", "(unnamed)"))
 		var initial_db: float = float(d.get("gain_db", 0.0))
 		var strip := _BusStrip.new()
@@ -604,20 +637,24 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		strip.fx_toggled.connect(_on_strip_fx_toggled)
 		# v0.28.8 context menu (right-click) for bus topology ops.
 		strip.context_menu_requested.connect(_on_strip_context_menu_requested)
-		# v0.28.5: populate Fx button count IMMEDIATELY from the
-		# config model rather than waiting for the first _poll tick.
-		# v0.28.4 had this gated on _poll firing the empty-stats branch,
-		# but if the very first _poll happened before _debugger_plugin
-		# was wired, or if the timing didn't line up, the strip would
-		# stay at effect_count=0 until F5 brought stats in. Setting
-		# the count here at build time makes the Fx button appearance
-		# deterministic — it's there immediately when the dock opens,
-		# regardless of poll timing or debugger-plugin readiness.
 		if _config_model != null:
 			strip.set_effect_count(_config_model.get_effects(bus_name).size())
 		# Wrap in a column so the effects panel can stack below.
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 4)
+
+		# v0.52.0: hierarchy indenting. Add a top spacer sized to
+		# depth × INDENT_PX_VERT. depth 0 (root) = no offset; depth
+		# 1 = one level of vertical hang; etc. Capped at depth 3
+		# to prevent runaway indent in pathologically deep configs.
+		var depth: int = int(depth_map.get(bus_name, 0))
+		depth = clampi(depth, 0, 3)
+		if depth > 0:
+			var top_pad := Control.new()
+			top_pad.custom_minimum_size = Vector2(0, depth * HIERARCHY_INDENT_PX)
+			top_pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			col.add_child(top_pad)
+
 		col.add_child(strip)
 		_strip_container.add_child(col)
 		_strips.append(strip)
@@ -625,6 +662,72 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 	# v0.28.8: trailing "+ Add Bus" column. Not added to _strips/_columns
 	# since it doesn't represent a real bus — it's a UI affordance only.
 	_strip_container.add_child(_build_add_bus_column())
+
+
+# v0.52.0: compute the parent-chain depth for each bus. Depth 0
+# means root (no parent or parent missing from the bus list).
+# Walks parent references up to a max-depth guard against cycles.
+func _compute_bus_depths(buses: Array) -> Dictionary:
+	# Build a name → parent_name map first so we don't re-scan the
+	# bus list for every depth lookup.
+	var parent_map: Dictionary = {}
+	var known_names: Dictionary = {}
+	for d in buses:
+		if not (d is Dictionary):
+			continue
+		var bus_name: String = String(d.get("name", ""))
+		known_names[bus_name] = true
+		var parent_name: String = String(d.get("parent", ""))
+		if not parent_name.is_empty():
+			parent_map[bus_name] = parent_name
+
+	var depths: Dictionary = {}
+	for d in buses:
+		if not (d is Dictionary):
+			continue
+		var bus_name: String = String(d.get("name", ""))
+		var depth: int = 0
+		var current: String = bus_name
+		# Walk up the parent chain. Guard against cycles (depth > 16
+		# means something's wrong with the config; bail).
+		while depth < 16:
+			var parent_name: String = String(parent_map.get(current, ""))
+			# Parent missing from the bus list = effectively root.
+			# This handles the common case where parent="Master" but
+			# Master isn't a real bus in the user's config (it's a
+			# convention).
+			if parent_name.is_empty() or not known_names.has(parent_name):
+				break
+			depth += 1
+			current = parent_name
+		depths[bus_name] = depth
+	return depths
+
+
+# v0.52.0: topologically sort buses so parents come before children.
+# Stable: within the same depth, preserves config.json order.
+# Buses with missing parents are treated as roots.
+func _topologically_sort_buses(buses: Array) -> Array:
+	var depths: Dictionary = _compute_bus_depths(buses)
+	# Pair each bus dict with its depth, then sort. Stable sort keeps
+	# original-order siblings together within each depth level.
+	var pairs: Array = []
+	for i in range(buses.size()):
+		var d = buses[i]
+		var bus_name: String = String(d.get("name", "")) if d is Dictionary else ""
+		var depth: int = int(depths.get(bus_name, 0))
+		pairs.append({"idx": i, "depth": depth, "data": d})
+	# Sort by depth ascending. Tie-break by original index to
+	# preserve config.json order for siblings.
+	pairs.sort_custom(func(a, b):
+		if a.depth != b.depth:
+			return a.depth < b.depth
+		return a.idx < b.idx
+	)
+	var out: Array = []
+	for p in pairs:
+		out.append(p.data)
+	return out
 
 
 # ---- Live data polling (during F5) -----------------------------------
@@ -2538,25 +2641,178 @@ class _EffectsPanel extends PanelContainer:
 		_vbox.add_theme_constant_override("separation", 6)
 		add_child(_vbox)
 
-	# Build the panel from a list of effect dicts as returned by
-	# get_bus_effects: [{kind: int, kind_name: String, params: {paramId: value, ...}}, ...].
-	# Clears any previous content first.
+	# v0.52.0: flow-diagram layout for the effect chain.
 	#
-	# v0.28.8: after the effect sections, a "+ Add Effect" button is
-	# appended. Clicking it opens a PopupMenu with the five kinds.
+	# Replaces v0.28.x's all-effects-stacked-vertically layout. Now
+	# the panel renders as:
+	#
+	#   ┌────────────────────────────────────────────────┐
+	#   │ [Reverb]→[Compressor]→[Biquad]      [+ Add]    │  ← flow row
+	#   │  (selected tile highlighted)                    │
+	#   ├────────────────────────────────────────────────┤
+	#   │ Reverb                            [↑] [↓] [×]  │  ← param section
+	#   │ Decay   ━━━●━━━━━  0.65                        │     (selected effect only)
+	#   │ HF Damp ━━━━━●━━━  0.30                        │
+	#   │ ...                                             │
+	#   └────────────────────────────────────────────────┘
+	#
+	# Click any tile to switch which effect's params are displayed.
+	# Signal flow (left → right) is now spatially literal — you can
+	# see at a glance "send goes through HPF, then Reverb, then LPF"
+	# instead of scrolling through a tall list.
+	var _selected_effect_idx: int = 0
+	var _effects_cache: Array = []
+	# v0.52.0: remember which bus we last built for. build_from_effects
+	# may be called periodically with refreshed values (poll-driven);
+	# resetting selection on every call would constantly snap the
+	# user's chosen effect back to the first one. Only reset selection
+	# when the bus context actually changes.
+	var _last_built_bus_name: String = ""
+	const FLOW_ARROW := " → "
+	const COLOR_TILE_SELECTED := Color(0.36, 0.55, 0.85)
+	const COLOR_TILE_INACTIVE := Color(0.20, 0.22, 0.26)
+	const COLOR_ARROW := Color(0.55, 0.58, 0.62)
+
 	func build_from_effects(effects: Array) -> void:
+		_effects_cache = effects.duplicate()
+		# v0.52.0: reset selection if this is a different bus than
+		# we last built for. Same bus = preserve selection through
+		# poll refreshes.
+		if bus_name != _last_built_bus_name:
+			_selected_effect_idx = 0
+			_last_built_bus_name = bus_name
+		# Clamp selection in case the chain shrank (e.g. user removed
+		# the previously-selected effect; default back to first).
+		if _selected_effect_idx >= _effects_cache.size():
+			_selected_effect_idx = 0
+		if _selected_effect_idx < 0:
+			_selected_effect_idx = 0
+		_rebuild_panel_ui()
+
+	# Internal: rebuild the entire panel UI from _effects_cache +
+	# _selected_effect_idx. Called from build_from_effects and from
+	# the tile-click handler.
+	func _rebuild_panel_ui() -> void:
 		_control_map.clear()
 		_value_label_map.clear()
 		for child in _vbox.get_children():
 			child.queue_free()
-		var n: int = effects.size()
-		for i in range(n):
-			var e: Dictionary = effects[i]
+
+		var n: int = _effects_cache.size()
+		# Flow row at top. Even with zero effects we still want the
+		# "+ Add Effect" affordance visible.
+		_vbox.add_child(_build_flow_row())
+
+		# Detail section for the selected effect. Skip if empty chain.
+		if n > 0 and _selected_effect_idx < n:
+			var e: Dictionary = _effects_cache[_selected_effect_idx]
 			var kind: int = int(e.get("kind", 0))
 			var kind_name: String = String(e.get("kind_name", "Effect"))
 			var params: Dictionary = e.get("params", {})
-			_vbox.add_child(_build_effect_section(i, n, kind, kind_name, params))
-		_vbox.add_child(_build_add_effect_button())
+			_vbox.add_child(_build_effect_section(
+					_selected_effect_idx, n, kind, kind_name, params))
+
+	# v0.52.0: build the horizontal flow row of effect tiles with
+	# arrows between, plus a trailing "+ Add" button.
+	func _build_flow_row() -> Control:
+		var outer := PanelContainer.new()
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = COLOR_PANEL_BG
+		sb.content_margin_left = 4.0
+		sb.content_margin_right = 4.0
+		sb.content_margin_top = 4.0
+		sb.content_margin_bottom = 4.0
+		outer.add_theme_stylebox_override("panel", sb)
+
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 0)
+		outer.add_child(row)
+
+		var n: int = _effects_cache.size()
+		for i in range(n):
+			var e: Dictionary = _effects_cache[i]
+			var kind_name: String = String(e.get("kind_name", "Effect"))
+			row.add_child(_build_effect_tile(i, kind_name,
+					i == _selected_effect_idx))
+			# Arrow separator between tiles (not after the last).
+			if i < n - 1:
+				row.add_child(_build_flow_arrow())
+
+		# Spacer pushes the Add button right.
+		var spacer := Control.new()
+		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(spacer)
+
+		row.add_child(_build_add_effect_button())
+		return outer
+
+	# Build one clickable effect tile. Selected state is rendered
+	# via background fill + bold label tint; inactive tiles get a
+	# muted appearance so the eye lands on the selected one first.
+	func _build_effect_tile(idx: int, kind_name: String,
+			selected: bool) -> Control:
+		var btn := Button.new()
+		btn.text = kind_name
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.custom_minimum_size = Vector2(0, 24)
+		btn.tooltip_text = "Click to edit %s params" % kind_name
+		# Highlight via StyleBoxFlat. Selected = filled with accent;
+		# inactive = subtle dark fill.
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = COLOR_TILE_SELECTED if selected else COLOR_TILE_INACTIVE
+		sb.corner_radius_top_left = 3
+		sb.corner_radius_top_right = 3
+		sb.corner_radius_bottom_left = 3
+		sb.corner_radius_bottom_right = 3
+		sb.content_margin_left = 8
+		sb.content_margin_right = 8
+		sb.content_margin_top = 4
+		sb.content_margin_bottom = 4
+		# Hover style — slightly lighter than the inactive fill, never
+		# brighter than the selected accent so the affordance stays
+		# subtle. Same shape for both selected and inactive (Godot
+		# Buttons render their own hover frame if we don't override).
+		var sb_hover := StyleBoxFlat.new()
+		sb_hover.bg_color = (COLOR_TILE_SELECTED if selected
+				else Color(0.28, 0.30, 0.34))
+		sb_hover.corner_radius_top_left = 3
+		sb_hover.corner_radius_top_right = 3
+		sb_hover.corner_radius_bottom_left = 3
+		sb_hover.corner_radius_bottom_right = 3
+		sb_hover.content_margin_left = 8
+		sb_hover.content_margin_right = 8
+		sb_hover.content_margin_top = 4
+		sb_hover.content_margin_bottom = 4
+		btn.add_theme_stylebox_override("normal", sb)
+		btn.add_theme_stylebox_override("hover", sb_hover)
+		btn.add_theme_stylebox_override("pressed", sb)
+		btn.add_theme_color_override("font_color",
+				Color.WHITE if selected else Color(0.85, 0.88, 0.92))
+		btn.pressed.connect(_on_effect_tile_pressed.bind(idx))
+		return btn
+
+	# Build a small arrow glyph (Label with "→") between tiles. Done
+	# as a Label rather than custom draw because Godot's text layout
+	# handles vertical centering with the tile heights automatically.
+	func _build_flow_arrow() -> Control:
+		var arrow := Label.new()
+		arrow.text = "→"
+		arrow.add_theme_color_override("font_color", COLOR_ARROW)
+		arrow.add_theme_constant_override("outline_size", 0)
+		arrow.custom_minimum_size = Vector2(20, 0)
+		arrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		arrow.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		return arrow
+
+	# Tile-click handler — update selection and rebuild. The
+	# Button's toggle_mode would be cleaner but Godot's button group
+	# state doesn't survive _rebuild_panel_ui (which frees children),
+	# so we manage selection state explicitly here.
+	func _on_effect_tile_pressed(idx: int) -> void:
+		if idx == _selected_effect_idx:
+			return
+		_selected_effect_idx = idx
+		_rebuild_panel_ui()
 
 	# v0.28.8: "+ Add Effect" button that opens a PopupMenu of the
 	# five effect kinds. Selection emits add_effect_requested for

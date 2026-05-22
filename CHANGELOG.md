@@ -22,7 +22,124 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.51.0] - 2026-05-22 — Mixer dock visual refresh
+## [0.52.0] - 2026-05-22 — Bus hierarchy indenting + Effect chain flow diagram
+
+### Added
+
+- **Bus hierarchy indenting in the mixer dock.** Child buses now
+  visually "hang" below their parents in the horizontal strip
+  layout, making the bus topology readable at a glance.
+
+  Example: with Master / Music (child of Master) / Sfx (child
+  of Master) / LocalSfx (child of Sfx) / RemoteSfx (child of
+  Sfx), the strips render as:
+
+  ```
+   ┌Master┐  ┌Music ┐
+   │      │  │      │
+   │  ─   │  │  ─   │
+   └──────┘  └──────┘
+              ┌ Sfx ┐
+              │     │
+              │  ─  │
+              └─────┘
+                       ┌LocalSfx┐  ┌RemoteSfx┐
+                       │        │  │         │
+                       │   ─    │  │    ─    │
+                       └────────┘  └─────────┘
+  ```
+
+  Implementation:
+  - New `HIERARCHY_INDENT_PX = 28.0` constant: vertical offset
+    per nesting level.
+  - `_compute_bus_depths(buses) → Dictionary` walks the parent
+    chain for each bus and returns name → depth. Cycle guard at
+    depth 16. Buses whose parent isn't a real bus in the config
+    are treated as roots.
+  - `_topologically_sort_buses(buses) → Array` returns the bus
+    list re-ordered so parents always come before their children.
+    Stable: siblings within the same depth preserve config.json
+    order.
+  - `_rebuild_strips_from_config` now uses the sorted order and
+    prepends a top-spacer `Control` sized to `depth × HIERARCHY_INDENT_PX`
+    in each column. Depth capped at 3 so pathologically deep
+    configs don't push strips off-screen.
+
+- **Effect chain flow diagram in the Fx panel.** The v0.28.x
+  "all effects stacked vertically with their full param lists"
+  layout has been replaced with a horizontal signal-flow row +
+  one-effect-at-a-time param editing.
+
+  Visual:
+  ```
+   ┌────────────────────────────────────────────────────┐
+   │ [Reverb]→[Compressor]→[Biquad]      [+ Add]        │  ← flow row
+   ├────────────────────────────────────────────────────┤
+   │ Reverb                            [↑] [↓] [×]      │  ← param section
+   │ Decay   ━━━●━━━━━  0.65                            │     (selected effect only)
+   │ HF Damp ━━━━━●━━━  0.30                            │
+   │ Wet     ━━━●━━━━━  -6.0 dB                         │
+   └────────────────────────────────────────────────────┘
+  ```
+
+  Click any tile to switch which effect's params are shown.
+  Signal flow (left → right) is now spatially literal — "send
+  goes through HPF, then Reverb, then LPF" is visible at a
+  glance instead of buried in a scrolling list.
+
+  Implementation:
+  - New `_EffectsPanel` state: `_selected_effect_idx: int`,
+    `_effects_cache: Array`, `_last_built_bus_name: String`.
+  - New const palette: `COLOR_TILE_SELECTED` (accent blue),
+    `COLOR_TILE_INACTIVE` (dark grey), `COLOR_ARROW` (mid grey).
+  - `build_from_effects` rewritten: caches the input, clamps
+    selection if the chain shrank, resets selection to 0 only
+    when the bus context actually changes (not on every
+    poll-driven refresh — without that guard, the user's chosen
+    effect would constantly snap back to the first one at 30 Hz).
+    Then calls `_rebuild_panel_ui` which clears children and
+    rebuilds: flow row at top, then the selected effect's param
+    section below (or nothing if the chain is empty — the flow
+    row still hosts the `+ Add` affordance).
+  - New helpers: `_build_flow_row()`, `_build_effect_tile(idx,
+    kind_name, selected)` (StyleBoxFlat fills + hover style),
+    `_build_flow_arrow()` (Label with "→" glyph),
+    `_on_effect_tile_pressed(idx)` (updates selection + rebuilds).
+  - The existing `_build_effect_section` is still used for the
+    detail section below — including its ↑/↓/× topology buttons
+    in the header. The kind_name appears in both the tile and
+    the section header (mild redundancy, useful confirmation).
+
+### Notes
+
+- I cannot directly render the dock, so this release is built
+  from code-reading the existing structure. If anything renders
+  wrong — strips clipping, tile fills not theming correctly,
+  flow row wrapping at small dock widths, indented strips
+  pushing the scroll height past the dock viewport — report it
+  and I'll fix it.
+- The bus strip itself (custom-drawn meter, fader, S/M/B
+  buttons) is unchanged. Indenting is purely a column-level
+  top-padding effect.
+- The `_build_effect_section` body is unchanged. The
+  redesign affects how it's called (one section instead of
+  many, picked by selection) and what's above it (the new
+  flow row).
+
+### Backward compatibility
+
+- No source-level breaks. No public API changes. No config
+  schema changes.
+- Existing `build_from_effects(effects)` signature unchanged.
+  Callers don't need updating.
+- Existing topology signals (`add_effect_requested`,
+  `remove_effect_requested`, `move_effect_requested`,
+  `param_changed`) unchanged.
+- `HIERARCHY_INDENT_PX` is an internal const, not a config knob.
+  Configs without parent fields still render as flat (depth 0
+  for every bus).
+
+
 
 ### Added
 
@@ -16894,7 +17011,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/siliconight/gool/releases/tag/v0.52.0
 [0.51.0]: https://github.com/siliconight/gool/releases/tag/v0.51.0
 [0.50.0]: https://github.com/siliconight/gool/releases/tag/v0.50.0
 [0.49.0]: https://github.com/siliconight/gool/releases/tag/v0.49.0
