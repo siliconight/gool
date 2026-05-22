@@ -81,28 +81,29 @@ Open `res://sounds/bank.tres` in the inspector, add a
 `SoundDefinition` entry for each sound that needs custom settings.
 This is the data-driven path and survives reloads.
 
-### Option B — register at runtime
+### Option B — register at runtime (recommended: Dict form)
 
 ```gdscript
 func _ready() -> void:
-    Gool.register_sound_definition(
-            "gunshot",          # name
-            true,               # spatialized
-            false,              # looping
-            1.0,                # min_distance (meters)
-            80.0,               # max_distance (meters)
-            0.0,                # loop_crossfade_ms
-            Gool.CATEGORY_SFX,  # category
-            "LocalSfx",         # target_bus_name
-            true)               # occlusion_enabled
+    # v0.49.0: Dict form. Named keys eliminate the 9-positional-arg
+    # footgun — wrong key prints a warning instead of silent default.
+    Gool.register_sound("gunshot", {
+        "spatialized": true,
+        "max_distance": 80.0,
+        "category": Gool.CATEGORY_SFX,
+        "target_bus_name": "LocalSfx",
+        "occlusion_enabled": true,
+    })
 ```
 
-> **Pitfall.** `register_sound_definition` takes 9 positional
-> arguments. Argument order is easy to get wrong silently — if
-> you skip the `target_bus_name` argument, your gunshot still
-> plays but routes to the wrong bus and skips the sidechain
-> compressor. Double-check the arg list against the example
-> above. A Dictionary form is on the roadmap.
+The Dict form is preferred for new code. The original 9-positional
+signature still works (`register_sound_definition(...)`) for
+backward compatibility.
+
+> **Pitfall (legacy form only).** If you must use the positional
+> signature, double-check argument order against the API docs.
+> Skipping `target_bus_name` silently uses category routing,
+> which may not be what you wanted.
 
 ## Step 2 — Add the listener (player's ears)
 
@@ -246,8 +247,25 @@ above works without any runtime registration.
 
 > **13 materials are built-in:** Default, Air, Glass, Wood,
 > Drywall, Concrete, Metal, Curtain, Foliage, Meat, Cardboard,
-> Rubber, Liquid. Custom materials aren't currently supported via
-> public API — pick the closest match.
+> Rubber, Liquid.
+>
+> **v0.49.0: custom materials are supported** via
+> `Gool.register_material(opts)`. The function returns a new
+> material ID (>= 100) you can use anywhere a built-in `MATERIAL_*`
+> constant works — ReverbZone, AudioMaterialTag, play_impact_sound:
+>
+> ```gdscript
+> var wet_stone = Gool.register_material({
+>     "name": "Wet Stone",
+>     "eq": {
+>         "low_gain_db": 0.5, "low_freq_hz": 200.0,
+>         "mid_gain_db": -2.0, "mid_freq_hz": 1500.0, "mid_q": 0.7,
+>         "high_gain_db": -3.5, "high_freq_hz": 6000.0,
+>     },
+>     "reverb_preset": GoolPresets.REVERB_CAVE,
+>     "impact_sound_suffix": "wet_stone",  # ⇒ "footstep_wet_stone" in bank
+> })
+> ```
 
 The `play_impact_sound` path applies per-material EQ (configured
 per material in `gool_presets.gd`) and picks the appropriate bank
@@ -399,9 +417,19 @@ var loss_ratio: float = Gool.get_voice_packet_loss_ratio(peer_id)
 Voice routes to the dedicated Voice bus from the FPS config —
 intentionally NOT ducked, intelligibility priority.
 
-> **There's no working mic-capture example shipping with gool
-> yet.** This is on the v0.48.0+ roadmap (see audit). For now,
-> integrate Steamworks if you're shipping on Steam.
+> **v0.49.0:** `examples/voice_chat/` ships a runnable loopback
+> demo showing the integration shape (mic capture → encoder
+> step → packet send → submit_voice_packet). The encoder is a
+> stub — no audible playback — but the wiring, sequence numbers,
+> timestamps, jitter buffer, and packet-loss metrics all work
+> end-to-end. Open it as the canonical reference for what real
+> integration looks like.
+
+For Steam shipments, Steamworks voice is recommended — it
+handles capture, encoding, transport, and echo cancellation in
+one integration. Wire the Steam voice byte stream into
+`Gool.submit_voice_packet(player_id, bytes, seq, send_ts)` on
+the receiving side.
 
 ## Step 12 — Tune the mix
 
@@ -487,7 +515,7 @@ reference for "what does this look like working?"
 | Replicated gunshots lag for the firing client | Calling `Gool.play_3d` AND bridge fire | Just use the bridge — it plays locally + replicates |
 | Voice chat is silent | No mic capture wired (gool doesn't ship one) | Integrate Steamworks voice or AudioStreamMicrophone + Opus |
 | Crash on `play_3d` | (Pre-v0.46.1 bug) | Update to v0.46.1+ |
-| `register_sound_definition` argument order silently wrong | 9 positional args is footgun | Compare against this doc's example carefully |
+| `register_sound_definition` argument order silently wrong | 9 positional args is footgun | **v0.49.0:** use the Dict form `register_sound(name, opts)` instead |
 
 ## Where to go next
 
@@ -500,6 +528,9 @@ reference for "what does this look like working?"
 - **`docs/terminology.md`** — gool's vocabulary vs FMOD / Wwise
 - **`docs/asset_pipeline.md`** — the sound bank schema in detail
 - **`examples/audition/`** — runnable feature showcase (Step 12)
+- **`examples/voice_chat/`** — runnable voice chat integration
+  demo (Step 11) showing mic capture + packet pipeline with
+  stubbed encoder
 - **`examples/coop_shooter_template/`** — a fuller multiplayer
   example with weapon firing + AI bots + combat music
 

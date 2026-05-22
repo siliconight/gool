@@ -882,6 +882,73 @@ func register_sound_definition(name: String, spatialized: bool = true,
 										 category, target_bus_name,
 										 occlusion_enabled)
 
+## v0.49.0: Dictionary-based form of register_sound_definition.
+## Eliminates the 9-positional-argument footgun in the original
+## signature — argument order is easy to get wrong silently because
+## skipping arguments uses defaults you didn't intend.
+##
+## Recognized keys (all optional; defaults match register_sound_definition):
+##   - "spatialized": bool (default true)
+##   - "looping": bool (default false)
+##   - "min_distance": float meters (default 1.0)
+##   - "max_distance": float meters (default 50.0)
+##   - "loop_crossfade_ms": float ms (default 0.0)
+##   - "category": int from CATEGORY_* enum (default CATEGORY_SFX)
+##   - "target_bus_name": String (default "" — use category routing)
+##   - "occlusion_enabled": bool (default true)
+##
+## Unrecognized keys are silently ignored — feel free to stash
+## game-specific notes in the same dict (e.g. for documentation),
+## they'll be dropped at registration time.
+##
+## Example:
+##     Gool.register_sound({
+##         "name": "gunshot",
+##         "spatialized": true,
+##         "max_distance": 80.0,
+##         "category": Gool.CATEGORY_SFX,
+##         "target_bus_name": "LocalSfx",
+##         "occlusion_enabled": true,
+##     })
+##
+## Equivalent to the v0.48.0-era positional form but with all
+## arguments named at the call site — your IDE can autocomplete
+## the keys, and a wrong key prints a warning instead of silently
+## using the default.
+func register_sound(name: String, opts: Dictionary = {}) -> void:
+	if not is_initialized():
+		return
+
+	# Validate keys so typos surface as warnings rather than
+	# silent default-fallback (the whole point of this wrapper).
+	const RECOGNIZED_KEYS: Array = [
+		"spatialized", "looping", "min_distance", "max_distance",
+		"loop_crossfade_ms", "category", "target_bus_name",
+		"occlusion_enabled",
+	]
+	for k in opts.keys():
+		var k_str: String = String(k)
+		if not RECOGNIZED_KEYS.has(k_str):
+			push_warning(
+					"[gool] register_sound: unknown key '%s' for sound '%s' (silently ignored). "
+					% [k_str, name]
+					+ "Recognized keys: %s" % str(RECOGNIZED_KEYS))
+
+	var spatialized: bool = bool(opts.get("spatialized", true))
+	var looping: bool = bool(opts.get("looping", false))
+	var min_distance: float = float(opts.get("min_distance", 1.0))
+	var max_distance: float = float(opts.get("max_distance", 50.0))
+	var loop_crossfade_ms: float = float(opts.get("loop_crossfade_ms", 0.0))
+	var category: int = int(opts.get("category", CATEGORY_SFX))
+	var target_bus_name: String = String(opts.get("target_bus_name", ""))
+	var occlusion_enabled: bool = bool(opts.get("occlusion_enabled", true))
+
+	_runtime.register_sound_definition(name, spatialized, looping,
+										 min_distance, max_distance,
+										 loop_crossfade_ms,
+										 category, target_bus_name,
+										 occlusion_enabled)
+
 ## Resolve a bus name to its BusId. Returns -1 if no bus matches.
 ## Use to bridge between code that knows bus names (config files,
 ## hosts) and code that needs BusId tokens (set_bus_gain_db,
@@ -1420,16 +1487,125 @@ const _MATERIAL_NAMES := [
 	"Cardboard", "Rubber", "Liquid",
 ]
 
+# v0.49.0: custom material registry.
+#
+# Built-in materials (IDs 0-12) live in the C++ engine. To add a
+# new material without forking the engine, register one here —
+# custom material IDs start at MATERIAL_CUSTOM_BASE (100) so they
+# never collide with built-ins. The registry is checked BEFORE
+# delegating to the C++ runtime in get_reverb_preset_for_material,
+# get_material_eq_for_material, and play_impact_sound.
+#
+# Registry entry shape:
+#   {
+#     "name": "Wet Stone",
+#     "eq": { "low_gain_db": ..., "low_freq_hz": ..., ... },
+#     "reverb_preset": { "decay": ..., "lf_damping": ..., ... },
+#     "impact_sound_suffix": "wet_stone",  # for play_impact_sound name lookup
+#   }
+#
+# Built-in materials still use the C++ path — this is purely an
+# extension mechanism, not a replacement for the engine-side table.
+const MATERIAL_CUSTOM_BASE: int = 100
+var _custom_materials: Dictionary = {}
+var _next_custom_material_id: int = MATERIAL_CUSTOM_BASE
+
 ## Return the string name of an AudioMaterial, e.g.
 ## `material_name(Gool.MATERIAL_CONCRETE)` returns `"Concrete"`.
 ## Returns `"Unknown"` for out-of-range values. Useful for debug
 ## overlays and logging.
+##
+## v0.49.0: also resolves custom-registered materials (IDs >= 100).
 func material_name(material: int) -> String:
 	if not is_initialized():
 		return ""
 	if material >= 0 and material < _MATERIAL_NAMES.size():
 		return _MATERIAL_NAMES[material]
+	if _custom_materials.has(material):
+		return String(_custom_materials[material].get("name", "CustomMaterial%d" % material))
 	return "Unknown"
+
+## v0.49.0: register a custom material at runtime. Returns the
+## allocated material ID (>= MATERIAL_CUSTOM_BASE = 100). Use the
+## returned ID anywhere a built-in MATERIAL_* constant works —
+## ReverbZone, AudioMaterialTag, play_impact_sound, etc.
+##
+## opts keys:
+##   - "name" (String): human-readable label for debug overlays.
+##     Default: "CustomMaterial<id>".
+##   - "eq" (Dictionary): the per-material EQ curve. Same shape as
+##     get_material_eq_for_material returns:
+##       low_gain_db, low_freq_hz, mid_gain_db, mid_freq_hz, mid_q,
+##       high_gain_db, high_freq_hz, is_neutral (optional bool)
+##     Default: empty (treated as neutral / no coloring).
+##   - "reverb_preset" (Dictionary): tail-shape values, same shape
+##     as get_reverb_preset_for_material returns:
+##       decay, predelay_ms, lf_damping, hf_damping, diffusion,
+##       wet_gain_db, send_hpf_hz, return_lpf_hz
+##     Defaults to {} (ReverbZone falls back to its @export
+##     defaults if a key is missing).
+##   - "impact_sound_suffix" (String): used by play_impact_sound to
+##     construct the actual sound bank name. If set, an impact
+##     call like `play_impact_sound("footstep", pos, my_id)` looks
+##     up the sound `"footstep_<suffix>"` in the bank instead of
+##     calling the C++ material-aware path. Default: "" (uses the
+##     bare `name` argument as the sound name).
+##
+## Example — register "Wet Stone" using the existing Cave reverb
+## preset but a bespoke EQ curve:
+##
+##     var wet_stone_id = Gool.register_material({
+##         "name": "Wet Stone",
+##         "eq": {
+##             "low_gain_db": 0.5, "low_freq_hz": 200.0,
+##             "mid_gain_db": -2.0, "mid_freq_hz": 1500.0, "mid_q": 0.7,
+##             "high_gain_db": -3.5, "high_freq_hz": 6000.0,
+##         },
+##         "reverb_preset": GoolPresets.REVERB_CAVE,
+##         "impact_sound_suffix": "wet_stone",
+##     })
+##     # Then in level scripts:
+##     reverb_zone.material = wet_stone_id
+##     # Or for AudioMaterialTag:
+##     audio_tag.material = wet_stone_id
+##     # Or for one-shot impacts:
+##     Gool.play_impact_sound("footstep", hit_pos, wet_stone_id)
+##     # Requires you've registered a sound named "footstep_wet_stone"
+##     # in your bank (or matching whatever suffix you chose).
+func register_material(opts: Dictionary) -> int:
+	if not is_initialized():
+		return MATERIAL_DEFAULT
+	var id: int = _next_custom_material_id
+	_next_custom_material_id += 1
+	var name_default: String = "CustomMaterial%d" % id
+	_custom_materials[id] = {
+		"name": String(opts.get("name", name_default)),
+		"eq": opts.get("eq", {}) if opts.get("eq", {}) is Dictionary else {},
+		"reverb_preset": opts.get("reverb_preset", {}) if opts.get("reverb_preset", {}) is Dictionary else {},
+		"impact_sound_suffix": String(opts.get("impact_sound_suffix", "")),
+	}
+	return id
+
+## v0.49.0: remove a custom material by ID. No-op if the ID isn't
+## registered or if it's a built-in (IDs 0-12). Materials still
+## referenced by ReverbZone / AudioMaterialTag / etc. will fall
+## through to Default after unregistration.
+func unregister_material(id: int) -> bool:
+	if not is_initialized():
+		return false
+	if id < MATERIAL_CUSTOM_BASE:
+		return false
+	if not _custom_materials.has(id):
+		return false
+	_custom_materials.erase(id)
+	return true
+
+## v0.49.0: return all custom material IDs currently registered.
+## Useful for debug UIs that enumerate the material catalog.
+func get_custom_material_ids() -> Array:
+	if not is_initialized():
+		return []
+	return _custom_materials.keys()
 
 ## Return the engine's per-material reverb preset as a Dictionary
 ## with keys: `decay`, `lf_damping`, `hf_damping`, `diffusion` (all
@@ -1466,6 +1642,11 @@ func material_name(material: int) -> String:
 func get_reverb_preset_for_material(material: int) -> Dictionary:
 	if not is_initialized():
 		return {}
+	# v0.49.0: custom materials take precedence. Built-in IDs (0-12)
+	# fall through to the C++ engine table.
+	if _custom_materials.has(material):
+		var entry: Dictionary = _custom_materials[material]
+		return entry.get("reverb_preset", {})
 	return _runtime.get_reverb_preset_for_material(material)
 
 ## DEPRECATED (v0.44.1): use get_reverb_preset_for_material instead.
@@ -1507,6 +1688,11 @@ func reverb_preset_for_material(material: int) -> Dictionary:
 func get_material_eq_for_material(material: int) -> Dictionary:
 	if not is_initialized():
 		return {}
+	# v0.49.0: custom materials take precedence. Built-in IDs (0-12)
+	# fall through to the C++ engine table.
+	if _custom_materials.has(material):
+		var entry: Dictionary = _custom_materials[material]
+		return entry.get("eq", {})
 	return _runtime.get_material_eq_for_material(material)
 
 ## DEPRECATED (v0.44.2): use get_material_eq_for_material instead.
@@ -1581,6 +1767,31 @@ func material_from_collider(node: Node) -> int:
 func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 	if not is_initialized():
 		return
+
+	# v0.49.0: custom material path. Custom materials live entirely
+	# in the GDScript registry — the C++ engine doesn't know about
+	# them, so we can't call play_sound_at_location_for_material.
+	# Instead, construct the effective sound name from the suffix
+	# and route through play_3d. EQ is applied via the scaled helper
+	# using the registered custom EQ dict (the C++
+	# apply_material_eq_to_bus would fall through to Default for an
+	# unrecognized material ID).
+	if _custom_materials.has(material):
+		var entry: Dictionary = _custom_materials[material]
+		var suffix: String = String(entry.get("impact_sound_suffix", ""))
+		var effective_name: String = name
+		if not suffix.is_empty():
+			effective_name = "%s_%s" % [name, suffix]
+		# EQ apply: only if we have a configured impact bus AND the
+		# custom EQ dict isn't empty/neutral. Uses the scaled helper
+		# so the eq_intensity slider still applies.
+		var custom_eq: Dictionary = entry.get("eq", {})
+		if _impact_eq_bus_name != "" and not custom_eq.is_empty() \
+				and not bool(custom_eq.get("is_neutral", false)):
+			_apply_custom_material_eq_to_bus(_impact_eq_bus_name, custom_eq)
+		play_3d(effective_name, position, 128)
+		return
+
 	# v0.34.0: push the material's EQ curve to the impact bus
 	# before play. The C++ method is a no-op for unrecognized
 	# bus configurations, but our _setup_impact_eq has already
@@ -1609,6 +1820,29 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 		else:
 			_apply_scaled_material_eq_to_bus(_impact_eq_bus_name, material)
 	_runtime.play_sound_at_location_for_material(name, position, material)
+
+# v0.49.0: apply a custom-material EQ dict to a bus. Used by
+# play_impact_sound for custom materials. Mirrors the structure of
+# _apply_scaled_material_eq_to_bus but reads from the supplied
+# dict instead of get_material_eq_for_material(id). The bus is
+# expected to have the 3-biquad shape from cookbook section 14
+# (LowShelf at index 0, Peaking at 1, HighShelf at 2).
+func _apply_custom_material_eq_to_bus(bus_name: String, eq: Dictionary) -> void:
+	var low_gain_db: float = float(eq.get("low_gain_db", 0.0)) * _eq_intensity
+	var low_freq_hz: float = float(eq.get("low_freq_hz", 200.0))
+	var mid_gain_db: float = float(eq.get("mid_gain_db", 0.0)) * _eq_intensity
+	var mid_freq_hz: float = float(eq.get("mid_freq_hz", 1000.0))
+	var mid_q: float = float(eq.get("mid_q", 0.707))
+	var high_gain_db: float = float(eq.get("high_gain_db", 0.0)) * _eq_intensity
+	var high_freq_hz: float = float(eq.get("high_freq_hz", 6000.0))
+	# Effect param IDs (BiquadFilter): 2=cutoff_hz, 3=q, 12=gain_db.
+	_runtime.set_effect_parameter(bus_name, 0, 12, low_gain_db)
+	_runtime.set_effect_parameter(bus_name, 0, 2, low_freq_hz)
+	_runtime.set_effect_parameter(bus_name, 1, 12, mid_gain_db)
+	_runtime.set_effect_parameter(bus_name, 1, 2, mid_freq_hz)
+	_runtime.set_effect_parameter(bus_name, 1, 3, mid_q)
+	_runtime.set_effect_parameter(bus_name, 2, 12, high_gain_db)
+	_runtime.set_effect_parameter(bus_name, 2, 2, high_freq_hz)
 
 # v0.34.0 (Phase 6.B): one-shot check at _ready to determine
 # whether the auto-EQ for impacts is viable. Reads the configured

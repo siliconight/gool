@@ -22,7 +22,119 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.48.0] - 2026-05-22 — FPS quickstart: doc + config template + audition example + Save Mix button
+## [0.49.0] - 2026-05-22 — Tier 2 DX: Dict form for register_sound, custom material registration, voice chat example
+
+### Added
+
+- **`Gool.register_sound(name, opts)`** — Dictionary-form
+  wrapper around `register_sound_definition`. Eliminates the
+  9-positional-argument footgun in the original signature. Keys:
+  `spatialized`, `looping`, `min_distance`, `max_distance`,
+  `loop_crossfade_ms`, `category`, `target_bus_name`,
+  `occlusion_enabled` (all optional, defaults match the original
+  function). Unknown keys print a warning so typos surface
+  immediately instead of silently using the default. The
+  positional `register_sound_definition` remains for backward
+  compatibility — both call the same underlying C++ binding.
+  Closes Tier 2 item #5 from the v0.48.0 audit.
+
+- **Custom material registration API** —
+  `Gool.register_material(opts) -> int`,
+  `Gool.unregister_material(id)`, `Gool.get_custom_material_ids()`,
+  plus a new `MATERIAL_CUSTOM_BASE = 100` constant. Lets game
+  devs add materials beyond the 13 built-ins (Default, Air,
+  Glass, Wood, Drywall, Concrete, Metal, Curtain, Foliage, Meat,
+  Cardboard, Rubber, Liquid) without forking gool. opts keys:
+  `name`, `eq` (per-material EQ curve dict), `reverb_preset`
+  (tail-shape dict), `impact_sound_suffix` (for bank lookup).
+  Returns a new material ID >= 100 that works anywhere a built-in
+  MATERIAL_* constant works: ReverbZone, AudioMaterialTag,
+  play_impact_sound. `get_reverb_preset_for_material`,
+  `get_material_eq_for_material`, and `play_impact_sound` all
+  check the custom registry before delegating to the C++ engine,
+  so custom materials are transparent to consumers. Closes Tier
+  2 item #6.
+
+  Example — register "Wet Stone" using Cave reverb + bespoke EQ:
+  ```gdscript
+  var wet_stone = Gool.register_material({
+      "name": "Wet Stone",
+      "eq": { "low_gain_db": 0.5, "low_freq_hz": 200.0,
+              "mid_gain_db": -2.0, "mid_freq_hz": 1500.0, "mid_q": 0.7,
+              "high_gain_db": -3.5, "high_freq_hz": 6000.0 },
+      "reverb_preset": GoolPresets.REVERB_CAVE,
+      "impact_sound_suffix": "wet_stone",
+  })
+  reverb_zone.material = wet_stone  # works just like a built-in
+  ```
+
+- **`examples/voice_chat/`** — runnable single-process loopback
+  demo of the voice chat integration pipeline. Demonstrates:
+  - `AudioStreamMicrophone` + `AudioEffectCapture` for mic capture
+  - Packet structuring with sequence numbers + send timestamps
+  - Hand-off to `Gool.submit_voice_packet` with full jitter +
+    packet-loss metric flow
+  - The `VoiceChatPlayer` prefab's role on the receive side
+    (loopback variant inlined for the demo so the wiring is
+    visible without prefab indirection)
+
+  The encoder is **honestly stubbed** — `_encode_pcm_to_opus`
+  returns raw float bytes that gool's Opus decoder will reject.
+  No audible voice plays back. The point is to surface the
+  integration shape so FPS devs can swap in a real encoder
+  (Steamworks voice for Steam shipments, godot-opus addon,
+  custom GDExtension wrapping libopus). README walks through the
+  production checklist. Closes Tier 2 item #7.
+
+- **`docs/quickstart_fps.md`** updated to reflect v0.49.0:
+  - Step 1 (Sound bank registration): leads with `register_sound`
+    (Dict form) as the recommended path
+  - Step 6 (Footsteps / materials): documents `register_material`
+    with a complete Wet Stone example
+  - Step 11 (Voice chat): points at `examples/voice_chat/` as
+    the canonical integration reference
+  - Common pitfalls table updated to reflect that the 9-arg
+    footgun is closed
+
+### Changed
+
+- `Gool.material_name(id)` now resolves custom material IDs to
+  the registered `name` (or `"CustomMaterial<id>"` if no name
+  was provided). Built-in material IDs still resolve via the
+  static `_MATERIAL_NAMES` table.
+- `Gool.play_impact_sound` short-circuits for custom material
+  IDs (>=100): looks up the registered `impact_sound_suffix`,
+  constructs `"<base_name>_<suffix>"`, applies the custom EQ
+  curve via the new `_apply_custom_material_eq_to_bus` helper,
+  and routes through `play_3d`. Built-in materials still take
+  the existing C++ `play_sound_at_location_for_material` path.
+
+### Notes
+
+- Custom materials live entirely in the GDScript registry — no
+  C++ changes. They're checked BEFORE delegating to the C++
+  runtime in the three lookup functions
+  (`get_reverb_preset_for_material`,
+  `get_material_eq_for_material`, `play_impact_sound`). Built-in
+  IDs 0-12 still go through the C++ engine table unchanged.
+- The voice chat example's stub encoder is intentional. Shipping
+  a working encoder would require either bundling libopus
+  (large binary dependency) or recommending a community addon
+  with its own update / compatibility story. Stubbing makes the
+  example honest about what gool provides vs what the integrator
+  brings — and the demo still exercises the full packet metadata
+  pipeline (jitter buffer + loss tracking work end-to-end).
+- Tier 3 items remain: voice budget / performance doc, FPS smoke
+  test, intensity-driven music with stems/layers.
+
+### Backward compatibility
+
+- No source-level breaks. `register_sound_definition` (positional
+  form) unchanged. `Gool.MATERIAL_*` constants unchanged. All
+  existing prefab and API surfaces unchanged.
+- New autoload methods only — no removals, no signature changes.
+
+
 
 ### Added
 
@@ -16582,7 +16694,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/siliconight/gool/releases/tag/v0.49.0
 [0.48.0]: https://github.com/siliconight/gool/releases/tag/v0.48.0
 [0.47.0]: https://github.com/siliconight/gool/releases/tag/v0.47.0
 [0.46.1]: https://github.com/siliconight/gool/releases/tag/v0.46.1
