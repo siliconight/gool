@@ -22,7 +22,101 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.49.0] - 2026-05-22 — Tier 2 DX: Dict form for register_sound, custom material registration, voice chat example
+## [0.50.0] - 2026-05-22 — Tier 3 polish: performance budgets doc + FPS scene smoke test
+
+### Added
+
+- **`docs/performance_budgets.md`** — reference doc for every
+  budget gool enforces at runtime, written against the actual
+  constants in `include/audio_engine/config.h` (not guessed).
+  Covers:
+  - The two independent budget systems: per-emitter runtime
+    pools (`AudioRuntimeBudget`) and per-player replication
+    rate limits (`ReplicationRateLimitConfig`)
+  - Actual defaults: 128 active emitters / 64 spatial / 16
+    voice sources / 12 occlusion checks-per-frame / 8 streaming
+    voices / 256 registered sounds — and the SFX 50/sec, Voice
+    150/sec, Dialogue 20/sec replication rates
+  - Anti-DoS budgets (`maxTrackedPlayers`,
+    `maxNewPlayersPerTick`) for internet-facing hosts
+  - Reading drops + voice counts in the editor mixer dock's
+    Live Stats panel (the first thing to check when sounds are
+    going missing)
+  - `AudioRelevancyFilter` usage for pre-emitter culling
+  - Priority guidance — FPS convention table (your local
+    gunshot 220 wins over teammate gunshot 180, etc.)
+  - Memory budgets for streaming vs preloaded sounds
+  - A complete 32-player FPS budget config example with all
+    the overrides spelled out
+  - A 60-player BR variant using
+    `maxActiveEmittersProcessedPerTick` for interest management
+
+  Closes Tier 3 item #8 from the v0.47.0 audit.
+
+- **`addons/gool/tools/fps_scene_smoke_test.gd`** —
+  scene-level static analysis tool. Complements
+  `prefab_smoke_test.gd` (v0.45.0) which finds cross-reference
+  bugs in GDScript; this one finds **configuration drift** —
+  the bug class where you added a feature (ReverbZone,
+  VoiceChatPlayer) but didn't wire its config dependency, so
+  the feature fires its enter events but produces no audible
+  change. How it works:
+  - Walks every .tscn under res:// (excluding addons/, .godot/,
+    build/, dist/, hidden dirs)
+  - Counts occurrences of each gool prefab script (Listener3D,
+    AudioEmitter3D, ReverbZone, VoiceChatPlayer,
+    AudioMaterialTag, MusicStateController, etc.)
+  - Loads `gool/config.json` and analyzes the bus chain —
+    detects which buses have Reverb, which have the v0.47.0
+    EQ-shaping pattern (adjacent biquads), which standard
+    semantic buses exist (Voice, Dialogue, Music, Ambient)
+  - Cross-references and flags errors/warnings/info findings:
+    - ERROR: scenes use ReverbZone but no bus has a Reverb effect
+    - ERROR: scenes use VoiceChatPlayer but no Voice bus in config
+    - WARNING: scenes use 3D audio but no GoolListener3D in any
+      .tscn (OK if listener is added at runtime, worth flagging)
+    - INFO: which buses support v0.47.0 EQ shaping so devs know
+      where their `send_hpf_hz`/`return_lpf_hz` @exports work
+  - Prints a per-scene usage summary table + the findings list
+
+  Registered in the editor Tools menu:
+  Project ▸ Tools ▸ gool ▸ "Run FPS scene smoke test"
+
+  Closes Tier 3 item #9 from the v0.47.0 audit.
+
+- **`docs/quickstart_fps.md`** Step 13 (Performance budgets)
+  rewritten with the actual numbers from `config.h` plus a
+  pointer to `docs/performance_budgets.md` for the full
+  reference. "Where to go next" section adds links to the new
+  doc and the new smoke test.
+
+### Notes
+
+- The performance budgets doc was written entirely from
+  source-of-truth constants in `include/audio_engine/config.h`,
+  not from the audit's earlier guess values. The v0.47.0 audit
+  listed defaults like "SFX 64, MUSIC 4, VOICE 16" — the
+  ACTUAL system is different: gool budgets are per-pool
+  (maxActiveEmitters, maxSpatialEmitters, etc.) plus per-
+  player replication rate limits. Categories don't have
+  separate voice pools the way some other audio engines do.
+- The FPS scene smoke test is a tool-time check, not a runtime
+  one. Run it before tagging releases or after major scene
+  refactors; it takes seconds and catches misconfigurations
+  that would otherwise surface as "the reverb isn't working
+  but I have no idea why."
+- Long-term roadmap items remain (intensity-driven music with
+  stems/layers — the L4D2 deferred feature). That's a much
+  bigger feature, not in scope for the polish tier.
+
+### Backward compatibility
+
+- No source-level breaks. All deliverables are additive
+  (new doc, new tool, two new menu items).
+- Existing prefab_smoke_test.gd unchanged.
+- No autoload API changes.
+
+
 
 ### Added
 
@@ -16694,7 +16788,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.50.0...HEAD
+[0.50.0]: https://github.com/siliconight/gool/releases/tag/v0.50.0
 [0.49.0]: https://github.com/siliconight/gool/releases/tag/v0.49.0
 [0.48.0]: https://github.com/siliconight/gool/releases/tag/v0.48.0
 [0.47.0]: https://github.com/siliconight/gool/releases/tag/v0.47.0

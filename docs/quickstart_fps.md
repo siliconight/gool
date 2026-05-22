@@ -461,28 +461,39 @@ evicted. Drops show up in the stats panel.
 
 ## Step 13 — Performance budgets
 
-Defaults you should know:
+Defaults you should know (from `include/audio_engine/config.h`):
 
-| Category | Default voice limit | Typical use |
-|---|---|---|
-| `SFX` | 64 | gunshots, impacts, world sounds |
-| `MUSIC` | 4 | music tracks (usually 1-2 active) |
-| `VOICE` | 16 | voice chat players |
-| `AMBIENCE` | 8 | room tones, looping environment |
-| `UI` | 8 | menu / HUD sounds |
-| `DIALOGUE` | 4 | NPC barks |
+| Budget | Default | What it limits |
+|---|---:|---|
+| `maxSpatialEmitters` | 64 | Concurrent 3D-positioned sounds |
+| `maxActiveEmitters` | 128 | Total concurrent emitters |
+| `maxVoiceSources` | 16 | Concurrent voice chat speakers |
+| `maxOcclusionChecksPerFrame` | 12 | Per-emitter raycasts/frame |
+| `maxStreamingVoices` | 8 | Concurrent streaming voices |
 
-When you exceed the limit, lower-priority sounds get evicted to
-make room. Priority is the third argument to `play_3d`.
+Plus per-player replication rate limits (SFX 50/sec, Voice
+150/sec, Dialogue 20/sec, Music 5/sec, Ambience 10/sec, UI
+unlimited).
 
-For a 32-player MP FPS with all players firing, you'll be at the
-SFX limit constantly. Strategies:
+When you exceed a budget, **priority-based eviction** kicks in:
+new high-priority sounds steal slots from active low-priority
+ones. Drops show up in the mixer dock's Live Stats panel.
 
-- Increase `SFX` voice limit in `config.json`
-- Use `RemoteSfx` with lower priority for teammate audio (so
-  yours always wins)
+For a 32-player MP FPS where everyone's firing, you'll be at the
+spatial emitter limit constantly. Strategies:
+
+- Increase `maxSpatialEmitters` (typically to 96-128)
+- Use `RemoteSfx` with lower priority than `LocalSfx` so your own
+  gun wins eviction battles
 - Use `AudioRelevancyFilter` to skip far-away sounds before they
   consume a voice (see `audio_relevancy_filter.gd`)
+- For 60-player BR, set `maxActiveEmittersProcessedPerTick` for
+  interest management (sort by distance, process closest N)
+
+**`docs/performance_budgets.md`** has the full reference — every
+budget, what happens when you hit it, how to read drops in Live
+Stats, AudioRelevancyFilter usage, priority conventions, and a
+32-player FPS budget configuration example.
 
 ## Try-this-now: the audition example
 
@@ -521,6 +532,9 @@ reference for "what does this look like working?"
 
 - **`docs/networking_bridge.md`** — the bridge's full API (host
   migration, transport modes, custom network layer integration)
+- **`docs/performance_budgets.md`** — every runtime + replication
+  budget, what happens at the limit, how to read drops in Live
+  Stats, scaling guidance for 32-player FPS and 60-player BR
 - **`docs/audio_design/reverb_eq.md`** — the v0.47.0 EQ shaping
   recipes (Sound on Sound + MixingLessons articles)
 - **`docs/audio_design/dialogue_setup.md`** — the sidechain
@@ -533,6 +547,12 @@ reference for "what does this look like working?"
   stubbed encoder
 - **`examples/coop_shooter_template/`** — a fuller multiplayer
   example with weapon firing + AI bots + combat music
+- **Tools menu** — Project ▸ Tools ▸ gool ▸ "Run FPS scene
+  smoke test" (v0.50.0) walks all .tscn files in your project
+  and flags missing config dependencies (ReverbZone without
+  reverb in the bus chain, VoiceChatPlayer without a Voice bus,
+  3D audio used without a listener). Run it before each release
+  to catch config drift.
 
 If you hit something this doc doesn't cover, open an issue with
 the "fps-quickstart" label and we'll patch it in.

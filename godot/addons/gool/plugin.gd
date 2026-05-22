@@ -570,6 +570,7 @@ enum ToolsMenuItem {
 	OPEN_QUICKSTART    = 2,
 	ADD_DEBUG_OVERLAY  = 3,   # v0.23.1
 	RUN_PREFAB_SMOKE_TEST = 4,  # v0.45.0
+	RUN_FPS_SCENE_SMOKE_TEST = 5,  # v0.50.0
 }
 
 func _register_tools_menu() -> void:
@@ -589,6 +590,13 @@ func _register_tools_menu() -> void:
 	_tools_menu.add_separator()
 	_tools_menu.add_item("Run prefab smoke test (find missing autoload wrappers)",
 		ToolsMenuItem.RUN_PREFAB_SMOKE_TEST)
+	# v0.50.0: scene-level FPS smoke test. Scans every .tscn for
+	# gool prefab usage and cross-references with config.json to
+	# detect "added a feature but didn't wire its dependency"
+	# bugs (ReverbZone with no Reverb in bus chain, VoiceChatPlayer
+	# with no Voice bus, etc.). See addons/gool/tools/fps_scene_smoke_test.gd.
+	_tools_menu.add_item("Run FPS scene smoke test (find missing config dependencies)",
+		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST)
 	_tools_menu.id_pressed.connect(_on_tools_menu_pressed)
 	add_tool_submenu_item(TOOLS_MENU_NAME, _tools_menu)
 
@@ -620,6 +628,8 @@ func _on_tools_menu_pressed(id: int) -> void:
 			_add_debug_overlay_to_current_scene()
 		ToolsMenuItem.RUN_PREFAB_SMOKE_TEST:
 			_run_prefab_smoke_test()
+		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST:
+			_run_fps_scene_smoke_test()
 
 # v0.45.0: run the static-analysis smoke test from the Tools menu.
 # Tool prints findings to the Output panel. Pure analysis — no F5
@@ -643,6 +653,33 @@ func _run_prefab_smoke_test() -> void:
 			"Missing autoload wrapper(s) detected. See the Output "
 			+ "panel for the list of missing methods and where each "
 			+ "is called from. Same bug shape as v0.44.1 / v0.44.2."
+		)
+
+# v0.50.0: run the scene-level FPS smoke test from the Tools menu.
+# Walks all .tscn under res:// (excluding addons/), counts gool
+# prefab usage per scene, and cross-references with config.json
+# to find missing dependencies (ReverbZone with no Reverb in any
+# bus chain, VoiceChatPlayer with no Voice bus, etc.).
+func _run_fps_scene_smoke_test() -> void:
+	var tool_script := load("res://addons/gool/tools/fps_scene_smoke_test.gd")
+	if tool_script == null:
+		push_error("[gool] fps_scene_smoke_test.gd not found")
+		return
+	var tool = tool_script.new()
+	var ok: bool = tool.run()
+	if ok:
+		_show_info_dialog(
+			"gool: FPS scene smoke test PASSED",
+			"No errors detected. Some scenes may have warnings or "
+			+ "info notes — see the Output panel for the full report."
+		)
+	else:
+		_show_info_dialog(
+			"gool: FPS scene smoke test FAILED",
+			"One or more error-severity findings detected. See the "
+			+ "Output panel for the list. Common causes: ReverbZone "
+			+ "without a Reverb effect in any bus chain, "
+			+ "VoiceChatPlayer without a Voice bus in config.json."
 		)
 
 # v0.23.0: scene scaffolding command.
