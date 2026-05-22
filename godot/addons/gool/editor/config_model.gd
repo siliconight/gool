@@ -493,36 +493,47 @@ func _do_save() -> int:
 		save_failed.emit("patch errors: " + ", ".join(write_errors))
 		return ERR_INVALID_DATA
 
-	# Write the patched text.
+	# v0.54.3: verify BEFORE writing to disk. The previous flow was
+	# write → verify → restore-from-bak-on-failure, which left a
+	# window where corrupted data was on disk, and which silently
+	# kept the corruption if the restore itself failed (the
+	# _copy_file return value was discarded). A real user hit this
+	# in v0.54.1: a save produced "gain_db": %g, the verify caught
+	# it, but the restore didn't complete cleanly and the user's
+	# config.json on disk stayed as the broken version. On next F5
+	# the C++ JSON parser rejected the file and runtime init failed.
+	#
+	# New flow: parse new_text in memory. Only open config.json for
+	# write after we know the candidate is valid JSON. Bad candidates
+	# get dumped to .failed for diagnosis but NEVER touch the live
+	# config.
+	var verify_v: Variant = JSON.parse_string(new_text)
+	if verify_v == null or not (verify_v is Dictionary):
+		# Dump the failing text to a sibling file for diagnosis. The
+		# live config.json is untouched — anything that reads it
+		# (F5'd runtime, other editor tools) sees the previous good
+		# state, NOT this candidate.
+		var failed_path: String = "res://gool/config.json.failed"
+		var f_dump := FileAccess.open(failed_path, FileAccess.WRITE)
+		if f_dump != null:
+			f_dump.store_string(new_text)
+			f_dump.close()
+		save_failed.emit(
+				"save aborted: patcher produced invalid JSON. "
+				+ "res://gool/config.json is UNCHANGED. "
+				+ "Failing candidate dumped to %s for diagnosis. "
+				+ "This is a bug in gool's patched-save path — please "
+				+ "report the .failed file."
+				% failed_path)
+		return ERR_INVALID_DATA
+
+	# Verified. Safe to write.
 	var f := FileAccess.open(CONFIG_PATH, FileAccess.WRITE)
 	if f == null:
 		save_failed.emit("could not open %s for write" % CONFIG_PATH)
 		return ERR_CANT_OPEN
 	f.store_string(new_text)
 	f.close()
-
-	# Re-parse to verify the patcher produced valid JSON. If parse
-	# fails, restore from backup — leaves the user's previous good
-	# config intact, surfaces the bug for us to fix.
-	#
-	# v0.28.6: on parse failure, ALSO dump the failed text to
-	# `gool/config.json.failed` so we have ground truth on what the
-	# patcher produced. Without this, all we get is "JSON invalid"
-	# with no way to see what was actually wrong. The file is left
-	# on disk until the next successful save (which doesn't touch
-	# it) or a manual delete — read once, fix the bug, then delete.
-	var verify_v: Variant = JSON.parse_string(new_text)
-	if verify_v == null or not (verify_v is Dictionary):
-		var failed_path: String = "res://gool/config.json.failed"
-		var f_dump := FileAccess.open(failed_path, FileAccess.WRITE)
-		if f_dump != null:
-			f_dump.store_string(new_text)
-			f_dump.close()
-		_copy_file(BACKUP_PATH, CONFIG_PATH)
-		save_failed.emit(
-				"post-write JSON invalid; restored from .bak. "
-				+ "Failing text dumped to %s for diagnosis." % failed_path)
-		return ERR_INVALID_DATA
 
 	# All good. Commit the new state.
 	_raw_text = new_text
@@ -821,9 +832,55 @@ func _patch_string_in_range(text: String, block_range: Vector2i,
 # conversion which handles arbitrary precision and trims trailing
 # zeros (-21.1 → "-21.1", 0.707 → "0.707").
 func _format_number(value: float) -> String:
+	# v0.54.3: defensive validation. The patched-save path is the
+	# only place that emits float-to-JSON, and corrupted output
+	# (e.g. literal "%g" from a v0.28.7-era bug, or "nan"/"inf" from
+	# IEEE 754 sentinels) is unsalvageable downstream — the C++ JSON
+	# parser rejects the whole config. Clamp non-finite values to 0.0
+	# and surface a warning so the bug source is visible in the
+	# editor log rather than dying silently in a .failed dump.
+	if is_nan(value) or is_inf(value):
+		push_warning(
+				"[gool] config_model: refusing to serialize non-finite "
+				+ "value (%s); clamping to 0.0. "
+				+ "This indicates a bug — the model shouldn't be carrying "
+				+ "NaN or Inf. Report the steps that produced it."
+				% str(value))
+		return "0.0"
+	var s: String
 	if value == floor(value) and absf(value) < 1.0e15:
-		return "%0.1f" % value
-	return String.num(value)
+		s = "%0.1f" % value
+	else:
+		s = String.num(value)
+	# Belt-and-suspenders: validate the output IS a JSON number
+	# before returning. If a future Godot version or platform quirk
+	# makes String.num emit something the JSON parser would reject,
+	# we catch it here rather than letting it reach disk.
+	if not _is_valid_json_number(s):
+		push_warning(
+				"[gool] config_model: serializer produced non-JSON "
+				+ "output '%s' for value %f; clamping to 0.0. "
+				+ "This indicates a bug — please report the steps."
+				% [s, value])
+		return "0.0"
+	return s
+
+
+# JSON number grammar (RFC 8259 §6):
+#   number = [ minus ] int [ frac ] [ exp ]
+#   int    = zero / ( digit1-9 *DIGIT )
+#   frac   = decimal-point 1*DIGIT
+#   exp    = e [ minus / plus ] 1*DIGIT
+# Used by _format_number to validate its own output. Catches the
+# %g class of bug (literal "%g" wouldn't match anywhere in this
+# grammar) as well as any "nan"/"inf"/"infinity" that might slip
+# through from String.num on some platforms.
+func _is_valid_json_number(s: String) -> bool:
+	if s.is_empty():
+		return false
+	var re := RegEx.new()
+	re.compile("^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$")
+	return re.search(s) != null
 
 
 # Locate `key` (a JSON string field name) inside `block_range`.

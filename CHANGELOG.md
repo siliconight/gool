@@ -22,7 +22,88 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.54.2] - 2026-05-22 — Init-failure clarity: better error, no cascade spam
+## [0.54.3] - 2026-05-22 — config_model: verify-before-write, defensive _format_number
+
+### Fixed
+
+- **Patched save no longer corrupts `gool/config.json` when verify
+  fails.** A user reported `bus config parse failed at line 2:
+  bad escape \u` at runtime — diagnosed via the `.failed` dump
+  they shipped me. The actual corruption was `"gain_db": %g` on
+  the Ambience bus's line of their config. Two distinct bugs in
+  the save path combined to ship that to disk:
+
+  1. **Write-before-verify.** The patched text was written to
+     `config.json` first, then re-parsed to verify. If verify
+     failed, the bad bytes had already touched disk.
+  2. **Silent backup-restore failure.** When verify failed, the
+     code called `_copy_file(BACKUP_PATH, CONFIG_PATH)` to roll
+     back, but threw away the return value. If the restore
+     silently failed (missing backup, write permission issue,
+     anything), the corrupted bytes from step 1 stayed live.
+     The user hit this combination — F5 then loaded the bad
+     file and runtime init failed.
+
+  Fix: parse `new_text` BEFORE opening `config.json` for write.
+  If parse fails, dump to `.failed` for diagnosis and abort
+  the save with `config.json` untouched. The backup file is
+  still made (useful as a manual recovery artifact and for
+  reverting unrelated catastrophes) but is no longer required
+  to be restorable for the auto-save flow to be safe.
+
+- **`_format_number` now refuses non-finite values.** NaN and
+  ±Inf were the most plausible internal sources of malformed
+  output (`String.num(NAN)` returns `"nan"`, which JSON rejects).
+  The function now clamps NaN/Inf to `0.0` and pushes a warning
+  to the editor log with the original value, so any future bug
+  that lets a non-finite value reach the serializer leaves a
+  paper trail instead of dying silently in a `.failed` dump.
+
+- **`_format_number` validates its own output as JSON-numeric.**
+  Added `_is_valid_json_number(s)` (regex against RFC 8259 §6
+  number grammar) and a check right before returning. If a
+  future GDScript / platform quirk makes `String.num` emit
+  something the JSON parser would reject, we catch it here and
+  fall back to `0.0` with a warning. Catches the `%g` class of
+  bug too — if any code path ever managed to inject `%g` into
+  the formatted output, this check would reject it before it
+  reached `new_text`.
+
+### Notes
+
+- I genuinely don't know which code path produced the user's
+  `%g`. The shipping `_format_number` (post-v0.28.7) has no
+  literal `%g`; `JSON.stringify` doesn't emit it; no other
+  write path to config.json exists in the addon. The most
+  plausible source is a pre-v0.28.7 version of gool that wrote
+  the user's config originally — that era's bug was exactly
+  `"%g" % value` returning the unformatted template string when
+  GDScript's `%` operator rejected the format character. If a
+  config from that era was later loaded by a current version,
+  it would have failed JSON parse at LOAD time, not at save.
+  So this is still a mystery.
+- What we DO know: the verify path caught it; the dump-to-
+  `.failed` worked; the backup restore failed for unknown
+  reasons. v0.54.3 makes the restore irrelevant to safety:
+  bad candidates never reach `config.json` in the first place.
+- The user's recovery path is unchanged from v0.54.2's
+  recommendation: delete `res://gool/config.json`, use the
+  mixer dock empty state's **Create default config** or **Use
+  FPS template** button to rebuild.
+
+### Backward compatibility
+
+- No API changes. No config schema changes.
+- Behavior change on the save-failure path: bad candidates dump
+  to `.failed` but `config.json` is unchanged (previously the
+  pre-write was already on disk, then restored, with a window
+  where readers could see corruption). Strict improvement.
+- `_format_number` now warns instead of silently emitting
+  garbage for non-finite values. Production code shouldn't hit
+  this — if it does, the warning is useful diagnostic info, not
+  a regression.
+
+
 
 ### Changed
 
@@ -17351,7 +17432,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.2...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.3...HEAD
+[0.54.3]: https://github.com/siliconight/gool/releases/tag/v0.54.3
 [0.54.2]: https://github.com/siliconight/gool/releases/tag/v0.54.2
 [0.54.1]: https://github.com/siliconight/gool/releases/tag/v0.54.1
 [0.54.0]: https://github.com/siliconight/gool/releases/tag/v0.54.0
