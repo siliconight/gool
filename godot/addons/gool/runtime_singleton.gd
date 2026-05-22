@@ -17,6 +17,15 @@ extends Node
 const CONFIG_PATH := "res://gool/config.json"
 
 var _runtime: Node = null
+
+# v0.54.2: rate-limit flag for play_networked's "called before
+# init" warning. Auto-firing weapons that trigger play_networked
+# every frame can produce 40+ identical errors per second when
+# init has failed. The first warning is actionable; the rest are
+# noise that buries the actual init-failure error higher in the
+# log. Set true on first warn, never reset (init only happens
+# once per process lifetime, so re-init isn't a real scenario).
+var _play_networked_warning_emitted: bool = false
 var _ready_emitted: bool = false
 
 # Lazy-instantiated GoolMusicChannel for the play_music_state facade.
@@ -146,13 +155,28 @@ func _ready() -> void:
 
 	if not ok:
 		if has_bus_graph:
+			# v0.54.2: expanded message — added the JSON-escape
+			# failure mode (bad \u or stray backslash, surfaced in
+			# the screenshot from v0.54.1 era as "bad escape \u")
+			# and pointed users at the dock's empty-state recovery
+			# buttons (shipped in v0.51.0) which are usually the
+			# fastest fix path.
 			push_error(
 				"[gool] runtime init failed: bus config rejected. "
 				+ "Check the prior error from the JSON parser above for "
-				+ "the specific line. Common causes: duplicate bus ids, "
-				+ "a bus that references a parent which doesn't exist, "
-				+ "an effect kind that isn't recognized. Fix res://gool/"
-				+ "config.json or delete it to regenerate defaults."
+				+ "the specific line. Common causes:\n"
+				+ "  (1) Bad JSON escape sequence — `\\u` not followed "
+				+ "by 4 hex digits, stray backslash from a Windows path, "
+				+ "or unescaped quote inside a string. The parser error "
+				+ "above names the line.\n"
+				+ "  (2) Duplicate bus ids.\n"
+				+ "  (3) A bus references a parent which doesn't exist.\n"
+				+ "  (4) An effect kind that isn't recognized.\n"
+				+ "Recovery: open res://gool/config.json in a text "
+				+ "editor and fix the line named in the parser error. "
+				+ "Or delete the file entirely — the mixer dock's empty "
+				+ "state has Create default config / Use FPS template "
+				+ "buttons that rebuild a known-good config."
 			)
 		else:
 			push_error(
@@ -2253,12 +2277,23 @@ func play_networked(sound_name: String,
 					   volume_db: float = 0.0,
 					   pitch: float = 1.0) -> void:
 	if not is_initialized():
-		push_error(
-			"[gool] play_networked('%s') called before runtime init. "
-			% sound_name
-			+ "Either wait for the ready_to_play signal or call from "
-			+ "_ready() after the autoload has finished initializing."
-		)
+		# v0.54.2: rate-limit this warning. Auto-firing weapons or
+		# any sound triggered every frame can spam 40+ identical
+		# errors per second when init has failed; the underlying
+		# init failure is already in the log at this point and is
+		# the actionable diagnostic. Emit once and let the cascade
+		# stay quiet so the real root cause stays visible.
+		if not _play_networked_warning_emitted:
+			_play_networked_warning_emitted = true
+			push_error(
+				"[gool] play_networked('%s') called before runtime init. "
+				% sound_name
+				+ "Either wait for the ready_to_play signal or call from "
+				+ "_ready() after the autoload has finished initializing. "
+				+ "(Further warnings of this kind suppressed for this "
+				+ "session — check the FIRST error in the log for the "
+				+ "real cause.)"
+			)
 		return
 	var t_ms: int = Time.get_ticks_msec()
 	# Local immediate play.

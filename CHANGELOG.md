@@ -22,7 +22,67 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.54.1] - 2026-05-22 — Debug overlay: friendlier "starting up" message
+## [0.54.2] - 2026-05-22 — Init-failure clarity: better error, no cascade spam
+
+### Changed
+
+- **Init-failure error message now lists JSON escape issues + the
+  recovery path explicitly.** A user hit a "bus config parse
+  failed at line 2: bad escape \\u" error from a backslash that
+  had slipped into their `res://gool/config.json`, then got 40+
+  cascade errors from auto-firing weapons calling
+  `play_networked` before init completed. The old error message
+  listed three common causes (duplicate bus ids, missing parent,
+  unknown effect kind) but didn't cover bad JSON escapes, and
+  the recovery suggestion ("delete it to regenerate defaults")
+  predated the v0.51.0 empty-state recovery buttons.
+
+  New message lists four common causes (including bad JSON
+  escapes as cause #1, since that's what just hit a user) and
+  points at the dock's empty-state Create default config / Use
+  FPS template buttons as the fastest recovery path.
+
+- **`play_networked` warns once per session when init has failed,
+  not once per call.** A weapon firing 5 different sound names
+  in a loop produced 40+ identical "called before runtime init"
+  errors per second, burying the real init-failure error higher
+  in the log under a wall of cascade noise. New behavior: first
+  call emits the warning, subsequent calls return silently.
+
+  Implementation: new module-level flag
+  `_play_networked_warning_emitted` on the runtime singleton,
+  set true on first emit. Not reset — init only happens once per
+  process lifetime in practice, so re-init isn't a real
+  scenario. The warning itself was updated to mention the
+  suppression so anyone watching only the play_networked error
+  knows to scroll up for the actual cause.
+
+### Notes
+
+- This release was driven entirely by a user screenshot showing
+  the exact failure cascade. Two things were obviously wrong in
+  the screenshot: the top error didn't mention the failure mode
+  (bad JSON escape) and the bottom 40 errors were duplicates of
+  each other. Both fixes are small, focused, and target the
+  observed problem.
+- The actual config corruption that triggered the user's report
+  is NOT from any code gool ships. The shipping templates
+  (`config_fps.json`, the v0.51.0 default config writer) are
+  JSON-clean; the patched-edit auto-save path (v0.28.6+) has
+  verify-after-write that catches malformed JSON and restores
+  from backup. The user's config must have been hand-edited or
+  touched by an external tool.
+
+### Backward compatibility
+
+- No API changes.
+- The play_networked function returns silently after the first
+  warning per session, which is a behavior change. Code that
+  was somehow relying on every call producing an error in the
+  log (debugging instrumentation, e.g.) would see fewer errors.
+  No legitimate use case depends on the cascade volume.
+
+
 
 ### Changed
 
@@ -17291,7 +17351,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.54.2...HEAD
+[0.54.2]: https://github.com/siliconight/gool/releases/tag/v0.54.2
 [0.54.1]: https://github.com/siliconight/gool/releases/tag/v0.54.1
 [0.54.0]: https://github.com/siliconight/gool/releases/tag/v0.54.0
 [0.53.0]: https://github.com/siliconight/gool/releases/tag/v0.53.0
