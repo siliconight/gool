@@ -1,0 +1,64 @@
+; gool audition example — hub-and-spokes reverb auditioning scene
+;
+; Demonstrates v0.47.0+ feature set in a runnable single-player walkthrough:
+;   - Hub with Outdoor Open reverb + 4 enclosed rooms
+;   - Real wall occlusion (StaticBody3D walls)
+;   - Per-room material targets (Wood / Concrete / Glass / Metal / Foliage / Drywall)
+;   - DialogueDirector bark + sidechain ducking
+;   - GoolMixSnapshot capture/apply
+;   - F3 debug overlay
+;
+; Open this project in Godot 4.x with the gool addon enabled.
+
+config_version=5
+
+[application]
+
+config/name="gool audition"
+config/description="Reverb + occlusion + material auditioning scene"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.2")
+config/icon="res://icon.svg"
+
+[autoload]
+
+Gool="*res://addons/gool/runtime_singleton.gd"
+DialogueDirector="*res://addons/gool/dialogue_director.gd"
+GoolMultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gool/plugin.cfg")
+
+[input]
+
+move_forward={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":87,"key_label":0,"unicode":119,"echo":false,"script":null)
+]
+}
+move_back={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":83,"key_label":0,"unicode":115,"echo":false,"script":null)
+]
+}
+move_left={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":65,"key_label":0,"unicode":97,"echo":false,"script":null)
+]
+}
+move_right={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":68,"key_label":0,"unicode":100,"echo":false,"script":null)
+]
+}
+shoot={
+"deadzone": 0.5,
+"events": [Object(InputEventMouseButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"button_mask":0,"position":Vector2(0, 0),"global_position":Vector2(0, 0),"factor":1.0,"button_index":1,"canceled":false,"pressed":false,"double_click":false,"script":null)
+]
+}
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

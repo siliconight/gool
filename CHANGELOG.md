@@ -22,7 +22,102 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.47.0] - 2026-05-21 — Reverb EQ shaping (pre-HPF + post-LPF, Abbey-Road-style)
+## [0.48.0] - 2026-05-22 — FPS quickstart: doc + config template + audition example + Save Mix button
+
+### Added
+
+- **`docs/quickstart_fps.md`** — the canonical "I want to build
+  an MP FPS, here's the recipe" doc. Walks devs from zero to a
+  working audio loop (install → sound bank → listener → local
+  gunshot → replicated gunshot → footsteps with material lookup
+  → reverb zones → music states → dialogue ducking → voice chat
+  scaffolding → dock tuning workflow → performance budgets →
+  common pitfalls). ~450 lines, code-example-heavy, cross-links
+  the supporting docs. Closes the biggest friction point from
+  the v0.47.0 DX audit ("No FPS quickstart doc — onboarding
+  requires synthesizing 5+ scattered docs").
+- **`godot/addons/gool/templates/config_fps.json`** — FPS-ready
+  config template. Extends DEFAULT_CONFIG with:
+  - Dedicated **Sfx parent bus** carrying the v0.47.0 reverb
+    chain pre-wired: `[HPF 20Hz bypass] → [Reverb] → [LPF 22kHz
+    bypass]`. ReverbZone prefabs default to `bus_name = "Sfx"` so
+    they automatically pick this up without any per-zone setup.
+  - **LocalSfx + RemoteSfx** both routing through Sfx so local
+    and remote audio share the same world reverb.
+  - **Sidechain compressors** preserved from DEFAULT_CONFIG
+    (Dialogue ducks Music + LocalSfx + RemoteSfx; LocalSfx ducks
+    Music + RemoteSfx).
+  - **Voice** bus separate and never ducked (intelligibility
+    priority — voice chat shouldn't drop under gunfire).
+  - Step 0 of `quickstart_fps.md` instructs `cp` into
+    `res://gool/config.json`. Closes friction point #6 ("No
+    FPS-ready config.json template with reverb chain pre-wired").
+- **`examples/audition/`** — runnable feature showcase. Promotes
+  the hub-and-spokes audition from the sandbox into a standalone
+  Godot example project alongside `quickstart` and
+  `coop_shooter_template`. Includes:
+  - `project.godot` with three autoloads + plugin enabled +
+    WASD/mouse/LMB input map
+  - `main.tscn` — the audition scene
+  - `audition_builder.gd` — 786 lines, builds 4 enclosed rooms
+    (Cathedral N, Cave E, Bathroom Tile W, Small Room S) with
+    walls + ceilings + doorways + ReverbZones, plus a central
+    hub with Outdoor Open reverb + 13-panel material gallery,
+    plus 2 in-room impact targets per enclosed room
+  - `fps_player.tscn` + `fps_player.gd` — minimal single-player
+    CharacterBody3D with WASD + mouse + LMB raycast that fires
+    material-aware `play_impact_sound`
+  - Trimmed `addons/gool/` (~100KB, follows the
+    `coop_shooter_template` convention — just the essential .gd
+    files for the demonstrated features)
+  - `gool/config.json` — copy of `templates/config_fps.json`
+  - README walking through controls + what to listen for + how
+    each feature maps to docs. Closes "no game-style example
+    project ships with gool" gap.
+- **Editor mixer dock: "Save Mix to Config" button** at the top
+  toolbar. Calls `_config_model.overwrite_disk()` for a clean
+  full rewrite of `res://gool/config.json` from the in-memory
+  model. **Complement** to the existing debounced patch-based
+  auto-save (which writes individual edits in place to preserve
+  formatting). Useful when:
+  - config.json formatting got corrupted by external edits
+  - dev wants to "commit" current mix state as a known-good
+    baseline regardless of what's on disk
+  - external tools (git merge, search-replace) left config in an
+    ambiguous state
+  - The path label next to the button shows
+    `→ res://gool/config.json` so devs can see where they're
+    writing without hunting for it.
+
+### Notes
+
+- The audition example does NOT exercise multiplayer
+  (intentionally — it's the audio feature showcase, not the
+  networking showcase). For multiplayer integration patterns
+  see `examples/coop_shooter_template/` and
+  `docs/networking_bridge.md`.
+- "Save Mix to Config" is honestly a **panic button** more than
+  a new persistence feature. The dock's auto-save (v0.28.4) was
+  already persisting slider edits — the v0.47.0 audit
+  incorrectly listed this as a missing feature. The button still
+  earns its place as a visible affordance + clean-rewrite path,
+  but the auto-save behavior didn't change.
+- The FPS audit identified several remaining friction points
+  (register_sound_definition's 9 positional args, voice chat
+  example with mic capture, custom material registration,
+  performance budget doc) — these are noted in
+  `docs/quickstart_fps.md` as known gaps and queued for v0.49+
+  (Tier 2 from the audit).
+
+### Backward compatibility
+
+- No source-level breaks. DEFAULT_CONFIG unchanged — new template
+  is opt-in via `cp`.
+- Existing dock layout unchanged except for the new toolbar row
+  at the top (~32px taller).
+- All public API signatures unchanged.
+
+
 
 Static EQ shaping for the reverb path, complementing the existing
 time-varying `hf_damping` / `lf_damping`. Sources: Paul White's
@@ -16487,7 +16582,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.47.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.48.0...HEAD
+[0.48.0]: https://github.com/siliconight/gool/releases/tag/v0.48.0
 [0.47.0]: https://github.com/siliconight/gool/releases/tag/v0.47.0
 [0.46.1]: https://github.com/siliconight/gool/releases/tag/v0.46.1
 [0.46.0]: https://github.com/siliconight/gool/releases/tag/v0.46.0

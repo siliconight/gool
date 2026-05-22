@@ -163,6 +163,39 @@ func _ready() -> void:
 	root_vbox.anchor_bottom = 1.0
 	add_child(root_vbox)
 
+	# v0.48.0: toolbar above the strip area. Hosts the Save Mix to
+	# Config button — a complement to the existing debounced auto-
+	# save (v0.28.4). Auto-save writes patched edits in place to
+	# preserve formatting; overwrite_disk() does a clean full
+	# rewrite from the in-memory model. Useful when:
+	#   - config.json formatting got corrupted by external edits
+	#   - dev wants to "commit" the current mix as a known-good
+	#     baseline regardless of what's on disk
+	#   - external tools (git merge, search-replace) left config
+	#     in an ambiguous state and dev wants the model's view
+	var toolbar := HBoxContainer.new()
+	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_theme_constant_override("separation", 8)
+	root_vbox.add_child(toolbar)
+
+	var save_button := Button.new()
+	save_button.text = "Save Mix to Config"
+	save_button.tooltip_text = (
+			"Write the current model state to res://gool/config.json "
+			+ "as a clean full rewrite. Most edits auto-save in the "
+			+ "background — use this when you want to force a clean "
+			+ "rewrite or recover from external edits."
+	)
+	save_button.pressed.connect(_on_save_mix_to_config_pressed)
+	toolbar.add_child(save_button)
+
+	# Path indicator so devs can see where they're writing to.
+	var path_label := Label.new()
+	path_label.text = "→ res://gool/config.json"
+	path_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+	path_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(path_label)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -858,6 +891,24 @@ func _on_model_saved(_bus_names_saved: Array) -> void:
 # Output panel and can investigate.
 func _on_model_save_failed(reason: String) -> void:
 	push_warning("[gool] mixer dock: config save failed — " + reason)
+
+
+# v0.48.0: explicit Save Mix to Config button handler. Complements
+# the debounced auto-save (v0.28.4) which writes patched edits in
+# place. This one does a clean full rewrite via overwrite_disk() —
+# useful when the patch-based auto-save has lost confidence (after
+# external edits, formatting damage, or merge conflicts) or when
+# the dev wants to commit the current mix state as a baseline.
+func _on_save_mix_to_config_pressed() -> void:
+	if _config_model == null:
+		push_warning("[gool] Save Mix to Config: no config model loaded")
+		return
+	var result: int = _config_model.overwrite_disk()
+	if result == OK:
+		print("[gool] Saved mix to res://gool/config.json (full rewrite)")
+		_refresh_dirty_indicators()
+	else:
+		push_warning("[gool] Save Mix to Config: overwrite_disk returned error %d" % result)
 
 
 # External-change conflict (disk mtime advanced since last load).
