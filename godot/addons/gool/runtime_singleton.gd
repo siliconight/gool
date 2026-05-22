@@ -2084,10 +2084,19 @@ func _rpc_play_networked(sound_name: String, position: Vector3,
 # Returns true if the event was queued; false if the runtime is not
 # initialized or the queue is full.
 func play_3d(name: String, position: Vector3, priority: int = 128) -> bool:
-	if _runtime == null:
+	if not is_initialized():
 		return false
-	var rc: int = _runtime.submit_event_local(name, position, 0, priority, 0)
-	return rc == 0  # AudioResult::Success
+	# v0.46.1 fix: submit_event_local is void on the C++ side. Pre-
+	# v0.46.1 this function tried to capture an int return value
+	# ("var rc: int = _runtime.submit_event_local(...)") which crashed
+	# with "Trying to get a return value of a method that returns void"
+	# the moment anyone called Gool.play_3d (notably DialogueDirector
+	# routes barks through here). Engine drop policies still apply
+	# internally; callers just can't observe drops through this path.
+	# If you need drop telemetry, watch the gool:render_stats debugger
+	# channel (or the Live Stats panel's Drops counter, v0.44.0+).
+	_runtime.submit_event_local(name, position, 0, priority, 0)
+	return true
 
 # Switch the music channel to `state_name` with an equal-power crossfade.
 # Idempotent: passing the currently-playing state is a no-op so callers

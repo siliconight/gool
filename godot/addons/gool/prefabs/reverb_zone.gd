@@ -69,6 +69,17 @@ var material: int = 0
 ## `material` is MATERIAL_DEFAULT.
 @export_range(0.0, 1.0, 0.01) var diffusion: float = 0.625
 
+## v0.46.1: Predelay in milliseconds — gap between the dry signal
+## and the start of the reverb tail. Defining perceptual cue for
+## space SIZE: small rooms have ~5ms, medium rooms ~20ms,
+## halls/cathedrals 50–100ms. Without predelay variation, "small
+## bathroom" and "large cathedral" sound smushed together because
+## the human ear uses predelay as the primary size cue.
+##
+## Engine cap is 200ms (the DSP's allocated buffer); useful range
+## is roughly 5..80ms for normal interior spaces, 0 for outdoor.
+@export_range(0.0, 200.0, 1.0, "suffix:ms") var predelay_ms: float = 30.0
+
 ## Wet-mix level in dB. The most direct "how much reverb" knob —
 ## independent from material/per-parameter authoring (always
 ## applied regardless of which mode you're in). -60 = effectively
@@ -135,6 +146,10 @@ var _default_lf_damping: float = 0.0
 var _default_hf_damping: float = 0.0
 var _default_diffusion: float = 0.0
 var _default_wet_gain_db: float = 0.0
+# v0.46.1: predelay default. 30ms matches the DSP's ReverbEffect
+# default constructor value — what the bus has if config.json
+# doesn't override.
+var _default_predelay_ms: float = 30.0
 
 # Smoothing state. We tween from current → target over
 # transition_ms by linearly interpolating each frame in _process.
@@ -173,6 +188,11 @@ const _PARAM_HF_DAMPING:  int = 10
 const _PARAM_WET_GAIN_DB: int = 11
 const _PARAM_LF_DAMPING:  int = 24
 const _PARAM_DIFFUSION:   int = 25
+# v0.46.1: Reverb_PredelayMs = 23 in the engine's param enum
+# (include/audio_engine/bus.h). The DSP has supported it since
+# v0.29 but ReverbZone didn't @export it, so cathedral/outdoor
+# distinctions were neutered. Adding now.
+const _PARAM_PREDELAY_MS: int = 23
 
 # v0.35.0 (Phase 6.C): biquad parameter IDs + chain indices for
 # the listener-EQ bus. The three biquads at indices 0/1/2 of the
@@ -226,6 +246,7 @@ func _locate_reverb_effect() -> void:
 			_default_hf_damping  = float(params.get(_PARAM_HF_DAMPING,  0.3))
 			_default_diffusion   = float(params.get(_PARAM_DIFFUSION,   0.625))
 			_default_wet_gain_db = float(params.get(_PARAM_WET_GAIN_DB, -60.0))
+			_default_predelay_ms = float(params.get(_PARAM_PREDELAY_MS, 30.0))
 			_have_defaults = true
 			return
 	push_warning("ReverbZone: bus '%s' has no Reverb effect. Zone is inert. " % bus_name
@@ -383,6 +404,11 @@ func _resolve_zone_target() -> Dictionary:
 			_PARAM_HF_DAMPING:  float(preset.get("hf_damping", _default_hf_damping)),
 			_PARAM_DIFFUSION:   float(preset.get("diffusion",  _default_diffusion)),
 			_PARAM_WET_GAIN_DB: wet_gain_db,
+			# v0.46.1: pull predelay from the material preset too.
+			# Materials like Liquid have very different predelay
+			# characters (60ms) from Wood (10ms) — without this it
+			# all collapsed to the engine default.
+			_PARAM_PREDELAY_MS: float(preset.get("predelay_ms", _default_predelay_ms)),
 		}
 	# Manual path — use the per-parameter exports verbatim.
 	return {
@@ -391,6 +417,7 @@ func _resolve_zone_target() -> Dictionary:
 		_PARAM_HF_DAMPING:  hf_damping,
 		_PARAM_DIFFUSION:   diffusion,
 		_PARAM_WET_GAIN_DB: wet_gain_db,
+		_PARAM_PREDELAY_MS: predelay_ms,
 	}
 
 func _current_live_values() -> Dictionary:
@@ -412,6 +439,7 @@ func _current_live_values() -> Dictionary:
 			_PARAM_HF_DAMPING:  _default_hf_damping,
 			_PARAM_DIFFUSION:   _default_diffusion,
 			_PARAM_WET_GAIN_DB: _default_wet_gain_db,
+			_PARAM_PREDELAY_MS: _default_predelay_ms,
 		}
 	return _ramp_to.duplicate()
 

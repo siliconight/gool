@@ -96,7 +96,13 @@ const REVERB_LARGE_HALL: Dictionary = {
 	"decay":         0.80,
 	"lf_damping":    0.20,
 	"hf_damping":    0.25,
-	"diffusion":     0.65,
+	# v0.46.1 retune: 0.65 → 0.78. Concert/event halls have soft
+	# furnishings (seats, drapes, audience absorption) scattering
+	# reflections, which perceptually maps to higher diffusion than
+	# the previous 0.65. 0.78 sits between bathroom's flutter
+	# character (0.45) and cathedral's full wash (0.85) — gives the
+	# preset a distinct "spacious but defined" tail.
+	"diffusion":     0.78,
 	"wet_gain_db":  -1.0,
 }
 
@@ -107,8 +113,17 @@ const REVERB_CATHEDRAL: Dictionary = {
 	"predelay_ms": 100.0,
 	"decay":         0.92,
 	"lf_damping":    0.30,
-	"hf_damping":    0.20,
-	"diffusion":     0.55,
+	# v0.46.1: bumped 0.20 → 0.18 to keep just a hint more brightness
+	# in the tail (cathedrals are stone — they don't absorb HF as
+	# aggressively as upholstered halls).
+	"hf_damping":    0.18,
+	# v0.46.1 retune: 0.55 → 0.85. Diffusion 0.55 produces audibly
+	# discrete reflections — corridor or stairwell character, not a
+	# cathedral's wash. Real cathedrals have irregular vaults +
+	# columns + pews scattering reflections at every density, which
+	# perceptually maps to high diffusion (smooth tail). Bringing
+	# this up is the biggest single perceptual win on the preset set.
+	"diffusion":     0.85,
 	"wet_gain_db":   0.0,
 }
 
@@ -129,8 +144,16 @@ const REVERB_CAVE: Dictionary = {
 ## little damping; low diffusion makes the early reflections
 ## audible as slapback.
 const REVERB_BATHROOM_TILE: Dictionary = {
+	# v0.46.1: kept predelay short (5ms) — close walls = early
+	# reflection arrives ~immediately. Matches the perceptual cue
+	# for "small tight space."
 	"predelay_ms":   5.0,
-	"decay":         0.65,
+	# v0.46.1 retune: 0.65 → 0.50. Real bathrooms are 3-4m³ — the
+	# tail length is ~0.6-1.0s, which on gool's normalized [0..1]
+	# decay maps to ~0.45-0.55. 0.65 was reading high-school-locker-
+	# room. The flutter-echo character (low diffusion, low damping)
+	# was correct; just the duration was overshooting.
+	"decay":         0.50,
 	"lf_damping":    0.05,
 	"hf_damping":    0.10,
 	"diffusion":     0.45,

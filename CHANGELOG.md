@@ -22,6 +22,86 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.46.1] - 2026-05-21 — Fix: play_3d void-capture crash + ReverbZone predelay + three preset retunes
+
+Mixed-bag patch from continuing the v0.46.0 sandbox audition.
+
+### Fixed
+
+- **`Gool.play_3d` crashed on every call** with "Trying to get a
+  return value of a method that returns void." The function tried
+  to capture an `int` from `_runtime.submit_event_local(...)`, but
+  that C++ method returns `void`. Surfaced when pressing B in the
+  audition (DialogueDirector routes barks through `play_3d`).
+  Function now drops the int capture and returns true on
+  best-effort. Drop telemetry is still available via the
+  `gool:render_stats` debugger channel / Live Stats panel.
+
+### Added
+
+- **`ReverbZone.predelay_ms`** `@export` (range 0–200 ms). The DSP
+  has supported predelay since v0.29 (Reverb_PredelayMs = 23 in
+  the engine's parameter enum), but ReverbZone didn't surface it.
+  Without predelay variation, cathedral (~100 ms) and outdoor
+  (~0 ms) reverbs sound smushed together because predelay is the
+  dominant perceptual cue for space SIZE. Now flows end-to-end:
+  inspector @export → material-aware path → manual path →
+  never-ramped fallback → captured-defaults snapshot.
+
+### Changed (reverb preset tuning — opinion-based)
+
+Three of the eight `GoolPresets.REVERB_*` presets had values that
+disagreed with their stated character. Re-tuned based on principles
+of room acoustics; documented the per-preset rationale in
+`gool_presets.gd` comments so future tuners can see why each
+number moved.
+
+- **REVERB_CATHEDRAL** — diffusion 0.55 → 0.85 (biggest perceptual
+  win). 0.55 produces discrete flutter echoes (corridor / stairwell
+  character), not the smooth wash a cathedral's irregular vaults +
+  columns + pews actually generate. Also bumped hf_damping 0.20 →
+  0.18 to keep a hint more tail brightness — cathedrals are stone,
+  which doesn't absorb HF as aggressively as upholstered halls.
+
+- **REVERB_BATHROOM_TILE** — decay 0.65 → 0.50. A real bathroom
+  (3–4 m³, hard parallel surfaces) has a tail of roughly 0.6–1.0 s,
+  which on gool's normalized [0..1] decay scale is ~0.45–0.55.
+  0.65 was reading "high school locker room." Flutter-echo
+  character (low diffusion + low damping) kept — only duration
+  shifted.
+
+- **REVERB_LARGE_HALL** — diffusion 0.65 → 0.78. Halls have soft
+  furnishings (seats, drapes, audience) scattering reflections;
+  0.65 sounded under-scattered. 0.78 sits between bathroom's
+  flutter (0.45) and cathedral's full wash (0.85), giving the
+  preset its own perceptual identity.
+
+Other five presets (SMALL_ROOM, MEDIUM_ROOM, CAVE, OUTDOOR_OPEN,
+UNDERWATER) inspected but left at their existing values — judgments
+were less clear-cut and the user said they wanted to tune from
+the audition. These five are good iteration candidates if the
+audition reveals issues.
+
+### Why this is a patch (not minor)
+
+Bug fix + property surfacing on existing prefab + preset
+re-tuning. No new types, no breaking API, no behavior changes
+for consumers that don't use ReverbZone or the affected presets.
+
+### Migration
+
+No code changes required. Existing ReverbZone instances pick up
+their new `predelay_ms` @export with the engine default (30 ms),
+which matches the pre-v0.46.1 behavior (since predelay was held
+at the C++ default). To benefit from the variation, set
+`predelay_ms` in the inspector or via the material-aware path's
+preset lookup (no script changes — material-aware ReverbZones
+auto-pick up the new predelay field from GoolPresets).
+
+If you'd authored your own `gool_presets.gd` overrides for the
+three retuned presets, your overrides remain in effect — only
+the default values shipped by gool changed.
+
 ## [0.46.0] - 2026-05-21 — GoolMultiplayerBridge: transport-agnostic networking glue
 
 The next L4D2-roadmap item, designed to be flexible to whatever
@@ -16314,7 +16394,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.46.1...HEAD
+[0.46.1]: https://github.com/siliconight/gool/releases/tag/v0.46.1
 [0.46.0]: https://github.com/siliconight/gool/releases/tag/v0.46.0
 [0.45.0]: https://github.com/siliconight/gool/releases/tag/v0.45.0
 [0.44.2]: https://github.com/siliconight/gool/releases/tag/v0.44.2
