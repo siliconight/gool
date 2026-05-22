@@ -86,6 +86,36 @@ var material: int = 0
 ## dry (no audible reverb), 0 = unity, positive values boost.
 @export_range(-60.0, 0.0, 0.5, "suffix:dB") var wet_gain_db: float = -12.0
 
+## v0.47.0: HPF cutoff applied to the bus signal BEFORE the Reverb
+## effect — the Abbey Road trick (per MixingLessons). Keeps mud
+## and low-frequency content out of the reverb tail so the tail
+## doesn't pile onto the bass of the dry signal. 0 = bypass (no
+## HPF applied). Typical values: 200Hz for warmth, 400Hz for
+## clarity, 600Hz for the classic Abbey Road setting.
+##
+## Requires a Biquad effect in the bus chain at index
+## (reverb_index - 1). ReverbZone auto-discovers it. If missing,
+## logs a one-time warning at scene start; the send-HPF path is
+## skipped gracefully but all other reverb shaping still works.
+@export_range(0.0, 2000.0, 10.0, "suffix:Hz") var send_hpf_hz: float = 0.0
+
+## v0.47.0: LPF cutoff applied to the bus signal AFTER the Reverb
+## effect. Per Sound on Sound's research, this is the single biggest
+## realism knob — real spaces rarely have content above ~5kHz in
+## the reflected field. Typical values: 3kHz for warm/intimate
+## (vocal ambience), 5–6kHz for natural (concert hall, room),
+## 7–10kHz for bright (plate, small room).
+##
+## Different from hf_damping: damping fades highs as the tail
+## decays (time-varying); LPF cuts highs uniformly (frequency-only).
+## Both knobs at once is normal — damping for tail character, LPF
+## for mix placement.
+##
+## 22000 = effectively bypass. Requires a Biquad effect at index
+## (reverb_index + 1). Same auto-discovery + graceful skip as
+## send_hpf_hz.
+@export_range(2000.0, 22000.0, 100.0, "suffix:Hz") var return_lpf_hz: float = 22000.0
+
 ## Smoothing time for the parameter ramp on entry/exit (ms).
 ## Longer values feel more natural (real spaces don't switch
 ## acoustic identity instantly). 800 ms is the default sweet spot;
@@ -140,6 +170,20 @@ var _occupied: bool = false
 # ever pushed anything, so we can restore them on exit. -1 means
 # "we haven't found a reverb effect on the bus; zone is inert."
 var _effect_index: int = -1
+
+# v0.47.0: bus-chain slot indices for the optional pre/post EQ
+# biquads. -1 means "not present in the bus chain at the expected
+# adjacent slot; skip this side of the EQ shaping." Discovery
+# happens once in _locate_reverb_effect; missing slots fire a
+# one-time push_warning so the integrator knows what to add.
+var _send_hpf_index: int = -1
+var _return_lpf_index: int = -1
+# Cutoffs that were on the discovered biquad slots at startup. We
+# snapshot them so exit-restore puts them back, matching the
+# semantics for the reverb params themselves.
+var _default_send_hpf_hz: float = 20.0    # near-bypass HPF default
+var _default_return_lpf_hz: float = 22000.0  # bypass LPF default
+
 var _have_defaults: bool = false
 var _default_decay: float = 0.0
 var _default_lf_damping: float = 0.0
@@ -193,6 +237,15 @@ const _PARAM_DIFFUSION:   int = 25
 # v0.29 but ReverbZone didn't @export it, so cathedral/outdoor
 # distinctions were neutered. Adding now.
 const _PARAM_PREDELAY_MS: int = 23
+
+# v0.47.0: sentinel keys for the pre/post EQ shaping params.
+# These don't correspond to engine parameter IDs — they're routed
+# in _apply_values to the adjacent biquad slots (set_effect_parameter
+# at _send_hpf_index / _return_lpf_index) instead of to the Reverb
+# effect itself. Value range is outside the engine's param-ID
+# space (0..255) so there's no collision risk.
+const _SENTINEL_SEND_HPF_HZ:   int = 100000
+const _SENTINEL_RETURN_LPF_HZ: int = 100001
 
 # v0.35.0 (Phase 6.C): biquad parameter IDs + chain indices for
 # the listener-EQ bus. The three biquads at indices 0/1/2 of the
@@ -248,6 +301,47 @@ func _locate_reverb_effect() -> void:
 			_default_wet_gain_db = float(params.get(_PARAM_WET_GAIN_DB, -60.0))
 			_default_predelay_ms = float(params.get(_PARAM_PREDELAY_MS, 30.0))
 			_have_defaults = true
+			# v0.47.0: probe for adjacent Biquad slots used by the EQ
+			# shaping pre/post-reverb path. Per Sound on Sound + the
+			# Abbey Road trick, the recommended chain shape is
+			# ...→ HPF biquad → Reverb → LPF biquad → ... so we look
+			# at i-1 and i+1 specifically.
+			if i - 1 >= 0:
+				var e_prev: Dictionary = effects[i - 1]
+				if String(e_prev.get("kind_name", "")) == "Biquad":
+					_send_hpf_index = i - 1
+					var p_prev: Dictionary = e_prev.get("params", {})
+					_default_send_hpf_hz = float(p_prev.get(
+							_BIQUAD_CUTOFF_HZ, 20.0))
+			if i + 1 < effects.size():
+				var e_next: Dictionary = effects[i + 1]
+				if String(e_next.get("kind_name", "")) == "Biquad":
+					_return_lpf_index = i + 1
+					var p_next: Dictionary = e_next.get("params", {})
+					_default_return_lpf_hz = float(p_next.get(
+							_BIQUAD_CUTOFF_HZ, 22000.0))
+			# One-time warnings if either slot is missing AND the
+			# zone is configured to use that side of the shaping.
+			# We check the @export here at scene start; if the
+			# integrator switches it on at runtime later with no
+			# slot present, the warning fires again on next ramp.
+			if _send_hpf_index < 0 and send_hpf_hz > 0.0:
+				push_warning(
+					"ReverbZone: send_hpf_hz=%.0f set but no Biquad effect at index %d "
+					% [send_hpf_hz, i - 1]
+					+ "(immediately before Reverb) on bus '%s'. " % bus_name
+					+ "Send-HPF will be skipped. To enable: add a Biquad to the bus's "
+					+ "effect chain right before the Reverb effect — gool ships a "
+					+ "default config with this slot pre-populated as of v0.47.0; if "
+					+ "your config predates that, copy the relevant entry from "
+					+ "addons/gool/templates/default_config.json.")
+			if _return_lpf_index < 0 and return_lpf_hz < 22000.0:
+				push_warning(
+					"ReverbZone: return_lpf_hz=%.0f set but no Biquad effect at index %d "
+					% [return_lpf_hz, i + 1]
+					+ "(immediately after Reverb) on bus '%s'. " % bus_name
+					+ "Return-LPF will be skipped. To enable: add a Biquad to the bus's "
+					+ "effect chain right after the Reverb effect.")
 			return
 	push_warning("ReverbZone: bus '%s' has no Reverb effect. Zone is inert. " % bus_name
 			+ "Add a Reverb effect to the bus's effect chain in your gool config.")
@@ -409,6 +503,15 @@ func _resolve_zone_target() -> Dictionary:
 			# characters (60ms) from Wood (10ms) — without this it
 			# all collapsed to the engine default.
 			_PARAM_PREDELAY_MS: float(preset.get("predelay_ms", _default_predelay_ms)),
+			# v0.47.0: pre/post EQ shaping. Falls back to the zone's
+			# own @export if the material preset doesn't specify —
+			# materials map to acoustic-space presets, not necessarily
+			# to mix-context EQ choices, so the zone @export wins
+			# when present.
+			_SENTINEL_SEND_HPF_HZ:   float(preset.get("send_hpf_hz",
+					send_hpf_hz if send_hpf_hz > 0.0 else _default_send_hpf_hz)),
+			_SENTINEL_RETURN_LPF_HZ: float(preset.get("return_lpf_hz",
+					return_lpf_hz if return_lpf_hz < 22000.0 else _default_return_lpf_hz)),
 		}
 	# Manual path — use the per-parameter exports verbatim.
 	return {
@@ -418,6 +521,13 @@ func _resolve_zone_target() -> Dictionary:
 		_PARAM_DIFFUSION:   diffusion,
 		_PARAM_WET_GAIN_DB: wet_gain_db,
 		_PARAM_PREDELAY_MS: predelay_ms,
+		# v0.47.0: pre/post EQ shaping. Zone export is the source of
+		# truth in manual mode. Effective bypass (0 / 22000) means
+		# "leave the biquad cutoff at its captured default."
+		_SENTINEL_SEND_HPF_HZ:   send_hpf_hz if send_hpf_hz > 0.0
+				else _default_send_hpf_hz,
+		_SENTINEL_RETURN_LPF_HZ: return_lpf_hz if return_lpf_hz < 22000.0
+				else _default_return_lpf_hz,
 	}
 
 func _current_live_values() -> Dictionary:
@@ -440,6 +550,9 @@ func _current_live_values() -> Dictionary:
 			_PARAM_DIFFUSION:   _default_diffusion,
 			_PARAM_WET_GAIN_DB: _default_wet_gain_db,
 			_PARAM_PREDELAY_MS: _default_predelay_ms,
+			# v0.47.0
+			_SENTINEL_SEND_HPF_HZ:   _default_send_hpf_hz,
+			_SENTINEL_RETURN_LPF_HZ: _default_return_lpf_hz,
 		}
 	return _ramp_to.duplicate()
 
@@ -494,8 +607,24 @@ func _apply_values(values: Dictionary) -> void:
 	# resolution is O(N) over kMaxBuses (16) but only fires a few
 	# times per frame during a ramp, well below any perf concern.
 	for k in values.keys():
+		var key: int = int(k)
+		# v0.47.0: sentinel keys route to adjacent biquad slots
+		# rather than the Reverb effect. Skip if the slot wasn't
+		# discovered (graceful no-op — warning already fired in
+		# _locate_reverb_effect).
+		if key == _SENTINEL_SEND_HPF_HZ:
+			if _send_hpf_index >= 0:
+				_runtime.set_effect_parameter(bus_name, _send_hpf_index,
+						_BIQUAD_CUTOFF_HZ, float(values[k]))
+			continue
+		if key == _SENTINEL_RETURN_LPF_HZ:
+			if _return_lpf_index >= 0:
+				_runtime.set_effect_parameter(bus_name, _return_lpf_index,
+						_BIQUAD_CUTOFF_HZ, float(values[k]))
+			continue
+		# Regular reverb parameter — goes to the Reverb effect itself.
 		_runtime.set_effect_parameter(bus_name, _effect_index,
-				int(k), float(values[k]))
+				key, float(values[k]))
 
 # v0.35.0 (Phase 6.C): push the three listener-EQ band gains to
 # their biquads on the Gool autoload's _listener_eq_bus_name.

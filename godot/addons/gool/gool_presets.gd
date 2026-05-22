@@ -48,7 +48,7 @@ extends RefCounted
 
 # ─── Reverb space presets ─────────────────────────────────────
 #
-# Six parameters in every reverb dictionary. The ranges match what
+# Eight parameters in every reverb dictionary. The ranges match what
 # the C++ reverb effect accepts; values outside the range get
 # clamped at apply time. Quick guide to what each number does to
 # what you hear:
@@ -65,6 +65,28 @@ extends RefCounted
 #     discrete echoey slaps; high = smooth wash.
 #   wet_gain_db (-24 to +12): overall loudness of the reverb. 0 dB
 #     is "as authored"; negative dips the tail under the dry signal.
+#
+# v0.47.0 added two static-EQ-shape parameters that work together
+# with damping (which is time-varying) to set the reverb's place in
+# the mix. These are recipes from Sound on Sound's classic article
+# on reverb realism and MixingLessons' Abbey Road write-up — both
+# converge on the same principle: a real space's reflected field
+# has less HF content than the dry source, and clearing LF from
+# the send before reverb keeps the tail out of the bass mud.
+#
+#   send_hpf_hz (0–2000): HPF cutoff applied to the bus signal
+#     BEFORE the Reverb effect. 0 = bypass. Typical values:
+#     200 (warmth), 400 (clarity), 600 (Abbey Road).
+#   return_lpf_hz (2000–22000): LPF cutoff applied AFTER the Reverb
+#     effect. 22000 = bypass. The single biggest realism knob per
+#     SoS — real concert halls have ~nothing above 5kHz. Typical:
+#     3000 (warm/intimate), 5000–6000 (natural), 7000–10000 (bright).
+#
+# Note: ReverbZone auto-discovers adjacent Biquad slots in the bus
+# chain at scene start. If your bus doesn't have Biquads before
+# and after the Reverb effect (gool's DEFAULT_CONFIG ships them as
+# of v0.47.0), these two values are silently ignored. Add the
+# slots to your config.json — see docs/audio_design/reverb_eq.md.
 
 ## Tiny indoor space — bedroom, small office, car interior.
 ## Short predelay, quick decay, mid HF rolloff. Subtle; sets place
@@ -76,6 +98,10 @@ const REVERB_SMALL_ROOM: Dictionary = {
 	"hf_damping":    0.40,
 	"diffusion":     0.70,
 	"wet_gain_db":  -3.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   150.0,
+	"return_lpf_hz": 10000.0,
 }
 
 ## Living-room-sized interior — typical home or classroom.
@@ -87,6 +113,10 @@ const REVERB_MEDIUM_ROOM: Dictionary = {
 	"hf_damping":    0.35,
 	"diffusion":     0.70,
 	"wet_gain_db":  -2.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   200.0,
+	"return_lpf_hz": 7000.0,
 }
 
 ## Big enclosed space — concert hall, gymnasium, warehouse.
@@ -104,6 +134,10 @@ const REVERB_LARGE_HALL: Dictionary = {
 	# preset a distinct "spacious but defined" tail.
 	"diffusion":     0.78,
 	"wet_gain_db":  -1.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   250.0,
+	"return_lpf_hz": 6000.0,
 }
 
 ## Massive stone interior — cathedral, mausoleum, abandoned
@@ -125,6 +159,10 @@ const REVERB_CATHEDRAL: Dictionary = {
 	# this up is the biggest single perceptual win on the preset set.
 	"diffusion":     0.85,
 	"wet_gain_db":   0.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   300.0,
+	"return_lpf_hz": 6000.0,
 }
 
 ## Cavern / mineshaft / damp tunnel. Heavy LF + HF damping makes
@@ -137,6 +175,10 @@ const REVERB_CAVE: Dictionary = {
 	"hf_damping":    0.55,
 	"diffusion":     0.80,
 	"wet_gain_db":  -2.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   200.0,
+	"return_lpf_hz": 4500.0,
 }
 
 ## Hard, parallel-walled small room with reflective surfaces —
@@ -158,6 +200,10 @@ const REVERB_BATHROOM_TILE: Dictionary = {
 	"hf_damping":    0.10,
 	"diffusion":     0.45,
 	"wet_gain_db":   0.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   200.0,
+	"return_lpf_hz": 5000.0,
 }
 
 ## Open exterior — field, meadow, rooftop. Almost no enclosure, so
@@ -172,6 +218,10 @@ const REVERB_OUTDOOR_OPEN: Dictionary = {
 	"hf_damping":    0.70,
 	"diffusion":     0.95,
 	"wet_gain_db":  -8.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   100.0,
+	"return_lpf_hz": 4000.0,
 }
 
 ## Submerged / stylistic underwater. Extreme LF and HF damping
@@ -185,6 +235,10 @@ const REVERB_UNDERWATER: Dictionary = {
 	"hf_damping":    0.95,
 	"diffusion":     0.90,
 	"wet_gain_db":  -3.0,
+	# v0.47.0 EQ shaping — mapped from Sound on Sound and
+	# MixingLessons article recipes. Game-audio context tweaked.
+	"send_hpf_hz":   100.0,
+	"return_lpf_hz": 2500.0,
 }
 
 # ─── Compressor presets ────────────────────────────────────────

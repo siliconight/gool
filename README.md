@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.46.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.47.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -478,6 +478,12 @@ runtime.
 - **Terminology:** [`docs/terminology.md`](docs/terminology.md)
   — gool's vocabulary aligned with FMOD/Wwise so muscle memory
   transfers
+- **Reverb EQ shaping (v0.47.0):**
+  [`docs/audio_design/reverb_eq.md`](docs/audio_design/reverb_eq.md)
+  — pre/post EQ recipes for the eight built-in reverb presets,
+  mapped from Sound on Sound's classic article and the Abbey
+  Road trick. Explains the recommended bus chain shape and how
+  static EQ shaping complements time-varying `hf_damping`.
 - **Migration from FMOD:** [`docs/migration_from_fmod.md`](docs/migration_from_fmod.md)
 - **Migration from Wwise:** [`docs/migration_from_wwise.md`](docs/migration_from_wwise.md)
 

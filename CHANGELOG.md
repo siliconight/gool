@@ -22,6 +22,99 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.47.0] - 2026-05-21 — Reverb EQ shaping (pre-HPF + post-LPF, Abbey-Road-style)
+
+Static EQ shaping for the reverb path, complementing the existing
+time-varying `hf_damping` / `lf_damping`. Sources: Paul White's
+classic Sound on Sound article ("real concert halls have ~nothing
+above 5 kHz") and MixingLessons' Abbey Road trick writeup
+(HPF the reverb send to clean up the tail).
+
+### Added
+
+- **`ReverbZone.send_hpf_hz`** `@export` (0–2000 Hz, suffix Hz).
+  Cutoff for an HPF biquad immediately BEFORE the Reverb effect
+  on the bus. 0 = bypass. Removes low frequencies from the
+  reverb send so the tail doesn't pile bass mud onto the dry
+  signal. Per MixingLessons' Abbey Road writeup.
+
+- **`ReverbZone.return_lpf_hz`** `@export` (2000–22000 Hz,
+  suffix Hz). Cutoff for an LPF biquad immediately AFTER the
+  Reverb effect. 22000 = bypass. Rolls off the top of the
+  reverb output — single biggest perceived-realism knob per
+  Sound on Sound. Different from `hf_damping`: damping is
+  time-varying (tail loses HF as it decays), this is a static
+  frequency-only filter on the wet output.
+
+- **Auto-discovery of adjacent Biquad slots in the bus chain.**
+  ReverbZone scans the bus's effect chain at scene start; if
+  effects at indices `reverb_index ± 1` are Biquads, their
+  positions are cached and the zone pushes cutoffs to them via
+  `set_effect_parameter(bus, idx, Biquad_CutoffHz, value)` during
+  the existing ramp. If slots are missing AND the zone is trying
+  to use them, a one-time `push_warning` fires; the EQ side is
+  silently skipped (graceful degradation — the reverb itself
+  still works).
+
+- **All 8 `GoolPresets.REVERB_*` entries gain `send_hpf_hz` and
+  `return_lpf_hz` fields**, mapped from the source articles:
+
+  | Preset | send_hpf_hz | return_lpf_hz |
+  |---|---|---|
+  | SMALL_ROOM | 150 | 10000 |
+  | MEDIUM_ROOM | 200 | 7000 |
+  | LARGE_HALL | 250 | 6000 |
+  | CATHEDRAL | 300 | 6000 |
+  | CAVE | 200 | 4500 |
+  | BATHROOM_TILE | 200 | 5000 |
+  | OUTDOOR_OPEN | 100 | 4000 |
+  | UNDERWATER | 100 | 2500 |
+
+- **`docs/audio_design/reverb_eq.md`** — full writeup citing both
+  source articles, explaining the bus chain shape, why static EQ
+  ≠ damping, recommended `config.json` JSON for adding the slots
+  to an existing bus, and how to author your own per-preset EQ.
+
+- **README link** added under "For audio designers."
+
+### Implementation notes
+
+The two new params are routed through ReverbZone's existing
+ramp/values dictionary using sentinel keys (100000 and 100001)
+that `_apply_values` recognizes as biquad targets rather than
+Reverb-effect targets. Sentinels are outside the engine's
+parameter-ID space (0..255) so there's no collision risk.
+
+When ramping between zones with different EQ shapes, the cutoffs
+interpolate linearly across `transition_ms` — same as decay,
+diffusion, etc. — so EQ changes feel synchronized to the rest
+of the reverb transition.
+
+### Migration
+
+No code changes required for existing projects.
+
+Projects that DON'T add adjacent Biquad slots to their bus
+chain: ReverbZone keeps working identically to v0.46.1. The
+`send_hpf_hz` / `return_lpf_hz` exports exist on the inspector
+but have no audible effect, and a one-time push_warning logs if
+you set non-bypass values without slots.
+
+Projects that DO want the shaping: add a Biquad effect
+immediately before and after the Reverb in your bus's effect
+chain. See `docs/audio_design/reverb_eq.md` for the JSON example.
+
+`DEFAULT_CONFIG` was NOT modified — it doesn't ship a Reverb
+effect on any bus, so adding flanking slots would be premature.
+Projects that customize their config with a Reverb effect are
+expected to add the EQ slots alongside; the docs page explains
+how.
+
+### What's next
+
+v0.48.0 candidate: intensity-driven music with stems/layers
+(the remaining big L4D2 roadmap item, deferred since v0.43.0).
+
 ## [0.46.1] - 2026-05-21 — Fix: play_3d void-capture crash + ReverbZone predelay + three preset retunes
 
 Mixed-bag patch from continuing the v0.46.0 sandbox audition.
@@ -16394,7 +16487,8 @@ Headlines:
 - Godot 4.2+ GDExtension binding with 7 prefab Nodes, editor plugin
   with autoload installation
 
-[Unreleased]: https://github.com/siliconight/gool/compare/v0.46.1...HEAD
+[Unreleased]: https://github.com/siliconight/gool/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/siliconight/gool/releases/tag/v0.47.0
 [0.46.1]: https://github.com/siliconight/gool/releases/tag/v0.46.1
 [0.46.0]: https://github.com/siliconight/gool/releases/tag/v0.46.0
 [0.45.0]: https://github.com/siliconight/gool/releases/tag/v0.45.0
