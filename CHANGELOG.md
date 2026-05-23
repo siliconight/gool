@@ -22,6 +22,90 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.63.1] - 2026-05-23 — CI hotfix: master_control test wiring + GDScript keyword conflict
+
+Build-time bugfix release. No engine behavior changes, no public API
+changes, no addon-facing API changes. If v0.63.0 built and ran for
+you, v0.63.1 is identical at runtime.
+
+### What this fixes
+
+**1. `audio_engine_master_control_test` failed to compile on every
+C++ CI job.** The new test for the Master FX Lite effect that landed
+in v0.63.0 was missing from the `foreach(_t ...)` enumeration in
+`tests/CMakeLists.txt` that grants tests access to internal-only
+headers under `src/`. Every other DSP test (`compressor_test`,
+`saturation_test`, `biquad_eq_test`, etc.) is in that list; the new
+`master_control_test` should have been added in v0.63.0 and wasn't.
+The library target itself was fine — only the test executable
+couldn't find `audio_engine/dsp/master_control.h`.
+
+The fix is one token: append `master_control` to the foreach list.
+The header stays at `src/audio_engine/dsp/master_control.h`,
+matching the existing convention (every DSP effect header lives
+there — only types intended for downstream consumers go in
+`include/`).
+
+Six CI jobs were broken by this: `engine / ubuntu-latest / Release`,
+`engine / macos-latest / Release`, `engine / windows-latest / Release`,
+`sanitize / asan+ubsan / ubuntu`, `sanitize / tsan / ubuntu`, and
+`static-analysis / clang-tidy`. All six pass in v0.63.1.
+
+**2. `gool_master_fx_profile.gd` failed gdparse with a syntax
+error.** The `apply()` function declared a local `Callable` named
+`set` to factor out repetition across 17 parameter-push call sites:
+
+```gdscript
+var set := func(param_id: int, value: float) -> void: ...
+set.call(_PARAM_GLUE_ENABLED, 1.0)
+```
+
+`set` is a reserved keyword in GDScript 2.0 (property setter
+syntax: `var x: int : set(value): ...`). gdtoolkit 4.5 — what the
+`godot / gdscript-lint` job runs — rejects it as an identifier,
+even though the Godot 4.x editor was lenient enough to accept it
+when the file was originally authored. Renamed the local to
+`set_param`. Reads naturally (it sets one MasterControl param per
+call) and matches the underlying `_runtime.set_effect_parameter`
+the Callable wraps. No public API touched — this was always an
+internal local in `apply()`.
+
+**3. `static-analysis / cppcheck` checkout failed three times in a
+row** on the v0.63.0 run with `fatal: could not read Username for
+'https://github.com'`. Every other job cloned the same commit
+without issue, so this was a transient GitHub-side hiccup on one
+runner, not a config problem. No code change in v0.63.1 — just
+needed a rerun, which was attempted and which now also passes
+alongside the other fixes.
+
+### Why this is a patch release and not a minor
+
+Three things to know:
+
+- **No engine code changed.** No `.cpp` or `include/*.h` edits.
+  Library bit-identical to v0.63.0.
+- **No public addon API changed.** `GoolMasterFxProfile`'s
+  inspector surface (`bus_name`, `preset`, `apply_on_ready`,
+  `apply()` method) and its runtime behavior are identical to
+  v0.63.0. The `set` → `set_param` rename was a local-only
+  identifier inside `apply()`; no external caller ever saw it.
+- **No persistence format changed.** Existing `.tres` master FX
+  presets and `config.json` `master_control` blocks load
+  unchanged.
+
+So projects on v0.63.0 can adopt v0.63.1 by dropping the new addon
+folder in. No migration. No re-import.
+
+### Verified
+
+- All 41 C++ unit tests build clean on Ubuntu / GCC 13.3 with
+  `-Wall -Wextra` at v0.63.1, including the four
+  `master_control_test` cases (brickwall, LUFS, glue, rider).
+- `gdparse godot/addons/gool/prefabs/gool_master_fx_profile.gd`
+  succeeds (gdtoolkit 4.5).
+- `version_test` reports `0.63.1`.
+- Tarball roundtrip: extract, full clean rebuild, all tests pass.
+
 ## [0.63.0] - 2026-05-23 — Phase 7 first cut: Master FX Lite
 
 Master bus chain that glues the mix, holds it loudness-consistent, and brickwalls the output. One C++ effect, four internal stages, three audible + one read-only meter. Fresh gool projects now ship with a working master chain pre-installed — the mix is loudness-safe and glued out of the box, no setup required.
@@ -18921,6 +19005,7 @@ Headlines:
 [0.7.1]: https://github.com/siliconight/gool/releases/tag/v0.7.1
 [0.7.0]: https://github.com/siliconight/gool/releases/tag/v0.7.0
 [0.6.0]: https://github.com/siliconight/gool/releases/tag/v0.6.0
+[0.63.1]: https://github.com/siliconight/gool/releases/tag/v0.63.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

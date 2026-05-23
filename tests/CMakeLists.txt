@@ -49,7 +49,7 @@ add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitch
 
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
-foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry voice_mute_budget biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion material_eq_curve material_eq_audition)
+foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry voice_mute_budget biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion material_eq_curve material_eq_audition master_control)
     target_include_directories(audio_engine_${_t}_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)

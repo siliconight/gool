@@ -150,27 +150,32 @@ func apply() -> void:
 	# Push all 17 config params. set_effect_parameter takes a
 	# float; bools convert to 1.0/0.0 per the engine's enable-flag
 	# convention.
-	var set := func(param_id: int, value: float) -> void:
+	#
+	# Note: this local must NOT be named `set` — `set` is a
+	# reserved keyword in GDScript 2.0 (property setter syntax).
+	# gdparse rejects it as an identifier even though some Godot
+	# 4.x runtimes are lenient.
+	var set_param := func(param_id: int, value: float) -> void:
 		_runtime.set_effect_parameter(bus_name, _effect_index,
 				param_id, value)
 
-	set.call(_PARAM_GLUE_ENABLED,    1.0 if preset.glue_enabled    else 0.0)
-	set.call(_PARAM_RIDER_ENABLED,   1.0 if preset.rider_enabled   else 0.0)
-	set.call(_PARAM_LIMITER_ENABLED, 1.0 if preset.limiter_enabled else 0.0)
-	set.call(_PARAM_GLUE_THRESHOLD_DB,     preset.glue_threshold_db)
-	set.call(_PARAM_GLUE_RATIO,            preset.glue_ratio)
-	set.call(_PARAM_GLUE_ATTACK_MS,        preset.glue_attack_ms)
-	set.call(_PARAM_GLUE_RELEASE_MS,       preset.glue_release_ms)
-	set.call(_PARAM_GLUE_KNEE_DB,          preset.glue_knee_db)
-	set.call(_PARAM_GLUE_MAKEUP_DB,        preset.glue_makeup_db)
-	set.call(_PARAM_RIDER_TARGET_LUFS,     preset.rider_target_lufs)
-	set.call(_PARAM_RIDER_TIME_CONST_MS,   preset.rider_time_constant_ms)
-	set.call(_PARAM_RIDER_MAX_GAIN_DB,     preset.rider_max_gain_db)
-	set.call(_PARAM_RIDER_MIN_GAIN_DB,     preset.rider_min_gain_db)
-	set.call(_PARAM_RIDER_FREEZE_BELOW_LUFS, preset.rider_freeze_below_lufs)
-	set.call(_PARAM_LIMITER_CEILING_DBTP,  preset.limiter_ceiling_dbtp)
-	set.call(_PARAM_LIMITER_RELEASE_MS,    preset.limiter_release_ms)
-	set.call(_PARAM_LIMITER_LOOKAHEAD_MS,  preset.limiter_lookahead_ms)
+	set_param.call(_PARAM_GLUE_ENABLED,    1.0 if preset.glue_enabled    else 0.0)
+	set_param.call(_PARAM_RIDER_ENABLED,   1.0 if preset.rider_enabled   else 0.0)
+	set_param.call(_PARAM_LIMITER_ENABLED, 1.0 if preset.limiter_enabled else 0.0)
+	set_param.call(_PARAM_GLUE_THRESHOLD_DB,     preset.glue_threshold_db)
+	set_param.call(_PARAM_GLUE_RATIO,            preset.glue_ratio)
+	set_param.call(_PARAM_GLUE_ATTACK_MS,        preset.glue_attack_ms)
+	set_param.call(_PARAM_GLUE_RELEASE_MS,       preset.glue_release_ms)
+	set_param.call(_PARAM_GLUE_KNEE_DB,          preset.glue_knee_db)
+	set_param.call(_PARAM_GLUE_MAKEUP_DB,        preset.glue_makeup_db)
+	set_param.call(_PARAM_RIDER_TARGET_LUFS,     preset.rider_target_lufs)
+	set_param.call(_PARAM_RIDER_TIME_CONST_MS,   preset.rider_time_constant_ms)
+	set_param.call(_PARAM_RIDER_MAX_GAIN_DB,     preset.rider_max_gain_db)
+	set_param.call(_PARAM_RIDER_MIN_GAIN_DB,     preset.rider_min_gain_db)
+	set_param.call(_PARAM_RIDER_FREEZE_BELOW_LUFS, preset.rider_freeze_below_lufs)
+	set_param.call(_PARAM_LIMITER_CEILING_DBTP,  preset.limiter_ceiling_dbtp)
+	set_param.call(_PARAM_LIMITER_RELEASE_MS,    preset.limiter_release_ms)
+	set_param.call(_PARAM_LIMITER_LOOKAHEAD_MS,  preset.limiter_lookahead_ms)
 
 
 # Locate the MasterControl-kind effect on the configured bus.
