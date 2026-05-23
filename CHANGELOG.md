@@ -22,6 +22,206 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.64.0] - 2026-05-23 — Mixer UI evolution: routing visible, master differentiated, FX as chain
+
+Phase 1 + Phase 2 + Phase 5 of the mixer UI evolution plan, bundled
+into one visual refresh. Same engine semantics as v0.63.1; the
+strip layout changes how the dock communicates topology and
+processing at a glance.
+
+The strip stack grows by one band (a routing footer at the bottom),
+the Master bus becomes visually distinct from submix buses, and
+the `Fx (N)` button becomes a chain of effect pills. The C++ audio
+kernel and the runtime DSP are untouched; this release is the
+Godot binding + dock + a small editor-time helper table.
+
+### What this solves
+
+Before v0.64.0, the mixer dock communicated three things per
+strip — name, gain, and an effect count. It did not communicate:
+
+1. **Where the bus routes.** "Music" might be parented to Master,
+   to a Music submix, to SfxAll, or to nothing at all (orphan).
+   The dock didn't show this, even though `config.json` has had a
+   `parent` field for buses since v0.26.x — the data was loaded
+   and used internally, but never surfaced on the strip.
+2. **Which bus is the final stage.** The Master bus drew with the
+   same width and outline as every submix. Designers reading the
+   dock left-to-right had no visual cue about which strip
+   controlled the final player-facing output.
+3. **What's processing each bus.** "Fx (2)" told you a bus had
+   effects without saying what kind. To learn that an EQ was on
+   the Music bus, you had to click the Fx button and read the
+   panel headers — an extra interaction for what should be
+   ambient information.
+
+### Phase 1: every strip shows its routing destination
+
+A new `ROUTE_BAND` (22px tall) sits at the bottom of every strip.
+Rendered text states where the bus's audio goes:
+
+  - For a normal submix:                `→ ParentName`
+  - For the Master bus (no parent):     `→ Output`
+  - For an orphan (parent set in config but doesn't resolve to a
+    known bus):                         `→ (unrouted)` (warning color)
+
+The arrow + destination is muted text by default (caption-like,
+~half-contrast of the bus name) so it doesn't compete with
+fader/meter/dB for attention; the Master variant uses a slightly
+brighter accent so its terminal status reads.
+
+Data source: gool's config already carried `"parent": "Master"` on
+every non-root bus, and the runtime substrate already emitted
+`"parent": <int_index>` in bus_stats. v0.64.0 surfaces what was
+already loaded. No config schema change.
+
+### Phase 2: the Master bus looks like the final stage
+
+Three coordinated visual changes when a bus has no parent (i.e.
+when it's a root in the topology):
+
+  - **Wider strip.** `MASTER_STRIP_WIDTH = 130px` vs the standard
+    `STRIP_WIDTH = 96px`. About 35% wider — enough that the eye
+    finds Master immediately when scanning a row of strips, not so
+    much that the layout feels lopsided.
+  - **Blue-purple outline.** A muted `Color(0.48, 0.49, 0.72)`
+    drawn at 2px stroke around the strip's outer rect. Deliberately
+    distinct from the saturated purple already used for the active
+    Bypass button state — desaturated and slightly bluer reads as
+    "system/special" rather than "user state."
+  - **All-caps label.** The displayed name on the Master strip
+    reads `MASTER` regardless of what the config bus is named
+    (`"Master"`, `"MasterBus"`, anything). Consistent terminal-
+    stage identity across configs.
+
+Multiple roots (a misconfigured topology) all get the master
+treatment — surfaces the config's structure faithfully rather
+than picking a winner.
+
+### Phase 5: FX shown as a chain summary, not a count
+
+The `Fx (N)` button is replaced by a band of one variable-width
+pill per effect, in chain order, each pill labeled with a short
+uppercase abbreviation of the effect's kind:
+
+  - `Gain`          → `GAIN`
+  - `BiquadFilter`  → `EQ`
+  - `Compressor`    → `COMP`
+  - `Reverb`        → `REVERB`
+  - `Saturation`    → `SAT`
+  - `MasterControl` → `MSTR`
+
+`BiquadFilter → EQ` is a friendly lie: a biquad is technically a
+generic filter, not necessarily an EQ band, but `EQ` is what
+non-audio-specialist Godot devs recognize from any DAW. Accurate
+strings still appear in the effects panel header (`kind_name`).
+
+Variable-width pills hug their text content with a small gap
+between, so `REVERB` is visibly longer than `SAT` — which matches
+how DAWs typically render send/insert names. If a chain doesn't
+fit (5+ effects on a 96px strip), the renderer truncates with an
+ellipsis pill `…` and clicking the band opens the full panel.
+
+The whole FX band remains the click target for "open/close the
+effects panel" — same affordance as the pre-v0.64.0 button. Per-
+pill click-to-jump-to-effect is deferred to a future release.
+
+### Where the abbrev lives (architectural note)
+
+The pill abbreviation is owned by the Godot binding layer, NOT by
+the C++ render kernel. `IDspEffect` in `audio_engine/dsp/dsp_effect.h`
+stays as a pure render-thread interface — display strings would be
+overreach. Instead:
+
+  - `godot/src/gool_godot.cpp` adds a new file-scope helper
+    `_gool_effect_kind_abbreviation(EffectKind k)` next to the
+    existing `_gool_effect_kind_name`, and the effect Dictionary
+    emitted to GDScript gains a `kind_abbrev` field alongside
+    `kind_name`.
+  - `godot/addons/gool/editor/config_model.gd` mirrors that mapping
+    in a new `KIND_INT_TO_ABBREV` constant — same shape as the
+    existing `KIND_INT_TO_NAME` — and `get_effects()` emits
+    `kind_abbrev` for the editor-time fallback path (no F5 needed).
+
+Keep the two tables in sync if a future effect kind is added.
+
+### Tidy-up bundled
+
+The `config_model.gd` editor-time tables stopped at `EffectKind::Saturation=5`
+and were missing the v0.63.0 `MasterControl=6` entry across four
+tables: `KIND_STRING_TO_INT`, `KIND_INT_TO_NAME`, `KIND_INT_TO_JSON_KEYS`,
+and `KIND_INT_TO_KEY_TO_PARAM_ID`. Without these, `get_effects()` on a
+bus with a `master_control` effect would skip it entirely at editor
+time. v0.64.0 adds entries to the first three (`STRING_TO_INT`,
+`INT_TO_NAME`, `INT_TO_ABBREV`) so the dock renders the MSTR pill
+correctly at editor time. The full param schema (the 17 parameters
+of MasterControl) is deferred to a follow-up release — full editor-
+time MasterControl parameter introspection needs both `JSON_KEYS` and
+`KEY_TO_PARAM_ID` populated with the matching engine defaults, which
+is a separate scope worth doing on its own. The deferred state is
+documented in a `NOTE` comment under `KIND_INT_TO_ABBREV`.
+
+### What's NOT in this release (deliberately)
+
+Phases 3, 4, 6, 7, 8, and 9 of the UI evolution plan are out of
+scope:
+
+  - **LUFS / true-peak / headroom readouts on the Master strip**
+    (Phase 7) — needs new telemetry plumbing from the master_control
+    effect to the dock; lands separately.
+  - **Mix-state awareness** (Phase 8) — Combat/Exploration/Dialogue
+    state needs game-side state input and a different UX surface
+    than the strip itself.
+  - **Bus category color-coding** (Phase 4) — opinionated design
+    work, separate from the signal-flow legibility focus of this
+    release.
+  - **Submix group collapsibility** (Phase 6) — separate UX problem
+    that compounds with this release's wider strips.
+  - **Platform translation profiles** (Phase 9) — needs both the
+    engine-side profile abstraction and the UI to switch between
+    them.
+  - **Per-pill click-to-jump-to-effect** — would land cleanly on
+    top of Phase 5's pill rendering but needs new signal plumbing
+    from `_BusStrip` to the effects panel's "scroll to effect N"
+    handler.
+
+Keeping 0.64.0 focused on signal-flow legibility means Phase 7+
+work has a clean foundation to build on without entangling visual
+and data concerns.
+
+### Public API surface changes
+
+None breaking. Three additions:
+
+  - **C++ binding**: `_gool_effect_kind_abbreviation(EffectKind k)`
+    is a new file-scope static in `godot/src/gool_godot.cpp`. The
+    effect Dictionary returned by `Gool.get_bus_effects(bus_name)`
+    gains a new `kind_abbrev` String field. Existing fields
+    (`kind`, `kind_name`, `params`) are unchanged.
+  - **Editor-time API**: `GoolConfigModel.get_effects(bus_name)`
+    returns dictionaries with a new `kind_abbrev` field. Existing
+    fields unchanged.
+  - **Dock-internal API**: `_BusStrip` gains three new setters
+    (`set_parent_name`, `set_is_master`, `set_effect_abbrevs`) and
+    two new draw helpers (`_draw_route_footer`, `_draw_fx_chain`).
+    The legacy `_draw_fx_button` is kept as a fallback path when
+    abbrev data is missing (older external scripts that talk to
+    `_BusStrip` directly).
+
+Existing addon prefab API (`GoolMasterFxProfile`, `GoolSceneProfile`,
+etc.) and the `Gool` autoload runtime API are untouched.
+
+### Verified
+
+- 0.63.1's whole test suite passes against the v0.64.0 engine
+  binding (no engine .cpp changes; library output bit-identical
+  to v0.63.1).
+- The C++ binding's new abbreviation switch compiles clean
+  isolated with `-Wall -Wextra -Werror -std=c++20`.
+- The dock's edited file passes structural checks: no GDScript
+  reserved-word identifiers, balanced brackets, tab-only indent.
+- Tarball roundtrip: extract, version_test reports `0.64.0`.
+
 ## [0.63.1] - 2026-05-23 — CI hotfix: master_control test wiring + GDScript keyword conflict
 
 Build-time bugfix release. No engine behavior changes, no public API
@@ -19006,6 +19206,7 @@ Headlines:
 [0.7.0]: https://github.com/siliconight/gool/releases/tag/v0.7.0
 [0.6.0]: https://github.com/siliconight/gool/releases/tag/v0.6.0
 [0.63.1]: https://github.com/siliconight/gool/releases/tag/v0.63.1
+[0.64.0]: https://github.com/siliconight/gool/releases/tag/v0.64.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

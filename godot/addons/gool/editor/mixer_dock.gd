@@ -38,7 +38,14 @@ const PEAK_DECAY: float = 0.85
 
 # Strip dimensions.
 const STRIP_WIDTH: float = 96.0
-const STRIP_HEIGHT: float = 362.0  # v0.28.3: +22 for FX_BAND below readout
+# v0.64.0: Master strip is ~35% wider than a submix strip — Phase 2
+# of the UI evolution plan. Wider strip carries more visual weight,
+# signaling "this is the final output stage." Master also gets a
+# blue-purple outline (COLOR_MASTER_OUTLINE on _BusStrip) and an
+# all-caps "MASTER" label; per-strip width is the column-sizing
+# part of that treatment.
+const MASTER_STRIP_WIDTH: float = 130.0
+const STRIP_HEIGHT: float = 384.0  # v0.28.3: +22 for FX_BAND below readout. v0.64.0: +22 for ROUTE_BAND below FX_BAND.
 const STRIP_GAP: float = 4.0
 
 # v0.52.0: vertical offset per nesting depth for bus hierarchy
@@ -713,10 +720,20 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 	for d in sorted_buses:
 		var bus_name: String = String(d.get("name", "(unnamed)"))
 		var initial_db: float = float(d.get("gain_db", 0.0))
+		# v0.64.0: routing-related state. is_master is true when the
+		# bus has no parent field in config. parent_string is the
+		# parent's name (empty for root). The strip uses both — see
+		# _BusStrip.set_parent_name / set_is_master.
+		var parent_string: String = String(d.get("parent", ""))
+		var is_master_bus: bool = parent_string == ""
 		var strip := _BusStrip.new()
 		strip.bus_name = bus_name
 		strip.set_fader_db(initial_db, false)  # silent (no signal emit)
-		strip.custom_minimum_size = Vector2(STRIP_WIDTH, STRIP_HEIGHT)
+		strip.set_parent_name(parent_string)
+		strip.set_is_master(is_master_bus)
+		# v0.64.0 Phase 2: Master strip is wider than submix strips.
+		var strip_w: float = MASTER_STRIP_WIDTH if is_master_bus else STRIP_WIDTH
+		strip.custom_minimum_size = Vector2(strip_w, STRIP_HEIGHT)
 		strip.db_changed.connect(_on_strip_db_changed)
 		# v0.27.0: S/M/B signal forwarding.
 		strip.mute_changed.connect(_on_strip_mute_changed)
@@ -727,7 +744,13 @@ func _rebuild_strips_from_config(buses: Array) -> void:
 		# v0.28.8 context menu (right-click) for bus topology ops.
 		strip.context_menu_requested.connect(_on_strip_context_menu_requested)
 		if _config_model != null:
-			strip.set_effect_count(_config_model.get_effects(bus_name).size())
+			# v0.64.0 Phase 5: surface effect kind_abbrev to the
+			# strip for chain pill rendering. set_effect_count is
+			# kept as a parallel call because the strip's renderer
+			# falls back to "Fx (N)" when abbrevs is empty.
+			var effects: Array = _config_model.get_effects(bus_name)
+			strip.set_effect_count(effects.size())
+			strip.set_effect_abbrevs(_extract_effect_abbrevs(effects))
 		# Wrap in a column so the effects panel can stack below.
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 4)
@@ -844,9 +867,14 @@ func _poll() -> void:
 		for s in _strips:
 			s.push_peak(0.0)
 			var count_at_rest: int = 0
+			var effects_at_rest: Array = []
 			if _config_model != null:
-				count_at_rest = _config_model.get_effects(s.bus_name).size()
+				effects_at_rest = _config_model.get_effects(s.bus_name)
+				count_at_rest = effects_at_rest.size()
 			s.set_effect_count(count_at_rest)
+			# v0.64.0 Phase 5: also push abbrevs so the chain pills
+			# render in the dock at rest (not just during F5).
+			s.set_effect_abbrevs(_extract_effect_abbrevs(effects_at_rest))
 		# v0.44.0: reset Live Stats labels to placeholders when no
 		# F5 session is providing data. Without this, the panel
 		# would keep showing stale numbers from the previous session.
@@ -893,6 +921,9 @@ func _poll() -> void:
 		var effects_v: Variant = d.get("effects", [])
 		var effects_arr: Array = effects_v if effects_v is Array else []
 		_strips[i].set_effect_count(effects_arr.size())
+		# v0.64.0 Phase 5: push abbrevs so the chain pills stay
+		# in sync if effects are added/removed in a running game.
+		_strips[i].set_effect_abbrevs(_extract_effect_abbrevs(effects_arr))
 
 	# v0.44.0: refresh the Live Stats panel from the render-stats
 	# debugger channel. Cheap — just label.text writes; only the
@@ -914,11 +945,41 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 	_strips.clear()
 	_columns.clear()
 	_expanded_bus = ""
-	for d in stats:
+	# v0.64.0: build a parent-index → bus-name map so each strip's
+	# route footer can show "→ Music" / "→ Master" / etc. Runtime
+	# stats encode parent as an int (-1 == root) per get_bus_stats
+	# in gool_godot.cpp; this loop translates that to a name string
+	# the strip can render directly.
+	var name_by_index: Dictionary = {}
+	for i in range(stats.size()):
+		var s: Variant = stats[i]
+		if s is Dictionary:
+			name_by_index[i] = String((s as Dictionary).get("name", ""))
+	for i in range(stats.size()):
+		var d: Variant = stats[i]
+		if not (d is Dictionary):
+			continue
+		var d_dict: Dictionary = d as Dictionary
+		var bus_name: String = String(d_dict.get("name", "(unnamed)"))
+		var parent_idx: int = int(d_dict.get("parent", -1))
+		var parent_string: String = ""
+		var is_master_bus: bool = false
+		if parent_idx < 0:
+			is_master_bus = true
+		elif name_by_index.has(parent_idx):
+			parent_string = String(name_by_index[parent_idx])
+		# else: parent index set but unresolved → leaves
+		# parent_string=="" and is_master=false, which the strip
+		# renders as "→ (unrouted)" in warning color. Shouldn't
+		# happen with sane runtime stats but defensively handled.
 		var strip := _BusStrip.new()
-		strip.bus_name = String(d.get("name", "(unnamed)"))
+		strip.bus_name = bus_name
 		strip.set_fader_db(0.0, false)
-		strip.custom_minimum_size = Vector2(STRIP_WIDTH, STRIP_HEIGHT)
+		strip.set_parent_name(parent_string)
+		strip.set_is_master(is_master_bus)
+		# v0.64.0 Phase 2: Master strip is wider than submix strips.
+		var strip_w: float = MASTER_STRIP_WIDTH if is_master_bus else STRIP_WIDTH
+		strip.custom_minimum_size = Vector2(strip_w, STRIP_HEIGHT)
 		strip.db_changed.connect(_on_strip_db_changed)
 		# v0.27.0: S/M/B signal forwarding (matches _rebuild_strips_from_config).
 		strip.mute_changed.connect(_on_strip_mute_changed)
@@ -929,6 +990,14 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 		# v0.28.8: context menu for bus topology ops, parity with the
 		# static-config build path.
 		strip.context_menu_requested.connect(_on_strip_context_menu_requested)
+		# v0.64.0 Phase 5: per-effect abbreviations from runtime stats.
+		# The "effects" field on each bus stat carries kind_abbrev
+		# from the engine binding (gool_godot.cpp::get_bus_effects).
+		var effects_v: Variant = d_dict.get("effects", [])
+		if effects_v is Array:
+			var effects_arr: Array = effects_v as Array
+			strip.set_effect_count(effects_arr.size())
+			strip.set_effect_abbrevs(_extract_effect_abbrevs(effects_arr))
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 4)
 		col.add_child(strip)
@@ -937,6 +1006,25 @@ func _rebuild_strips_from_runtime(stats: Array) -> void:
 		_columns.append(col)
 	# v0.28.8: + Add Bus column (parity with _rebuild_strips_from_config).
 	_strip_container.add_child(_build_add_bus_column())
+
+
+# v0.64.0 Phase 5: helper to turn an effects array (one dict per
+# effect, as emitted by either _config_model.get_effects or the
+# runtime substrate's bus_stats[i].effects) into a PackedStringArray
+# of abbreviations ready for _BusStrip.set_effect_abbrevs.
+#
+# Each effect dict carries a "kind_abbrev" field after v0.64.0 (added
+# to gool_godot.cpp _gool_effect_kind_abbreviation and to config_model
+# KIND_INT_TO_ABBREV). Falls back to "FX" if the field is missing,
+# which only happens with a stale runtime/binding mismatch.
+func _extract_effect_abbrevs(effects: Array) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for e in effects:
+		if e is Dictionary:
+			out.append(String((e as Dictionary).get("kind_abbrev", "FX")))
+		else:
+			out.append("FX")
+	return out
 
 
 # Strip fader was dragged. Forward to the running game via the
@@ -1898,6 +1986,36 @@ class _BusStrip extends Control:
 	var _is_dirty: bool = false
 	const COLOR_DIRTY_DOT := Color(0.95, 0.82, 0.32)
 
+	# v0.64.0 (Phase 1, UI evolution plan): routing data. Both fields
+	# are set externally by the outer GoolMixerDock when populating
+	# each strip from config.json or runtime stats; the strip itself
+	# doesn't look up topology. parent_name is the bus this strip
+	# routes to ("Master", "SfxAll", etc.) or "" if this bus has no
+	# parent (root, i.e. Master itself). is_master is true when this
+	# strip represents a root bus — drives the route footer text
+	# ("→ Output" vs "→ ParentName") and Phase 2's visual emphasis.
+	#
+	# Why two fields instead of inferring is_master from parent_name
+	# being empty: an orphan bus (parent string set but doesn't
+	# resolve to a known bus) ALSO has parent_name=="" after the
+	# outer dock's resolve step. is_master disambiguates the two
+	# cases so the orphan can render "→ (unrouted)" in the warning
+	# color without being mistaken for the actual Master strip.
+	var parent_name: String = ""
+	var is_master: bool = false
+
+	# v0.64.0 (Phase 5, UI evolution plan): per-effect abbreviation
+	# strings supplied by the engine binding (`kind_abbrev` field on
+	# each effect dict from get_bus_effects / config_model.get_effects).
+	# Drives the FX_BAND chain pills — one pill per entry, rendered
+	# left-to-right in chain order. Stays a parallel array to
+	# _effect_count rather than replacing it because _effect_count is
+	# read by the outer dock for the "has any effects, draw button at
+	# all?" check, and keeping both lets the strip work even if a
+	# caller forgets to call set_effect_abbrevs (falls back to a
+	# generic "Fx (N)" pill — see _draw_fx_chain).
+	var _effect_abbrevs: PackedStringArray = PackedStringArray()
+
 	const PEAK_HOLD_TIME: float = 1.5
 	const PEAK_DROP_RATE: float = 0.5
 
@@ -1934,6 +2052,34 @@ class _BusStrip extends Control:
 	const FX_BUTTON_H: float = 18.0
 	const FX_BUTTON_INSET_X: float = 6.0
 	const COLOR_FX_BUTTON_ACTIVE := Color(0.45, 0.60, 0.85)
+	# v0.64.0 (Phase 1 of the UI evolution plan): ROUTE_BAND sits at
+	# the bottom of every strip, below FX_BAND. Renders "→ ParentName"
+	# (or "→ Output" for Master, or "→ (unrouted)" for an orphan bus
+	# whose parent doesn't resolve). 22px tall to match FX_BAND so the
+	# two bottom bands form a visually consistent pair. Drawn in
+	# COLOR_ROUTE_TEXT — deliberately muted, ~half the contrast of the
+	# bus name, so it reads as a footer caption rather than a label
+	# competing for attention.
+	const ROUTE_BAND: float = 22.0
+	const ROUTE_SEPARATOR_INSET: float = 6.0
+	const COLOR_ROUTE_TEXT := Color(0.49, 0.50, 0.56)
+	const COLOR_ROUTE_TEXT_MASTER := Color(0.64, 0.65, 0.75)
+	const COLOR_ROUTE_TEXT_WARN := Color(0.95, 0.62, 0.32)
+	const COLOR_ROUTE_SEPARATOR := Color(0.16, 0.17, 0.20)
+	# v0.64.0 (Phase 2): Master strip outline. Submix strips don't
+	# draw an outer outline (the meter/fader rects define their
+	# bounds visually); Master gets one in a muted blue-purple to
+	# signal "terminal stage" without being loud. 2px stroke gives
+	# it weight without crowding the inner content.
+	#
+	# Color rationale: avoids the saturated purple already used by
+	# the active Bypass button state — a desaturated, slightly
+	# bluer variant reads as "system/special" rather than "user
+	# state." Audit-trail: this color was the option labeled
+	# "Muted blue-purple stroke (as mocked up)" in the design
+	# review for the 0.64.0 visual refresh.
+	const COLOR_MASTER_OUTLINE := Color(0.48, 0.49, 0.72)
+	const MASTER_STROKE_W: float = 2.0
 
 	# v0.27.0: S/M/B change signals. Emitted when the user clicks the
 	# corresponding button. The outer GoolMixerDock forwards these to
@@ -2053,6 +2199,48 @@ class _BusStrip extends Control:
 		_is_dirty = dirty
 		queue_redraw()
 
+	# v0.64.0 (Phase 1, UI evolution plan): routing setter. Outer
+	# dock resolves the bus's parent (from config.json's "parent"
+	# field, or from runtime stats' parent-index lookup) and pushes
+	# the name string here. Empty string + is_master=true → render
+	# "→ Output". Empty string + is_master=false → orphan (render
+	# "→ (unrouted)" in warning color). Otherwise → "→ <name>".
+	func set_parent_name(name: String) -> void:
+		if parent_name == name:
+			return
+		parent_name = name
+		queue_redraw()
+
+	# v0.64.0 (Phase 1 + Phase 2): root-bus flag. Drives BOTH the
+	# route footer text ("→ Output" vs "→ ParentName") AND the
+	# Phase 2 visual emphasis (wider strip, blue-purple outline,
+	# all-caps name). The outer dock sets this true for any bus
+	# with no parent in the topology.
+	func set_is_master(b: bool) -> void:
+		if is_master == b:
+			return
+		is_master = b
+		queue_redraw()
+
+	# v0.64.0 (Phase 5): set the per-effect abbreviation list
+	# (e.g. ["EQ", "COMP", "REVERB"]). Drives the FX_BAND chain
+	# pills. Order matches the effect chain on the bus. Pass an
+	# empty PackedStringArray to clear (also makes set_effect_count
+	# the authoritative count; the strip falls back to a generic
+	# "Fx (N)" pill if abbrevs are empty but count > 0).
+	func set_effect_abbrevs(abbrevs: PackedStringArray) -> void:
+		# PackedStringArray doesn't implement ==; compare manually.
+		if _effect_abbrevs.size() == abbrevs.size():
+			var same: bool = true
+			for i in range(abbrevs.size()):
+				if _effect_abbrevs[i] != abbrevs[i]:
+					same = false
+					break
+			if same:
+				return
+		_effect_abbrevs = abbrevs.duplicate()
+		queue_redraw()
+
 	# Button rect helpers. Compute once, used by both _draw and
 	# _gui_input — keeping these in one place prevents the
 	# rendered-vs-hittable mismatch the lessons doc warns about
@@ -2083,9 +2271,15 @@ class _BusStrip extends Control:
 	# FX_BUTTON_H tall with 2px of breathing room above. Both _draw
 	# and _gui_input call this so the visual and the hit region are
 	# guaranteed to match.
+	#
+	# v0.64.0: FX_BAND is no longer flush with the bottom of the
+	# strip — ROUTE_BAND sits below it now. Y offset accounts for
+	# that. Old math: `size.y - FX_BAND + 2.0`. If you're updating
+	# this method, also update _start_db_edit's position math which
+	# uses the same offset chain.
 	func _fx_button_rect() -> Rect2:
 		return Rect2(FX_BUTTON_INSET_X,
-				size.y - FX_BAND + 2.0,
+				size.y - FX_BAND - ROUTE_BAND + 2.0,
 				size.x - FX_BUTTON_INSET_X * 2.0,
 				FX_BUTTON_H)
 
@@ -2104,8 +2298,10 @@ class _BusStrip extends Control:
 		# the editor doesn't run flush to the strip edges.
 		# v0.28.3: y shifted by FX_BAND since the readout is no
 		# longer bottom-anchored — FX_BAND sits below it.
+		# v0.64.0: also shifted by ROUTE_BAND — readout sits above
+		# FX_BAND which sits above ROUTE_BAND.
 		var pad: float = 4.0
-		_db_editor.position = Vector2(pad, size.y - FX_BAND - READOUT_BAND)
+		_db_editor.position = Vector2(pad, size.y - FX_BAND - READOUT_BAND - ROUTE_BAND)
 		_db_editor.size = Vector2(size.x - pad * 2.0, READOUT_BAND)
 		_db_editor.text = "%.1f" % _fader_db
 		_db_editor.visible = true
@@ -2275,6 +2471,15 @@ class _BusStrip extends Control:
 		var fs := get_theme_default_font_size()
 		var fs_small := maxi(fs - 2, 8)
 
+		# v0.64.0 Phase 2: Master strip outline. Drawn first so the
+		# inner content (meter, fader, pills, footer) sits over it.
+		# Submix strips skip this — only Master gets the outline,
+		# carrying the "this is the final stage" visual weight.
+		if is_master:
+			draw_rect(
+					Rect2(Vector2.ZERO, Vector2(w, h)),
+					COLOR_MASTER_OUTLINE, false, MASTER_STROKE_W)
+
 		# v0.27.0: fader region shifted down to make room for the
 		# BUTTON_BAND (S/M/B buttons sit between the bus name and the
 		# fader). Both _draw and _gui_input compute the region the
@@ -2282,16 +2487,29 @@ class _BusStrip extends Control:
 		# v0.28.3: FX_BAND eats 22px from the bottom (below READOUT_BAND)
 		# to host the Fx toggle button. Same math change here AND in
 		# _gui_input — both compute the region identically.
+		# v0.64.0: ROUTE_BAND eats another 22px below FX_BAND for
+		# the per-strip routing footer (Phase 1 of UI evolution plan).
+		# Same change here AND in _gui_input.
 		var fader_region_y: float = NAME_BAND + BUTTON_BAND + 4.0
-		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - FX_BAND - 8.0
+		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - FX_BAND - ROUTE_BAND - 8.0
 
 		# --- Bus name (top) ---
 		if f != null:
+			# v0.64.0 Phase 2: Master gets "MASTER" in all caps as a
+			# secondary visual differentiator (alongside the wider
+			# strip and the blue-purple outline). The actual bus
+			# name from config might be "Master" or "MasterBus" or
+			# whatever — we deliberately override the displayed
+			# label to a uniform "MASTER" so multiple Masters (in a
+			# misconfigured topology with multiple roots) all read
+			# as the terminal stage, and the strip's identity stays
+			# consistent across configs.
+			var display_name: String = "MASTER" if is_master else bus_name
 			var name_size := f.get_string_size(
-					bus_name, HORIZONTAL_ALIGNMENT_CENTER, -1, fs)
+					display_name, HORIZONTAL_ALIGNMENT_CENTER, -1, fs)
 			draw_string(f,
 					Vector2((w - name_size.x) * 0.5, NAME_BAND - 4),
-					bus_name,
+					display_name,
 					HORIZONTAL_ALIGNMENT_CENTER,
 					-1, fs,
 					COLOR_TEXT)
@@ -2412,26 +2630,83 @@ class _BusStrip extends Control:
 					-1, fs,
 					COLOR_TEXT)
 
-		# --- v0.28.3: Fx toggle button (bottom band) ---
-		# Drawn only when the bus actually has effects. The button
-		# is the user's entry point into the effect editor: clicking
-		# expands a side-panel in this strip's column showing one
-		# section per effect with sliders per parameter.
+		# --- v0.28.3 / v0.64.0: Fx chain pills (above ROUTE_BAND) ---
+		# Renders one variable-width pill per effect in the bus's
+		# chain, labeled with the effect's short uppercase abbrev
+		# from `_effect_abbrevs` (set by the outer dock from the
+		# engine binding's kind_abbrev field). Falls back to the
+		# pre-v0.64.0 "Fx (N)" single-button rendering when abbrevs
+		# are empty but count > 0 (graceful: older external code
+		# paths that only set_effect_count still get a usable UI).
 		#
 		# UX rationale:
-		# - Visible only when relevant (no orphan clicks)
-		# - Label "Fx (N)" shows count so the user knows what to
-		#   expect before clicking
-		# - Active color when expanded so the relationship between
-		#   button state and panel visibility is obvious
-		# v0.28.9: always draw the Fx button, even when count==0,
-		# so empty buses still have an entry point to the
-		# "+ Add Effect" affordance. Pre-v0.28.9 hid the button
-		# for empty buses, which meant a newly-added bus had no
-		# way to ever get its first effect from the dock.
+		# - Each pill shows what kind of processing is happening, at
+		#   a glance — no panel-open needed to see "EQ → COMP".
+		# - Whole band is the click target (toggles the panel), same
+		#   as the pre-v0.64.0 Fx button. Per-pill click-to-jump is
+		#   future work.
+		# - Active state (panel expanded) shows on the band's
+		#   surrounding rect, not on individual pills, so the click-
+		#   target affordance is unambiguous.
+		# v0.28.9: always draw the Fx band, even when count==0, so
+		# empty buses still have an entry point to "+ Add Effect".
 		if f != null:
-			_draw_fx_button(_fx_button_rect(), _effect_count,
-					_is_fx_expanded, f, fs_small)
+			_draw_fx_chain(_fx_button_rect(), _effect_count,
+					_effect_abbrevs, _is_fx_expanded, f, fs_small)
+
+		# --- v0.64.0 Phase 1: route footer (bottom band) ---
+		# "→ ParentName" for non-root buses, "→ Output" for Master,
+		# "→ (unrouted)" in warning color for orphans whose parent
+		# string doesn't resolve to a known bus. Drawn in muted text
+		# so it reads as a footer caption — visible without competing
+		# with the bus name or the dB readout for attention.
+		_draw_route_footer(f, fs_small)
+
+	# v0.64.0 Phase 1: draw the route footer at the bottom of the
+	# strip. Pulls all positioning from size.y/ROUTE_BAND so it stays
+	# anchored if STRIP_HEIGHT changes. Thin separator line above the
+	# text band sets it apart from FX_BAND visually — same as a
+	# table footer rule.
+	func _draw_route_footer(font: Font, font_size: int) -> void:
+		var w: float = size.x
+		var h: float = size.y
+		var band_top: float = h - ROUTE_BAND
+		# Thin separator above the footer. Inset slightly from the
+		# strip edges so it doesn't fight the outer strip outline.
+		draw_line(
+				Vector2(ROUTE_SEPARATOR_INSET, band_top),
+				Vector2(w - ROUTE_SEPARATOR_INSET, band_top),
+				COLOR_ROUTE_SEPARATOR, 1.0)
+		if font == null:
+			return
+		# Decide footer text + color from the three states:
+		#   1. is_master                   → "→ Output" (system blue-purple)
+		#   2. parent_name not empty       → "→ <parent_name>" (muted)
+		#   3. neither (orphan: parent set in config but unresolved,
+		#      or parent missing entirely from a non-root bus)
+		#                                  → "→ (unrouted)" (warning)
+		var footer_text: String
+		var footer_color: Color
+		if is_master:
+			footer_text = "→ Output"
+			footer_color = COLOR_ROUTE_TEXT_MASTER
+		elif parent_name != "":
+			footer_text = "→ %s" % parent_name
+			footer_color = COLOR_ROUTE_TEXT
+		else:
+			footer_text = "→ (unrouted)"
+			footer_color = COLOR_ROUTE_TEXT_WARN
+		var text_size := font.get_string_size(
+				footer_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+		var ascent: float = float(font_size) * 0.75
+		var text_x: float = (w - text_size.x) * 0.5
+		var text_y: float = band_top + (ROUTE_BAND + ascent) * 0.5
+		draw_string(font,
+				Vector2(text_x, text_y),
+				footer_text,
+				HORIZONTAL_ALIGNMENT_CENTER,
+				-1, font_size,
+				footer_color)
 
 	# ---- Input handling for fader drag ----
 
@@ -2441,8 +2716,10 @@ class _BusStrip extends Control:
 		# v0.27.0: fader region accounts for BUTTON_BAND between the
 		# name and the fader. Must match the _draw math exactly.
 		# v0.28.3: FX_BAND also subtracted (eats from the bottom).
+		# v0.64.0: ROUTE_BAND also subtracted — routing footer sits
+		# below FX_BAND.
 		var fader_region_y: float = NAME_BAND + BUTTON_BAND + 4.0
-		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - FX_BAND - 8.0
+		var fader_region_h: float = h - NAME_BAND - BUTTON_BAND - READOUT_BAND - FX_BAND - ROUTE_BAND - 8.0
 		var fader_x: float = 6.0 + METER_W + 14.0
 		var fader_full_rect := Rect2(
 				fader_x, fader_region_y,
@@ -2452,8 +2729,10 @@ class _BusStrip extends Control:
 		# activates the LineEdit overlay for type-to-set dB entry.
 		# Checked BEFORE the fader rect because the regions don't
 		# overlap but the explicit ordering documents intent.
+		# v0.64.0: y offset bumped by ROUTE_BAND — readout sits above
+		# FX_BAND which sits above ROUTE_BAND.
 		var readout_rect := Rect2(
-				0.0, h - FX_BAND - READOUT_BAND,
+				0.0, h - FX_BAND - READOUT_BAND - ROUTE_BAND,
 				w, READOUT_BAND)
 		# v0.28.3: Fx button rect (bottom FX_BAND of the strip). Only
 		# active when the bus actually has effects — _effect_count==0
@@ -2598,6 +2877,91 @@ class _BusStrip extends Control:
 				HORIZONTAL_ALIGNMENT_CENTER,
 				-1, font_size,
 				COLOR_BUTTON_LABEL)
+
+	# v0.64.0 Phase 5: chain renderer. Replaces the single "Fx (N)"
+	# button with one pill per effect, left-to-right in chain order,
+	# pill widths hugging their text. The active state (panel open)
+	# is shown on the surrounding band background so the whole band
+	# remains the click target — pill-level clicks are future work.
+	#
+	# Fallback path: if abbrevs is empty (caller forgot or doesn't
+	# know about v0.64.0), defers to _draw_fx_button so the strip
+	# still renders something sensible. The dock's own rebuild paths
+	# always populate abbrevs, but external scripts that talk to
+	# _BusStrip directly might not.
+	#
+	# Overflow: if pills don't fit horizontally, truncate and append
+	# an ellipsis pill "[…]" to signal more effects exist. Clicking
+	# anywhere in the band still opens the panel which shows the
+	# full chain.
+	func _draw_fx_chain(rect: Rect2, count: int, abbrevs: PackedStringArray,
+			active: bool, font: Font, font_size: int) -> void:
+		# Fallback: empty abbrevs but non-zero count → old-style button.
+		if abbrevs.is_empty():
+			_draw_fx_button(rect, count, active, font, font_size)
+			return
+		# Background band: faint surrounding rect that responds to
+		# the active (panel-expanded) state. Same color vocabulary
+		# as _draw_fx_button so the visual "click here to expand"
+		# affordance is preserved.
+		var band_color: Color = COLOR_FX_BUTTON_ACTIVE if active else COLOR_BUTTON_INACTIVE
+		draw_rect(rect, band_color, true)
+		draw_rect(rect, COLOR_BUTTON_OUTLINE, false, 1.0)
+		if font == null:
+			return
+		# Pill geometry. Width hugs text + padding; height a few px
+		# smaller than the band so the band's outline shows around.
+		var pill_inset_y: float = 2.0
+		var pill_h: float = rect.size.y - pill_inset_y * 2.0
+		var pill_pad_x: float = 4.0
+		var pill_gap: float = 3.0
+		var pill_y: float = rect.position.y + pill_inset_y
+		var avail_w: float = rect.size.x - 4.0  # 2px breathing room each side
+		var cursor_x: float = rect.position.x + 2.0
+		var ascent: float = float(font_size) * 0.75
+		# Reserve space for the overflow indicator IF we might need it.
+		# Approximate: ellipsis pill needs about 18px (3 dots + padding).
+		var ellipsis_reserve: float = 18.0 if abbrevs.size() > 1 else 0.0
+		for i in range(abbrevs.size()):
+			var abbrev: String = abbrevs[i]
+			var label_size := font.get_string_size(
+					abbrev, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+			var pill_w: float = label_size.x + pill_pad_x * 2.0
+			# Will this pill (plus reserved ellipsis if more follow)
+			# overflow? If yes, draw the ellipsis instead and stop.
+			var remaining: float = avail_w - (cursor_x - rect.position.x)
+			var needs_ellipsis: bool = (i < abbrevs.size() - 1)
+			var room_needed: float = pill_w + (ellipsis_reserve + pill_gap if needs_ellipsis else 0.0)
+			if room_needed > remaining:
+				# Draw ellipsis pill in the remaining space if any.
+				var ell_w: float = ellipsis_reserve
+				if ell_w <= remaining and ell_w > 8.0:
+					var ell_rect := Rect2(cursor_x, pill_y, ell_w, pill_h)
+					draw_rect(ell_rect, COLOR_BG, true)
+					draw_rect(ell_rect, COLOR_BUTTON_OUTLINE, false, 1.0)
+					var ell_label := "…"
+					var ell_size := font.get_string_size(
+							ell_label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+					draw_string(font,
+							Vector2(cursor_x + (ell_w - ell_size.x) * 0.5,
+									pill_y + (pill_h + ascent) * 0.5),
+							ell_label,
+							HORIZONTAL_ALIGNMENT_CENTER,
+							-1, font_size,
+							COLOR_TEXT_DIM)
+				break
+			# Draw the pill.
+			var pill_rect := Rect2(cursor_x, pill_y, pill_w, pill_h)
+			draw_rect(pill_rect, COLOR_BG, true)
+			draw_rect(pill_rect, COLOR_BUTTON_OUTLINE, false, 1.0)
+			draw_string(font,
+					Vector2(cursor_x + pill_pad_x,
+							pill_y + (pill_h + ascent) * 0.5),
+					abbrev,
+					HORIZONTAL_ALIGNMENT_LEFT,
+					-1, font_size,
+					COLOR_TEXT)
+			cursor_x += pill_w + pill_gap
 
 
 # ===================================================================

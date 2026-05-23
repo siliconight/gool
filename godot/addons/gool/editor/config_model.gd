@@ -109,16 +109,41 @@ const PARAM_ID_TO_KIND: Dictionary = {
 # Reverse: config "kind" string → EffectKind int. Used when
 # loading effects from config.json.
 const KIND_STRING_TO_INT: Dictionary = {
-	"gain":        1,
-	"biquad":      2,
-	"compressor":  3,
-	"reverb":      4,
-	"saturation":  5,
+	"gain":           1,
+	"biquad":         2,
+	"compressor":     3,
+	"reverb":         4,
+	"saturation":     5,
+	"master_control": 6,
 }
 const KIND_INT_TO_NAME: Dictionary = {
 	1: "Gain", 2: "BiquadFilter", 3: "Compressor",
-	4: "Reverb", 5: "Saturation",
+	4: "Reverb", 5: "Saturation", 6: "MasterControl",
 }
+# v0.64.0: short uppercase pill labels for the mixer dock's FX_BAND
+# chain summary (Phase 5 of the UI evolution plan). Mirrors the C++
+# binding's _gool_effect_kind_abbreviation in gool_godot.cpp — that
+# function serves the runtime path (F5 session running); this table
+# serves the editor-time path (config-only, no live runtime). Keep
+# the two in sync.
+#
+# Audience: gool's audience is Godot devs without a strong audio
+# background. BiquadFilter → "EQ" is technically lossy but matches
+# what users will recognize from every DAW. KIND_INT_TO_NAME above
+# remains the accurate display string for the effects-panel header.
+const KIND_INT_TO_ABBREV: Dictionary = {
+	1: "GAIN", 2: "EQ", 3: "COMP",
+	4: "REVERB", 5: "SAT", 6: "MSTR",
+}
+# NOTE: KIND_INT_TO_JSON_KEYS and KIND_INT_TO_KEY_TO_PARAM_ID below
+# do NOT yet have a 6: entry for MasterControl. That means a bus
+# with a master_control effect, when queried via get_effects() with
+# no live runtime, will surface kind/kind_name/kind_abbrev correctly
+# but its params dict will be empty. The FX chain pill in the dock
+# renders fine from name+abbrev alone; the gap only affects editor-
+# time param introspection. Adding the full param mapping is queued
+# for a separate release — needs the 17-parameter master_control
+# schema and a matching default-values table mirroring StaticBusConfig.
 # Per-kind list of JSON keys that the loader recognizes for that
 # kind's parameters. Used by get_effects() to surface only the
 # values that actually exist in config (vs. relying on engine
@@ -134,6 +159,11 @@ const KIND_INT_TO_JSON_KEYS: Dictionary = {
 	# Matches PARAM_ORDER_BY_KIND in mixer_dock.gd. Dry added v0.29.5.
 	4: ["predelay_ms", "decay", "lf_damping", "hf_damping", "diffusion", "dry_gain_db", "wet_gain_db"],
 	5: ["drive", "mix", "output_gain", "bias"],
+	# v0.64.0: MasterControl param-key list is intentionally empty —
+	# see the NOTE under KIND_INT_TO_ABBREV. Surfaces kind/name/abbrev
+	# correctly (enough for the FX chain pill to render); editor-time
+	# param introspection is queued for a separate release.
+	6: [],
 }
 # Per-kind map: JSON key → paramId. Used by get_effects() to
 # build the {paramId: value} dict in the same shape that the
@@ -153,6 +183,8 @@ const KIND_INT_TO_KEY_TO_PARAM_ID: Dictionary = {
 		"wet_gain_db": 11,
 	},
 	5: { "drive": 19, "mix": 20, "output_gain": 21, "bias": 22 },
+	# v0.64.0: empty stub — see NOTE under KIND_INT_TO_ABBREV.
+	6: {},
 }
 # Engine compile-time defaults for every paramId, mirroring
 # StaticBusConfig defaults in include/audio_engine/bus.h. Used to
@@ -324,9 +356,10 @@ func get_effects(bus_name: String) -> Array:
 			else:
 				params[pid] = float(PARAM_ID_TO_ENGINE_DEFAULT.get(pid, 0.0))
 		out.append({
-			"kind":      kind_i,
-			"kind_name": KIND_INT_TO_NAME[kind_i],
-			"params":    params,
+			"kind":        kind_i,
+			"kind_name":   KIND_INT_TO_NAME[kind_i],
+			"kind_abbrev": KIND_INT_TO_ABBREV[kind_i],
+			"params":      params,
 		})
 	return out
 

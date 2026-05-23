@@ -94,6 +94,33 @@ static const char* _gool_effect_kind_name(audio::EffectKind k) {
     }
 }
 
+// v0.64.0: short uppercase pill label for the mixer dock's FX chain
+// summary band (Phase 5 of the UI evolution plan). Distinct from
+// _gool_effect_kind_name above: this returns a 3-6 char abbreviation
+// suitable for cramming into a 130px-wide strip's FX_BAND.
+//
+// Audience reminder: gool's audience is Godot devs without a strong
+// audio background. BiquadFilter → "EQ" is technically lossy (a
+// biquad can be a generic filter, not just an EQ band) but matches
+// what users will recognize from every DAW. _kind_name remains the
+// accurate display string for the effects panel header.
+//
+// Keep in sync with KIND_INT_TO_ABBREV in config_model.gd — the
+// editor-time fallback path uses that table when no live runtime
+// is present (no F5 session running).
+static const char* _gool_effect_kind_abbreviation(audio::EffectKind k) {
+    switch (k) {
+        case audio::EffectKind::Gain:           return "GAIN";
+        case audio::EffectKind::BiquadFilter:   return "EQ";
+        case audio::EffectKind::Compressor:     return "COMP";
+        case audio::EffectKind::Reverb:         return "REVERB";
+        case audio::EffectKind::Saturation:     return "SAT";
+        case audio::EffectKind::MasterControl:  return "MSTR";
+        case audio::EffectKind::None:
+        default:                                return "FX";
+    }
+}
+
 // For an effect of the given kind, read every parameter the kind
 // recognizes and stuff them into `out` as paramId → value. The set
 // of params per kind is defined here (single source of truth on the
@@ -1422,6 +1449,11 @@ public:
             // above.
             d["kind"]      = static_cast<int64_t>(kind);
             d["kind_name"] = String(_gool_effect_kind_name(kind));
+            // v0.64.0: short uppercase pill label for the mixer dock's
+            // FX_BAND chain summary. See _gool_effect_kind_abbreviation
+            // for the rationale; mirrored in config_model.gd's
+            // KIND_INT_TO_ABBREV for the editor-time fallback path.
+            d["kind_abbrev"] = String(_gool_effect_kind_abbreviation(kind));
             Dictionary params;
             // v0.28.2: runtime_ is std::unique_ptr<AudioRuntime>; the
             // helper takes a raw AudioRuntime*. .get() is required —
