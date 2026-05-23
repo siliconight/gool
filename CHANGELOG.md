@@ -22,6 +22,129 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.60.0] - 2026-05-23 — Phase 6.E.1 complete (Option B): editable per-material EQ curves
+
+Closes Phase 6.E.1 of `docs/audio_design/acoustic_presence_eq.md`. Designers can now author per-instance EQ curves on any `GoolAudioMaterial.tres` via drag handles on the inspector plot — no code edits, no config files, no rebuild. Drag a band, hear the change with the audition button, save on release. The override path is opt-in per resource: existing `.tres` files keep working at zero overhead, and new resources default to override-off so they behave exactly like v0.59.x.
+
+The two principles that guided v0.60.0:
+
+1. **Runtime performance.** The override path adds one Variant type-check + one Dict construction per impact, then routes through the same GDScript apply helper that v0.36.0's intensity scaling has used in production since v0.36.0. When override is off (the default), the runtime takes the existing C++ fast path — zero overhead vs v0.59.x. The Dict construction only happens when `override_enabled=true`, and only on the impact frame.
+2. **Ease of development to get good sound.** Designer workflow: open `concrete.tres`, toggle "Override curve", drag the high-shelf dot up, press Audition, hear the new brightness, drop the dot a hair, audition again, save (automatic on drag-end). End-to-end iteration cycle measured in seconds. No code edits, no JSON, no rebuild.
+
+### What designers see
+
+A `GoolAudioMaterial.tres` inspector now shows (top → bottom):
+
+- The standard `material` int picker (unchanged from v0.59.x)
+- The new per-band fields (`low_freq_hz`, `low_gain_db`, `mid_freq_hz`, `mid_gain_db`, `mid_q`, `high_freq_hz`, `high_gain_db`) with appropriate ranges and dB/Hz suffixes
+- **EQ curve preview** plot — same widget as v0.59.2/v0.59.3, now with draggable handles when override is on
+- Per-band numerical readout (unchanged)
+- **Mid Q slider** — visible only when override is on; adjusts the peak band's Q (0.1–10)
+- Realism intensity slider (unchanged)
+- **Override curve checkbox** — toggle "Override curve (edit per-band values)"
+- Audition button — same v0.59.3 button, but now routes through `process_buffer_through_curve` when override is on so the audition reflects the designer's tweaks
+- v0.60.0 footer
+
+When override is off, the inspector behaves exactly like v0.59.3: read-only plot, audition uses engine table. Toggling override on auto-seeds the per-band fields from the engine table for the current material, so the curve doesn't change audibly the moment override is engaged — the designer's starting point is "exactly what the engine has," and they deviate from there with drag handles.
+
+### Drag-handle UX
+
+The plot's three band dots are repositioned from sitting on the zero-dB line (v0.59.x — purely informational) to sitting at each band's actual `(freq, gain)` point (v0.60.0 — also true to its DSP meaning). In read-only mode they're small filled dots; in editable mode they grow slightly larger and gain a white outline so they read as interactive handles.
+
+Drag interaction:
+- **Horizontal drag** → adjusts center frequency (log-mapped, 20 Hz–20 kHz)
+- **Vertical drag** → adjusts gain (clamped −24..+24 dB to stay within the plot bounds; the resource fields themselves clamp to a tighter −12..+12 range that matches the runtime's physical-range expectations)
+- **Hit radius**: 10 px around each dot — generous enough that the user doesn't need pixel-perfect aim; small enough that two close dots are still distinguishable. Closest-dot-within-radius wins.
+- **Save on drag-end**: motion frames update the resource in memory live (so the plot redraws under the cursor and the audition is always current); disk save happens once when the mouse is released, via `ResourceSaver.save()`.
+
+Q adjustment goes through a dedicated horizontal slider below the curve plot — drag-handles can only express two parameters per dot, and the third (Q) is per-band metadata that's cleaner as an explicit slider than as a right-click-drag affordance. Low and high shelves have Q fixed at 1.0 to match the runtime impact/listener-EQ apply path.
+
+### Schema change (backward compatible)
+
+`GoolAudioMaterial` gains seven new `@export` fields plus an `override_enabled: bool` toggle. Default values: `override_enabled = false`, per-band fields at neutral values (0.0 dB everywhere, standard frequencies). Existing `.tres` files load unchanged — Godot's Resource serializer ignores unknown fields gracefully (loading v0.59.x files into v0.60.0 just leaves the new fields at their defaults; the resource still works exactly as it did).
+
+A new method `GoolAudioMaterial.get_curve()` returns the effective curve as a Dictionary (override fields when override is on, engine table fallback when off). The setter for `override_enabled` has a side effect: on false → true, it seeds the override fields from the engine table for the current `material` (so toggling doesn't snap the curve). `reset_overrides_to_engine_table()` provides a "revert" path.
+
+### Runtime dispatch — both forms accepted
+
+`Gool.play_impact_sound(name, position, material)` accepts either:
+
+- **int** (legacy, fast C++ path) — exactly as v0.59.x. Zero overhead.
+- **GoolAudioMaterial Resource** (new) — preserves override fields. When override is off, falls through to the int path internally (zero overhead path is taken). When override is on, routes through the GDScript-side apply helper (same path v0.36.0 intensity scaling uses).
+
+A new `Gool.material_resource_from_collider(node)` returns the GoolAudioMaterial Resource when one is set as collider metadata, falling back to int for non-resource cases. This is the preferred entry point for designers using override resources:
+
+```gdscript
+var hit = raycast.get_collider()
+if hit:
+    var mat = Gool.material_resource_from_collider(hit)
+    Gool.play_impact_sound("bullet_impact", hit.position, mat)
+```
+
+Existing `material_from_collider()` continues to return just int and is the right choice when overrides aren't needed.
+
+### New engine surface
+
+One new static method on `GoolAudioRuntime`:
+
+```cpp
+static PackedFloat32Array process_buffer_through_curve(
+    const PackedFloat32Array& buffer,
+    double low_freq_hz, double low_gain_db,
+    double mid_freq_hz, double mid_gain_db, double mid_q,
+    double high_freq_hz, double high_gain_db,
+    double intensity,
+    int sample_rate);
+```
+
+Takes raw curve parameters (the override fields) and processes a sample buffer through the same `BiquadFilterEffect` chain as the by-material audition method. Used by the inspector when `override_enabled=true` so the audition reflects the designer's per-band tweaks, not the engine table.
+
+The audition test (`material_eq_audition_test.cpp`) gained a new property: `TestCurveMatchesMaterial` verifies that the by-material path and the by-curve path produce **bit-identical** output (max sample diff: 0.00e+00) when fed matching parameters. This pins the two audition routes against each other so toggling override on a freshly-seeded resource (whose override values match the engine table) sounds identical to the same material with override off. Without that invariant, the audition would lie about override-engagement.
+
+### Added
+
+- **GoolAudioMaterial schema extension** (`godot/addons/gool/resources/gool_audio_material.gd`): `override_enabled` toggle + seven per-band `@export` fields + `get_curve()` method + `reset_overrides_to_engine_table()` + a hardcoded engine-table mirror for editor-context fallback. ~300 lines total (up from ~60).
+- **`process_buffer_through_curve()` static method** on `GoolAudioRuntime` (godot/src/gool_godot.cpp). Sibling to v0.59.3's `process_buffer_through_material_eq`. ~50 lines C++.
+- **`Gool.material_resource_from_collider()`** in the autoload (runtime_singleton.gd). Returns Resource-or-int; preserves override fields when a `GoolAudioMaterial` is the collider's `gool_audio_material` metadata.
+- **Drag-handle interaction** on the plot widget (`material_eq_curve_view.gd`): `editable` property gates the new input handling; `band_changed` + `band_drag_ended` signals report drag motion + drag-end; markers reposition to `(freq, gain)` instead of the zero-dB line; visual state distinguishes read-only vs editable vs dragging. ~150 new lines.
+- **Inspector override toggle + Q slider + drag wiring** in `material_eq_inspector.gd`: builds the new UI elements when the resource has `override_enabled=true`; connects drag signals to per-band field writes; saves on drag-end via `ResourceSaver.save()`. ~120 new lines.
+- **`TestCurveMatchesMaterial`** test in `material_eq_audition_test.cpp`: bit-identity parity between by-material and by-curve audition paths.
+
+### Modified
+
+- **`Gool.play_impact_sound()`** now accepts either an int or a `GoolAudioMaterial` Resource as the third argument. Backward compatible: existing int callers work unchanged and take the same fast C++ path as before.
+- The plot widget's band markers now sit at `(freq, gain)` instead of the zero-dB line (a UX improvement for v0.60.0 that also affects read-only display in v0.59.x callsites — the dots are still informational there but now meaningful in two dimensions, not just one).
+- `material_eq_audition_test.cpp` gained a fifth test (parity); the previous four are unchanged.
+
+### Performance characteristics
+
+| Code path | Overhead vs v0.59.x baseline |
+|---|---|
+| `play_impact_sound(int)` | identical — zero new work |
+| `play_impact_sound(Resource with override_enabled=false)` | one `is` type check; otherwise identical to int path |
+| `play_impact_sound(Resource with override_enabled=true)` | one type check + one Dict construction (~7 entries) + one GDScript-side helper call. Same path as v0.36.0 intensity-scaled apply, which has been in production since v0.36.0. |
+| Editor audition | unchanged from v0.59.3 |
+| Inspector drag-motion | ~6 property writes per frame + one signal emit + one plot redraw. All trivially cheap on the editor thread. |
+| Inspector drag-end save | one `ResourceSaver.save()` call (the .tres write). ~1 ms for a small Resource on SSD. |
+
+There is one knowable optimization deferred to a future release: when `override_enabled=true` AND realism intensity is exactly 1.0, the current path goes through the GDScript helper instead of the C++ fast path. A `Gool._runtime.apply_curve_to_bus(bus_name, low_freq, low_gain, ...)` C++ method would let the override path hit C++ speeds. Not blocking v0.60.0; can be added later if profiling shows it matters for a real game's impact rate.
+
+### Backward compatibility
+
+- **Existing `.tres` files**: load unchanged. New `override_enabled` field defaults to `false`; per-band fields default to neutral values. Resource behavior is bit-identical to v0.59.x for files that don't toggle override.
+- **Existing int-based `play_impact_sound()` callers**: work unchanged; take the same C++ fast path as v0.59.x.
+- **Existing `material_from_collider()` callers**: unchanged return type (int).
+- **`Gool.process_buffer_through_material_eq()`** (v0.59.3 audition): unchanged. The new `process_buffer_through_curve` is a sibling, not a replacement.
+- **Material EQ on impact / listener buses**: identical when `override_enabled=false`. Overrides only engage when a Resource with the flag set is passed in.
+
+### Deferred to v0.60.x+ / v0.61.0
+
+- **Right-click drag for Q** on the mid band's dot. Currently the dedicated Q slider is the only Q control surface. Drag-Q would be a nice polish task.
+- **Preset library** (Phase 6.E.4): "Save this curve as a preset / Load preset" UI in the inspector. Would let designers build a project-specific curve library, share across resources.
+- **A/B compare toggle** (Phase 6.E.3): "compare this curve against engine default" two-state audition.
+- **Mixer dock EQ visualization** (Phase 6.E.2): show the per-bus active EQ chain in the mixer dock during F5 sessions.
+- **C++ override fast path**: a `Gool._runtime.apply_curve_to_bus(bus_name, low_freq, low_gain, ..., high_gain)` method that bypasses the GDScript dict-construction overhead. Closes the small perf gap between override-on and override-off at intensity 1.0.
+
 ## [0.59.3] - 2026-05-23 — Phase 6.E.1 audition: hear the curve, not just see it
 
 Closes the read-only inspector experience that v0.59.2 opened. Where v0.59.2 let designers **see** what each material's EQ does, v0.59.3 lets them **hear** it — a one-click Audition button on every `GoolAudioMaterial.tres` plays one second of pink noise through the material's curve at the current realism intensity, using the exact same `BiquadFilterEffect` code path the runtime uses for impact and listener EQ. What the designer hears is bit-identical to what the player will hear.

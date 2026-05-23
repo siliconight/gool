@@ -354,30 +354,15 @@ inspector, they see:
 - Audition button — play a reference sample (pink noise, voice,
   drum hit) through the current curve in the editor
 
-**Status: ⏳ partial — read-only visualizer + audition shipped.**
-The frequency-response plot (log freq axis 20 Hz–20 kHz, dB
-axis ±24 dB to accommodate intensity ≤ 2.0), per-material hint
-text, three-band numerical readout, and realism intensity slider
-wired to ProjectSettings shipped in **v0.59.2**. The audition
-button shipped in **v0.59.3** — a one-click "▶ Play (pink noise,
-1 s)" plays one second of Voss-McCartney pink noise through the
-material's EQ curve at the current intensity, using the same
-`BiquadFilterEffect` code path the runtime impact / listener EQ
-uses (bit-identical preview). The engine exposes a static
-`GoolAudioRuntime.process_buffer_through_material_eq()` method
-so the editor inspector can call into the offline DSP without
-needing the Gool autoload to be reachable (it isn't, in editor).
+**Status: ✅ Phase 6.E.1 complete.**
 
-**Not** yet shipped: draggable handles, Q right-click adjust,
-preset dropdown. The handles and editable curves require
-extending `GoolAudioMaterial` with per-instance EQ profile fields
-(currently the resource is just a `material: int` pointer to the
-engine's built-in table) and an override path through the runtime
-EQ application code — that's Option B / v0.60.0 territory. The
-audition path will Just Work for editable curves once the runtime
-override reads per-instance values; the inspector will pass
-intensity-scaled per-instance values through to the same static
-method.
+Shipped in three releases:
+
+- **v0.59.2 (read-only visualizer)** — frequency-response plot (log freq axis 20 Hz–20 kHz, dB axis ±24 dB), per-material hint, three-band numerical readout, realism intensity slider wired to ProjectSettings. The plot uses the engine's curve via a hardcoded mirror of the C++ `MaterialEqByMaterial()` table (since the Gool autoload isn't reachable in editor context).
+- **v0.59.3 (audition button)** — one-click "▶ Play (pink noise, 1 s)" plays one second of Voss-McCartney pink noise through the material's EQ curve at the current intensity, using the exact same `BiquadFilterEffect` code path the runtime uses for impact and listener EQ. The engine exposes a static `GoolAudioRuntime.process_buffer_through_material_eq()` method so the editor inspector can call into offline DSP without the Gool autoload reachable.
+- **v0.60.0 (editable per-material curves — Option B)** — drag-handle interaction on the plot dots when `override_enabled=true` on the resource. Three handles (low shelf / mid peak / high shelf), 2D drag = (freq, gain) per band, Q slider for the mid band. Override fields seed from the engine table on toggle-on so the curve doesn't snap. Save on drag-end via `ResourceSaver`. Audition routes through a sibling `process_buffer_through_curve()` static method when override is on, so the audition reflects the designer's tweaks rather than the engine table.
+
+`GoolAudioMaterial` schema gained `override_enabled: bool` + seven per-band `@export` fields + `get_curve()` method. Backward compatible: existing `.tres` files default to `override_enabled = false` (zero runtime overhead — same C++ fast path as v0.59.x). `Gool.play_impact_sound()` now accepts either an int (legacy) or a `GoolAudioMaterial` Resource (preserves overrides). A new `Gool.material_resource_from_collider()` returns the Resource-or-int form for callers that want overrides to flow through.
 
 #### E.2 — Mixer dock EQ visualization
 The existing mixer dock gets a section showing the active per-bus

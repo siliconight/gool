@@ -243,6 +243,67 @@ void TestMaterialsAreDistinct() {
     EXPECT(diff_wm > 0.05f);
 }
 
+// --- 5. Curve-method parity with material-method ------------------
+//
+// v0.60.0: the inspector audition can route either through the
+// by-material path (override_enabled=false) or the by-curve path
+// (override_enabled=true). The two paths must produce bit-identical
+// output when given matching curve values — otherwise toggling
+// override on a freshly-seeded resource (whose override values
+// match the engine table) would sound different from the same
+// material with override off. That's the audition equivalent of
+// the visualizer drift test: if the audition lies, the designer
+// can't trust their ear.
+//
+// We can't call the binding directly from a unit test, but we can
+// verify the underlying math is the same by running the same input
+// through the same biquad classes with matching parameters.
+
+void TestCurveMatchesMaterial() {
+    std::printf("[material_eq_audition_test] curve-path matches material-path\n");
+    const auto src = WhiteNoise(kFrames, 31337);
+
+    // by-material: AudioMaterial::Concrete at intensity 1.0
+    const auto out_by_mat = AuditionImpl(src, AudioMaterial::Concrete, 1.0f);
+
+    // by-curve: same biquad chain, same parameters as Concrete's
+    // engine-table entry (geometry_query.h MaterialEqByMaterial).
+    // If these values drift from the engine table this test fails
+    // — same drift-catcher as the inspector's hardcoded mirror.
+    const MaterialEqCurve concrete = MaterialEqByMaterial(AudioMaterial::Concrete);
+    BiquadFilterEffect low(BiquadType::LowShelf,
+            concrete.lowFreqHz,  1.0f, concrete.lowGainDb);
+    BiquadFilterEffect mid(BiquadType::Peak,
+            concrete.midFreqHz,  concrete.midQ, concrete.midGainDb);
+    BiquadFilterEffect high(BiquadType::HighShelf,
+            concrete.highFreqHz, 1.0f, concrete.highGainDb);
+    low.Prepare(kSampleRate, 1);
+    mid.Prepare(kSampleRate, 1);
+    high.Prepare(kSampleRate, 1);
+    std::vector<float> out_by_curve = src;
+    low.Process(out_by_curve.data(),
+            static_cast<uint32_t>(out_by_curve.size()), 1, nullptr, 0);
+    mid.Process(out_by_curve.data(),
+            static_cast<uint32_t>(out_by_curve.size()), 1, nullptr, 0);
+    high.Process(out_by_curve.data(),
+            static_cast<uint32_t>(out_by_curve.size()), 1, nullptr, 0);
+
+    // Sample-wise diff. The two paths should produce bit-identical
+    // output because they use the same biquad class with the same
+    // inputs — any non-zero difference means a drift.
+    double max_diff = 0.0;
+    for (size_t i = 0; i < out_by_mat.size(); ++i) {
+        const double d = static_cast<double>(out_by_mat[i])
+                       - out_by_curve[i];
+        if (std::fabs(d) > max_diff) max_diff = std::fabs(d);
+    }
+    std::printf("  max sample diff between paths: %.2e\n", max_diff);
+    // Float32 round-trips through identical math should match
+    // exactly; allow a tiny epsilon for any compiler-introduced
+    // FMA reordering across compilation units.
+    EXPECT(max_diff < 1e-6);
+}
+
 } // namespace
 
 int main() {
@@ -251,6 +312,7 @@ int main() {
     TestCurtainCutsEnergy();
     TestIntensityScaling();
     TestMaterialsAreDistinct();
+    TestCurveMatchesMaterial();   // v0.60.0
     if (gFails == 0) {
         std::printf("[material_eq_audition_test] PASSED\n");
         return 0;

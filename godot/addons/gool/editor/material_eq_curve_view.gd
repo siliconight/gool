@@ -96,6 +96,49 @@ var material_label: String = "" :
 		material_label = value
 		queue_redraw()
 
+# v0.60.0: when true, the band dots become draggable handles —
+# horizontal drag moves the band's center frequency, vertical drag
+# moves the gain. Right-click on the mid band opens a Q popup.
+# When false (default, matches v0.59.x behavior), the dots are
+# read-only visual cues and the widget ignores mouse input.
+#
+# Editable mode is engaged by the inspector when the inspected
+# GoolAudioMaterial resource has override_enabled=true. Other
+# callers (a future mixer-dock variant showing a bus's effective
+# EQ) leave it false.
+var editable: bool = false :
+	set(value):
+		editable = value
+		# Drag tracking is cleared on mode change so a partial drag
+		# can't leak across editable toggles.
+		_dragging_band = -1
+		queue_redraw()
+
+## v0.60.0: emitted while the user drags a band handle. Payload:
+##   band_index : 0 = low shelf, 1 = peak, 2 = high shelf
+##   freq_hz    : new center frequency
+##   gain_db    : new gain in dB
+##   q          : new Q (mid band only; low/high shelves pass 1.0)
+## Inspector wires this to update the GoolAudioMaterial's per-band
+## fields live. Emitted on every mouse-motion delta during drag so
+## the inspector can save the resource and the curve plot refreshes
+## from the resource on the next paint.
+signal band_changed(band_index: int, freq_hz: float,
+		gain_db: float, q: float)
+
+## v0.60.0: emitted once when a drag operation finishes (mouse
+## button released). Lets the inspector commit the change to
+## disk via ResourceSaver — we don't save every mouse-motion
+## frame, just the final value.
+signal band_drag_ended(band_index: int)
+
+# Drag state. _dragging_band is -1 when no drag is active; 0/1/2
+# when the user is dragging the low/mid/high band's dot.
+var _dragging_band: int = -1
+# Hit radius (px) around each dot's center for clicks/drags.
+# Generous enough that the user doesn't need pixel-perfect aim.
+const _HIT_RADIUS: float = 10.0
+
 # ---- Widget setup ------------------------------------------------
 
 func _init() -> void:
@@ -313,33 +356,163 @@ func _band_response_db(hz: float, kind: String, f0: float,
 	return 10.0 * log(num_mag2 / den_mag2) / log(10.0)
 
 
-# Draw a small marker on the zero-dB line at each band's center
-# frequency. Marker color = curve color so it stays integrated;
-# marker size encodes band gain magnitude so cuts and boosts feel
-# different visually. No legend or text — the marker is just a
-# spatial cue for "where do the three bands live."
+# Draw a marker at each band's (freq_hz, gain_db) position. The
+# marker sits exactly where you'd intuitively want to drag it to —
+# horizontal axis = center frequency, vertical axis = gain. In
+# editable mode (v0.60.0), the markers ARE the drag handles; in
+# read-only mode (v0.59.x default), they're informational only.
+#
+# Visual conventions:
+#   - read-only: small filled dot, curve color
+#   - editable:  larger dot with a white outline so it reads as
+#                "this is a draggable handle"
+#   - dragging:  same as editable but thicker outline
 func _draw_band_markers(rect: Rect2, curve_color: Color,
 						 label_color: Color) -> void:
 	if curve.is_empty():
 		return
-	var bands := [
-		[float(curve.get("low_freq_hz",  200.0)),
-		 float(curve.get("low_gain_db",  0.0)) * intensity],
-		[float(curve.get("mid_freq_hz",  1000.0)),
-		 float(curve.get("mid_gain_db",  0.0)) * intensity],
-		[float(curve.get("high_freq_hz", 8000.0)),
-		 float(curve.get("high_gain_db", 0.0)) * intensity],
-	]
-	var zero_y := rect.position.y + _db_to_y(0.0, rect.size.y)
-	for b in bands:
-		var hz: float = b[0]
-		var gain_db: float = b[1]
-		var x := rect.position.x + _hz_to_x(hz, rect.size.x)
-		# Marker radius scales with |gain|, clamped so neutral
-		# bands still get a small visible dot (2 px) and extreme
-		# bands don't blow up the plot (6 px).
-		var radius := clampf(2.0 + absf(gain_db) * 0.3, 2.0, 6.0)
-		draw_circle(Vector2(x, zero_y), radius, curve_color)
+	var positions := _band_positions_in_widget(rect)
+	for i in 3:
+		var pos: Vector2 = positions[i]
+		if editable:
+			# Drag handle. Larger and outlined so the user can see
+			# it's an interactive element.
+			var is_dragging: bool = (_dragging_band == i)
+			var radius: float = 6.0 if is_dragging else 5.0
+			var outline_w: float = 2.5 if is_dragging else 1.5
+			draw_circle(pos, radius, curve_color)
+			# Outline drawn as a slightly-larger ring on top of the
+			# filled dot. Using a separate draw_arc for compatibility
+			# (draw_circle has no "stroke" option in Godot 4.x).
+			draw_arc(pos, radius + outline_w * 0.5,
+					0.0, TAU, 24,
+					Color(1.0, 1.0, 1.0, 0.9), outline_w, true)
+		else:
+			# Read-only: small filled dot at the band's position.
+			# Encodes both location AND magnitude (radius scales
+			# subtly with gain magnitude) without claiming
+			# interactivity.
+			var band_gain := _band_gain_intensity_scaled(i)
+			var radius: float = clampf(
+					2.5 + absf(band_gain) * 0.25, 2.5, 5.0)
+			draw_circle(pos, radius, curve_color)
+
+# Compute screen-space (widget-local) positions of all three band
+# markers. Position is (x_for_freq, y_for_gain). Shared between
+# the drawing path and the hit-testing path so they never disagree.
+func _band_positions_in_widget(rect: Rect2) -> Array:
+	var positions: Array = []
+	positions.resize(3)
+	# Band 0 — low shelf
+	var low_x := rect.position.x + _hz_to_x(
+			float(curve.get("low_freq_hz", 200.0)), rect.size.x)
+	var low_y := rect.position.y + _db_to_y(
+			_band_gain_intensity_scaled(0), rect.size.y)
+	positions[0] = Vector2(low_x, low_y)
+	# Band 1 — mid peak
+	var mid_x := rect.position.x + _hz_to_x(
+			float(curve.get("mid_freq_hz", 1000.0)), rect.size.x)
+	var mid_y := rect.position.y + _db_to_y(
+			_band_gain_intensity_scaled(1), rect.size.y)
+	positions[1] = Vector2(mid_x, mid_y)
+	# Band 2 — high shelf
+	var high_x := rect.position.x + _hz_to_x(
+			float(curve.get("high_freq_hz", 8000.0)), rect.size.x)
+	var high_y := rect.position.y + _db_to_y(
+			_band_gain_intensity_scaled(2), rect.size.y)
+	positions[2] = Vector2(high_x, high_y)
+	return positions
+
+# Helper: gain of the given band (0/1/2), scaled by intensity.
+# Centralizes the gain-readback so the drawing, the hit-test, and
+# the drag-update all see the same value.
+func _band_gain_intensity_scaled(band_index: int) -> float:
+	match band_index:
+		0: return float(curve.get("low_gain_db",  0.0)) * intensity
+		1: return float(curve.get("mid_gain_db",  0.0)) * intensity
+		2: return float(curve.get("high_gain_db", 0.0)) * intensity
+	return 0.0
+
+
+# v0.60.0: handle mouse input for drag-handle interaction. Only
+# active when editable=true; otherwise the widget is purely
+# informational and we pass through to the default handler (which
+# does nothing for Control).
+func _gui_input(event: InputEvent) -> void:
+	if not editable:
+		return
+	if event is InputEventMouseButton:
+		_handle_mouse_button(event as InputEventMouseButton)
+	elif event is InputEventMouseMotion and _dragging_band >= 0:
+		_handle_mouse_motion(event as InputEventMouseMotion)
+
+func _handle_mouse_button(event: InputEventMouseButton) -> void:
+	# Left-click only. Right-click + middle-click left for future
+	# affordances (Q popup on right-click is a v0.60.1 polish task).
+	if event.button_index != MOUSE_BUTTON_LEFT:
+		return
+	var rect := Rect2(_PAD_LEFT, _PAD_TOP,
+			size.x - _PAD_LEFT - _PAD_RIGHT,
+			size.y - _PAD_TOP - _PAD_BOTTOM)
+	if event.pressed:
+		# Begin drag. Hit-test against the three band positions;
+		# pick the closest match within _HIT_RADIUS. If multiple
+		# bands overlap (rare — happens when two bands are tuned
+		# close together), the closest wins.
+		var positions := _band_positions_in_widget(rect)
+		var closest_band: int = -1
+		var closest_d: float = _HIT_RADIUS
+		for i in 3:
+			var d: float = event.position.distance_to(positions[i])
+			if d < closest_d:
+				closest_d = d
+				closest_band = i
+		if closest_band >= 0:
+			_dragging_band = closest_band
+			accept_event()
+			queue_redraw()
+	else:
+		# End drag. Emit the drag-ended signal so the inspector
+		# can persist the resource to disk.
+		if _dragging_band >= 0:
+			var ended_band := _dragging_band
+			_dragging_band = -1
+			band_drag_ended.emit(ended_band)
+			accept_event()
+			queue_redraw()
+
+func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
+	# Active drag — translate mouse position to (freq, gain), emit
+	# band_changed. The inspector picks up the signal, updates the
+	# resource's @export fields, refreshes our `curve` dict, and
+	# the next paint draws the updated marker position.
+	var rect := Rect2(_PAD_LEFT, _PAD_TOP,
+			size.x - _PAD_LEFT - _PAD_RIGHT,
+			size.y - _PAD_TOP - _PAD_BOTTOM)
+	# Clamp mouse position into the plot rect so the user can't
+	# drag a handle into the axis-label margins.
+	var px: float = clampf(event.position.x, rect.position.x, rect.end.x)
+	var py: float = clampf(event.position.y, rect.position.y, rect.end.y)
+	# Translate back to (freq_hz, gain_db).
+	var new_freq: float = _x_to_hz(px - rect.position.x, rect.size.x)
+	var new_gain: float = _y_to_db(py - rect.position.y, rect.size.y)
+	# Undo the intensity scaling when reporting back — the resource
+	# stores the un-scaled gain, intensity is layered on at apply
+	# time. Otherwise dragging at intensity 2.0 and saving would
+	# write a doubled gain into the resource.
+	if absf(intensity) > 0.001:
+		new_gain = new_gain / intensity
+	# Q passes through unchanged (drag adjusts freq + gain only;
+	# Q is per-band metadata, edited via the inspector's separate
+	# Q slider for the mid band).
+	var current_q: float = float(curve.get("mid_q", 0.7))
+	band_changed.emit(_dragging_band, new_freq, new_gain, current_q)
+	accept_event()
+	# Note: no queue_redraw() here — the inspector emits
+	# `band_changed` → updates resource → updates our `curve` dict
+	# → the curve setter calls queue_redraw(). The handle motion
+	# is tracked through that loop, not a direct redraw, so we
+	# never have a one-frame stale state.
 
 
 # ---- Coordinate mapping helpers ----------------------------------
@@ -372,6 +545,13 @@ func _db_to_y(db: float, h: float) -> float:
 	db = clampf(db, _DB_MIN, _DB_MAX)
 	var t: float = (_DB_MAX - db) / (_DB_MAX - _DB_MIN)
 	return t * h
+
+# v0.60.0: inverse of _db_to_y. Convert a pixel Y back to dB.
+# Used by the drag-handle mouse-motion path to translate cursor
+# position into a band gain value.
+func _y_to_db(y: float, h: float) -> float:
+	var t: float = clampf(y / h, 0.0, 1.0)
+	return _DB_MAX - t * (_DB_MAX - _DB_MIN)
 
 
 # ---- Theme helpers -----------------------------------------------

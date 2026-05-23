@@ -1795,6 +1795,48 @@ func get_material_eq_for_material(material: int) -> Dictionary:
 func material_eq_for_material(material: int) -> Dictionary:
 	return get_material_eq_for_material(material)
 
+## v0.60.0: same as material_from_collider but returns the
+## GoolAudioMaterial Resource when one is set as collider metadata,
+## preserving its override_enabled / per-band override fields.
+## Falls back to int (MATERIAL_DEFAULT or group lookup) when no
+## resource is set.
+##
+## Designers who want .tres-authored EQ overrides to flow through
+## play_impact_sound should use this instead of
+## material_from_collider:
+##
+##   var mat = Gool.material_resource_from_collider(hit.collider)
+##   Gool.play_impact_sound("bullet_impact", hit.position, mat)
+##
+## play_impact_sound accepts both forms (int or Resource).
+## material_from_collider() continues to return just int and is
+## the right choice for callers that don't need override values.
+##
+## Returns: GoolAudioMaterial Resource when collider metadata is
+## one; otherwise int (MATERIAL_DEFAULT for unknown).
+func material_resource_from_collider(node: Node) -> Variant:
+	if node == null:
+		return MATERIAL_DEFAULT
+	# 1. Metadata path: prefer the resource form (preserves overrides).
+	if node.has_meta("gool_audio_material"):
+		var meta = node.get_meta("gool_audio_material")
+		if meta is GoolAudioMaterial:
+			return meta
+		if meta is int:
+			return meta
+		# Duck-type fallback for older custom resource scripts
+		# without class_name. Same conservative path
+		# material_from_collider uses.
+		if meta != null and "material" in meta:
+			return int(meta.material)
+	# 2. Group fallback — group is a string tag, no override fields
+	# to preserve, so return as int.
+	for i in range(_MATERIAL_NAMES.size()):
+		if node.is_in_group("audio_material:" + _MATERIAL_NAMES[i]):
+			return i
+	return MATERIAL_DEFAULT
+
+
 ## Resolve a Node's AudioMaterial. Checks two sources in order:
 ##
 ##   1. `gool_audio_material` metadata. Can be either an int
@@ -1858,8 +1900,40 @@ func material_from_collider(node: Node) -> int:
 ##
 ## For non-by_material groups (or plain sounds), `material` is
 ## ignored and behavior matches `play_sound_at_location`.
-func play_impact_sound(name: String, position: Vector3, material: int) -> void:
+## v0.60.0: `material` accepts either an int (legacy, fast C++ path)
+## OR a GoolAudioMaterial Resource (new, preserves override fields).
+## Passing the resource is how designers get per-instance EQ tweaks
+## (override_enabled=true on the .tres) routed through this call.
+## Passing an int continues to work unchanged — backward compat for
+## every existing caller.
+##
+## When given a Resource with override_enabled=false, behavior is
+## identical to passing `.material` (the int): zero override cost,
+## C++ fast path. When given a Resource with override_enabled=true,
+## the per-band override values flow through the GDScript-side
+## apply helper (same path v0.36.0 intensity scaling uses).
+func play_impact_sound(name: String, position: Vector3,
+		material) -> void:
 	if not is_initialized():
+		return
+
+	# v0.60.0: unwrap Resource → (material_int, override_curve_or_null).
+	# Override-disabled resources fall through to the int path so
+	# they take the C++ fast path; only override-enabled resources
+	# get the slower GDScript apply.
+	var material_int: int = MATERIAL_DEFAULT
+	var override_curve: Dictionary = {}
+	if material is int:
+		material_int = material
+	elif material is GoolAudioMaterial:
+		material_int = material.material
+		if material.override_enabled:
+			override_curve = material.get_curve()
+	else:
+		push_warning("[gool] play_impact_sound: invalid material "
+				+ "argument (expected int or GoolAudioMaterial, "
+				+ "got %s). Defaulting to MATERIAL_DEFAULT."
+				% typeof(material))
 		return
 
 	# v0.49.0: custom material path. Custom materials live entirely
@@ -1870,8 +1944,8 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 	# using the registered custom EQ dict (the C++
 	# apply_material_eq_to_bus would fall through to Default for an
 	# unrecognized material ID).
-	if _custom_materials.has(material):
-		var entry: Dictionary = _custom_materials[material]
+	if _custom_materials.has(material_int):
+		var entry: Dictionary = _custom_materials[material_int]
 		var suffix: String = String(entry.get("impact_sound_suffix", ""))
 		var effective_name: String = name
 		if not suffix.is_empty():
@@ -1884,6 +1958,21 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 				and not bool(custom_eq.get("is_neutral", false)):
 			_apply_custom_material_eq_to_bus(_impact_eq_bus_name, custom_eq)
 		play_3d(effective_name, position, 128)
+		return
+
+	# v0.60.0: per-instance override path. The resource provided a
+	# custom curve via override_enabled=true. Apply it through the
+	# same GDScript helper the custom material path uses (intensity
+	# scaling included). We use the curve directly rather than
+	# routing through _apply_scaled_material_eq_to_bus(int) so the
+	# engine table doesn't get queried again.
+	if not override_curve.is_empty():
+		if _impact_eq_bus_name != "" \
+				and not bool(override_curve.get("is_neutral", false)):
+			_apply_custom_material_eq_to_bus(_impact_eq_bus_name, override_curve)
+		# Sound variant lookup still uses the material int (so a
+		# Concrete override still picks Concrete impact variants).
+		_runtime.play_sound_at_location_for_material(name, position, material_int)
 		return
 
 	# v0.34.0: push the material's EQ curve to the impact bus
@@ -1907,13 +1996,13 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 	# to the three gain bands). At intensity exactly 1.0, the
 	# C++ binding is cheaper and the result identical.
 	if _impact_eq_bus_name != "" \
-			and material != MATERIAL_DEFAULT \
-			and material != MATERIAL_AIR:
+			and material_int != MATERIAL_DEFAULT \
+			and material_int != MATERIAL_AIR:
 		if abs(_eq_intensity - 1.0) < 0.001:
-			_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material)
+			_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material_int)
 		else:
-			_apply_scaled_material_eq_to_bus(_impact_eq_bus_name, material)
-	_runtime.play_sound_at_location_for_material(name, position, material)
+			_apply_scaled_material_eq_to_bus(_impact_eq_bus_name, material_int)
+	_runtime.play_sound_at_location_for_material(name, position, material_int)
 
 # v0.49.0: apply a custom-material EQ dict to a bus. Used by
 # play_impact_sound for custom materials. Mirrors the structure of

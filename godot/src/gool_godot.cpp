@@ -478,6 +478,20 @@ public:
                                                "intensity", "sample_rate"),
                                      &GoolAudioRuntime::process_buffer_through_material_eq);
 
+        // v0.60.0 (Phase 6.E.1 Option B audition): raw-curve audition
+        // for override-enabled GoolAudioMaterial resources. Same
+        // biquad path as process_buffer_through_material_eq but
+        // takes curve values directly so the inspector can preview
+        // override values that aren't in the engine table.
+        ClassDB::bind_static_method("GoolAudioRuntime",
+                                     D_METHOD("process_buffer_through_curve",
+                                               "buffer",
+                                               "low_freq_hz", "low_gain_db",
+                                               "mid_freq_hz", "mid_gain_db", "mid_q",
+                                               "high_freq_hz", "high_gain_db",
+                                               "intensity", "sample_rate"),
+                                     &GoolAudioRuntime::process_buffer_through_curve);
+
         // v0.31.0 (Phase 5.2): live occlusion controls.
         ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"),
                               &GoolAudioRuntime::set_occlusion_enabled);
@@ -1700,6 +1714,71 @@ public:
         // Process API is in-place (output buffer is both input and
         // output), so we run the three filters sequentially on the
         // same buffer.
+        out.resize(frames);
+        float* dst = out.ptrw();
+        const float* src = buffer.ptr();
+        for (int i = 0; i < frames; ++i) dst[i] = src[i];
+        low.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
+        mid.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
+        high.Process(dst, static_cast<uint32_t>(frames), 1, nullptr, 0);
+        return out;
+    }
+
+    // v0.60.0 (Phase 6.E.1 — Option B audition): same as
+    // process_buffer_through_material_eq() above, but takes raw
+    // curve parameters instead of looking up by material int.
+    // Used by the inspector when auditioning a GoolAudioMaterial
+    // with override_enabled=true — the override values are passed
+    // directly without going through the engine table.
+    //
+    // Same biquad code path (LowShelf → Peak → HighShelf with RBJ
+    // cookbook coefficients), same static-method design (no
+    // GoolAudioRuntime instance needed, reachable from editor
+    // context without the /root/Gool autoload).
+    //
+    // The intensity multiplier is applied to all three band gains
+    // here too, for consistency with the by-material path. Caller
+    // typically passes 1.0 (intensity is already baked into the
+    // per-band gain values when the inspector is auditioning an
+    // override curve), but the scaling is available for cases
+    // where someone wants to layer the global intensity on top of
+    // the override.
+    //
+    // All inputs are floats so the binding is straightforward;
+    // shelf Q is fixed at 1.0 to match the runtime impact / listener
+    // chains (which don't expose shelf Q in their authoring contract).
+    static PackedFloat32Array process_buffer_through_curve(
+            const PackedFloat32Array& buffer,
+            double low_freq_hz, double low_gain_db,
+            double mid_freq_hz, double mid_gain_db, double mid_q,
+            double high_freq_hz, double high_gain_db,
+            double intensity,
+            int sample_rate) {
+        PackedFloat32Array out;
+        const int frames = buffer.size();
+        if (frames <= 0) return out;
+        if (sample_rate <= 0) sample_rate = 48000;
+        const float gain_scale = static_cast<float>(intensity);
+
+        audio::BiquadFilterEffect low(
+            audio::BiquadType::LowShelf,
+            static_cast<float>(low_freq_hz), 1.0f,
+            static_cast<float>(low_gain_db) * gain_scale);
+        audio::BiquadFilterEffect mid(
+            audio::BiquadType::Peak,
+            static_cast<float>(mid_freq_hz),
+            static_cast<float>(mid_q),
+            static_cast<float>(mid_gain_db) * gain_scale);
+        audio::BiquadFilterEffect high(
+            audio::BiquadType::HighShelf,
+            static_cast<float>(high_freq_hz), 1.0f,
+            static_cast<float>(high_gain_db) * gain_scale);
+
+        const uint32_t sr = static_cast<uint32_t>(sample_rate);
+        low.Prepare(sr,  1);
+        mid.Prepare(sr,  1);
+        high.Prepare(sr, 1);
+
         out.resize(frames);
         float* dst = out.ptrw();
         const float* src = buffer.ptr();

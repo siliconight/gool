@@ -90,28 +90,28 @@ func _can_handle(object: Object) -> bool:
 func _parse_end(object: Object) -> void:
 	# Build the preview UI after all the resource's normal
 	# @export properties have been rendered, so the preview sits
-	# below the material picker (visually: pick a material →
-	# see what that material sounds like).
+	# below the per-band fields.
 	if not _can_handle(object):
 		return
 
-	# Pull the material int from the resource. GoolAudioMaterial
-	# defines `@export var material: int = 0`, so this property is
-	# always present on objects _can_handle() accepts. The intermediate
-	# `Variant` typing through .get() keeps the editor strict-mode
-	# parser happy even though we know the type statically.
-	var material_value: Variant = object.get("material")
+	# Resource handle — we hold a strong ref via the closures below
+	# so the inspector's signal connections stay valid even if the
+	# user is rapidly clicking between resources.
+	var resource: Resource = object
+
+	# Read the material int and override state. GoolAudioMaterial
+	# defines material/override_enabled/per-band fields, but we
+	# read defensively via .get() so a malformed resource (mid-edit
+	# of the schema script) doesn't crash the inspector.
+	var material_value: Variant = resource.get("material")
 	var material_int: int = int(material_value) if material_value != null else 0
+	var override_enabled: bool = bool(resource.get("override_enabled"))
 
 	var container := VBoxContainer.new()
 	container.add_theme_constant_override("separation", 6)
 
 	# Section header — matches the visual weight of the resource's
-	# own group headers. The header is a Label rather than a
-	# collapsible category because EditorInspectorPlugin's
-	# add_custom_control puts content into the resource's bottom
-	# panel, where a collapsible wouldn't add any value (the user
-	# is already looking at one resource at a time).
+	# own group headers.
 	var header := Label.new()
 	header.text = "EQ curve preview"
 	header.add_theme_font_size_override("font_size", 13)
@@ -124,43 +124,85 @@ func _parse_end(object: Object) -> void:
 	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	container.add_child(hint)
 
+	# v0.60.0: resolve the effective curve. When override is on,
+	# read from the resource's per-band fields. When off, use the
+	# inspector's engine-table mirror (the Gool autoload isn't
+	# reachable in editor context, so we can't go through the
+	# resource's get_curve() — its autoload fallback would return
+	# neutral). The mirror values match the C++ table and are
+	# verified by material_eq_curve_test.cpp on the engine side.
+	var effective_curve: Dictionary = _effective_curve(resource, material_int)
+
 	# The frequency-response plot.
 	var view: Control = CURVE_VIEW_SCRIPT.new()
-	view.curve = _curve_for_material(material_int)
+	view.curve = effective_curve
 	view.material_label = _material_name(material_int)
 	view.intensity = _current_intensity()
+	view.editable = override_enabled
 	container.add_child(view)
 
-	# Numerical readout under the plot. Three rows, one per band,
-	# showing the exact authored values. Helps designers correlate
-	# the visual curve with the values they could (eventually) edit.
+	# v0.60.0: when override is on, wire the drag-handle signals
+	# from the plot back to resource property writes. The motion
+	# signal fires per mouse-motion frame (cheap — just writes a
+	# few floats). The drag-ended signal fires once when the user
+	# releases the mouse (heavier — saves the resource to disk).
+	if override_enabled:
+		view.band_changed.connect(
+				func(band_index: int, freq_hz: float,
+						gain_db: float, q: float):
+					_apply_band_drag(resource, band_index,
+							freq_hz, gain_db, q))
+		view.band_drag_ended.connect(
+				func(_band_index: int):
+					_save_resource(resource))
+
+	# Live refresh of the plot when the resource changes (drag
+	# motion + explicit field edits both flow through the same
+	# `changed` signal). We connect on every _parse_end run; Godot
+	# tracks duplicate connections so the same callback isn't
+	# wired twice if the inspector rebuilds quickly. Connection
+	# is auto-disconnected when the view is freed (inspector
+	# rebuild), so no leak.
+	resource.changed.connect(
+			func():
+				if is_instance_valid(view):
+					view.curve = _effective_curve(resource, material_int))
+
+	# Numerical readout under the plot.
 	var values := _build_band_values_grid(view.curve)
 	container.add_child(values)
 
+	# v0.60.0: when override is on, add a Q slider for the mid band.
+	# (Drag handles adjust freq + gain; Q is the third per-band
+	# parameter that's not amenable to 2D dragging, so a slider is
+	# the cleanest control surface. Low and high shelves use Q=1.0
+	# fixed — the runtime apply path doesn't expose shelf Q.)
+	if override_enabled:
+		container.add_child(_build_mid_q_slider(resource))
+
 	# Realism intensity slider — global setting, scales the three
-	# gains uniformly. Reading and writing
-	# ProjectSettings("gool/material_eq/intensity") directly avoids
-	# needing the Gool autoload (which isn't running in editor
-	# context). The runtime picks up the new value on next F5.
+	# gains uniformly.
 	var intensity_row := _build_intensity_row(view)
 	container.add_child(intensity_row)
 
-	# v0.59.3: Audition button. Generates ~1 s of pink noise,
-	# routes it through Gool's offline EQ DSP at the current
-	# material + intensity, plays the result inline through an
-	# editor-local AudioStreamPlayer. See _build_audition_row()
-	# for the gory details (deferred AudioStream construction,
-	# Gool autoload reachability check, etc.).
-	var audition_row := _build_audition_row(material_int)
+	# v0.60.0: Override toggle. Above the audition row so designers
+	# see the toggle before the audition (auditioning the same
+	# material before-and-after override is the natural workflow).
+	var override_row := _build_override_toggle(resource)
+	container.add_child(override_row)
+
+	# Audition button. v0.59.3 introduced this; v0.60.0 makes it
+	# override-aware (routes through process_buffer_through_curve
+	# when override_enabled=true so the audition reflects the
+	# designer's tweaks, not the engine table).
+	var audition_row := _build_audition_row(resource, material_int)
 	container.add_child(audition_row)
 
-	# Small footer noting v0.59.3's read-only scope so designers
-	# don't waste time looking for editable handles.
+	# Small footer reflecting v0.60.0's full Option B status.
 	var footer := Label.new()
 	footer.text = (
-		"Read-only preview (v0.59.3, audition button live). "
-		+ "Curve values are authored engine-side; per-material "
-		+ "editable curves land in v0.60.0."
+		"v0.60.0: Phase 6.E.1 complete. Toggle 'Override curve' "
+		+ "to author per-instance EQ via drag handles on the plot."
 	)
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
@@ -168,6 +210,136 @@ func _parse_end(object: Object) -> void:
 	container.add_child(footer)
 
 	add_custom_control(container)
+
+
+# v0.60.0: resolve the effective curve for inspector display.
+# When override_enabled is true on the resource, build the curve
+# dict from the resource's per-band fields. When false, use the
+# inspector's hardcoded engine-table mirror (since the Gool
+# autoload isn't reachable in editor and the resource's own
+# fallback returns neutral in that context).
+func _effective_curve(resource: Resource, material_int: int) -> Dictionary:
+	if bool(resource.get("override_enabled")):
+		return {
+			"low_gain_db":  float(resource.get("low_gain_db")),
+			"low_freq_hz":  float(resource.get("low_freq_hz")),
+			"mid_gain_db":  float(resource.get("mid_gain_db")),
+			"mid_freq_hz":  float(resource.get("mid_freq_hz")),
+			"mid_q":        float(resource.get("mid_q")),
+			"high_gain_db": float(resource.get("high_gain_db")),
+			"high_freq_hz": float(resource.get("high_freq_hz")),
+			"is_neutral":   false,
+		}
+	return _fallback_curve(material_int)
+
+
+# Apply a drag-motion delta to the resource's per-band fields. The
+# resource's setters re-emit `changed`, which feeds back through to
+# the plot view's `curve` property to redraw. Motion is cheap; no
+# disk write here (that happens on drag-ended).
+func _apply_band_drag(resource: Resource, band_index: int,
+		freq_hz: float, gain_db: float, q: float) -> void:
+	match band_index:
+		0:
+			resource.set("low_freq_hz", freq_hz)
+			resource.set("low_gain_db", gain_db)
+		1:
+			resource.set("mid_freq_hz", freq_hz)
+			resource.set("mid_gain_db", gain_db)
+			# Q comes from the curve dict (current_q in the curve
+			# view), which is already on the resource — no change
+			# unless the slider sent it.
+		2:
+			resource.set("high_freq_hz", freq_hz)
+			resource.set("high_gain_db", gain_db)
+
+
+# Save the resource to disk via ResourceSaver. Called on drag-ended
+# so we don't hammer disk during dragging. The resource's existing
+# path is used (the .tres the user is editing).
+func _save_resource(resource: Resource) -> void:
+	if resource.resource_path.is_empty():
+		# In-memory resource not yet saved (the user created it
+		# but hasn't picked a path yet). Skip; values are still
+		# preserved in the resource object, just not on disk.
+		return
+	var err: int = ResourceSaver.save(resource, resource.resource_path)
+	if err != OK:
+		push_warning("[gool] could not save %s after drag: error %d"
+				% [resource.resource_path, err])
+
+
+# Build the override-enable toggle. A CheckBox with a small hint.
+# Toggling fires resource.override_enabled = !current, which in
+# turn (via the resource's setter) seeds the override fields from
+# the engine table on false → true. Godot's inspector rebuilds on
+# property change, so _parse_end runs again with the new state.
+func _build_override_toggle(resource: Resource) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var checkbox := CheckBox.new()
+	checkbox.text = "Override curve (edit per-band values)"
+	checkbox.button_pressed = bool(resource.get("override_enabled"))
+	checkbox.tooltip_text = (
+			"When on, this resource's per-band EQ fields take "
+			+ "effect at runtime instead of the engine's built-in "
+			+ "curve. Use the drag handles on the plot to author. "
+			+ "Saved to disk on drag-end. Toggle off to revert to "
+			+ "the engine table (zero runtime overhead)."
+	)
+	row.add_child(checkbox)
+
+	checkbox.toggled.connect(
+			func(pressed: bool):
+				resource.set("override_enabled", pressed)
+				# Saving immediately preserves the toggle state
+				# across editor restarts. The full inspector
+				# rebuild happens via the property-change side
+				# of the Godot inspector pipeline.
+				_save_resource(resource))
+	return row
+
+
+# Build the mid-band Q slider, shown only when override is on.
+# Drag handles cover freq + gain; Q is the third per-band
+# parameter that doesn't fit a 2D drag, so it gets its own slider.
+func _build_mid_q_slider(resource: Resource) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var label := Label.new()
+	label.text = "Mid Q"
+	label.custom_minimum_size = Vector2(120, 0)
+	row.add_child(label)
+
+	var slider := HSlider.new()
+	slider.min_value = 0.1
+	slider.max_value = 10.0
+	slider.step = 0.05
+	slider.value = float(resource.get("mid_q"))
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.tooltip_text = (
+			"Peak band sharpness. 0.5 is broad, 1.0 moderate, "
+			+ "2.0+ surgical. Only the mid peak has Q; low and "
+			+ "high shelves use Q=1.0 fixed."
+	)
+	row.add_child(slider)
+
+	var value_label := Label.new()
+	value_label.text = "%.2f" % slider.value
+	value_label.custom_minimum_size = Vector2(48, 0)
+	value_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	row.add_child(value_label)
+
+	slider.value_changed.connect(
+			func(v: float):
+				resource.set("mid_q", v)
+				value_label.text = "%.2f" % v)
+	slider.drag_ended.connect(
+			func(_value_changed_during_drag: bool):
+				_save_resource(resource))
+	return row
 
 
 # Resolve material int → friendly name. Out-of-range falls back to
@@ -498,7 +670,7 @@ const AUDITION_SAMPLE_RATE: int = 48000
 const AUDITION_PEAK: float = 0.25
 
 
-func _build_audition_row(material_int: int) -> Control:
+func _build_audition_row(resource: Resource, material_int: int) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 
@@ -514,9 +686,13 @@ func _build_audition_row(material_int: int) -> Control:
 	play_btn.text = "▶ Play (pink noise, 1 s)"
 	play_btn.tooltip_text = (
 			"Generates 1 second of pink noise, runs it through the "
-			+ "material's EQ curve at the current realism intensity, "
-			+ "and plays the result. The processing uses the same "
-			+ "biquad chain as the runtime impact-EQ path."
+			+ "material's effective EQ curve at the current realism "
+			+ "intensity, and plays the result. When 'Override curve' "
+			+ "is on, the per-band override values are used; "
+			+ "otherwise the engine's built-in curve for this "
+			+ "material. Uses the same biquad chain as the runtime "
+			+ "impact-EQ path — what you hear is what the player "
+			+ "will hear."
 	)
 	play_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(play_btn)
@@ -530,36 +706,57 @@ func _build_audition_row(material_int: int) -> Control:
 	player.bus = "Master"
 	row.add_child(player)
 
+	# v0.60.0: capture the resource by reference so the audition
+	# always reads the resource's CURRENT override state at click
+	# time, not whatever was captured at inspector-build time.
+	# This way a user can drag a band, immediately press audition,
+	# and hear the post-drag curve.
 	play_btn.pressed.connect(
 			func():
-				_audition_play(player, material_int))
+				_audition_play(player, resource, material_int))
 	return row
 
 
-# Run the audition pipeline end-to-end. Generates noise, processes
-# it through the C++ static method, wraps it in an AudioStreamWAV,
-# starts playback.
-func _audition_play(player: AudioStreamPlayer, material_int: int) -> void:
+# Run the audition pipeline end-to-end. v0.60.0: branches on
+# resource.override_enabled. When on, uses process_buffer_through_curve
+# with the resource's per-band fields. When off, uses
+# process_buffer_through_material_eq with the engine table.
+func _audition_play(player: AudioStreamPlayer,
+		resource: Resource, material_int: int) -> void:
 	var noise := _generate_pink_noise(
 			int(AUDITION_DURATION_S * float(AUDITION_SAMPLE_RATE)),
-			material_int * 7919 + 13)   # seed varies per-material so
-										# back-to-back materials sound
-										# different even in their
-										# random structure
+			material_int * 7919 + 13)   # seed varies per-material
 
-	# Call the C++ static method directly. No autoload dependency:
-	# even with /root/Gool absent in editor, this works because
-	# GoolAudioRuntime is registered globally in ClassDB by the
-	# GDExtension binding.
 	var intensity := _current_intensity()
-	var processed: PackedFloat32Array = (
-			GoolAudioRuntime.process_buffer_through_material_eq(
-					noise, material_int, intensity,
-					AUDITION_SAMPLE_RATE))
+	var processed: PackedFloat32Array
+	if bool(resource.get("override_enabled")):
+		# Override path: pass per-band values directly.
+		processed = GoolAudioRuntime.process_buffer_through_curve(
+				noise,
+				float(resource.get("low_freq_hz")),
+				float(resource.get("low_gain_db")),
+				float(resource.get("mid_freq_hz")),
+				float(resource.get("mid_gain_db")),
+				float(resource.get("mid_q")),
+				float(resource.get("high_freq_hz")),
+				float(resource.get("high_gain_db")),
+				intensity,
+				AUDITION_SAMPLE_RATE)
+	else:
+		# Engine-table path: same code path v0.59.3 used. The
+		# parity test (material_eq_audition_test.cpp's
+		# TestCurveMatchesMaterial) pins this against the curve
+		# path at bit equality, so toggling override off and on
+		# at the same material's engine-table values would produce
+		# bit-identical audition output.
+		processed = GoolAudioRuntime.process_buffer_through_material_eq(
+				noise, material_int, intensity,
+				AUDITION_SAMPLE_RATE)
 	if processed.is_empty():
-		push_warning("[gool] audition: process_buffer_through_material_eq "
-				+ "returned empty. Material %d, intensity %.2f."
-				% [material_int, intensity])
+		push_warning("[gool] audition: process returned empty. "
+				+ "Material %d, intensity %.2f, override=%s."
+				% [material_int, intensity,
+				   str(bool(resource.get("override_enabled")))])
 		return
 
 	# Build the AudioStreamWAV from the processed buffer and play.
