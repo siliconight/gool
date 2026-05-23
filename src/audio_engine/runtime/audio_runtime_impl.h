@@ -133,6 +133,13 @@ public:
     // v0.25.2: SoundDefinition lookup, forwarded to AudioAssetRegistry.
     const SoundDefinition* GetSoundDefinition(AudioSoundId id) const noexcept;
 
+    // v0.66.0: sound introspection — see audio_runtime.h for design
+    // notes. All three forward to the asset registry; the bool/info
+    // shapes hide registry types from the public header.
+    bool HasPlayableAsset(AudioSoundId id) const noexcept;
+    bool GetSoundInfo(AudioSoundId id, SoundAssetInfo& out) const noexcept;
+    size_t GetRegisteredSoundCount() const noexcept;
+
     void Update(float deltaSeconds) noexcept;
 
     // v0.15.0: the actual Update body, kept separate from the public

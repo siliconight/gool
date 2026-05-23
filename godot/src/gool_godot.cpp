@@ -505,6 +505,17 @@ public:
         ClassDB::bind_method(D_METHOD("register_sound_definition_dict",
                                        "name", "options"),
                               &GoolAudioRuntime::register_sound_definition_dict);
+        // v0.66.0: sound-registry introspection. Bound on a host
+        // that hasn't called Initialize yet, has_sound returns
+        // false, get_sound_info returns {}, get_registered_sound_count
+        // returns 0 — all safe no-data answers. Useful in tests that
+        // exercise the binding before audio backend init.
+        ClassDB::bind_method(D_METHOD("has_sound", "name"),
+                              &GoolAudioRuntime::has_sound);
+        ClassDB::bind_method(D_METHOD("get_sound_info", "name"),
+                              &GoolAudioRuntime::get_sound_info);
+        ClassDB::bind_method(D_METHOD("get_registered_sound_count"),
+                              &GoolAudioRuntime::get_registered_sound_count);
         // Bus-name → BusId resolver. Returns -1 if no bus matches.
         // Useful for hosts that need to call other BusId-taking
         // bindings (set_bus_gain_db, set_effect_parameter) by name.
@@ -1634,6 +1645,71 @@ public:
                                   occlusion_enabled);
     }
 
+    // v0.66.0: sound-registry introspection (GDScript-facing).
+    //
+    // Motivation: pre-v0.66.0 had no way from GDScript to verify
+    // that a sound actually registered with playable data. The
+    // sandbox debug session (v0.64.x) chased "no music" symptoms
+    // for half an hour before realizing the issue was upstream of
+    // the bus chain. These three methods make that one-line check.
+    //
+    //   if not Gool.has_sound("music"):
+    //       push_warning("music never registered")
+    //
+    //   var info := Gool.get_sound_info("music")
+    //   if info.is_empty() or info.get("frames", 0) == 0:
+    //       push_warning("music registered but decoded to 0 frames")
+    //
+    //   prints("[gool] %d sounds registered" % Gool.get_registered_sound_count())
+
+    // True iff a PCM or streaming asset is registered for this
+    // sound name. Sound definitions alone (register_sound_definition
+    // without backing audio data) don't count — those produce silent
+    // emitters, which is the bug class this method exists to catch.
+    bool has_sound(const String& name) const {
+        if (!runtime_) return false;
+        return runtime_->HasPlayableAsset(HashName(name));
+    }
+
+    // Returns a Dictionary describing the registered sound, or an
+    // empty Dictionary if the sound has no playable asset. Keys:
+    //   sound_id     int    the hashed sound id (matches what shows
+    //                       up in gool log lines and the debugger)
+    //   is_streaming bool   true = streamed at play time, false = PCM
+    //   frames       int    total decoded frames; 0 is the "decoder
+    //                       produced nothing" failure signal
+    //   channels     int    1 or 2 (downmixed to engine output mode)
+    //   sample_rate  int    Hz (engineSampleRate post-resampling)
+    //
+    // For the common diagnostic case ("did this sound actually
+    // decode?"), the frames field is the answer.
+    Dictionary get_sound_info(const String& name) const {
+        Dictionary out;
+        if (!runtime_) return out;
+        const audio::AudioSoundId id = HashName(name);
+        audio::SoundAssetInfo info;
+        if (!runtime_->GetSoundInfo(id, info)) return out;
+        out["sound_id"]     = static_cast<int64_t>(id);
+        out["is_streaming"] = info.isStreaming;
+        out["frames"]       = static_cast<int64_t>(info.frames);
+        out["channels"]     = static_cast<int>(info.channels);
+        out["sample_rate"]  = static_cast<int>(info.sampleRate);
+        return out;
+    }
+
+    // Total count of registered playable assets (PCM + streaming).
+    // Definitions without backing data are NOT counted. Useful as
+    // a sanity check after a batch of registrations:
+    //
+    //   var expected := 14   # what the host THOUGHT it registered
+    //   var actual := Gool.get_registered_sound_count()
+    //   assert(actual == expected,
+    //       "registration loss: expected %d, got %d" % [expected, actual])
+    int64_t get_registered_sound_count() const {
+        if (!runtime_) return 0;
+        return static_cast<int64_t>(runtime_->GetRegisteredSoundCount());
+    }
+
     int find_bus_id_by_name(const String& name) const {
         if (!runtime_) return -1;
         const auto utf8 = name.utf8();
@@ -2125,6 +2201,37 @@ public:
             // category, so we only need to set the things the
             // old code set explicitly.
             desc.isSpatialized = true;
+        }
+
+        // v0.66.0: warn loudly if this soundId has no playable asset
+        // registered. CreateEmitter will succeed (gool intentionally
+        // allows emitter creation for sounds that haven't been
+        // registered yet — some hosts batch-create emitters during
+        // scene load before any audio data is loaded — but a silent
+        // success is a footgun. The mixer ticks the voice, finds no
+        // PCM, produces silence. Multiple sandbox debug sessions
+        // ate hours on this exact pattern.
+        //
+        // The check is "neither definition nor playable asset" —
+        // requiring BOTH to be missing — because:
+        //   - A definition without playable data is also unplayable,
+        //     but is a less common shape (most paths register the
+        //     definition alongside the data).
+        //   - A playable asset without a definition is legitimate
+        //     (the host called register_sound_from_stream without
+        //     a follow-up register_sound_definition) and produces
+        //     audible output via the EmitterDescriptor defaults.
+        //
+        // So we warn only when nothing is registered for this id at
+        // all — the actual silent-emitter case.
+        if (def == nullptr && !runtime_->HasPlayableAsset(desc.soundId)) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: create_emitter('")
+                + name
+                + String("') — no sound registered with that name. ")
+                + String("Emitter created but will be silent. ")
+                + String("Did you call register_sound_from_stream or ")
+                + String("register_pcm_sound first?"));
         }
 
         desc.position      = V3(position);

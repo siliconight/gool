@@ -114,6 +114,21 @@ const SoundDefinition* AudioRuntime::GetSoundDefinition(
     return impl_->GetSoundDefinition(id);
 }
 
+// v0.66.0: sound introspection wrappers. See audio_runtime.h for
+// design notes. All three forward straight to impl_; no caching
+// (the underlying registry hashmap is cheap enough and we don't
+// want stale info if registration is happening concurrently).
+bool AudioRuntime::HasPlayableAsset(AudioSoundId id) const noexcept {
+    return impl_->HasPlayableAsset(id);
+}
+bool AudioRuntime::GetSoundInfo(AudioSoundId id,
+                                  SoundAssetInfo& out) const noexcept {
+    return impl_->GetSoundInfo(id, out);
+}
+size_t AudioRuntime::GetRegisteredSoundCount() const noexcept {
+    return impl_->GetRegisteredSoundCount();
+}
+
 AudioResult AudioRuntime::RegisterSoundDefinition(const SoundDefinition& d) {
     return impl_->RegisterSoundDefinition(d);
 }
@@ -427,6 +442,52 @@ const SoundDefinition* AudioRuntimeImpl::GetSoundDefinition(
         AudioSoundId id) const noexcept {
     if (!assets_) return nullptr;
     return assets_->GetDefinition(id);
+}
+
+// v0.66.0: HasPlayableAsset. Distinct from "HasDefinition" — a
+// SoundDefinition without backing PCM or streaming asset is useless
+// (the voice would tick producing silence), so the
+// playable-vs-defined distinction matters at the create_emitter
+// warning site. Either PCM or streaming counts.
+bool AudioRuntimeImpl::HasPlayableAsset(AudioSoundId id) const noexcept {
+    if (!assets_) return false;
+    if (assets_->GetAsset(id) != nullptr) return true;
+    if (assets_->GetStreamingAsset(id) != nullptr) return true;
+    return false;
+}
+
+// v0.66.0: GetSoundInfo. Fills the flat info struct from whichever
+// asset type backs this id. Returns false if neither PCM nor
+// streaming has this id registered, in which case `out` is
+// untouched.
+bool AudioRuntimeImpl::GetSoundInfo(AudioSoundId id,
+                                     SoundAssetInfo& out) const noexcept {
+    if (!assets_) return false;
+    if (const PcmAsset* pcm = assets_->GetAsset(id); pcm != nullptr) {
+        out.isStreaming = false;
+        out.frames      = pcm->frames;
+        out.channels    = pcm->channels;
+        out.sampleRate  = pcm->sampleRate;
+        return true;
+    }
+    if (const StreamingAsset* stream = assets_->GetStreamingAsset(id);
+            stream != nullptr) {
+        out.isStreaming = true;
+        out.frames      = stream->totalFrames;
+        out.channels    = stream->channels;
+        out.sampleRate  = stream->sampleRate;
+        return true;
+    }
+    return false;
+}
+
+// v0.66.0: GetRegisteredSoundCount. The asset registry's Count()
+// already returns the playable-asset total (PCM + streaming, dedup
+// by id), which is what we want here — definitions without backing
+// data are not counted.
+size_t AudioRuntimeImpl::GetRegisteredSoundCount() const noexcept {
+    if (!assets_) return 0;
+    return static_cast<size_t>(assets_->Count());
 }
 
 AudioResult AudioRuntimeImpl::Initialize(const AudioConfig& config,

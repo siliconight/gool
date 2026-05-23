@@ -48,6 +48,39 @@ class IRuntimeTelemetrySink;
 // Same pattern for the event-level log sink (Phase 4.8).
 class IRuntimeLogSink;
 
+// v0.66.0: flat info struct returned by AudioRuntime::GetSoundInfo.
+// Kept in the public header (rather than reaching into the registry's
+// internal PcmAsset / StreamingAsset structs) so the host doesn't
+// have to pull src/-side headers for diagnostic introspection.
+struct SoundAssetInfo {
+    // True if the sound is registered as a streaming asset (decoded
+    // on demand as the voice consumes frames). False = pre-decoded
+    // PCM resident in memory. Streaming assets serve at most one
+    // concurrent playback instance; PCM assets are unlimited.
+    bool     isStreaming = false;
+
+    // Total decoded frame count. For PCM, this is samples / channels
+    // (so a 1-second mono asset at 48000 Hz has frames=48000). For
+    // streaming, this is whatever the decoder reported as total at
+    // open time — may be 0 for streams that don't carry length
+    // metadata. A non-zero frames value is the most reliable
+    // "the sound actually decoded" signal at the binding layer.
+    uint64_t frames      = 0;
+
+    // Channel count after downmix (1 or 2). The registry's
+    // RegisterDecodedFrom* paths downmix multi-channel sources to
+    // stereo before storing, so >2 won't appear here even if the
+    // source file had surround channels.
+    uint32_t channels    = 0;
+
+    // Sample rate of the stored / streamed PCM. For PCM assets this
+    // is always engineSampleRate (the decoder is wrapped in a
+    // ResamplingDecoder during registration if the source rate
+    // differs). For streaming assets, also engineSampleRate for the
+    // same reason.
+    uint32_t sampleRate  = 0;
+};
+
 // Optional dependency injection. Any null pointer is replaced with the
 // engine's built-in stub (NullAudioBackend, DistancePanSpatializer,
 // NullGeometryQuery, StubVoiceCodec). The runtime takes ownership of any
@@ -324,6 +357,39 @@ public:
     // create emitters via the C++ API. The pointer is stable for
     // the lifetime of the runtime; lookups are thread-safe.
     const SoundDefinition* GetSoundDefinition(AudioSoundId id) const noexcept;
+
+    // ---- v0.66.0: sound introspection (game thread) ----------------------
+    //
+    // The pre-v0.66.0 surface let callers register sounds and create
+    // emitters without any visibility into whether the sound was actually
+    // playable. CreateEmitter would happily succeed for a soundId with no
+    // PCM data, then the voice would tick producing silence. The
+    // sandbox v0.64.x debug session revealed how easy it is to chase
+    // silence symptoms when the actual cause is "sound never got
+    // decoded." These three accessors close that gap.
+    //
+    // HasPlayableAsset: returns true iff a PCM asset OR streaming
+    // asset is registered for this id. Sound definitions alone don't
+    // count (a definition without backing audio data is useless).
+    // create_emitter at the binding layer uses this for the "emitter
+    // will be silent" warning.
+    bool HasPlayableAsset(AudioSoundId id) const noexcept;
+
+    // GetSoundInfo: fills `out` with sample-rate / channels / frames /
+    // streaming-vs-PCM and returns true if the sound is registered.
+    // Returns false (and leaves `out` untouched) if no playable asset
+    // exists for this id. Useful for diagnostic tooling that wants to
+    // verify a sound decoded to non-zero frames.
+    //
+    // SoundAssetInfo is a flat value type so the registry's internal
+    // asset structures stay out of the public runtime header.
+    bool GetSoundInfo(AudioSoundId id, SoundAssetInfo& out) const noexcept;
+
+    // Total count of registered playable assets (PCM + streaming).
+    // Definitions without backing data are NOT counted; this is the
+    // "how many sounds can actually play" number, useful for budget
+    // monitoring and as a sanity check after a batch of registrations.
+    size_t GetRegisteredSoundCount() const noexcept;
 
     // Per-frame tick. Drains event queues, advances simulation, recomputes
     // spatial state, publishes the next mixer snapshot for the render thread.

@@ -75,7 +75,18 @@ bool DecodeFully(IAudioDecoder& dec, std::vector<float>& out) {
                     buf.begin() + static_cast<size_t>(got) * channels);
         if (got < kChunk) break;
     }
-    return true;
+    // v0.66.0: zero-frame decode is a failure. Previously returned
+    // true with an empty out vector — the registry would then store
+    // an empty PcmAsset, the voice would tick producing silence,
+    // and no diagnostic would fire. (Multi-hour debug session in
+    // the sandbox v0.64.x work uncovered this — voices were
+    // "playing" sounds whose decoders produced no samples.) Now
+    // propagates as DecodeError to RegisterDecodedFromMemory's
+    // caller, which surfaces a push_error at the GDScript binding
+    // boundary. Catches corrupted files, format-detector
+    // mismatches, and decoder library failures that produce no
+    // output but no exception.
+    return !out.empty();
 }
 
 // Downmix interleaved 'channels'-channel data to 'maxChannels'.

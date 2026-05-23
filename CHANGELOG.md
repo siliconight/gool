@@ -22,6 +22,159 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.66.0] - 2026-05-23 — Engine hardening: silent-failure visibility
+
+Three coordinated changes that close failure-mode visibility gaps
+surfaced during the v0.64.x sandbox debug session. None of them
+change rendered audio for working configurations; all of them make
+broken configurations fail or warn loudly instead of producing
+silent output with no diagnostic.
+
+### Why this release exists
+
+The sandbox session ate ~90 minutes chasing "music doesn't play"
+without finding the cause directly. The actual issue turned out to
+be that the sandbox's main scene didn't call create_emitter for
+the music sound (the bug was outside gool's purview), but the time
+cost would have been much smaller if the engine had given us
+visibility-side signals:
+
+  - **create_emitter** silently succeeded for sounds that had no
+    backing PCM data. The voice ticked, produced zero samples,
+    and the only signal was "no audio." Multi-step diagnosis to
+    notice the missing emitter call.
+
+  - **DecodeFully** returned true even when the decoder produced
+    zero frames. Empty PcmAssets got stored in the registry,
+    matching the "registered but silent" pattern with no
+    diagnostic. Latent footgun on corrupted files, format-detector
+    mismatches, or decoder-library failures.
+
+  - **No sound-registry introspection** from GDScript. There was
+    no way to check "did this sound register with playable data"
+    from a debug script. Diagnosis required reading C++ sources
+    and inferring from binding-layer push_error coverage.
+
+v0.66.0 fixes all three.
+
+### Fixes
+
+**create_emitter warns when sound has no playable asset.**
+In `godot/src/gool_godot.cpp`, after computing the soundId, the
+binding now checks `runtime_->HasPlayableAsset(soundId)`. If no
+PCM or streaming asset is registered AND no SoundDefinition
+exists, a push_warning fires:
+
+```
+GoolAudioRuntime: create_emitter('music') — no sound registered
+with that name. Emitter created but will be silent. Did you call
+register_sound_from_stream or register_pcm_sound first?
+```
+
+The emitter still gets created — gool intentionally supports
+late-registration patterns where hosts batch-create emitters
+during scene load before audio data is loaded. The warning is
+the only intervention. Existing working configurations see no
+change.
+
+**DecodeFully reports failure on zero-frame decode.**
+In `src/audio_engine/assets/audio_asset_registry.cpp`, `DecodeFully`
+now returns false if no samples were decoded:
+
+```cpp
+return !out.empty();   // was: return true;
+```
+
+Propagates as `AudioResult::DecodeError` to
+`RegisterDecodedFromMemory` callers, which surfaces as a
+push_error at the GDScript binding boundary. Catches corrupted
+files, format-detector mismatches, and decoder-library failures
+that previously stored empty PcmAssets in the registry.
+
+**Three new GDScript introspection methods.**
+
+  - `Gool.has_sound(name) -> bool`
+    True iff a PCM or streaming asset is registered for this
+    sound name. Sound definitions alone don't count — those
+    produce silent emitters. One-line check from any debug
+    script.
+
+  - `Gool.get_sound_info(name) -> Dictionary`
+    Returns a Dictionary with `sound_id`, `is_streaming`,
+    `frames`, `channels`, `sample_rate`. Empty Dictionary if
+    the sound is not registered. The `frames` field is the
+    most reliable "did this sound actually decode" signal —
+    zero frames means the decoder produced nothing.
+
+  - `Gool.get_registered_sound_count() -> int`
+    Total count of registered playable assets (PCM +
+    streaming). Definitions without backing data are NOT
+    counted. Useful as a sanity check after a batch of
+    registrations to verify expected count vs actual count.
+
+### Engine surface
+
+The public AudioRuntime header gains:
+
+  - `struct SoundAssetInfo` — flat value type with fields
+    `isStreaming`, `frames`, `channels`, `sampleRate`. Kept in
+    the public header so hosts don't have to pull src/-side
+    headers for diagnostic introspection.
+
+  - `bool HasPlayableAsset(AudioSoundId) const noexcept`
+
+  - `bool GetSoundInfo(AudioSoundId, SoundAssetInfo&) const noexcept`
+
+  - `size_t GetRegisteredSoundCount() const noexcept`
+
+All three delegate to the asset registry's existing accessors.
+No new state, no new threading concerns, no allocations on the
+hot path.
+
+### Tests
+
+New `tests/unit/sound_registry_introspection_test.cpp` covers:
+
+  - Pre-Initialize introspection returns sane defaults
+    (HasPlayableAsset = false, GetRegisteredSoundCount = 0,
+    GetSoundInfo returns false without touching the out-param).
+  - SoundAssetInfo layout sanity (static_assert on size +
+    field defaults), so future struct changes that would
+    silently break the binding-layer Dictionary conversion
+    fail at compile time.
+  - The zero-frame DecodeFully contract (indirect — the test
+    pins the post-fix observable behavior at the
+    HasPlayableAsset level).
+
+### Compatibility
+
+Public surface only added, not modified. Working callers see no
+behavior change. Existing tests pass unchanged: version_test
+reports 0.66.0, master_control_test green, bus_config_loader's
+typo-rejection regression green.
+
+### Practical impact
+
+For sandbox or game-side debug after upgrading to v0.66.0:
+
+```gdscript
+# After audio_setup.gd finishes registering sounds:
+prints("[audio] %d sounds registered" % Gool.get_registered_sound_count())
+for name in ["music", "wind", "grenade", "mecha_bark"]:
+    var info := Gool.get_sound_info(name)
+    if info.is_empty():
+        push_warning("[audio] '%s' NOT registered" % name)
+    elif info.get("frames", 0) == 0:
+        push_warning("[audio] '%s' registered but decoded to ZERO frames" % name)
+    else:
+        prints("[audio] %s: %d frames, %dch, %d Hz" % [
+            name, info.frames, info.channels, info.sample_rate])
+```
+
+That snippet would have caught the sandbox failure pattern
+("music registered but never emitted") immediately — at the
+sound-registration step.
+
 ## [0.65.0] - 2026-05-23 — register_sound_definition_dict: ergonomic sound registration API
 
 The positional `register_sound_definition` has 8 optional args
@@ -19537,6 +19690,7 @@ Headlines:
 [0.64.1]: https://github.com/siliconight/gool/releases/tag/v0.64.1
 [0.64.2]: https://github.com/siliconight/gool/releases/tag/v0.64.2
 [0.65.0]: https://github.com/siliconight/gool/releases/tag/v0.65.0
+[0.66.0]: https://github.com/siliconight/gool/releases/tag/v0.66.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
