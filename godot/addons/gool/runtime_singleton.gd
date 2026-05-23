@@ -743,6 +743,63 @@ func is_initialized() -> bool:
 	return _runtime != null and _runtime.is_initialized()
 
 
+# ---- v0.67.0: session log dump (game-thread API) ---------------------
+#
+# Convenience wrappers on the Gool singleton for the always-on session
+# log buffer maintained by GoolLog. Every emit() call (info/warn/error/
+# etc.) pushes a structured entry into a bounded ring; these methods
+# read and dump it.
+#
+# Why expose these here as well as on GoolLog directly?
+# Two reasons:
+#   1. Discoverability — Gool.dump_session_log() is the path a user
+#      finds via autocomplete on the Gool autoload. GoolLog.dump_*
+#      requires knowing the helper class exists.
+#   2. Symmetry with the existing Gool API surface — register_sound,
+#      get_bus_stats, etc. all live on Gool. The session dump fits the
+#      same shape: "diagnostic capability you reach through the
+#      autoload."
+#
+# Typical usage:
+#
+#   var path := Gool.dump_session_log()        # auto-named .jsonl in user://
+#   prints("[gool] %d entries dumped to %s" % [
+#       Gool.get_session_log_size(), path])
+#
+#   Gool.dump_session_log("res://debug/last.jsonl")   # explicit path
+#   Gool.clear_session_log()                          # reset between tests
+#
+# The JSONL format is one JSON object per line (timestamp_ms, level,
+# category, msg, fields, source, label) — grep/jq-friendly for
+# post-session analysis.
+
+func dump_session_log(path: String = "") -> String:
+	# When path is empty, GoolLog auto-generates
+	# user://gool_session_<datetime>_<ms>.jsonl so a user who just
+	# wants "a file I can attach to a bug report" doesn't have to
+	# invent a path. Returns the resolved path on success, "" on
+	# failure (an error was already logged via GoolLog.error in the
+	# helper, so we don't double-log here).
+	return GoolLog.dump_session_to_file(path)
+
+
+func clear_session_log() -> void:
+	# Resets the ring buffer to empty and rebases the t_ms timeline
+	# to "now." Useful for bracketing the part of a session a user
+	# wants to inspect — call before reproducing a bug, then dump
+	# after, and the resulting file contains only the relevant
+	# window rather than all setup noise.
+	GoolLog.clear_session()
+
+
+func get_session_log_size() -> int:
+	# Current entry count in the ring (saturates at the configured
+	# capacity; default 4096). Useful for sanity checks like "did
+	# the suspect path actually log anything between this clear()
+	# and this dump()?"
+	return GoolLog.session_entry_count()
+
+
 # v0.55.0: cheap bus-existence check. Reads from a cache built at
 # init time, NOT from the C++ runtime — the C++ side logs "unknown
 # bus" when queried for a missing bus, which is exactly the noise

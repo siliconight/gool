@@ -121,6 +121,12 @@ const _PS_FORMAT: String       = "addons/gool/logging/format"
 const _PS_INCLUDE_SOURCE: String = "addons/gool/logging/include_source"
 # v0.23.4:
 const _PS_VERBOSITY: String    = "addons/gool/logging/verbosity"
+# v0.67.0: session log ring buffer capacity. Bounded so a runaway
+# log spammer can't OOM the editor process. 4096 entries comfortably
+# covers minutes of normal session activity with room for DEAD AIR
+# and other diagnostic events; bumping to 65536 is fine for
+# long-running soak tests at the cost of ~20 MB peak memory.
+const _PS_SESSION_BUF_SIZE: String = "addons/gool/logging/session_buffer_size"
 
 # Output format options. "human" (default) is the v0.23.2 format
 # styled for readability in Godot's Output panel; "json" emits one
@@ -162,6 +168,37 @@ static var _include_source: bool = true
 # _global_level / _include_source / _include_timestamps / file
 # sink settings that the preset configured.
 static var _verbosity: int = Verbosity.DEV
+
+# v0.67.0: session log ring buffer.
+#
+# Every emit() call pushes a Dictionary entry here, regardless of
+# the file_sink_enabled setting. Bounded to _session_buffer_capacity
+# entries (default 4096); when full, oldest entries are dropped.
+# Dump_session_to_file walks the ring in chronological order and
+# writes JSONL.
+#
+# Motivation: pre-v0.67.0, post-mortem log analysis required the
+# user to have enabled file_sink BEFORE the session. If they hit
+# Play without enabling it, the session output was visible in the
+# Output panel but not capturable for sharing. The ring buffer is
+# always-on so the dump-after-the-fact workflow always works.
+#
+# Entry shape (Dictionary):
+#   t_ms        int      milliseconds since session start
+#   level       String   "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL"
+#   category    String   subsystem tag
+#   msg         String   primary message
+#   fields      Dictionary  structured key-value context
+#   source      String   "file.gd:line" (when include_source true)
+#   label       String   optional sublabel
+#
+# Storage as an Array of Dictionaries: GDScript can serialize this
+# directly via JSON.stringify when dumping. No type-erasure dance.
+static var _session_buffer: Array = []
+static var _session_buffer_capacity: int = 4096
+static var _session_write_idx: int = 0     # next write position (wraps at capacity)
+static var _session_count: int = 0          # entries written so far (saturates at capacity)
+static var _session_start_ms: int = 0       # Time.get_ticks_msec() at init
 
 # ─── public API: configuration ───────────────────────────────
 
@@ -211,6 +248,107 @@ static func disable_file_sink() -> void:
 		_file.close()
 		_file = null
 	_file_sink_enabled = false
+
+# ---- v0.67.0: session log dump / query --------------------------------
+#
+# GoolLog buffers every emit() call into an in-memory ring (capacity
+# from addons/gool/logging/session_buffer_size, default 4096). These
+# methods expose the buffer for after-the-fact analysis without
+# requiring file_sink to have been enabled before the session.
+#
+# Typical usage from a debug script or REPL:
+#
+#   var path := GoolLog.dump_session_to_file("user://gool_session.jsonl")
+#   prints("dumped %d entries to %s" % [GoolLog.session_entry_count(), path])
+#
+# Or query in-memory for live introspection:
+#
+#   for entry in GoolLog.get_session_entries():
+#       if entry.level == "WARN" and entry.category == "mixer":
+#           print(entry.t_ms, " ", entry.msg)
+
+# Walks the ring buffer in chronological order and returns a fresh
+# Array of Dictionary entries. Each entry is independent — mutating
+# the returned Array does not affect the ring. Useful for filtering
+# and analysis in GDScript without parsing a file.
+static func get_session_entries() -> Array:
+	_ensure_initialized()
+	# Chronological walk: if the buffer hasn't wrapped yet
+	# (_session_count < capacity), entries are at indices
+	# [0, _session_count). After wrap, oldest is at _session_write_idx
+	# and we iterate capacity steps modulo capacity.
+	var out: Array = []
+	out.resize(_session_count)
+	if _session_count < _session_buffer_capacity:
+		# Pre-wrap: entries are in insertion order at [0, count).
+		for i in range(_session_count):
+			out[i] = _session_buffer[i]
+	else:
+		# Post-wrap: oldest at write_idx, wrap forward.
+		for i in range(_session_buffer_capacity):
+			var src_idx: int = (_session_write_idx + i) % _session_buffer_capacity
+			out[i] = _session_buffer[src_idx]
+	return out
+
+# Returns the number of entries currently in the buffer. Saturates
+# at session_buffer_size — once the buffer fills, this stops growing
+# even as more entries push out the oldest. Useful as a sanity check
+# (e.g., "we expected at least 10 INFO-level events in this session").
+static func session_entry_count() -> int:
+	_ensure_initialized()
+	return _session_count
+
+# Resets the ring buffer to empty and rebases session_start_ms to
+# "now". Useful for test isolation — clear between tests so each
+# test's dump captures only that test's log output, not bleed from
+# the previous one. Also useful in interactive REPL workflows where
+# you want to bracket "the part you care about."
+static func clear_session() -> void:
+	_ensure_initialized()
+	_session_write_idx = 0
+	_session_count = 0
+	_session_start_ms = Time.get_ticks_msec()
+	# Don't shrink the array — keep capacity allocated so the next
+	# wave of emits doesn't have to grow.
+
+# Writes the session log to a JSONL file. Each line is one entry
+# as a JSON object. JSONL is grep-friendly, jq-friendly, and
+# diff-friendly across runs. Returns the path actually written
+# (handy when the caller passed "" and we auto-generated a path).
+#
+# If path is empty, auto-generates user://gool_session_<ts>.jsonl
+# using the current date for easy session disambiguation.
+#
+# Returns "" on failure (file couldn't be opened). The caller can
+# check this for error handling; the function also logs an error
+# at the gool category before returning.
+static func dump_session_to_file(path: String = "") -> String:
+	_ensure_initialized()
+	if path.is_empty():
+		# Auto-name with seconds resolution + millisecond suffix to
+		# avoid collisions if two dumps happen within the same
+		# second (test harnesses, double-clicks on the dump button).
+		var datetime: String = Time.get_datetime_string_from_system(false, true)
+		datetime = datetime.replace(":", "-").replace(" ", "_")
+		var ms_suffix: int = Time.get_ticks_msec() % 1000
+		path = "user://gool_session_%s_%03d.jsonl" % [datetime, ms_suffix]
+	var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		var err: int = FileAccess.get_open_error()
+		# Use error() rather than push_error so it appears in the
+		# session log too (push_error wouldn't, since we're below
+		# the ring-buffer push path here).
+		error("gool", "dump_session_to_file open failed",
+			{"path": path, "FileAccess.get_open_error": err})
+		return ""
+	# Walk the ring chronologically and JSON-encode each entry on
+	# its own line. JSONL spec: one JSON value per line, no
+	# trailing newline issues, parseable line-by-line.
+	var entries: Array = get_session_entries()
+	for entry in entries:
+		f.store_line(JSON.stringify(entry))
+	f.close()
+	return path
 
 # v0.23.3: choose log line format at runtime. Accepts either a
 # Format enum value or a case-insensitive string ("human" / "json").
@@ -396,6 +534,35 @@ static func _log(level: int, category: String,
 			push_warning(formatted)
 		_:
 			print(formatted)
+
+	# v0.67.0: session ring buffer push. Always-on, independent of
+	# file_sink_enabled — this is what powers dump_session_to_file
+	# and the GDScript-facing Gool.dump_session_log() convenience.
+	#
+	# The buffer is preallocated to _session_buffer_capacity at init.
+	# We write at _session_write_idx and wrap. _session_count
+	# saturates at capacity so callers can ask "have we filled the
+	# buffer yet" (used by the dumper to know whether to start at
+	# index 0 or follow the wrap).
+	#
+	# fields_copy is a shallow Dictionary duplicate. Without it, if
+	# the caller later mutates the same dict (e.g., reuses a context
+	# dict across a loop body), our stored entry would change too —
+	# painful debugging exactly when you don't want it.
+	var fields_copy: Dictionary = fields.duplicate() if fields != null else {}
+	_session_buffer[_session_write_idx] = {
+		"t_ms":     Time.get_ticks_msec() - _session_start_ms,
+		"level":    _LEVEL_NAMES[level],
+		"category": category,
+		"msg":      msg,
+		"fields":   fields_copy,
+		"source":   source,
+		"label":    label,
+	}
+	_session_write_idx = (_session_write_idx + 1) % _session_buffer_capacity
+	if _session_count < _session_buffer_capacity:
+		_session_count += 1
+
 	# Optional file mirror. In JSON mode the line already contains
 	# the timestamp inside the object; in human mode we prepend an
 	# extra ISO 8601 timestamp for unambiguous time-ordering when
@@ -665,6 +832,26 @@ static func _ensure_initialized() -> void:
 	if _initialized:
 		return
 	_initialized = true
+	# v0.67.0: capture session start time first so the ring-buffer
+	# t_ms field is relative to "GoolLog became active." This makes
+	# session log timestamps independent of OS uptime, easy to read
+	# at a glance (entries start at 0, not at some 6-digit number).
+	_session_start_ms = Time.get_ticks_msec()
+	var cap_v: Variant = ProjectSettings.get_setting(
+		_PS_SESSION_BUF_SIZE, 4096)
+	# Defensive coercion — ProjectSettings may return int or float
+	# depending on how the user typed the setting. Clamp to a
+	# sensible range so a typo can't blow up the editor.
+	var cap: int = int(cap_v)
+	if cap < 16:
+		cap = 16
+	elif cap > 1048576:
+		cap = 1048576
+	_session_buffer_capacity = cap
+	_session_buffer.clear()
+	_session_buffer.resize(_session_buffer_capacity)
+	_session_write_idx = 0
+	_session_count = 0
 	_register_project_settings()
 	# v0.23.4: read verbosity FIRST. The preset determines defaults
 	# for several other settings (global_level, include_source,
@@ -846,6 +1033,18 @@ static func _register_project_settings() -> void:
 			"type": TYPE_BOOL,
 		})
 		ProjectSettings.set_initial_value(_PS_INCLUDE_SOURCE, true)
+	# v0.67.0: session buffer capacity. Bounded so an exported game
+	# can ship with a small buffer to keep memory steady; diagnostic
+	# soak tests bump this up via the editor.
+	if not ProjectSettings.has_setting(_PS_SESSION_BUF_SIZE):
+		ProjectSettings.set_setting(_PS_SESSION_BUF_SIZE, 4096)
+		ProjectSettings.add_property_info({
+			"name": _PS_SESSION_BUF_SIZE,
+			"type": TYPE_INT,
+			"hint": PROPERTY_HINT_RANGE,
+			"hint_string": "16,1048576,1",
+		})
+		ProjectSettings.set_initial_value(_PS_SESSION_BUF_SIZE, 4096)
 	# v0.23.4: verbosity preset
 	if not ProjectSettings.has_setting(_PS_VERBOSITY):
 		ProjectSettings.set_setting(_PS_VERBOSITY, "auto")

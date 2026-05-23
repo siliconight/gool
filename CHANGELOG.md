@@ -22,6 +22,141 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.67.0] - 2026-05-23 — Session log dump
+
+The v0.64.x sandbox debug session ate ~90 minutes trading Output-panel
+screenshots back and forth. A single `Gool.dump_session_log()` call
+would have replaced every one of them: paste the .jsonl file into the
+ticket, done. v0.67.0 ships that call.
+
+### Why this release exists
+
+`GoolLog` already had structured logging with levels + categories +
+file sink. But the file sink was opt-in BEFORE the session: forget
+to enable it, hit Play, observe a bug, and the only record is what
+the Output panel is currently showing — no scrollback past the
+ring's visual limit, no way to grep, no way to attach to a bug
+report. As gool grows toward non-audio-expert Godot devs, "share
+your session log" needs to be a one-click workflow.
+
+### What's new
+
+**Always-on in-memory ring buffer in GoolLog.** Every emit() call
+pushes a structured entry into a bounded ring (capacity from
+`addons/gool/logging/session_buffer_size`, default 4096). Each
+entry:
+
+```json
+{
+  "t_ms":     10673,
+  "level":    "WARN",
+  "category": "mixer",
+  "msg":      "DEAD AIR: mixer silent with voices active",
+  "fields":   {"active_voices": 3, "cause": "..."},
+  "source":   "runtime_singleton.gd:683",
+  "label":    ""
+}
+```
+
+`t_ms` is milliseconds since session start (or since the most
+recent `clear_session_log()`), so timestamps are readable at a
+glance — entries begin at 0, not at some 6-digit OS uptime
+number.
+
+When the ring fills, oldest entries drop. 4096 entries
+comfortably covers minutes of normal session activity with room
+for DEAD AIR / register / decoder events; bumping to 65536 is
+fine for long soak tests at the cost of ~20 MB peak memory.
+
+**Three new methods on the `Gool` autoload** (GDScript-facing
+convenience wrappers, the discoverable path):
+
+  - `Gool.dump_session_log(path: String = "") -> String`
+    Writes the ring buffer to a JSONL file. Empty path
+    auto-generates `user://gool_session_<datetime>_<ms>.jsonl`
+    so a user who just wants "a file I can attach to a bug
+    report" doesn't have to invent a path. Returns the resolved
+    path on success, `""` on failure.
+
+  - `Gool.clear_session_log() -> void`
+    Resets the ring and rebases the t_ms timeline to "now."
+    Useful for bracketing: clear before reproducing a bug, then
+    dump after, and the resulting file contains only the
+    relevant window.
+
+  - `Gool.get_session_log_size() -> int`
+    Current entry count (saturates at capacity). Useful for
+    sanity checks like "did the suspect path actually log
+    anything between this clear and this dump?"
+
+**Four new static methods on `GoolLog`** (the underlying surface
+the wrappers forward to):
+
+  - `GoolLog.get_session_entries() -> Array` — returns a chronological
+    array of entry Dictionaries; suitable for in-process filtering
+    and analysis without writing to disk first.
+  - `GoolLog.session_entry_count() -> int`
+  - `GoolLog.clear_session() -> void`
+  - `GoolLog.dump_session_to_file(path: String = "") -> String`
+
+**One new project setting:**
+
+  - `addons/gool/logging/session_buffer_size` (int, default 4096,
+    range 16-1048576). Exposed in Project Settings under the
+    existing `addons/gool/logging/` group.
+
+### Implementation notes
+
+  - **Always-on.** Independent of `file_sink_enabled`. The whole
+    point is "you don't have to remember to turn it on" — the
+    sandbox debug session was painful precisely because the
+    file sink wasn't on when the bug repro happened.
+
+  - **Fields are deep-copied** (`fields.duplicate()`) at emit
+    time. Without this, a caller that reuses the same fields
+    dict across a loop body would retroactively mutate every
+    previously-stored entry — painful debugging exactly when
+    you don't want it. Shallow copy is enough for typical
+    fields (primitives + strings); nested dict mutation through
+    aliased values is a future hazard but not exercised today.
+
+  - **JSONL output**, one object per line. Parseable
+    line-by-line with `jq`, greppable, diffable across runs.
+    Standard format for log shipping pipelines.
+
+  - **Ring capacity is set once at first init**, not
+    re-checked on every emit. The ProjectSettings lookup is
+    expensive enough that doing it on every emit would
+    introduce a hot-path tax we don't need; users who want to
+    change capacity restart the editor (the documented
+    workflow for Project Settings changes).
+
+### Practical usage
+
+For the next time the sandbox produces an unexpected silence,
+or any other "what was the engine actually doing" question:
+
+```gdscript
+# In a debug script attached to the bug repro
+func _input(event):
+    if event.is_action_pressed("dump_log"):
+        var path := Gool.dump_session_log()
+        prints("[gool] dumped %d entries to %s" % [
+            Gool.get_session_log_size(), path])
+        OS.shell_open(path.get_base_dir())   # opens user:// in file manager
+```
+
+Then attach the .jsonl to the bug ticket. The whole session's
+structured trace travels with the report.
+
+### Compatibility
+
+Public-surface only adds, no behavior change for existing callers.
+The ring buffer push is a single Dictionary insert per emit, well
+inside the budget of the editor logging path (already doing string
+formatting + push_warning/push_error/print). Existing tests pass
+unchanged.
+
 ## [0.66.1] - 2026-05-23 — Hotfix: tests/CI compile
 
 Hotfix for v0.66.0's CI build failure. No engine behavior change,
@@ -19730,6 +19865,7 @@ Headlines:
 [0.65.0]: https://github.com/siliconight/gool/releases/tag/v0.65.0
 [0.66.0]: https://github.com/siliconight/gool/releases/tag/v0.66.0
 [0.66.1]: https://github.com/siliconight/gool/releases/tag/v0.66.1
+[0.67.0]: https://github.com/siliconight/gool/releases/tag/v0.67.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
