@@ -800,6 +800,48 @@ func get_session_log_size() -> int:
 	return GoolLog.session_entry_count()
 
 
+# ---- v0.66.0 introspection (v0.67.1: autoload forwarders) -------------
+#
+# These three methods exist on the C++ binding (GoolAudioRuntime;
+# bound in gool_godot.cpp around line 513 via ClassDB::bind_method),
+# but in v0.66.0 they were NOT exposed as forwarders on the Gool
+# autoload — even though the documentation everywhere (including
+# the gool_godot.cpp doc comment around line 1656) shows the
+# intended usage as Gool.has_sound("music"), Gool.get_sound_info(...),
+# etc. v0.67.1 closes the gap.
+#
+# Defensive coding pattern (the original v0.66.0 motivation):
+#
+#   if not Gool.has_sound("music"):
+#       push_warning("[Audition] 'music' not registered; "
+#                  + "is audio_setup.gd running as an autoload AND "
+#                  + "completing before audition's _ready?")
+#       return
+#   var handle := Gool.create_emitter("music", Vector3.ZERO, true, 250.0)
+#
+# Returns safe values when the runtime isn't initialized yet:
+# has_sound = false, get_sound_info = {}, get_registered_sound_count = 0.
+# This mirrors the C++ side's contract and means callers can ask
+# these questions before init without special-casing.
+
+func has_sound(name: String) -> bool:
+	if _runtime == null:
+		return false
+	return _runtime.has_sound(name)
+
+
+func get_sound_info(name: String) -> Dictionary:
+	if _runtime == null:
+		return {}
+	return _runtime.get_sound_info(name)
+
+
+func get_registered_sound_count() -> int:
+	if _runtime == null:
+		return 0
+	return _runtime.get_registered_sound_count()
+
+
 # v0.55.0: cheap bus-existence check. Reads from a cache built at
 # init time, NOT from the C++ runtime — the C++ side logs "unknown
 # bus" when queried for a missing bus, which is exactly the noise

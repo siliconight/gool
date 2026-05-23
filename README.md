@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.67.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.67.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -359,10 +359,20 @@ target.
 - Drag-and-drop Godot nodes (`AudioEmitter3D`, `VoiceChatPlayer`,
   `MusicStateController`, `ReverbZone`, `FootstepSurfacePlayer`,
   `NetworkedAudioEvent`, `NetworkedAudioEmitter3D`)
+- **Mixer dock in the editor** — visual bus tree with strip-style
+  effect chains, click to edit parameters, master bus accent-coloured
+  for differentiation. Configure the whole audio system from
+  inside Godot without hand-editing `config.json` (though that
+  still works — the dock writes back to the same file).
 - Built-in debug overlay (`GoolDebugOverlay`) — drop the node in,
   **press F3 in-game** to see real-time engine health (peak,
   active voices, callback rate, exceptions). No code, no
   instrumentation, no leaving Godot.
+- **Session log dump** — `Gool.dump_session_log()` writes a JSONL
+  file with every structured log entry (level, category, message,
+  fields, source) since session start. Bind it to a debug key and
+  the file goes with bug reports — no more
+  trade-screenshots-of-the-Output-panel debugging loops.
 - JSON sound banks designers can edit without touching code
 - Hot reload — change `sounds.json` on disk, the runtime
   re-registers without restart
@@ -377,6 +387,21 @@ target.
 - Lock-free, allocation-free render thread (the engine never
   allocates or takes a lock during audio rendering)
 
+## Master Control: the master bus, done
+
+Dynamics on the master bus is the part of mixing that makes
+non-audio-experts nervous. Pick the wrong limiter threshold and
+your game clips; pick the wrong release time and it sounds dead.
+
+The `master_control` effect is a single bus effect bundling three
+audio-engineer staples — Glue compression, true-peak Limiter,
+LUFS-targeting Rider — with five preset configurations chosen by
+submenu in the mixer dock (Standard FPS, Cinematic, Esports,
+Mobile, Pass-through). Drop it on the Master bus, pick the preset
+that matches your game type, ship. Every parameter is editable in
+the mixer dock if you want to tune later — the presets are a
+sane default, not a lock.
+
 ## Why not Godot's built-in audio?
 
 The gap is concrete:
@@ -388,6 +413,7 @@ The gap is concrete:
 | Adaptive music                | per-clip state machines         | `MusicStateController` prefab + crossfade       |
 | Asset pipeline                | per-clip imports                | JSON sound banks + `.gpak` archives             |
 | Bus graph + sidechain         | linear audio buses              | hierarchical buses with sidechain compressor    |
+| Master bus dynamics           | manual limiter setup            | `master_control` effect with five presets       |
 | Replay determinism            | not addressed                   | bit-identical mix output verified               |
 | Per-event priority + eviction | first-come-first-served voices  | priority + distance-based eviction              |
 
@@ -457,6 +483,20 @@ listener position from your camera each frame.
 
 - **API surface:** the `/root/Gool` autoload + the seven prefab Nodes
   (see `godot/addons/gool/`)
+- **GDScript-friendly registration:** `Gool.register_sound_definition_dict(name, opts)`
+  takes a dict of named keys instead of eight positional arguments
+  (because GDScript has no named-argument calls). Unknown keys
+  produce `push_warning` rather than being silently ignored, so
+  typos surface immediately.
+- **Defensive coding with introspection:** `Gool.has_sound(name)`,
+  `Gool.get_sound_info(name)`, `Gool.get_registered_sound_count()` —
+  cheap checks that the soundId you're about to emit actually has
+  backing PCM data, ahead of `create_emitter`. The engine also
+  actively warns on common silent-failure modes (calling
+  `create_emitter` against an unregistered sound, decoding a file
+  that produced zero frames, etc.), so the first place to look
+  when something's silent is the Godot Errors panel — the warning
+  usually says exactly what's wrong.
 - **Networking integration:** [`docs/networking_integration.md`](docs/networking_integration.md)
   — the four classes of game-network data and which gool entry
   point implements each

@@ -22,6 +22,53 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.67.1] - 2026-05-23 — Hotfix: Gool autoload forwarders for v0.66.0 introspection API
+
+Hotfix for a v0.66.0 plumbing gap: the introspection API (`has_sound`,
+`get_sound_info`, `get_registered_sound_count`) was implemented on the
+C++ `AudioRuntime`, exposed via `ClassDB::bind_method` on the
+`GoolAudioRuntime` C++ binding, and *documented* as `Gool.has_sound("music")`
+in the binding's doc comment (gool_godot.cpp:1656) — but the
+corresponding GDScript forwarders on the `Gool` autoload
+(`runtime_singleton.gd`) were never written. So calling
+`Gool.has_sound("music")` — exactly as the v0.66.0 doc comment and
+the v0.67.0 README show — produced:
+
+```
+Invalid call. Nonexistent function 'has_sound' in base 'Node (runtime_singleton.gd)'.
+```
+
+### Fix
+
+Three thin forwarders added to `runtime_singleton.gd`:
+
+```gdscript
+func has_sound(name: String) -> bool
+func get_sound_info(name: String) -> Dictionary
+func get_registered_sound_count() -> int
+```
+
+Each forwards to the underlying `_runtime` (the `GoolAudioRuntime`
+C++ binding instance) and returns safe values when the runtime
+isn't initialized yet: `false`, `{}`, and `0` respectively. This
+mirrors the C++ contract and means callers can ask these questions
+before `Initialize()` completes without special-casing.
+
+### Why this slipped
+
+v0.66.0 added the C++ side and the binding bind_method, and the
+binding's doc comment was written as if `Gool.has_sound(...)` were
+the access path. The intent was clear; the autoload glue just never
+got written. No call site in gool or the tests exercised the
+`Gool.`-prefixed access path, so the gap was invisible until the
+sandbox tried to use it. Same shape as the v0.66.0 CI break (test
+file included a header that wasn't on the test target's include
+path) and the sandbox v3 music-silence (audition called
+create_emitter before audio_setup's _ready completed): static
+reading said "this works," runtime exercise hadn't been done.
+Process change: any new public API gets called from at least one
+real call site (test, example, or sandbox) before the release ships.
+
 ## [0.67.0] - 2026-05-23 — Session log dump
 
 The v0.64.x sandbox debug session ate ~90 minutes trading Output-panel
@@ -19866,6 +19913,7 @@ Headlines:
 [0.66.0]: https://github.com/siliconight/gool/releases/tag/v0.66.0
 [0.66.1]: https://github.com/siliconight/gool/releases/tag/v0.66.1
 [0.67.0]: https://github.com/siliconight/gool/releases/tag/v0.67.0
+[0.67.1]: https://github.com/siliconight/gool/releases/tag/v0.67.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
