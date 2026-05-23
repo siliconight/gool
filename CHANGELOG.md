@@ -22,6 +22,114 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.64.1] - 2026-05-23 — Add Effect dropdown completeness
+
+Three coordinated fixes for the dock's "+ Add Effect" picker
+menu. The v0.64.0 mixer UI refresh surfaced two latent gaps in
+this path and one pre-existing positioning bug, all of them small
+enough to roll into one patch rather than spread across releases:
+
+### What this solves
+
+When v0.63.0 introduced the MasterControl effect, the C++ engine,
+the JSON config loader, the default config template in
+`plugin.gd`, and the runtime binding all got the new kind. But
+the dock's Add Effect dropdown is a hardcoded list of 5 entries
+that was never updated — so users couldn't add a master_control
+effect from the UI even though fresh projects ship with one on
+their Master bus. The only path was hand-editing `config.json`.
+
+v0.64.0's chain-pill UI made this gap immediately visible: users
+upgrading from older projects (their Master bus has no
+master_control, since the engine doesn't retroactively add it)
+saw a Master strip without a `[MSTR]` pill, opened the Add Effect
+menu, and found Master Control missing entirely.
+
+Adjacent issue, separate root cause: the picker menu itself was
+mis-positioned when the dock lived inside the Godot editor's
+embedded subviewport — appearing at the lower-left of the screen
+instead of below the Add Effect button. Pre-existing bug from
+when the picker was first added; symptom became more noticeable
+once v0.64.0's wider Master strip pushed the Add Effect button
+further from its old position.
+
+### Fixes
+
+**Master Control in the Add Effect dropdown.**
+`_KIND_PICKER_LABELS` in `mixer_dock.gd` gains a sixth entry
+`["master_control", "Master Control"]`, placed at the end of the
+list to reflect signal-chain convention (mastering processing
+goes last). Picking it appends a master_control effect to the
+selected bus's chain.
+
+**Standard FPS preset defaults for new master_control effects.**
+`EFFECT_DEFAULTS_BY_KIND` in `config_model.gd` gains a
+`"master_control"` entry with the full 17-parameter Standard FPS
+preset — same block fresh projects ship with on their Master
+bus (`plugin.gd` lines 117-137):
+
+  - All three stages enabled (glue, rider, limiter)
+  - -16 LUFS target, -1 dBTP ceiling — baseline streaming loudness
+  - Conservative glue (2:1, soft knee)
+  - ±6 dB rider envelope with 3-second time constant
+  - Limiter at 5ms lookahead, 50ms release
+
+Per-bus tuning happens through the effects-panel sliders after
+the effect is added. To opt out of any stage, the user flips the
+corresponding `mc_*_enabled` to false. The user can also remove
+the effect entirely via the existing × button on the effect
+header.
+
+**Popup menu positioning fix.**
+`_on_add_effect_button_pressed` in `mixer_dock.gd` switches from
+`Control.global_position` to `Control.get_screen_position()` for
+the menu's anchor point. `PopupMenu.popup()` interprets its
+`Rect2i` argument in screen coordinates, but `global_position`
+returns viewport coordinates — fine for a fullscreen window,
+wrong inside the Godot editor where the dock lives in an
+embedded SubViewport offset from the screen origin. The previous
+math placed the menu at `(viewport_x, viewport_y)` when it should
+have been at `(screen_x, screen_y)`. Difference equals the
+editor window's offset, which is why the menu jumped far away
+from the button instead of landing right below it.
+`get_screen_position()` walks the window hierarchy and returns
+the actual screen-space position, so the menu now lands directly
+below the Add Effect button regardless of the editor's layout
+or window position.
+
+### Known limitation carried forward from v0.64.0
+
+The MasterControl param-introspection tables in `config_model.gd`
+(`KIND_INT_TO_JSON_KEYS` and `KIND_INT_TO_KEY_TO_PARAM_ID`) are
+still empty stubs for kind=6. Consequence: when a user adds a
+master_control effect via the new dropdown entry, the JSON block
+is correctly written to `config.json` with all 17 params at the
+Standard FPS preset, the engine loads it correctly at game-time,
+and the FX chain pill renders `[MSTR]` — but the effects panel
+sliders for master_control's individual parameters are blank
+at editor time. To tune individual params before the engine
+loads them, hand-edit `config.json`. To tune at runtime during
+F5, the runtime path's effect introspection serves real values
+via `get_bus_effects()` so the sliders DO render during a live
+session.
+
+Full editor-time MasterControl introspection (populating the
+param-key tables so all 17 sliders render at rest) is queued for
+a separate release — the work needed is a 17-paramId map matching
+`audio::EffectParameter::*` in `bus.h` plus per-param metadata
+(label, range, curve, units, format) for `PARAM_META` in
+`mixer_dock.gd`.
+
+### Verified
+
+- C++ engine binding unchanged from v0.64.0; library output
+  bit-identical aside from the version-pin file.
+- `version_test` reports 0.64.1 from both local build and
+  roundtripped tarball.
+- `master_control_test` regression check green.
+- Structural checks on the edited GDScript pass: no reserved-word
+  identifiers, balanced brackets, tab-only indent.
+
 ## [0.64.0] - 2026-05-23 — Mixer UI evolution: routing visible, master differentiated, FX as chain
 
 Phase 1 + Phase 2 + Phase 5 of the mixer UI evolution plan, bundled
@@ -19207,6 +19315,7 @@ Headlines:
 [0.6.0]: https://github.com/siliconight/gool/releases/tag/v0.6.0
 [0.63.1]: https://github.com/siliconight/gool/releases/tag/v0.63.1
 [0.64.0]: https://github.com/siliconight/gool/releases/tag/v0.64.0
+[0.64.1]: https://github.com/siliconight/gool/releases/tag/v0.64.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

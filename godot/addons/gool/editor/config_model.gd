@@ -1223,6 +1223,54 @@ const EFFECT_DEFAULTS_BY_KIND: Dictionary = {
 		"output_gain": 1.0,
 		"bias": 0.0,
 	},
+	# v0.64.1: master_control defaults block. Mirrors the Standard
+	# FPS preset that fresh projects ship with on their Master bus
+	# (see plugin.gd lines 117-137 of the default config template).
+	# When the user picks "Master Control" from the Add Effect
+	# dropdown, this dict gets appended to the bus's effects array
+	# via add_effect, producing the same JSON shape that fresh
+	# projects have built in by default.
+	#
+	# Preset rationale: -16 LUFS target + -1 dBTP ceiling is the
+	# baseline streaming-loudness target for game-style mixes.
+	# Conservative glue (2:1, soft knee) and rider (±6 dB envelope,
+	# 3s time constant) so a user dropping this on an existing mix
+	# doesn't get aggressive processing they have to immediately
+	# tune down.
+	#
+	# Per-bus tuning happens through the effects-panel sliders
+	# after the effect is added; this dict is just the starting
+	# point. To opt out of any stage, the user can flip the
+	# corresponding mc_*_enabled to false.
+	#
+	# Note: editor-time param introspection for master_control's
+	# 17 parameters is still deferred (see NOTE under
+	# KIND_INT_TO_ABBREV) — adding this effect from the dropdown
+	# WILL write the correct JSON block and the engine will load
+	# it correctly when the game runs, but the per-parameter
+	# sliders in the dock's effects panel are blank at editor time
+	# until KIND_INT_TO_JSON_KEYS and KIND_INT_TO_KEY_TO_PARAM_ID
+	# get their kind=6 entries populated.
+	"master_control": {
+		"kind":                       "master_control",
+		"mc_glue_enabled":            true,
+		"mc_rider_enabled":           true,
+		"mc_limiter_enabled":         true,
+		"mc_glue_threshold_db":      -12.0,
+		"mc_glue_ratio":               2.0,
+		"mc_glue_attack_ms":          10.0,
+		"mc_glue_release_ms":        250.0,
+		"mc_glue_knee_db":             6.0,
+		"mc_glue_makeup_db":           0.0,
+		"mc_rider_target_lufs":      -16.0,
+		"mc_rider_time_constant_ms": 3000.0,
+		"mc_rider_max_gain_db":        6.0,
+		"mc_rider_min_gain_db":       -6.0,
+		"mc_rider_freeze_below_lufs": -6.0,
+		"mc_limiter_ceiling_dbtp":    -1.0,
+		"mc_limiter_release_ms":      50.0,
+		"mc_limiter_lookahead_ms":     5.0,
+	},
 }
 
 # Display order for the effect kind picker. Five kinds, signal-flow

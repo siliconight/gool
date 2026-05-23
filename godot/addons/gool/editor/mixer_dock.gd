@@ -3496,12 +3496,22 @@ class _EffectsPanel extends PanelContainer:
 
 	# Kind labels matching EFFECT_KIND_ORDER in GoolConfigModel.
 	# Kept local so _EffectsPanel doesn't need to import the model.
+	#
+	# v0.64.1: master_control added. Placed at end of the list to
+	# reflect signal-chain convention — mastering goes last in the
+	# chain. When the user picks "Master Control" from the menu,
+	# add_effect appends a master_control block with the Standard
+	# FPS preset defaults (see EFFECT_DEFAULTS_BY_KIND["master_control"]
+	# in config_model.gd). The new effect lands AT THE END of the
+	# bus's existing effect chain, which is correct placement for
+	# all mastering processing.
 	const _KIND_PICKER_LABELS: Array = [
 		["gain", "Gain"],
 		["biquad", "Biquad Filter"],
 		["compressor", "Compressor"],
 		["saturation", "Saturation"],
 		["reverb", "Reverb"],
+		["master_control", "Master Control"],
 	]
 
 	func _on_add_effect_button_pressed(anchor_btn: Button) -> void:
@@ -3515,7 +3525,21 @@ class _EffectsPanel extends PanelContainer:
 		menu.close_requested.connect(menu.queue_free)
 		menu.popup_hide.connect(menu.queue_free)
 		anchor_btn.add_child(menu)
-		var origin: Vector2 = anchor_btn.global_position \
+		# v0.64.1: position fix. PopupMenu.popup() interprets its
+		# Rect2i argument in SCREEN coordinates, not viewport coords.
+		# Pre-v0.64.1 used Control.global_position, which returns
+		# the button's position inside its viewport — fine for a
+		# fullscreen window but wrong inside the Godot editor where
+		# the dock lives in an embedded SubViewport offset from the
+		# screen origin. Result was the menu jumping to the lower-
+		# left of the screen instead of appearing next to the
+		# button.
+		#
+		# Control.get_screen_position() walks the window hierarchy
+		# and returns the actual screen-space position, so the
+		# menu now lands directly below the button regardless of
+		# the editor's window layout.
+		var origin: Vector2 = anchor_btn.get_screen_position() \
 				+ Vector2(0, anchor_btn.size.y)
 		menu.popup(Rect2i(Vector2i(origin), Vector2i(0, 0)))
 
