@@ -198,11 +198,26 @@ func _parse_end(object: Object) -> void:
 	var audition_row := _build_audition_row(resource, material_int)
 	container.add_child(audition_row)
 
-	# Small footer reflecting v0.60.0's full Option B status.
+	# v0.61.2 — Phase 6.E.4 (first cut): preset row.
+	# "Save preset..." captures the current override curve as a
+	# named .tres under res://gool/material_eq_presets/. Enabled
+	# only when override is on (no point saving the engine table —
+	# that's already addressable via the material int).
+	# "Load preset..." pops up the picker, copies the chosen
+	# preset's band values into the resource's override fields,
+	# flips override_enabled on, and saves. Available always:
+	# loading a preset onto an override-off resource is a valid
+	# "start from this curve" workflow.
+	var preset_row := _build_preset_row(resource, override_enabled)
+	container.add_child(preset_row)
+
+	# Small footer reflecting current Phase 6.E status.
 	var footer := Label.new()
 	footer.text = (
-		"v0.60.0: Phase 6.E.1 complete. Toggle 'Override curve' "
-		+ "to author per-instance EQ via drag handles on the plot."
+		"v0.61.2: Phase 6.E.1/2/4 shipped. Override + drag handles "
+		+ "for per-instance EQ; mixer dock shows live bus EQ; "
+		+ "save/load named curve presets under "
+		+ "res://gool/material_eq_presets/."
 	)
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
@@ -853,3 +868,268 @@ func _stream_from_float_buffer(buffer: PackedFloat32Array,
 	stream.mix_rate = sample_rate
 	stream.data = bytes
 	return stream
+
+
+# v0.61.2 — Phase 6.E.4 (first cut): preset row.
+#
+# Two buttons side by side: Save and Load. Save is enabled only
+# when the resource's override_enabled is true (no point saving
+# the engine table, which is already addressable by material int).
+# Load is always enabled — loading a preset onto an override-off
+# resource is a valid "I want to start from THIS curve" workflow,
+# and it implicitly flips override on.
+#
+# The PRESET_MANAGER preload is wrapped in a const at this scope
+# (not above the file's existing CURVE_VIEW_SCRIPT block) so the
+# preset-related code stays grouped at the bottom of the file
+# alongside the rest of v0.61.2 additions. Cheap to preload at
+# parse time; doesn't affect inspector cold-start cost.
+const _PRESET_MANAGER := preload(
+		"res://addons/gool/editor/material_eq_preset_manager.gd")
+const _PRESET_SCRIPT := preload(
+		"res://addons/gool/resources/gool_material_eq_preset.gd")
+
+
+func _build_preset_row(resource: Resource, override_on: bool) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var label := Label.new()
+	label.text = "Presets"
+	label.custom_minimum_size = Vector2(120, 0)
+	row.add_child(label)
+
+	var save_btn := Button.new()
+	save_btn.text = "Save…"
+	save_btn.tooltip_text = (
+			"Save the current override curve as a named preset "
+			+ "under res://gool/material_eq_presets/. Enabled when "
+			+ "'Override curve' is on."
+	)
+	save_btn.disabled = not override_on
+	save_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_btn.pressed.connect(
+			func() -> void:
+				_show_save_preset_dialog(resource))
+	row.add_child(save_btn)
+
+	var load_btn := Button.new()
+	load_btn.text = "Load…"
+	load_btn.tooltip_text = (
+			"Apply a saved preset's curve to this material. Loads "
+			+ "from res://gool/material_eq_presets/. Will turn "
+			+ "'Override curve' on if it isn't already."
+	)
+	load_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	load_btn.pressed.connect(
+			func() -> void:
+				_show_load_preset_dialog(resource))
+	row.add_child(load_btn)
+
+	return row
+
+
+# Pop the "Save as preset…" dialog. Single LineEdit for the name,
+# with a sensible default. On accept: build a preset from the
+# resource's current override fields, write it through the
+# manager, push a status message.
+func _show_save_preset_dialog(resource: Resource) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = "Save EQ preset"
+	dlg.ok_button_text = "Save"
+	dlg.add_cancel_button("Cancel")
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+
+	var hint := Label.new()
+	hint.text = (
+			"Saves the current override curve as a named .tres "
+			+ "under res://gool/material_eq_presets/. The name "
+			+ "becomes the picker label; punctuation is replaced "
+			+ "with underscores in the filename."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	hint.custom_minimum_size = Vector2(360, 0)
+	vbox.add_child(hint)
+
+	var name_label := Label.new()
+	name_label.text = "Preset name:"
+	vbox.add_child(name_label)
+
+	var name_edit := LineEdit.new()
+	# Default: the material's friendly name as a starting point.
+	# Designer probably wants to refine it but a populated field
+	# is faster than a blank one.
+	name_edit.text = _material_name(int(resource.get("material")))
+	name_edit.placeholder_text = "e.g. Brawler concrete (punchier)"
+	name_edit.custom_minimum_size = Vector2(360, 0)
+	vbox.add_child(name_edit)
+
+	dlg.add_child(vbox)
+	dlg.register_text_enter(name_edit)
+	dlg.confirmed.connect(
+			func() -> void:
+				_on_save_preset_confirmed(resource, name_edit.text, dlg))
+	dlg.canceled.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
+	# Add to the editor scene tree via EditorInterface — same path
+	# the mixer dock uses for its ConfirmationDialog instances. The
+	# inspector itself isn't in a viewport-rooted tree until added,
+	# so we attach to the base control.
+	EditorInterface.get_base_control().add_child(dlg)
+	dlg.popup_centered()
+	name_edit.grab_focus()
+
+
+func _on_save_preset_confirmed(resource: Resource, name: String,
+		dlg: AcceptDialog) -> void:
+	dlg.queue_free()
+	var trimmed: String = name.strip_edges()
+	if trimmed.is_empty():
+		push_warning("[gool] preset name was empty — nothing saved")
+		return
+	# Check for overwrite. If a preset by this sanitized name
+	# already exists, confirm before clobbering. The previous
+	# author may have used the same display name with a different
+	# tuning, and the v0.61.2 sanitization is destructive (only
+	# one .tres per sanitized name).
+	if _PRESET_MANAGER.would_overwrite(trimmed):
+		var confirm := ConfirmationDialog.new()
+		confirm.title = "Overwrite existing preset?"
+		confirm.dialog_text = (
+				"A preset with this name already exists at "
+				+ "res://gool/material_eq_presets/. Overwrite?"
+		)
+		confirm.ok_button_text = "Overwrite"
+		confirm.confirmed.connect(
+				func() -> void:
+					_do_save_preset(resource, trimmed)
+					confirm.queue_free())
+		confirm.canceled.connect(confirm.queue_free)
+		confirm.close_requested.connect(confirm.queue_free)
+		EditorInterface.get_base_control().add_child(confirm)
+		confirm.popup_centered()
+	else:
+		_do_save_preset(resource, trimmed)
+
+
+func _do_save_preset(resource: Resource, display_name: String) -> void:
+	var preset: Resource = _PRESET_SCRIPT.from_material(resource)
+	var saved_path: String = _PRESET_MANAGER.save_preset(preset, display_name)
+	if saved_path.is_empty():
+		# save_preset already pushed a warning explaining why.
+		return
+	print("[gool] saved preset to ", saved_path)
+	# Filesystem rescan so the new preset shows up immediately in
+	# any subsequent picker dialog without needing a manual refresh.
+	EditorInterface.get_resource_filesystem().scan()
+
+
+# Pop the "Load preset…" dialog. Lists all presets in the directory
+# via ItemList. On accept: copy the chosen preset's band values
+# into the resource's override fields, flip override on if it isn't,
+# save the resource so the change persists.
+func _show_load_preset_dialog(resource: Resource) -> void:
+	var presets: Array = _PRESET_MANAGER.list_presets()
+	var dlg := AcceptDialog.new()
+	dlg.title = "Load EQ preset"
+	dlg.ok_button_text = "Load"
+	dlg.add_cancel_button("Cancel")
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+
+	if presets.is_empty():
+		var empty_label := Label.new()
+		empty_label.text = (
+				"No presets found under res://gool/material_eq_presets/. "
+				+ "Save your first preset via the 'Save…' button after "
+				+ "tweaking an override curve."
+		)
+		empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		empty_label.custom_minimum_size = Vector2(360, 0)
+		empty_label.add_theme_color_override("font_color",
+				Color(0.7, 0.7, 0.7))
+		vbox.add_child(empty_label)
+		dlg.add_child(vbox)
+		dlg.ok_button_text = "OK"
+		dlg.get_ok_button().disabled = true
+		dlg.close_requested.connect(dlg.queue_free)
+		dlg.canceled.connect(dlg.queue_free)
+		EditorInterface.get_base_control().add_child(dlg)
+		dlg.popup_centered()
+		return
+
+	var hint := Label.new()
+	hint.text = (
+			"Select a preset to apply. The curve values will be "
+			+ "copied onto this material's override fields and "
+			+ "'Override curve' will be turned on."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	hint.custom_minimum_size = Vector2(360, 0)
+	vbox.add_child(hint)
+
+	var item_list := ItemList.new()
+	item_list.custom_minimum_size = Vector2(360, 200)
+	item_list.allow_reselect = true
+	for entry in presets:
+		var e: Dictionary = entry as Dictionary
+		var line: String = String(e.get("name", "(unnamed)"))
+		var desc: String = String((e.get("preset") as Resource).get(
+				"description"))
+		if not desc.is_empty():
+			line += "  —  " + desc
+		item_list.add_item(line)
+	if item_list.item_count > 0:
+		item_list.select(0)
+	vbox.add_child(item_list)
+
+	dlg.add_child(vbox)
+	dlg.confirmed.connect(
+			func() -> void:
+				_on_load_preset_confirmed(resource, presets,
+						item_list.get_selected_items(), dlg))
+	dlg.canceled.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
+	# Double-click in the list = accept.
+	item_list.item_activated.connect(
+			func(_idx: int) -> void:
+				dlg.confirmed.emit()
+				dlg.queue_free())
+	EditorInterface.get_base_control().add_child(dlg)
+	dlg.popup_centered()
+
+
+func _on_load_preset_confirmed(resource: Resource, presets: Array,
+		selection: PackedInt32Array, dlg: AcceptDialog) -> void:
+	dlg.queue_free()
+	if selection.is_empty():
+		return
+	var idx: int = selection[0]
+	if idx < 0 or idx >= presets.size():
+		return
+	var entry: Dictionary = presets[idx] as Dictionary
+	var preset: Resource = entry.get("preset") as Resource
+	if preset == null:
+		push_warning("[gool] selected preset entry had no preset Resource")
+		return
+	# Order matters: flipping override_enabled false → true triggers
+	# the resource's setter to seed override fields from the engine
+	# table. If we applied the preset BEFORE flipping, the seed
+	# would clobber the preset values. So we flip first (no-op if
+	# override was already on; seeds engine table if it was off),
+	# then apply the preset over the top — the preset wins.
+	resource.set("override_enabled", true)
+	preset.apply_to_material(resource)
+	_save_resource(resource)
+	# emit_changed so the inspector's curve view + readout refresh
+	# immediately. The per-field setters already emit, but a single
+	# explicit emit at the end guarantees the inspector rebuild sees
+	# a coherent post-load state rather than chasing seven partial
+	# updates.
+	resource.emit_changed()
+	print("[gool] applied preset '%s'" % String(entry.get("name", "(unnamed)")))

@@ -22,7 +22,63 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.61.1] - 2026-05-23 — Phase 6.E.2: bus EQ visualization in the mixer dock
+## [0.61.2] - 2026-05-23 — Phase 6.E.4 (first cut): named EQ curve presets
+
+Closes the EQ-preset slice of Phase 6.E.4. Designers can save the override curve from a `GoolAudioMaterial.tres` as a named preset, browse saved presets, and apply a preset back to any material later. Presets are individual `.tres` files under `res://gool/material_eq_presets/` — version-controllable, shareable across projects via the standard Godot resource workflow.
+
+This is the EQ-only first cut. The acoustic-presence-EQ design doc envisions full material *profiles* bundling occlusion coefficients + EQ curve + reverb preset overrides. Those additions are deferred to v0.62.x and require schema work on `GoolAudioMaterial` itself (occlusion currently lives only in the engine table; reverb isn't material-bound). v0.61.2 ships the slice that's genuinely useful today, with the schema set up to grow.
+
+### What designers see
+
+Two new buttons on the `GoolAudioMaterial.tres` inspector, in a "Presets" row between the audition row and the footer:
+
+- **Save…** — opens a dialog asking for a preset name (pre-filled with the material's friendly name as a starting point). Saves the seven band override values to `res://gool/material_eq_presets/<sanitized_name>.tres`. Enabled only when "Override curve" is on — saving the engine table makes no sense since the material int already addresses it. Overwrite confirmation if a preset with the same name already exists.
+- **Load…** — opens a picker dialog listing every preset in the directory, sorted by display name, with optional description shown inline. Pick one (or double-click) to apply: the seven band values are copied onto the material's override fields, "Override curve" is turned on if it wasn't already, and the resource is saved.
+
+Workflow:
+
+1. Open `concrete.tres`, toggle "Override curve", drag the high-shelf dot up for more brightness, audition, tweak more, audition again. The curve sounds the way you want.
+2. Click **Save…**, accept the suggested name (or rename to e.g. "Concrete (brawler tuning)"), click Save. The preset is now a `.tres` file you can copy into another project or commit to git.
+3. Open `metal.tres`, click **Load…**, pick "Concrete (brawler tuning)", click Load. Metal now has the same EQ shape; the curve plot and per-band fields update immediately.
+
+### What's in the box
+
+- **`addons/gool/resources/gool_material_eq_preset.gd`** — new `GoolMaterialEqPreset extends Resource` class. Holds `preset_name`, `description`, the seven band fields, and a `preset_schema_version` int (1 in v0.61.2). Two convenience methods: `to_curve()` returns the curve dict shape the visualizer expects, `apply_to_material(mat)` pushes values onto a GoolAudioMaterial's override fields. A static `from_material(mat)` constructor populates a fresh preset from an existing material's current override state.
+- **`addons/gool/editor/material_eq_preset_manager.gd`** — `@tool extends RefCounted` helper with static methods. `list_presets()` scans the preset directory and returns a sorted Array of `{name, path, preset}` dicts. `save_preset(preset, display_name)` writes the .tres with a sanitized filename. `would_overwrite(display_name)` checks for an existing file with the same sanitized name (used by the inspector to put up an overwrite-confirmation). `_sanitize_filename` is the path-safe pass: `[A-Za-z0-9_-]` survives; everything else collapses to underscores, with consecutive non-alnum coalescing to a single underscore. Tested across 11 inputs including non-ASCII, leading/trailing whitespace, all-punctuation.
+- **`addons/gool/editor/material_eq_inspector.gd`** — `_build_preset_row()` adds the two buttons; `_show_save_preset_dialog` / `_show_load_preset_dialog` / `_on_save_preset_confirmed` / `_on_load_preset_confirmed` handle the dialog UX. Both dialogs are popped via `EditorInterface.get_base_control()` — same pattern the mixer dock uses for its ConfirmationDialog instances. Load order is `override_enabled = true` first (which seeds engine table values via the resource setter), THEN `preset.apply_to_material(resource)` (which overwrites the seeds) — this order was an early bug I caught while writing the code, called out in the inline comment so future authors don't reverse it.
+
+### Storage convention
+
+```
+res://gool/
+├── config.json                      # existing — bus topology + effects
+├── config.json.gool-backup          # existing — auto-backup
+└── material_eq_presets/             # new in v0.61.2
+    ├── Concrete_brawler_tuning.tres
+    ├── Cathedral_foliage.tres
+    └── Brawler_metal.tres
+```
+
+The directory is created on first save. Empty directory is a normal "no presets yet" state — the load dialog handles it with a helpful empty-state message.
+
+### Migration
+
+None. v0.61.2 is purely additive. Existing `GoolAudioMaterial.tres` files are unchanged, the C++ engine library is unchanged, the godot binding is unchanged, no existing GDScript APIs were modified. Pulling v0.61.2 onto a project with no presets shows an empty preset picker; saving the first preset populates the directory and rolls forward from there.
+
+### What's deferred
+
+Full Phase 6.E.4 (per the design doc) bundles **occlusion overrides + EQ + reverb** into one "acoustic identity". v0.61.2 ships only the EQ slice because:
+
+1. **Occlusion overrides** require new `@export` fields on `GoolAudioMaterial` (currently absorption/damping live only in the engine table — there's no `.tres`-level override path equivalent to v0.60.0's EQ override fields). Adding them is a separate schema change that needs its own design pass.
+2. **Reverb preset binding** is even more upstream: materials don't currently influence which reverb preset gets applied at all. The design-doc vision of "drag a material → set the acoustic identity" requires associating reverb presets (or per-zone send levels) with material profiles, which is design-doc work not addon-side patch work.
+3. **Drag-to-apply on colliders** would need an inspector plugin for `CollisionShape3D` (currently outside gool's editor scope).
+
+The v0.61.2 `preset_schema_version` field is in place so future v0.62.x presets can carry occlusion + reverb without breaking v0.61.2 loaders (Godot's .tres loader tolerates unknown fields gracefully).
+
+### Status
+
+Phase 6.E.4 design-doc status updated to **⚠️ partially complete (v0.61.2) — EQ presets only**, with the deferred items enumerated. Phase 6.E.3 (A/B compare with realism slider) remains unstarted and is the natural Phase E completion candidate before moving on.
+
 
 Closes Phase 6.E.2 of `docs/audio_design/acoustic_presence_eq.md`. When a designer expands the Fx panel on a bus whose first three effects are biquads — the convention `apply_material_eq_to_bus` enforces, and the shape every material-EQ-shaped sfx bus has — the dock now shows the cumulative frequency response of those three biquads above the existing effect tiles.
 
