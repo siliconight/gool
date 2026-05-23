@@ -73,6 +73,13 @@ const PREFABS := [
 	# separate autoload (see DIALOGUE_DIRECTOR_AUTOLOAD_* above)
 	# rather than appearing here.
 	["AudioMaterialTag",          "Node",   "audio_material_tag.gd",          "audio_material_tag.svg"],
+	# v0.62.0: scene-level acoustic profile prefab. Drop into the
+	# scene root, pick a GoolAcousticProfile from the dropdown (8
+	# built-ins ship with gool at res://addons/gool/acoustic_profiles/;
+	# user profiles live at res://gool/acoustic_profiles/), F5. The
+	# scene's reverb bus is configured at scene load. ReverbZones
+	# still override per-region on top.
+	["GoolSceneProfile",          "Node",   "gool_scene_profile.gd",          "gool_scene_profile.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"

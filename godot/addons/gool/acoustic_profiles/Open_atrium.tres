@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="GoolAcousticProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_acoustic_profile.gd" id="1_profile"]
+
+[resource]
+script = ExtResource("1_profile")
+profile_name = "Open atrium"
+description = "Large open hard-surface space — long bright tail, smooth wash. Use for lobbies, atriums, malls, large foyers."
+profile_schema_version = 1
+reverb_decay = 0.75
+reverb_lf_damping = 0.1
+reverb_hf_damping = 0.25
+reverb_diffusion = 0.75
+reverb_predelay_ms = 60.0
+reverb_wet_gain_db = -10.0

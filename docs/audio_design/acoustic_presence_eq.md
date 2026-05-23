@@ -392,20 +392,47 @@ collider's metadata; the whole acoustic identity is set in one
 gesture. Save your own materials back to the library to share
 across projects.
 
-**Status: ⚠️ Phase 6.E.4 mostly complete (v0.61.2 + v0.61.3) — EQ tonal-character library; full profile bundling deferred.**
+**Status: ✅ Phase 6.E.4 complete (v0.61.2 + v0.61.3 + v0.62.0). Scope simplified per "simple simple simple" — see below.**
 
-v0.61.2 shipped the per-project save/load infrastructure: `GoolMaterialEqPreset` Resource type, Save…/Load… inspector buttons, presets stored as `.tres` files under `res://gool/material_eq_presets/`.
+v0.61.2 shipped the per-project Save…/Load… infrastructure and the `GoolMaterialEqPreset` Resource type. Presets stored as individual `.tres` files under `res://gool/material_eq_presets/`.
 
-v0.61.3 shipped the **built-in tonal-character library** at `res://addons/gool/material_eq_presets/` — twelve curated presets covering common acoustic situations: hard reflective ("Tile bathroom", "Concrete bunker", "Empty warehouse", "Cathedral stone"), warm/wooden ("Wooden cabin", "Library"), damped ("Carpeted office", "Forest clearing"), and stylistic ("Underwater", "Phone speaker", "Through a wall", "Old radio"). The Load… picker shows built-ins (★ prefix) above user presets, with descriptions inline and tooltips disclosing the source path. This delivers the design-doc principle "Defaults that 'just work'" extended from per-material defaults to per-space starting points: a Godot dev installing gool can immediately pick a preset that's close to the space they're designing, and tune from there rather than authoring from scratch.
+v0.61.3 shipped the **built-in tonal-character library** at `res://addons/gool/material_eq_presets/` — twelve curated EQ presets covering common surface contexts (Tile bathroom, Wooden cabin, Concrete bunker, Cathedral stone, etc.). Picker UX distinguishes built-in (★ prefix) from user presets.
 
-What's deferred (full Phase 6.E.4 per design-doc literal; candidate work for v0.62.x with its own design pass):
+v0.62.0 shipped the **scene-level acoustic profile prefab**: `GoolSceneProfile` Node + `GoolAcousticProfile` Resource type. Designer drops a `GoolSceneProfile` node anywhere in the scene tree, picks one of eight built-in profiles from the Inspector dropdown (Tight corridor, Open atrium, Wet cave, Dry forest, Industrial bunker, Suburban interior, Underwater, Outdoor field), F5 — the scene's reverb bus is configured at scene load. Custom profiles save to `res://gool/acoustic_profiles/`. ReverbZones continue to work per-region on top.
 
-1. **Occlusion overrides on materials.** Currently per-material absorption/damping coefficients live only in the engine table; there's no `.tres`-level override path equivalent to v0.60.0's EQ override fields. Adding that would let presets bundle "punchier concrete" with "less occlusive concrete" together.
-2. **Reverb preset binding.** Materials don't currently influence which reverb preset gets applied. The design-doc vision of "drag a material → set the full acoustic identity" requires associating reverb presets (or send levels per zone type) with material profiles — substantial engine work.
-3. **Full GoolMaterialProfile Resource bundling EQ + occlusion + reverb.** Once 1 and 2 land, the preset Resource grows from "EQ curve only" into "complete acoustic identity". The v0.61.2 `preset_schema_version` field is in place for forward-compatible loading.
-4. **Inspector drag-to-apply on colliders.** Drop a material profile onto a CollisionShape3D in the inspector and have the right metadata set automatically. The design-doc workflow, but requires an inspector plugin for CollisionShape3D, which is currently outside gool's editor scope.
+### What was simplified relative to the original design-doc literal scope
 
-The deferred items are scoped as v0.62.x because (1) and (2) require schema changes to `GoolAudioMaterial` itself with thoughtful backward compatibility, and (3) reorganizes what a "material" is. That's design-doc work, not an addon-side patch. The v0.61.x cluster ships the EQ slice that's genuinely useful today, with the schema set up to grow into the larger vision.
+The original Phase 6.E.4 framing envisioned a "complete material profile" bundling EQ + occlusion overrides + reverb preset bindings into one drag-and-drop acoustic identity. After scoping that vision against the **simplicity test — does this make a designer's workflow simpler, or just more flexible?** — three deferred items were cut, not deferred:
+
+1. **Occlusion overrides on `GoolAudioMaterial`** — *cut*. The existing engine table for absorption/damping has been working since v0.30.0; per-material override flexibility is an advanced workflow nobody asked for. If a project needs different occlusion behavior, adding a new entry to the AudioMaterial taxonomy is simpler than per-instance tuning.
+
+2. **Reverb preset binding on materials** — *cut*. Two reasons. First, `ReverbZone` already covers spatial reverb authoring (zone-attached, listener-position-driven), and v0.62.0's `GoolSceneProfile` covers the scene-wide baseline. A third reverb dimension on materials would double up on what's already there. Second, when scoped against a 3D multiplayer FPS workload (high-rate impacts, footsteps, voice — see Phase 6.E.4 scoping discussion in the v0.62.0 release notes), the surface-vs-space conflation that material-bound reverb implies would inflate per-impact branching and cache footprint on the hot path. Surface stays a surface concept; space is a separate zone/profile concept.
+
+3. **Full `GoolMaterialProfile` Resource bundling EQ + occlusion + reverb** — *cut*. Cancelled by (1) + (2). The three concerns (per-surface EQ tonal character, per-space reverb profile, per-impact occlusion engine defaults) stay in three orthogonal resource types: `GoolMaterialEqPreset`, `GoolAcousticProfile`, and the AudioMaterial taxonomy itself. Three simple things instead of one complex thing.
+
+### Concept positioning (post-v0.62.0)
+
+| Resource type | Concern | Scope | Shipped |
+|---|---|---|---|
+| `GoolAudioMaterial` (resource) | Surface for impact + occlusion | Per-collider | v0.20+ |
+| `GoolMaterialEqPreset` (resource) | EQ tonal character | Per-surface, per-impact | v0.61.2/.3 |
+| `GoolAcousticProfile` (resource) | Reverb shape of a space | Per-scene baseline | v0.62.0 |
+| `GoolSceneProfile` (node) | Apply an acoustic profile | Scene root | v0.62.0 |
+| `ReverbZone` (node) | Sub-region reverb override | Per-room volume | v0.27+ |
+
+Three orthogonal concepts, each with its own simple resource type. A typical multiplayer FPS level uses: surface materials tagged on colliders + per-impact EQ via material curves + one GoolSceneProfile node at scene root + zero or more ReverbZones for specific rooms.
+
+### Designer experience principles served
+
+- **Defaults that "just work"** — built-in libraries (12 EQ presets + 8 acoustic profiles) mean a fresh project sounds reasonable at install without any audio authoring.
+- **Discoverable presets, editable foundations** — the picker UX exposes the built-in values; designers learn what makes "Wet cave" feel wet by inspecting the resource and tuning from there.
+- **One slider for the realism-to-surrealism dial** — preserved via the existing `gool/material_eq/intensity` ProjectSetting from v0.59.x.
+
+### What's deferred to v0.62.x+ (genuine future work, not the previously-deferred items)
+
+- **Footstep-material library**: similar built-in library shape, but for footstep/movement sounds with material-aware variations. Separate from acoustic profiles; would complement them.
+- **A/B compare with realism slider (Phase 6.E.3)**: explicitly skipped per scope decision — designers' v0.61.3+ workflow is "pick a preset close to the target", not "A/B compare from scratch". Revisit only if real designer use produces a demand.
+- **Drag-and-drop a profile onto a CollisionShape3D**: explicitly cut as over-engineering. The existing metadata workflow for surface materials is fine; scene-level profiles drop onto the scene root, not colliders.
 
 ---
 

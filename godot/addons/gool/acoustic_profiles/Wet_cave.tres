@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="GoolAcousticProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_acoustic_profile.gd" id="1_profile"]
+
+[resource]
+script = ExtResource("1_profile")
+profile_name = "Wet cave"
+description = "Stone cavern with water — long tail, kept lows, slight HF damping. Use for caves, grottos, underground water spaces."
+profile_schema_version = 1
+reverb_decay = 0.85
+reverb_lf_damping = 0.05
+reverb_hf_damping = 0.4
+reverb_diffusion = 0.7
+reverb_predelay_ms = 80.0
+reverb_wet_gain_db = -7.0

@@ -22,7 +22,82 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.61.3] - 2026-05-23 — Phase 6.E.4 mostly complete: built-in tonal-character library
+## [0.62.0] - 2026-05-23 — Phase 6.E.4 complete: scene-level acoustic profiles
+
+Closes Phase 6.E.4. v0.61.3 shipped per-surface EQ tonal characters; v0.62.0 ships the complementary per-space reverb side. Together, three orthogonal authoring concerns (impact surface, EQ shape, reverb space) each live in their own simple resource type — no bundled "complete acoustic identity" Resource, no engine schema changes, no new runtime hooks.
+
+### Designer workflow
+
+1. Add a `GoolSceneProfile` node anywhere in the scene tree (root is fine; position doesn't matter, it's not spatial).
+2. In the Inspector, click the `profile` field. Godot's Resource picker shows eight built-in profiles shipping with gool plus any custom profiles the project has saved.
+3. Pick one — Tight corridor, Open atrium, Wet cave, Dry forest, Industrial bunker, Suburban interior, Underwater, or Outdoor field.
+4. Press F5. The scene's reverb bus is configured at scene load. The room sounds like the profile.
+
+That's the entire workflow. No drag-and-drop onto colliders, no metadata authoring, no parallel inspector dock. Drop the node, pick from a dropdown, done.
+
+To customize: a designer who wants to tune doesn't tweak the Node's fields. They open the profile `.tres` and tweak its fields (or Save… a new variant under `res://gool/acoustic_profiles/`). Keeping the Node's surface minimal (just a `profile` reference plus `bus_name` and `apply_on_ready` knobs) means there's exactly one source of truth for any given space's sound.
+
+### The eight built-in profiles
+
+Stored at `res://addons/gool/acoustic_profiles/` — read-only from the editor's perspective (saving over a built-in writes a same-named user profile to `res://gool/acoustic_profiles/` instead).
+
+| Profile | Decay | LF damp | HF damp | Diffusion | Predelay | Wet dB | Use case |
+|---|---|---|---|---|---|---|---|
+| Tight corridor | 0.35 | 0.15 | 0.35 | 0.45 | 8 ms | -14 | Corridors, narrow tunnels, stairwells |
+| Open atrium | 0.75 | 0.10 | 0.25 | 0.75 | 60 ms | -10 | Lobbies, atriums, malls |
+| Wet cave | 0.85 | 0.05 | 0.40 | 0.70 | 80 ms | -7 | Caves, grottos, underground water spaces |
+| Dry forest | 0.20 | 0.20 | 0.65 | 0.30 | 15 ms | -18 | Forests, dense vegetation, outdoor wooded |
+| Industrial bunker | 0.55 | 0.15 | 0.30 | 0.55 | 30 ms | -11 | Bunkers, machine rooms, industrial interiors |
+| Suburban interior | 0.40 | 0.15 | 0.45 | 0.55 | 18 ms | -15 | Houses, offices, normal rooms — neutral baseline |
+| Underwater | 0.50 | 0.05 | 0.85 | 0.65 | 25 ms | -9 | Submerged spaces (pairs with Underwater EQ preset) |
+| Outdoor field | 0.10 | 0.20 | 0.55 | 0.40 | 5 ms | -24 | Fields, open landscapes, rooftops |
+
+Each profile's `description` field carries the use case, visible in the picker.
+
+### Scope simplification
+
+Originally, the deferred Phase 6.E.4 work envisioned a "complete material profile" bundling EQ + occlusion overrides + reverb preset bindings into one drag-and-drop acoustic identity. After running the deferred items against the **simplicity test — does this make a designer's workflow simpler, or just more flexible?** — three items were cut, not deferred:
+
+1. **Occlusion overrides on `GoolAudioMaterial`** — *cut*. The existing engine table for absorption/damping has been working since v0.30.0; per-material override flexibility is an advanced workflow nobody asked for. If a project needs different occlusion behavior, adding a new entry to the AudioMaterial taxonomy is simpler than per-instance tuning.
+2. **Reverb preset binding on materials** — *cut*. ReverbZones already cover spatial reverb authoring (zone-attached, listener-position-driven); v0.62.0's GoolSceneProfile covers the scene-wide baseline. A third reverb dimension on materials would double up on what's already there. For a 3D multiplayer FPS workload (high-rate impacts, footsteps, voice comms — where stability and per-impact cycles matter), the surface-vs-space conflation would inflate per-impact branching and cache footprint on the hot path. Surface stays a surface concept; space is a separate zone/profile concept.
+3. **Full GoolMaterialProfile bundle** — *cut*. Cancelled by (1) + (2). The three concerns (surface EQ tonal character, space reverb profile, occlusion engine defaults) stay in three orthogonal resource types.
+
+The cut isn't an abdication. It's the right answer once the simplicity test is applied: three simple things that each do one job, instead of one bundled thing that does three jobs and forces designers to think about all three at once.
+
+### Concept positioning (post-v0.62.0)
+
+| Resource | Concern | Scope | Shipped |
+|---|---|---|---|
+| `GoolAudioMaterial` | Surface for impact + occlusion | Per-collider | v0.20+ |
+| `GoolMaterialEqPreset` | EQ tonal character | Per-surface, per-impact | v0.61.2/.3 |
+| `GoolAcousticProfile` | Reverb shape of a space | Per-scene baseline | v0.62.0 |
+| `GoolSceneProfile` (node) | Apply an acoustic profile | Scene root | v0.62.0 |
+| `ReverbZone` (node) | Sub-region reverb override | Per-room volume | v0.27+ |
+
+A typical multiplayer FPS level uses: surface materials tagged on colliders + per-impact EQ via material curves + one GoolSceneProfile node at scene root + zero or more ReverbZones for specific rooms. Each concern stays in its own simple type; no compound resources, no cross-property bundling.
+
+### Implementation
+
+- **`addons/gool/resources/gool_acoustic_profile.gd`** — new `GoolAcousticProfile extends Resource`. Six reverb fields (decay, lf_damping, hf_damping, diffusion, predelay_ms, wet_gain_db) plus `profile_name`, `description`, `profile_schema_version`. `@export_range` values match the existing ReverbZone @export ranges, so a designer who knows ReverbZone needs no new mental model.
+- **`addons/gool/prefabs/gool_scene_profile.gd`** — new `GoolSceneProfile extends Node`. Inspector fields: `profile: GoolAcousticProfile`, `apply_on_ready: bool`, `bus_name: String`. On `_ready`: looks up `/root/Gool`, scans the configured bus for a Reverb-kind effect, pushes the six profile params via `set_effect_parameter`. Engine handles the ~5 ms ramp internally; no audible click at scene load. Mirrors `ReverbZone._locate_reverb_effect` for bus-scanning conventions and same-bus warning suppression.
+- **Eight new `.tres` files** at `godot/addons/gool/acoustic_profiles/`. Format-3 .tres with `script_class` + `ExtResource` pattern, validated against the engine's reverb param ranges (decay/damping/diffusion in `[0, 1]`, predelay in `[0, 200]` ms, wet_gain in `[-60, 0]` dB).
+- **`plugin.gd`** registers `GoolSceneProfile` in the prefab list with the new `gool_scene_profile.svg` icon. Add Node dialog shows it under the gool category alongside ReverbZone, AudioEmitter3D, etc.
+
+### Migration
+
+None. v0.62.0 is purely additive over v0.61.3. No engine changes, no binding changes, no breaking API. Existing scenes continue working unchanged; ReverbZones continue overriding per-region as before. To opt in, a designer adds a GoolSceneProfile node and picks a profile — that's the only project-side change.
+
+### Phase 6.E status: ✅ complete
+
+| Sub-phase | Status |
+|---|---|
+| 6.E.1 — Inspector EQ editor | ✅ complete (v0.59.2 + v0.59.3 + v0.60.0) |
+| 6.E.2 — Mixer dock EQ visualization | ✅ complete (v0.61.1) |
+| 6.E.3 — A/B compare with realism slider | ✅ skipped by scope decision (designers pick presets close to target rather than A/B-comparing from scratch) |
+| 6.E.4 — Material library | ✅ complete (v0.61.2 + v0.61.3 + v0.62.0); scope simplified per simplicity test |
+
+Phase E is done. The natural next moves are Phase 6.D (artistic / surreal modes), Phase 7 if it exists in the roadmap, or follow-up work surfaced by actual designer use of v0.62.0 in production scenes.
+
 
 v0.61.2 shipped the EQ-preset *infrastructure* (save/load on the inspector, per-project `.tres` storage). v0.61.3 ships the **content** that makes that infrastructure immediately useful: twelve curated built-in presets bundled with gool, named for the acoustic situations they fit. A Godot dev installing gool can open any `GoolAudioMaterial.tres`, click Load…, pick "Tile bathroom" or "Wooden cabin" or "Underwater", and have a reasonable starting point for that space — no need to author the EQ from scratch.
 
