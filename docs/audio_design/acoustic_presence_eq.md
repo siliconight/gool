@@ -371,6 +371,12 @@ its material context. Useful for debugging "why does this sound
 muffled" — designer sees the EQ chain, identifies the offending
 material, fixes its profile or the tagging.
 
+**Status: ✅ Phase 6.E.2 complete (v0.61.1).**
+
+When a designer expands a bus's Fx panel and that bus's first three effects are biquads (the material-EQ convention), the dock prepends a read-only `MaterialEqCurveView` showing the cumulative frequency response of those three biquads. Refreshes at 30 Hz during F5 (matches the existing peak meter cadence), refreshes on config edits at rest. Designer can correlate the audible "muffled" symptom with the visible EQ shape in one glance, then drag the offending biquad slider or follow the chain back to the offending material.
+
+Implementation: nested class `_BusEqVisualizer extends VBoxContainer` in `mixer_dock.gd`, wraps the existing v0.59.2 `MaterialEqCurveView` widget read-only (`editable = false` — the widget's docstring planted this hook explicitly). Pure GDScript editor-side; no engine changes. Limitation: biquad subtype (LowShelf vs Peak vs HighShelf vs LPF etc.) is not exposed via the engine's effect-introspection API, so the visualizer assumes positional ordering — matching what `apply_material_eq_to_bus` writes. A non-EQ-shaped 3-biquad chain renders a misleading curve; the per-effect param sliders below are still accurate.
+
 #### E.3 — A/B compare with realism slider
 Two-state toggle in the editor: "Realistic" (multiplier = 1.0) vs
 "Designed" (multiplier = whatever the designer set). Click toggles

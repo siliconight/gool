@@ -22,7 +22,63 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.61.0] - 2026-05-23 — API: material-EQ audition moved into the public engine surface (gdextension CI restored)
+## [0.61.1] - 2026-05-23 — Phase 6.E.2: bus EQ visualization in the mixer dock
+
+Closes Phase 6.E.2 of `docs/audio_design/acoustic_presence_eq.md`. When a designer expands the Fx panel on a bus whose first three effects are biquads — the convention `apply_material_eq_to_bus` enforces, and the shape every material-EQ-shaped sfx bus has — the dock now shows the cumulative frequency response of those three biquads above the existing effect tiles.
+
+The use case the design doc names: "why does this sound muffled?" The designer expands the bus in the mixer dock, sees a curve cutting 4 dB at 4 kHz, knows immediately the EQ is the source of the muffle, and can either tune the offending biquad slider or follow the chain back to the material that's writing those values.
+
+### What designers see
+
+When a bus with a 3-biquad EQ chain has its Fx panel open:
+
+```
+┌──────────────────────────────────────────────┐
+│ Effective EQ (live)                          │  ← new header
+│                                              │
+│         ╱╲                                   │
+│  ──────╱──╲────────────────────────────────  │  ← new EQ curve plot (140 px)
+│              ╲      ╱                        │
+│               ╲____╱                         │
+├──────────────────────────────────────────────┤
+│ [Biquad]→[Biquad]→[Biquad]      [+ Add]      │  ← existing flow row
+│ (selected tile highlighted)                  │
+├──────────────────────────────────────────────┤
+│ Biquad                       [↑] [↓] [×]     │  ← existing param section
+│ Cutoff  ━━●━━━━━  1500 Hz                    │     for selected effect
+│ Q       ━━━●━━━  1.20                        │
+│ Gain    ━━━━●━━ +2.5 dB                      │
+└──────────────────────────────────────────────┘
+```
+
+The plot refreshes on every panel rebuild — 30 Hz during F5 (matches the existing peak meter cadence), and on config edits at rest. As the designer drags a biquad slider, the plot reshapes live. As the runtime mutates per-impact EQ (via `_apply_scaled_material_eq_to_bus`), the plot reflects what's hitting the signal *right now*.
+
+### When it appears
+
+The visualizer is conditional: it appears only when the bus's first three effects are biquads. A bus with a single biquad (e.g., the HPF on a send) shows the existing layout unchanged. A bus with no effects shows the existing "+ Add Effect" affordance. A bus whose chain starts with Compressor + Biquad + Biquad gets no visualizer — the convention `apply_material_eq_to_bus` enforces is that the EQ chain is at the head.
+
+### Known limitations
+
+**Positional convention.** Biquad subtype (`LowShelf` vs `Peak` vs `HighShelf` vs `LPF` etc.) is internal to `BiquadFilterEffect` and not exposed via the engine's effect-introspection API. The visualizer assumes positional ordering — LowShelf at index 0, Peak at index 1, HighShelf at index 2 — which is the same assumption `apply_material_eq_to_bus` makes. A bus with three biquads configured as e.g. HPF + LPF + BPF will render a misleading curve (the plot will treat the HPF's cutoff as a LowShelf knee, etc.). The per-effect param sliders below the plot still show the truth, so the misleading curve is recoverable. Engine work to expose biquad subtype, plus a guard in the visualizer to fall back gracefully on non-EQ-shaped chains, is a candidate for a future patch (v0.62.x territory if it surfaces in real use).
+
+**No "this curve is wrong" detection.** If a designer hand-authors a bus with three biquads configured as something other than the material-EQ pattern, the dock visualizer will silently render the wrong shape. There's no in-dock warning. Mitigation: the per-effect param sliders are still accurate, and a designer who's authored a non-standard biquad chain will recognize that the cumulative-response plot doesn't match what they wrote.
+
+### Implementation
+
+Pure GDScript editor-side work — no engine changes, no binding changes, no breaking API. Added a nested class `_BusEqVisualizer extends VBoxContainer` in `mixer_dock.gd` that wraps the v0.59.2 `MaterialEqCurveView` widget read-only (`editable = false`). The widget's docstring planted this hook explicitly: "Other callers (a future mixer-dock variant showing a bus's effective EQ) leave it false." v0.61.1 fulfills that planted intent.
+
+The visualizer's `update_from_effects(effects)` method packs the three biquads' live params into the curve dict shape the widget expects, matching `Gool.get_material_eq_for_material`'s return shape. Curve extraction is factored out as a static helper (`_curve_from_three_biquads`) so it's testable independently of the Godot Control lifecycle if GUT is ever wired into CI.
+
+Hook point: `_EffectsPanel._rebuild_panel_ui` calls `update_from_effects`. Returns true → visualizer is prepended above the flow row. Returns false → visualizer is freed without ever being added to the tree. Allocation cost is one Control per panel rebuild, matching the existing pattern (flow row and param section are also rebuilt every poll).
+
+### Migration
+
+None. No breaking changes. No new public API. Existing `.tres` resources unchanged. Existing bus configs unchanged. The visualizer appears automatically on any bus that already has a 3-biquad EQ chain.
+
+### Why this matters
+
+The inspector EQ editor (v0.59.2 / 6.E.1) shows what curve a `GoolAudioMaterial.tres` is *authored* to produce. The mixer dock visualization (v0.61.1 / 6.E.2) shows what curve is *being applied right now* — after material × intensity × override × any per-impact mutation. Those are different views and the design doc identifies both as required for designer adoption. Without 6.E.2, "the audition sounds great but in-game it sounds wrong" is unfalsifiable; with it, the designer can confirm the EQ chain is shaped correctly and look elsewhere for the muffle.
+
 
 Restores gdextension CI green on Linux, macOS, and Windows. v0.60.0 introduced an audition button on the inspector's `GoolAudioMaterial` editor, but the binding implementation reached into the engine's private `src/audio_engine/dsp/biquad_filter.h` to do its biquad work. The engine library target had `src/` on its include path; the godot binding target did not. CI broke on every platform with `fatal error: audio_engine/dsp/biquad_filter.h: No such file or directory` the first time anyone tried to build the gdextension after v0.59.3 landed.
 

@@ -2630,6 +2630,145 @@ class _BusStrip extends Control:
 # PARAM_META below, keyed by paramId (which matches
 # audio::EffectParameter:: in bus.h — keep these tables in sync if
 # the engine adds parameters).
+
+# v0.61.1 — Phase 6.E.2: bus EQ visualization.
+#
+# When a bus's first three effects are BiquadFilters configured as
+# LowShelf → Peak → HighShelf (the convention apply_material_eq_to_bus
+# enforces — the same convention the material EQ designer authors
+# against), show their cumulative frequency response above the flow
+# row of effect tiles. Designer can see at a glance what shape this
+# bus is imposing on its signal: "this bus is cutting 4 dB at 4 kHz,
+# that's why my impact sound feels muffled."
+#
+# Reuses the v0.59.2 MaterialEqCurveView widget read-only (editable
+# off). The widget docstring at material_eq_curve_view.gd:107 planted
+# this hook explicitly: "Other callers (a future mixer-dock variant
+# showing a bus's effective EQ) leave it false."
+#
+# Data flow:
+#   1. _EffectsPanel.build_from_effects(effects) is called by the
+#      dock on every poll (~30 Hz during F5) and on config edits.
+#   2. _rebuild_panel_ui calls _BusEqVisualizer.update_from_effects(),
+#      which inspects effects[0..2] and either populates the inner
+#      MaterialEqCurveView's curve dict (returning true) or signals
+#      "not an EQ chain" (returning false — caller hides it).
+#
+# Positional convention: biquad subtype (LowShelf/Peak/HighShelf vs
+# LPF/HPF/BPF) is internal to BiquadFilterEffect and not exposed via
+# the engine's effect-introspection API. apply_material_eq_to_bus
+# assumes positional ordering today; the visualizer matches that
+# assumption. A bus with three biquads that ISN'T shaped as a
+# material EQ will render a misleading curve (but won't crash, and
+# the per-effect param sliders below still show the truth). Future
+# work: expose biquad type so the visualizer can verify the chain
+# shape and fall back gracefully.
+class _BusEqVisualizer extends VBoxContainer:
+
+	const CURVE_VIEW_SCRIPT := preload(
+			"res://addons/gool/editor/material_eq_curve_view.gd")
+
+	# Engine EffectKind value for BiquadFilter. Mirrors the comment
+	# block at line ~2742 — keep these in sync. Hardcoded rather
+	# than imported because mixer_dock.gd is editor-side and doesn't
+	# link against the engine's C++ enum.
+	const _EFFECT_KIND_BIQUAD: int = 2
+
+	# Engine EffectParameter IDs for biquad params. Match PARAM_META
+	# entries 2 / 3 / 12 in _EffectsPanel above.
+	const _PARAM_CUTOFF_HZ: int = 2
+	const _PARAM_Q:         int = 3
+	const _PARAM_GAIN_DB:   int = 12
+
+	# Colors: match _EffectsPanel's COLOR_HEADER_BG / TEXT so the
+	# plot's surrounding header reads as part of the same panel.
+	const _COLOR_HEADER_BG   := Color(0.20, 0.22, 0.26)
+	const _COLOR_HEADER_TEXT := Color(0.92, 0.92, 0.92)
+
+	# Plot height. The inspector's curve view defaults to 180 px;
+	# 140 is a touch shorter to keep the mixer-dock footprint compact
+	# without sacrificing readability of the ±12 dB axis.
+	const _PLOT_HEIGHT: float = 140.0
+
+	var _curve_view: Control = null
+	var _header: Label = null
+
+	func _init() -> void:
+		add_theme_constant_override("separation", 2)
+
+		# Header bar so the plot reads as "this is what's happening
+		# to this bus", not "this is an editor for the bus".
+		_header = Label.new()
+		_header.text = "Effective EQ (live)"
+		_header.add_theme_color_override("font_color", _COLOR_HEADER_TEXT)
+		var hdr_panel := PanelContainer.new()
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = _COLOR_HEADER_BG
+		sb.content_margin_left = 6.0
+		sb.content_margin_right = 6.0
+		sb.content_margin_top = 2.0
+		sb.content_margin_bottom = 2.0
+		hdr_panel.add_theme_stylebox_override("panel", sb)
+		hdr_panel.add_child(_header)
+		add_child(hdr_panel)
+
+		_curve_view = CURVE_VIEW_SCRIPT.new()
+		_curve_view.custom_minimum_size = Vector2(0, _PLOT_HEIGHT)
+		_curve_view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_curve_view.editable = false   # read-only in the mixer dock
+		_curve_view.material_label = ""
+		add_child(_curve_view)
+
+	# Inspect the effects array. If the first three entries are
+	# biquads, extract their cutoff / Q / gain_db params, pack them
+	# into the curve-view's Dictionary shape (matching what
+	# Gool.get_material_eq_for_material returns), push to the inner
+	# widget, and return true. Otherwise return false — caller is
+	# expected to remove this visualizer from the panel.
+	#
+	# The intensity multiplier is 1.0 here: the per-bus biquad gain
+	# values ALREADY reflect any intensity scaling that
+	# _apply_scaled_material_eq_to_bus applied at impact time.
+	# Visualizing at intensity=1.0 shows exactly what's hitting the
+	# signal right now, no further multiplication.
+	func update_from_effects(effects: Array) -> bool:
+		if effects.size() < 3:
+			return false
+		for i in range(3):
+			var e_v: Variant = effects[i]
+			if not (e_v is Dictionary):
+				return false
+			if int((e_v as Dictionary).get("kind", 0)) != _EFFECT_KIND_BIQUAD:
+				return false
+
+		var curve: Dictionary = _curve_from_three_biquads(effects)
+		_curve_view.curve = curve
+		return true
+
+	# Static-ish helper: pack three biquad effect dicts into the
+	# MaterialEqCurveView curve dict shape. Caller has verified the
+	# three entries are biquads. Missing params default to neutral
+	# values (0 dB gain at the band's typical knee/center) so a
+	# partially-bypassed chain still renders without crashing.
+	static func _curve_from_three_biquads(effects: Array) -> Dictionary:
+		var low_params: Dictionary = (effects[0] as Dictionary).get(
+				"params", {}) as Dictionary
+		var mid_params: Dictionary = (effects[1] as Dictionary).get(
+				"params", {}) as Dictionary
+		var high_params: Dictionary = (effects[2] as Dictionary).get(
+				"params", {}) as Dictionary
+		return {
+			"low_freq_hz":   float(low_params.get(_PARAM_CUTOFF_HZ, 200.0)),
+			"low_gain_db":   float(low_params.get(_PARAM_GAIN_DB,   0.0)),
+			"mid_freq_hz":   float(mid_params.get(_PARAM_CUTOFF_HZ, 1000.0)),
+			"mid_q":         float(mid_params.get(_PARAM_Q,         1.0)),
+			"mid_gain_db":   float(mid_params.get(_PARAM_GAIN_DB,   0.0)),
+			"high_freq_hz":  float(high_params.get(_PARAM_CUTOFF_HZ, 6000.0)),
+			"high_gain_db":  float(high_params.get(_PARAM_GAIN_DB,   0.0)),
+			"is_neutral":    false,
+		}
+
+
 class _EffectsPanel extends PanelContainer:
 
 	# Visual constants for the panel itself
@@ -2851,6 +2990,20 @@ class _EffectsPanel extends PanelContainer:
 			child.queue_free()
 
 		var n: int = _effects_cache.size()
+
+		# v0.61.1 — Phase 6.E.2: bus EQ visualization. If the chain
+		# starts with three biquads (the material EQ convention), show
+		# their cumulative frequency response above the flow row. The
+		# visualizer is recreated on every rebuild, which mirrors how
+		# the flow row and param section also get recreated — keeps
+		# the UI state simple, costs one Control allocation per poll
+		# (cheap; n=1 here, not per-effect).
+		var eq_viz := _BusEqVisualizer.new()
+		if eq_viz.update_from_effects(_effects_cache):
+			_vbox.add_child(eq_viz)
+		else:
+			eq_viz.queue_free()
+
 		# Flow row at top. Even with zero effects we still want the
 		# "+ Add Effect" affordance visible.
 		_vbox.add_child(_build_flow_row())
