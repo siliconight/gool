@@ -22,6 +22,86 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.68.0] - 2026-05-23 — Default Ctrl+Shift+G hotkey for session log dump
+
+The v0.67.0 session log dump shipped the API (`Gool.dump_session_log()`)
+but left the keybinding to the user. Working through the sandbox v5
+debug session made the gap obvious: any non-trivial project needed
+to write the same five lines of `_input` boilerplate to bind a key.
+"Drop in gool, get logs" should be a single thing, not a two-step
+"drop in gool, then write a keybinding."
+
+### What's new
+
+**Default global hotkey.** Press **Ctrl+Shift+G** in-game in any
+project with gool installed. The Gool autoload's `_unhandled_input`
+catches the action, dumps the session log to a JSONL file under
+`user://`, prints the resolved path + entry count to Output, and
+(optionally) pops open the directory in the host OS file manager
+so the file is one click from "I have a bug" to "I have a file
+to attach."
+
+```gdscript
+# What happens when you press Ctrl+Shift+G:
+[gool] session log dumped (1247 entries) → user://gool_session_2026-05-23_19-43-12_847.jsonl
+# Explorer/Finder/file manager opens the user:// directory
+```
+
+**Three-key combo by design.** Single-key hotkeys (G alone, F12)
+collide too easily with host-project keybindings and trigger
+accidentally during normal gameplay. Ctrl+Shift+G is memorable
+(G for gool), distinctive (most games don't use Ctrl+Shift+
+anything), and intentional (you don't hit it without meaning to).
+
+**Customizable via Project Settings → Input Map.** The default
+binding is added at autoload init time only IF the InputMap action
+`gool_dump_session_log` doesn't already exist. Add the action to
+your project's InputMap with any keys/modifiers you want, and
+the autoload respects that binding instead of registering the
+default. Standard Godot rebind workflow — no custom UI, no hidden
+config.
+
+**Two project settings (both default true) under `addons/gool/logging/`:**
+
+  - `dump_log_enabled` — master switch. Set false in release
+    builds if you don't want the hotkey active in shipped games.
+  - `dump_log_open_dir` — whether to `OS.shell_open` the dump
+    directory after writing. Disable if the file-manager pop is
+    jarring (e.g. fullscreen game).
+
+### Implementation notes
+
+  - The InputMap action is registered at runtime via
+    `InputMap.add_action` + `action_add_event`. It does NOT modify
+    `project.godot` — the default only applies if the user hasn't
+    added their own action.
+  - The hotkey handler calls `get_viewport().set_input_as_handled()`
+    after dumping, so the keys don't also fire any host-project
+    action bound to the same combination.
+  - `OS.shell_open` is called on the *globalized* path
+    (`ProjectSettings.globalize_path`) of the dump directory.
+    `user://` paths can't be shell-opened directly — they have
+    to be resolved to a per-OS path first.
+  - All settings are cached at `_ready` time so `_unhandled_input`
+    is a cheap predicate on every key event (no ProjectSettings
+    lookup per keystroke).
+
+### Why a new minor instead of v0.67.2?
+
+This is additive new behavior (a default keybinding, two new
+project settings, a new InputMap action), not a fix to existing
+behavior. Semver minor bump.
+
+### Migration
+
+None. Projects that already wrote their own keybinding for
+`Gool.dump_session_log()` keep working — the autoload's hotkey
+either fires on the same key (in which case the autoload handles
+it and `set_input_as_handled()` blocks the host's `_input`) or
+on different keys (in which case both work independently).
+Projects that want to disable the default: set
+`addons/gool/logging/dump_log_enabled = false` in Project Settings.
+
 ## [0.67.1] - 2026-05-23 — Hotfix: Gool autoload forwarders for v0.66.0 introspection API
 
 Hotfix for a v0.66.0 plumbing gap: the introspection API (`has_sound`,
@@ -19914,6 +19994,7 @@ Headlines:
 [0.66.1]: https://github.com/siliconight/gool/releases/tag/v0.66.1
 [0.67.0]: https://github.com/siliconight/gool/releases/tag/v0.67.0
 [0.67.1]: https://github.com/siliconight/gool/releases/tag/v0.67.1
+[0.68.0]: https://github.com/siliconight/gool/releases/tag/v0.68.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

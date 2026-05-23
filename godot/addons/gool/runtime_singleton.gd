@@ -267,6 +267,15 @@ func _ready() -> void:
 	# project settings. Affects both 6.B impact EQ and 6.C
 	# listener EQ when applied via the GDScript helpers below.
 	_setup_eq_intensity()
+	# v0.68.0: register a default global hotkey (Ctrl+Shift+G) for
+	# dumping the session log to JSONL. Zero-code "press a key,
+	# attach the file to a bug report" workflow available in any
+	# project that has gool installed — no per-project keybinding
+	# code needed. Configurable via Project Settings → Input Map
+	# (action "gool_dump_session_log") and the addons/gool/logging/
+	# dump_log_* settings registered below.
+	_register_session_log_hotkey_settings()
+	_setup_session_log_hotkey()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -840,6 +849,123 @@ func get_registered_sound_count() -> int:
 	if _runtime == null:
 		return 0
 	return _runtime.get_registered_sound_count()
+
+
+# ---- v0.68.0: built-in session log dump hotkey ------------------------
+#
+# Default Ctrl+Shift+G in any gool-using project. The whole point is
+# "drop in gool, get logs" — no per-project keybinding code.
+#
+# Mechanism:
+#
+#   1. Project settings registered with sensible defaults (in
+#      _register_session_log_hotkey_settings, called from _ready).
+#   2. InputMap action "gool_dump_session_log" registered at runtime
+#      with default Ctrl+Shift+G binding IF the action doesn't
+#      already exist. If the user has added the action to their
+#      project's Input Map (in Project Settings) with custom keys,
+#      we respect that — InputMap.has_action returns true, we skip
+#      the default binding, and the user's binding wins.
+#   3. _unhandled_input listens for the action. On press, dumps the
+#      session log via GoolLog.dump_session_to_file(""), prints the
+#      resolved path + entry count to Output, and (optionally)
+#      OS.shell_open's the directory so the .jsonl is one click from
+#      "I have a bug" to "I have a file to attach."
+#
+# Project settings (all under addons/gool/logging/):
+#
+#   dump_log_enabled   (bool, default true)
+#       Master switch. Set false in release/export builds if you
+#       don't want the hotkey active in shipped games.
+#
+#   dump_log_open_dir  (bool, default true)
+#       Whether to OS.shell_open the directory containing the
+#       dumped file. Disable if the file manager popping open is
+#       jarring (e.g. fullscreen game).
+#
+# To rebind the key without code: Project Settings → Input Map,
+# find "gool_dump_session_log", change/add events.
+
+const _PS_DUMP_LOG_ENABLED: String  = "addons/gool/logging/dump_log_enabled"
+const _PS_DUMP_LOG_OPEN_DIR: String = "addons/gool/logging/dump_log_open_dir"
+const _DUMP_LOG_ACTION: String      = "gool_dump_session_log"
+
+var _dump_log_enabled: bool  = true
+var _dump_log_open_dir: bool = true
+
+
+func _register_session_log_hotkey_settings() -> void:
+	if not ProjectSettings.has_setting(_PS_DUMP_LOG_ENABLED):
+		ProjectSettings.set_setting(_PS_DUMP_LOG_ENABLED, true)
+		ProjectSettings.add_property_info({
+			"name": _PS_DUMP_LOG_ENABLED,
+			"type": TYPE_BOOL,
+		})
+		ProjectSettings.set_initial_value(_PS_DUMP_LOG_ENABLED, true)
+	if not ProjectSettings.has_setting(_PS_DUMP_LOG_OPEN_DIR):
+		ProjectSettings.set_setting(_PS_DUMP_LOG_OPEN_DIR, true)
+		ProjectSettings.add_property_info({
+			"name": _PS_DUMP_LOG_OPEN_DIR,
+			"type": TYPE_BOOL,
+		})
+		ProjectSettings.set_initial_value(_PS_DUMP_LOG_OPEN_DIR, true)
+
+
+func _setup_session_log_hotkey() -> void:
+	# Cache settings once so _unhandled_input is a cheap predicate.
+	_dump_log_enabled  = bool(ProjectSettings.get_setting(
+			_PS_DUMP_LOG_ENABLED, true))
+	_dump_log_open_dir = bool(ProjectSettings.get_setting(
+			_PS_DUMP_LOG_OPEN_DIR, true))
+	# Register the default InputMap action only if absent — respects
+	# any rebind the user did in Project Settings → Input Map.
+	if not InputMap.has_action(_DUMP_LOG_ACTION):
+		InputMap.add_action(_DUMP_LOG_ACTION)
+		var ev := InputEventKey.new()
+		ev.keycode = KEY_G
+		ev.ctrl_pressed = true
+		ev.shift_pressed = true
+		InputMap.action_add_event(_DUMP_LOG_ACTION, ev)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	# Hot-path predicate: bail before any allocation if disabled.
+	if not _dump_log_enabled:
+		return
+	# Defensive: action could have been removed at runtime by the
+	# host project. Treat that as "feature disabled" rather than
+	# crashing.
+	if not InputMap.has_action(_DUMP_LOG_ACTION):
+		return
+	if event.is_action_pressed(_DUMP_LOG_ACTION):
+		# Consume the event so it doesn't also fire any host-
+		# project action bound to the same keys.
+		get_viewport().set_input_as_handled()
+		_do_dump_session_log()
+
+
+func _do_dump_session_log() -> void:
+	var path: String = GoolLog.dump_session_to_file("")
+	if path == "":
+		push_warning("[gool] session log dump failed (empty path returned). "
+				+ "Check the Output panel for the underlying file-write error.")
+		return
+	var n: int = GoolLog.session_entry_count()
+	# Print to Output so the user knows it fired (visible feedback)
+	# AND has the path even without the file-manager pop.
+	print("[gool] session log dumped (%d entries) → %s" % [n, path])
+	if _dump_log_open_dir:
+		# user:// paths need to be globalized before handing to the
+		# OS shell. ProjectSettings.globalize_path resolves them to
+		# the per-OS user data dir (e.g. %APPDATA%\Godot\app_userdata\
+		# <project>\ on Windows).
+		var os_path: String = ProjectSettings.globalize_path(path)
+		var os_dir: String  = os_path.get_base_dir()
+		var err: int = OS.shell_open(os_dir)
+		if err != OK:
+			push_warning("[gool] OS.shell_open(\"%s\") failed (err=%d); "
+					% [os_dir, err]
+					+ "the dumped file is still at the path printed above.")
 
 
 # v0.55.0: cheap bus-existence check. Reads from a cache built at

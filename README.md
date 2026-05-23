@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.67.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.68.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -368,11 +368,14 @@ target.
   **press F3 in-game** to see real-time engine health (peak,
   active voices, callback rate, exceptions). No code, no
   instrumentation, no leaving Godot.
-- **Session log dump** — `Gool.dump_session_log()` writes a JSONL
-  file with every structured log entry (level, category, message,
-  fields, source) since session start. Bind it to a debug key and
-  the file goes with bug reports — no more
-  trade-screenshots-of-the-Output-panel debugging loops.
+- **Session log dump** — press **Ctrl+Shift+G** in-game (default;
+  rebind via Project Settings → Input Map → `gool_dump_session_log`).
+  A JSONL file with every structured log entry (level, category,
+  message, fields, source) since session start gets written under
+  `user://`, the file path prints to Output, and the directory
+  opens in your OS file manager. One click from "I have a bug" to
+  "I have a file to attach to the report." Also callable as
+  `Gool.dump_session_log()` for custom keybindings.
 - JSON sound banks designers can edit without touching code
 - Hot reload — change `sounds.json` on disk, the runtime
   re-registers without restart
