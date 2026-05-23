@@ -1,33 +1,45 @@
 // tests/unit/material_eq_audition_test.cpp
 //
-// v0.59.3 — verifies the offline material-EQ audition path
-// (Phase 6.E.1 audition button). The path constructs three
-// BiquadFilterEffect instances configured from a material's EQ
-// curve and processes a sample buffer through them.
+// Verifies the offline material-EQ audition surface in
+// audio_engine/material_eq.h — the same functions the editor
+// inspector's audition button uses to preview a material curve
+// without going through the bus chain.
 //
-// Two properties to verify:
+// History:
+//   v0.59.3: audition introduced inside the godot binding,
+//            reaching into the engine's private
+//            dsp/biquad_filter.h. Test mirrored the binding's
+//            hand-rolled biquad chain.
+//   v0.61.0: math moved into audio_engine/material_eq.h as
+//            ProcessBufferThroughMaterialEqCurve / *Material.
+//            This test now calls the public engine surface
+//            directly. The binding is a thin marshaler over
+//            the same functions, so the audition still reflects
+//            what the runtime impact-EQ / listener-EQ paths
+//            produce (they all share BiquadFilterEffect under
+//            the hood).
 //
-//   1. Audition output is non-trivial for non-neutral materials.
-//      Feeding white noise through Concrete's curve should
-//      produce a measurably different RMS than feeding through
-//      a neutral curve (Default / Air).
+// Properties verified:
 //
-//   2. Audition output is bit-identical to a manually-constructed
-//      three-biquad chain on the same buffer. This pins the
-//      audition path against the same BiquadFilterEffect code
-//      the runtime impact-EQ / listener-EQ paths use, so future
-//      changes to the biquad implementation can't silently make
-//      the audition lie about what the runtime will sound like.
+//   1. Non-neutral materials produce audibly different output
+//      than neutral ones (Concrete vs Air on white noise).
+//   2. Curtain CUTS broadband energy (sanity check the inverse).
+//   3. Intensity 0.0 ≡ unity passthrough; 2.0 amplifies relative
+//      to 1.0.
+//   4. Different materials produce measurably different outputs
+//      on the same input (no accidental cross-material clamping).
+//   5. By-curve and by-material paths are bit-identical when
+//      given matching parameters — pins them against drift.
 //
-// We don't try to test against the runtime impact-EQ path
-// directly because that path is bus-routed (Process inside a
-// bus chain, with sidechain and mix surrounding it). The
-// audition path is the EQ STAGE in isolation; the two would
-// only match if every other stage on the impact bus were a
-// no-op, which isn't a useful invariant.
+// We don't test against the runtime impact-EQ path directly
+// because that path is bus-routed (Process inside a bus chain,
+// with sidechain and mix surrounding it). The audition path is
+// the EQ STAGE in isolation; the two would only match if every
+// other stage on the impact bus were a no-op, which isn't a
+// useful invariant.
 
 #include "audio_engine/geometry_query.h"
-#include "audio_engine/dsp/biquad_filter.h"
+#include "audio_engine/material_eq.h"
 
 #include <cmath>
 #include <cstdio>
@@ -49,31 +61,22 @@ int gFails = 0;
 constexpr uint32_t kSampleRate = 48000;
 constexpr uint32_t kFrames     = 4800;   // 100 ms — enough for biquad settling
 
-// Mirror of the audition method's processing logic so we can
-// run the same path in C++ tests without Godot. If the engine-
-// side method drifts (changes coefficients, swaps biquad types,
-// changes per-mode parameter conventions), this test catches
-// it because the audition and the test compute different things.
+// Thin wrapper around the engine's by-material audition function.
+// Returns a fresh buffer because the engine API is in-place; the
+// tests below want to compare against an unmodified `input` buffer
+// in the same scope, so we copy here once at the test boundary.
+//
+// v0.61.0: previously this re-implemented the biquad chain by hand
+// (a tautology vs the binding). It now delegates to the canonical
+// engine surface. Drift detection is automatic — a change to the
+// biquad math is reflected here exactly because there is only one
+// implementation.
 std::vector<float> AuditionImpl(const std::vector<float>& input,
                                   AudioMaterial mat,
                                   float intensity) {
-    const MaterialEqCurve c = MaterialEqByMaterial(mat);
-    BiquadFilterEffect low(BiquadType::LowShelf,
-            c.lowFreqHz,  1.0f, c.lowGainDb  * intensity);
-    BiquadFilterEffect mid(BiquadType::Peak,
-            c.midFreqHz,  c.midQ, c.midGainDb * intensity);
-    BiquadFilterEffect high(BiquadType::HighShelf,
-            c.highFreqHz, 1.0f, c.highGainDb * intensity);
-    low.Prepare(kSampleRate, 1);
-    mid.Prepare(kSampleRate, 1);
-    high.Prepare(kSampleRate, 1);
     std::vector<float> buf = input;
-    low.Process(buf.data(),  static_cast<uint32_t>(buf.size()),
-            1, nullptr, 0);
-    mid.Process(buf.data(),  static_cast<uint32_t>(buf.size()),
-            1, nullptr, 0);
-    high.Process(buf.data(), static_cast<uint32_t>(buf.size()),
-            1, nullptr, 0);
+    ProcessBufferThroughMaterialEq(
+        buf.data(), buf.size(), mat, intensity, kSampleRate);
     return buf;
 }
 
@@ -245,52 +248,47 @@ void TestMaterialsAreDistinct() {
 
 // --- 5. Curve-method parity with material-method ------------------
 //
-// v0.60.0: the inspector audition can route either through the
-// by-material path (override_enabled=false) or the by-curve path
-// (override_enabled=true). The two paths must produce bit-identical
-// output when given matching curve values — otherwise toggling
-// override on a freshly-seeded resource (whose override values
-// match the engine table) would sound different from the same
-// material with override off. That's the audition equivalent of
-// the visualizer drift test: if the audition lies, the designer
-// can't trust their ear.
+// The inspector audition can route either through the by-material
+// path (override_enabled=false on a GoolAudioMaterial resource) or
+// the by-curve path (override_enabled=true with hand-tweaked band
+// values). The two paths must produce bit-identical output when
+// given matching curve values — otherwise toggling override on a
+// freshly-seeded resource (whose override values match the engine
+// table) would sound different from the same material with override
+// off. If the audition lies, the designer can't trust their ear.
 //
-// We can't call the binding directly from a unit test, but we can
-// verify the underlying math is the same by running the same input
-// through the same biquad classes with matching parameters.
+// v0.61.0: this test now drives both public engine surfaces
+// (ProcessBufferThroughMaterialEq + ProcessBufferThroughMaterialEqCurve)
+// directly, with matching parameters. The implementation guarantees
+// bit-identity because the by-material function is literally a
+// MaterialEqByMaterial lookup followed by the by-curve function —
+// any drift between the paths would have to be in
+// MaterialEqByMaterial itself, which is a separate concern.
 
 void TestCurveMatchesMaterial() {
     std::printf("[material_eq_audition_test] curve-path matches material-path\n");
     const auto src = WhiteNoise(kFrames, 31337);
 
     // by-material: AudioMaterial::Concrete at intensity 1.0
-    const auto out_by_mat = AuditionImpl(src, AudioMaterial::Concrete, 1.0f);
+    std::vector<float> out_by_mat = src;
+    ProcessBufferThroughMaterialEq(
+        out_by_mat.data(), out_by_mat.size(),
+        AudioMaterial::Concrete, 1.0f, kSampleRate);
 
-    // by-curve: same biquad chain, same parameters as Concrete's
-    // engine-table entry (geometry_query.h MaterialEqByMaterial).
-    // If these values drift from the engine table this test fails
-    // — same drift-catcher as the inspector's hardcoded mirror.
+    // by-curve: same engine table entry, fetched explicitly.
+    // If the binding's value-passing drifts from MaterialEqByMaterial
+    // this test fails — same drift-catcher as the inspector's
+    // hardcoded mirror.
     const MaterialEqCurve concrete = MaterialEqByMaterial(AudioMaterial::Concrete);
-    BiquadFilterEffect low(BiquadType::LowShelf,
-            concrete.lowFreqHz,  1.0f, concrete.lowGainDb);
-    BiquadFilterEffect mid(BiquadType::Peak,
-            concrete.midFreqHz,  concrete.midQ, concrete.midGainDb);
-    BiquadFilterEffect high(BiquadType::HighShelf,
-            concrete.highFreqHz, 1.0f, concrete.highGainDb);
-    low.Prepare(kSampleRate, 1);
-    mid.Prepare(kSampleRate, 1);
-    high.Prepare(kSampleRate, 1);
     std::vector<float> out_by_curve = src;
-    low.Process(out_by_curve.data(),
-            static_cast<uint32_t>(out_by_curve.size()), 1, nullptr, 0);
-    mid.Process(out_by_curve.data(),
-            static_cast<uint32_t>(out_by_curve.size()), 1, nullptr, 0);
-    high.Process(out_by_curve.data(),
-            static_cast<uint32_t>(out_by_curve.size()), 1, nullptr, 0);
+    ProcessBufferThroughMaterialEqCurve(
+        out_by_curve.data(), out_by_curve.size(),
+        concrete, 1.0f, kSampleRate);
 
     // Sample-wise diff. The two paths should produce bit-identical
-    // output because they use the same biquad class with the same
-    // inputs — any non-zero difference means a drift.
+    // output because by-material is implemented as a curve lookup
+    // followed by the by-curve function — same biquad math, same
+    // parameters, same order.
     double max_diff = 0.0;
     for (size_t i = 0; i < out_by_mat.size(); ++i) {
         const double d = static_cast<double>(out_by_mat[i])
@@ -298,9 +296,9 @@ void TestCurveMatchesMaterial() {
         if (std::fabs(d) > max_diff) max_diff = std::fabs(d);
     }
     std::printf("  max sample diff between paths: %.2e\n", max_diff);
-    // Float32 round-trips through identical math should match
-    // exactly; allow a tiny epsilon for any compiler-introduced
-    // FMA reordering across compilation units.
+    // Identical math through identical types: expect exact match.
+    // Allow a tiny epsilon only as defense against any compiler-
+    // introduced FMA reordering across compilation units.
     EXPECT(max_diff < 1e-6);
 }
 

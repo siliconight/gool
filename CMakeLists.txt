@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.60.0
+    VERSION 0.61.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -144,6 +144,7 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/dsp/compressor.cpp
     src/audio_engine/dsp/reverb_effect.cpp
     src/audio_engine/dsp/saturation_effect.cpp
+    src/audio_engine/dsp/material_eq.cpp
     src/audio_engine/decoders/decoder_factory.cpp
     src/audio_engine/decoders/resampling_decoder.cpp
     src/audio_engine/decoders/wav_decoder.cpp

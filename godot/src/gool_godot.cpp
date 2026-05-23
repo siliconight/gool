@@ -17,11 +17,11 @@
 #include "audio_engine/bus.h"
 #include "audio_engine/bus_config_loader.h"
 #include "audio_engine/config.h"
-#include "audio_engine/dsp/biquad_filter.h"   // v0.59.3 — material EQ audition
 #include "audio_engine/emitter.h"
 #include "audio_engine/events.h"
 #include "audio_engine/geometry_query.h"  // AudioMaterial (Phase 5.1)
 #include "audio_engine/gpak.h"
+#include "audio_engine/material_eq.h"     // v0.61.0 — audition surface
 #include "audio_engine/backend/miniaudio_backend.h"
 #include "audio_engine/music_channel.h"
 #include "audio_engine/sound_bank.h"
@@ -1664,6 +1664,16 @@ public:
     // that's ~430k multiplies — sub-millisecond on any modern host.
     // Called once per Audition button press, never on a render-thread
     // hot path.
+    //
+    // v0.61.0: refactored to a thin marshaler over the new public
+    // engine surface ProcessBufferThroughMaterialEq() in
+    // audio_engine/material_eq.h. Previously the binding constructed
+    // BiquadFilterEffect instances here, reaching into the engine's
+    // private dsp/biquad_filter.h. That broke gdextension CI in
+    // v0.60.0 because the binding target didn't have the engine's
+    // src/ on its include path. v0.61.0 puts the math on the proper
+    // side of the public API boundary; the binding stays a pure
+    // consumer of public headers.
     static PackedFloat32Array process_buffer_through_material_eq(
             const PackedFloat32Array& buffer,
             int material,
@@ -1674,53 +1684,31 @@ public:
         if (frames <= 0) return out;
         if (sample_rate <= 0) sample_rate = 48000;
 
-        // Resolve material to a curve. Out-of-range materials get the
-        // Default neutral curve — audition is then a near-passthrough,
-        // which is the right behavior (no EQ = no coloring).
+        // Resolve material to the engine's AudioMaterial enum. Out-of-
+        // range ints get clamped to Default here at the binding edge;
+        // the engine surface also handles out-of-range gracefully but
+        // we want a single explicit boundary check.
         audio::AudioMaterial m = audio::AudioMaterial::Default;
         if (material >= 0
             && material < static_cast<int>(audio::kAudioMaterialCount)) {
             m = static_cast<audio::AudioMaterial>(material);
         }
-        const audio::MaterialEqCurve curve = audio::MaterialEqByMaterial(m);
-        const float gain_scale = static_cast<float>(intensity);
 
-        // Construct three biquads matching the runtime's
-        // LowShelf → Peak → HighShelf authoring contract. Shelf
-        // filters use a Q of 1.0 in the runtime impact / listener
-        // chains (the cookbook shelf math interprets Q as transition
-        // sharpness; 1.0 is the standard "no resonance" value, also
-        // matching what apply_material_eq_to_bus writes). The peak
-        // band uses the curve's authored Q.
-        audio::BiquadFilterEffect low(
-            audio::BiquadType::LowShelf,
-            curve.lowFreqHz, 1.0f,
-            curve.lowGainDb * gain_scale);
-        audio::BiquadFilterEffect mid(
-            audio::BiquadType::Peak,
-            curve.midFreqHz, curve.midQ,
-            curve.midGainDb * gain_scale);
-        audio::BiquadFilterEffect high(
-            audio::BiquadType::HighShelf,
-            curve.highFreqHz, 1.0f,
-            curve.highGainDb * gain_scale);
-
-        const uint32_t sr = static_cast<uint32_t>(sample_rate);
-        low.Prepare(sr,  1);
-        mid.Prepare(sr,  1);
-        high.Prepare(sr, 1);
-
-        // Copy input → out, then process in-place. The BiquadFilterEffect
-        // Process API is in-place (output buffer is both input and
-        // output), so we run the three filters sequentially on the
-        // same buffer.
+        // Copy input into out (engine API is in-place), then run the
+        // canonical audition function. This is the same code path the
+        // runtime impact-EQ and listener-EQ paths use, so what the
+        // designer hears matches what F5 will produce.
         out.resize(frames);
         float* dst = out.ptrw();
         const float* src = buffer.ptr();
         for (int i = 0; i < frames; ++i) dst[i] = src[i];
-        low.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
-        mid.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
-        high.Process(dst, static_cast<uint32_t>(frames), 1, nullptr, 0);
+
+        audio::ProcessBufferThroughMaterialEq(
+            dst,
+            static_cast<std::size_t>(frames),
+            m,
+            static_cast<float>(intensity),
+            static_cast<std::uint32_t>(sample_rate));
         return out;
     }
 
@@ -1758,34 +1746,37 @@ public:
         const int frames = buffer.size();
         if (frames <= 0) return out;
         if (sample_rate <= 0) sample_rate = 48000;
-        const float gain_scale = static_cast<float>(intensity);
 
-        audio::BiquadFilterEffect low(
-            audio::BiquadType::LowShelf,
-            static_cast<float>(low_freq_hz), 1.0f,
-            static_cast<float>(low_gain_db) * gain_scale);
-        audio::BiquadFilterEffect mid(
-            audio::BiquadType::Peak,
-            static_cast<float>(mid_freq_hz),
-            static_cast<float>(mid_q),
-            static_cast<float>(mid_gain_db) * gain_scale);
-        audio::BiquadFilterEffect high(
-            audio::BiquadType::HighShelf,
-            static_cast<float>(high_freq_hz), 1.0f,
-            static_cast<float>(high_gain_db) * gain_scale);
-
-        const uint32_t sr = static_cast<uint32_t>(sample_rate);
-        low.Prepare(sr,  1);
-        mid.Prepare(sr,  1);
-        high.Prepare(sr, 1);
+        // Pack the inspector's per-band fields into the engine's
+        // MaterialEqCurve struct, then call the canonical audition
+        // function. Shelf Q is not in the struct (the runtime impact
+        // and listener chains fix it at 1.0); the engine surface
+        // handles that internally.
+        //
+        // v0.61.0: refactored to a thin marshaler over
+        // ProcessBufferThroughMaterialEqCurve() in
+        // audio_engine/material_eq.h. See the by-material method
+        // above for the rationale.
+        audio::MaterialEqCurve curve;
+        curve.lowFreqHz  = static_cast<float>(low_freq_hz);
+        curve.lowGainDb  = static_cast<float>(low_gain_db);
+        curve.midFreqHz  = static_cast<float>(mid_freq_hz);
+        curve.midGainDb  = static_cast<float>(mid_gain_db);
+        curve.midQ       = static_cast<float>(mid_q);
+        curve.highFreqHz = static_cast<float>(high_freq_hz);
+        curve.highGainDb = static_cast<float>(high_gain_db);
 
         out.resize(frames);
         float* dst = out.ptrw();
         const float* src = buffer.ptr();
         for (int i = 0; i < frames; ++i) dst[i] = src[i];
-        low.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
-        mid.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
-        high.Process(dst, static_cast<uint32_t>(frames), 1, nullptr, 0);
+
+        audio::ProcessBufferThroughMaterialEqCurve(
+            dst,
+            static_cast<std::size_t>(frames),
+            curve,
+            static_cast<float>(intensity),
+            static_cast<std::uint32_t>(sample_rate));
         return out;
     }
 

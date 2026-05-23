@@ -22,7 +22,56 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.60.0] - 2026-05-23 — Phase 6.E.1 complete (Option B): editable per-material EQ curves
+## [0.61.0] - 2026-05-23 — API: material-EQ audition moved into the public engine surface (gdextension CI restored)
+
+Restores gdextension CI green on Linux, macOS, and Windows. v0.60.0 introduced an audition button on the inspector's `GoolAudioMaterial` editor, but the binding implementation reached into the engine's private `src/audio_engine/dsp/biquad_filter.h` to do its biquad work. The engine library target had `src/` on its include path; the godot binding target did not. CI broke on every platform with `fatal error: audio_engine/dsp/biquad_filter.h: No such file or directory` the first time anyone tried to build the gdextension after v0.59.3 landed.
+
+The right fix isn't to widen the binding target's include path — that would normalize the binding reaching into engine internals, which is the leak we want to close. The right fix is to put the math on the proper side of the public API boundary. v0.61.0 does that.
+
+### Added — `audio_engine/material_eq.h` (new public header)
+
+Two free-standing functions, both pure and `noexcept`:
+
+```cpp
+void ProcessBufferThroughMaterialEqCurve(
+    float* samples, std::size_t numSamples,
+    const MaterialEqCurve& curve,
+    float intensity = 1.0f,
+    std::uint32_t sampleRate = 48000) noexcept;
+
+void ProcessBufferThroughMaterialEq(
+    float* samples, std::size_t numSamples,
+    AudioMaterial material,
+    float intensity = 1.0f,
+    std::uint32_t sampleRate = 48000) noexcept;
+```
+
+Both apply a LowShelf → Peak → HighShelf biquad chain with RBJ cookbook coefficients to a mono float buffer in place — the same DSP code the runtime impact-EQ and listener-EQ paths use. The by-material function is implemented as `MaterialEqByMaterial(material)` followed by the by-curve function, so the two paths are bit-identical when given matching parameters.
+
+The functions are free-standing (not on `AudioRuntime`) because the audition is pure math: no engine state involved, no `init()` requirement, no `GameThread` annotation, safe from any thread. This matches the design constraint the binding's static methods had from v0.59.3 — the editor inspector calls them from the editor's SceneTree where `/root/Gool` autoload isn't reachable. Putting the audition on `AudioRuntime` would have re-imposed the very constraint the static-method design was meant to escape.
+
+### Changed — `gool_godot.cpp` binding
+
+Both `process_buffer_through_material_eq` (v0.59.3) and `process_buffer_through_curve` (v0.60.0) are now thin marshalers: copy `PackedFloat32Array` into an out buffer, call the engine surface, return. The binding drops `#include "audio_engine/dsp/biquad_filter.h"` and replaces it with `#include "audio_engine/material_eq.h"`. The godot binding target's include path remains public-only — no widening, no `src/` exposure.
+
+The static-method binding registration via `ClassDB::bind_static_method` is unchanged. GDScript-side callers (`GoolAudioRuntime.process_buffer_through_material_eq`, `GoolAudioRuntime.process_buffer_through_curve`) are unchanged. The `runtime_singleton.gd` wrapper is unchanged. End-to-end inspector audition behavior is identical to v0.60.0 — bit-identical, in fact, since the underlying biquad math is the same code.
+
+### Changed — `material_eq_audition_test.cpp`
+
+The test now calls the public engine surface directly instead of mirroring the binding's hand-rolled biquad chain. The curve-vs-material parity test exercises both `ProcessBufferThroughMaterialEq` and `ProcessBufferThroughMaterialEqCurve` and asserts bit-identity (verified locally: max sample diff = 0.00e+00). This makes the test a genuine check of the canonical implementation rather than a tautology against an inline copy of itself.
+
+### Rationale
+
+- **Single source of truth.** The biquad chain configuration (which types, which Q values, intensity scaling) lives in exactly one place: `src/audio_engine/dsp/material_eq.cpp`. Drift between the runtime path and the audition path is now structurally impossible — they share the same internal `BiquadFilterEffect` calls.
+- **Clean API boundary.** The binding consumes only public headers (`include/audio_engine/*.h`). The engine's private `src/` directory is never on a binding-side include path. This matches the long-term shape we want: the binding is a translation layer, not an extension of the engine.
+- **CI signal.** Every binding-side change that needs new engine functionality now has to add a public header (or extend an existing one). Forgetting that step fails compilation against `-I include` alone, which is what CI compiles the binding against — the symptom now points directly at the cause.
+
+### Migration
+
+None. The binding's GDScript-visible API is identical to v0.60.0. Existing `GoolAudioMaterial.tres` resources, inspector audition button behavior, and the C++ override fast path are all unchanged. v0.61.0 is a pure internal-API tidy-up that happens to restore gdextension CI.
+
+If you're depending on the engine library directly (rare; most projects use the godot binding), the new functions in `audio_engine/material_eq.h` are additive — nothing was removed or renamed from the public surface.
+
 
 Closes Phase 6.E.1 of `docs/audio_design/acoustic_presence_eq.md`. Designers can now author per-instance EQ curves on any `GoolAudioMaterial.tres` via drag handles on the inspector plot — no code edits, no config files, no rebuild. Drag a band, hear the change with the audition button, save on release. The override path is opt-in per resource: existing `.tres` files keep working at zero overhead, and new resources default to override-off so they behave exactly like v0.59.x.
 
