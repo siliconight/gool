@@ -22,6 +22,44 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.66.1] - 2026-05-23 — Hotfix: tests/CI compile
+
+Hotfix for v0.66.0's CI build failure. No engine behavior change,
+no API change.
+
+### Fix
+
+`tests/unit/sound_registry_introspection_test.cpp` (new in v0.66.0)
+included `audio_engine/decoders/audio_decoder.h` for a
+`ZeroFrameDecoder` stub class. That header lives in `src/`, which
+the engine target declares as a `PRIVATE` include directory
+(CMakeLists.txt:620-621). Tests linking against `audio_engine`
+inherit only the `PUBLIC` include directory (`include/`), so the
+test couldn't find the header and the build failed across every
+platform (Linux, macOS, Windows) and every sanitizer
+(ASan+UBSan, TSan), plus coverage and clang-tidy.
+
+The kicker: the `ZeroFrameDecoder` stub was never actually invoked
+by any of the three test functions. T1 only checks public
+`AudioRuntime` behavior on an un-initialized runtime, which doesn't
+need a decoder at all. The stub was dead-code residue from a
+draft of the test that planned to inject a fake decoder; the
+plan was dropped, but the include lingered.
+
+v0.66.1 removes the include and the stub. The test still covers
+the same observable behavior — pre-init introspection, struct
+layout sanity, and the post-fix public contract.
+
+### Process improvement
+
+The v0.66.0 packaging didn't run the full CMake configure +
+build locally before shipping. A `-fsyntax-only` compile of the
+modified files passed, which gave false confidence. A real
+`cmake --build` would have caught the missing include
+immediately. Future releases will mirror CI's exact configure
+flags (`-DAUDIO_ENGINE_BACKEND_MINIAUDIO=OFF`, decoders off,
+Release build type) for the local pre-package smoke.
+
 ## [0.66.0] - 2026-05-23 — Engine hardening: silent-failure visibility
 
 Three coordinated changes that close failure-mode visibility gaps
@@ -19691,6 +19729,7 @@ Headlines:
 [0.64.2]: https://github.com/siliconight/gool/releases/tag/v0.64.2
 [0.65.0]: https://github.com/siliconight/gool/releases/tag/v0.65.0
 [0.66.0]: https://github.com/siliconight/gool/releases/tag/v0.66.0
+[0.66.1]: https://github.com/siliconight/gool/releases/tag/v0.66.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
