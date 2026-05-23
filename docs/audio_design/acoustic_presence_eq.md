@@ -354,21 +354,30 @@ inspector, they see:
 - Audition button — play a reference sample (pink noise, voice,
   drum hit) through the current curve in the editor
 
-**Status: ⏳ partial — read-only visualizer shipped as v0.59.2.**
+**Status: ⏳ partial — read-only visualizer + audition shipped.**
 The frequency-response plot (log freq axis 20 Hz–20 kHz, dB
 axis ±24 dB to accommodate intensity ≤ 2.0), per-material hint
 text, three-band numerical readout, and realism intensity slider
-wired to ProjectSettings ship in v0.59.2. **Not** yet shipped:
-draggable handles, Q right-click adjust, preset dropdown,
-audition button. The handles and editable curves require
+wired to ProjectSettings shipped in **v0.59.2**. The audition
+button shipped in **v0.59.3** — a one-click "▶ Play (pink noise,
+1 s)" plays one second of Voss-McCartney pink noise through the
+material's EQ curve at the current intensity, using the same
+`BiquadFilterEffect` code path the runtime impact / listener EQ
+uses (bit-identical preview). The engine exposes a static
+`GoolAudioRuntime.process_buffer_through_material_eq()` method
+so the editor inspector can call into the offline DSP without
+needing the Gool autoload to be reachable (it isn't, in editor).
+
+**Not** yet shipped: draggable handles, Q right-click adjust,
+preset dropdown. The handles and editable curves require
 extending `GoolAudioMaterial` with per-instance EQ profile fields
 (currently the resource is just a `material: int` pointer to the
 engine's built-in table) and an override path through the runtime
-EQ application code — that's Option B / v0.60.0 territory.
-Audition is deferred to v0.59.3 since it has subtle editor-runtime
-caveats (the autoload doesn't run in editor; needs either a temp
-bus through an in-editor mini-runtime or pre-rendered per-material
-samples) that don't belong in v0.59.2's tight scope.
+EQ application code — that's Option B / v0.60.0 territory. The
+audition path will Just Work for editable curves once the runtime
+override reads per-instance values; the inspector will pass
+intensity-scaled per-instance values through to the same static
+method.
 
 #### E.2 — Mixer dock EQ visualization
 The existing mixer dock gets a section showing the active per-bus

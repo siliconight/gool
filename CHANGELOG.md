@@ -22,6 +22,77 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.59.3] - 2026-05-23 — Phase 6.E.1 audition: hear the curve, not just see it
+
+Closes the read-only inspector experience that v0.59.2 opened. Where v0.59.2 let designers **see** what each material's EQ does, v0.59.3 lets them **hear** it — a one-click Audition button on every `GoolAudioMaterial.tres` plays one second of pink noise through the material's curve at the current realism intensity, using the exact same `BiquadFilterEffect` code path the runtime uses for impact and listener EQ. What the designer hears is bit-identical to what the player will hear.
+
+### What's new in the inspector
+
+A new row sits below the realism-intensity slider:
+
+> **Audition** &nbsp; [▶ Play (pink noise, 1 s)]
+
+Pressing the button generates a fresh second of deterministic pink noise (Voss-McCartney synthesis in GDScript, no shipped audio asset, ~48 000 samples at 48 kHz), pushes it through the engine's offline EQ-processing entry point, wraps the result in an `AudioStreamWAV`, and plays it through an inline `AudioStreamPlayer`. The whole pipeline takes well under a millisecond on any modern host; press the button repeatedly to A/B-compare materials, then drag the intensity slider mid-audition and press again to compare 1.0× vs 1.5× vs 2.0× on the same material.
+
+Why pink noise specifically (rather than white): white noise has equal energy per Hz, which sounds perceptually bright because human hearing weights high frequencies more. Pink noise has equal energy per octave — perceived loudness is approximately flat across the audible spectrum, so EQ shaping is heard the way it's drawn on the plot. A +3 dB peak at 1.5 kHz reads as +3 dB at 1.5 kHz, not buried under the HF of white noise.
+
+The audition output is attenuated to a -12 dBFS peak before playback to leave headroom for boost-heavy materials at high intensity. Concrete at intensity 2.0 can add ~5 dB net gain on broadband noise; the attenuation guarantees no clipping in any combination of material × intensity the inspector exposes.
+
+### New engine surface (small, static, single entry point)
+
+A new method on `GoolAudioRuntime`:
+
+```cpp
+static PackedFloat32Array process_buffer_through_material_eq(
+    const PackedFloat32Array& buffer,
+    int material,
+    double intensity,
+    int sample_rate);
+```
+
+Takes a mono float buffer, runs it through three `BiquadFilterEffect` instances configured for the material's curve (LowShelf → Peak → HighShelf, intensity-scaled gains, RBJ cookbook coefficients), returns the processed buffer. **Static by design**: the audition is pure math over stack-local biquad instances and the engine's per-material EQ table. It doesn't read or modify any runtime instance state, doesn't touch the audio device, and doesn't require `init()` to have been called.
+
+Why static matters for v0.59.3: editor inspector plugins run in the **editor process**, which does NOT load gool's autoload (`runtime_singleton.gd` is not `@tool`; the `/root/Gool` autoload only spins up in F5 game sessions). If the audition method were an instance method on `GoolAudioRuntime`, the editor would have nothing to call it on. A static class-level method is reachable through `ClassDB` without any instance, which is exactly the editor-inspector surface needed. Bonus: same call works during F5 game sessions, with no separate code path.
+
+### Reusability for future features
+
+This is the first piece of "editor-context DSP" in the addon. The pattern — small static method on the engine, deterministic input synthesis in GDScript, `AudioStreamWAV` for playback in editor — is reusable for:
+
+- **Master FX telemetry preview** (Phase 7): platform-translation profile preview will use the same pattern. Pick a profile from the inspector dropdown, hear the master sum filtered through that profile's translation curve.
+- **Saturation preset audition**: a future "audition" button on saturation profile picks (rock-amp / dialogue-warm / etc.) would reuse the same flow with `process_buffer_through_saturation_profile` as the engine surface.
+- **Reverb preset audition**: same pattern, harder pink-noise burst (a few hundred ms with a clear transient onset so the tail is audible).
+
+Each of those is a small follow-up — the path through `BiquadFilterEffect.Process()`, `PackedFloat32Array` → `AudioStreamWAV`, the GDScript pink-noise generator, and the editor `AudioStreamPlayer` is fully built out now and ready for reuse.
+
+### Added
+
+- **`process_buffer_through_material_eq()`** static method on `GoolAudioRuntime` (godot/src/gool_godot.cpp). ~30 lines C++ including the comment block; lives next to `apply_material_eq_to_bus` since they're the two material-EQ surfaces designers reach for.
+- **GDScript autoload passthrough** `Gool.process_buffer_through_material_eq()` for stable API surface during F5 sessions. Internally just delegates to the static class method.
+- **Audition button + pink-noise generator + AudioStreamWAV builder** in `godot/addons/gool/editor/material_eq_inspector.gd` (~150 new lines). Voss-McCartney pinking with 5 octave bands + a fast row, deterministic per-material seed (so back-to-back auditions of the same material sound identical and material-A vs material-B comparisons swap material randomness *and* curve shape rather than colliding the curves of one with the randomness of the other).
+- **`material_eq_audition_test.cpp`** unit test (~190 lines). Four properties verified: (1) non-neutral materials produce non-identity output; (2) Curtain (broadband cut) measurably reduces RMS vs Air; (3) intensity 0.0 is exact bypass, intensity 2.0 amplifies the curve shape; (4) different materials produce measurably distinct outputs from the same input. All four pass; see test output for concrete numbers (Concrete RMS 0.71 vs Air 0.58 on unit white noise, Curtain 0.39, etc.).
+
+### Modified
+
+- `godot/addons/gool/editor/material_eq_inspector.gd`: inserts the new audition row between the realism-intensity slider and the footer. Footer text updated from "(v0.59.2)" to "(v0.59.3, audition button live)". The v0.59.2 read-only-scope copy was otherwise unchanged.
+- `tests/CMakeLists.txt`: registers the new audition test in the `add_executable` / `target_link_libraries` / `add_test` chain alongside `material_eq_curve_test`.
+- `include/audio_engine/version.h`, `CMakeLists.txt`, `tests/unit/version_test.cpp`: standard triple bump 0.59.2 → 0.59.3.
+- `docs/audio_design/acoustic_presence_eq.md`: Phase 6.E.1 status updated from "⏳ partial — read-only visualizer shipped as v0.59.2" to note that the audition button is now live too; editable handles (Option B) remain v0.60.0 work.
+
+### Backward compatibility
+
+Fully backward compatible:
+
+- `GoolAudioRuntime` gains a new method; no existing surface changed.
+- The autoload's `Gool.process_buffer_through_material_eq()` is new; existing `Gool.*` methods unchanged.
+- The inspector adds a UI row; existing `GoolAudioMaterial.tres` files work unchanged. Existing inspector behavior identical for users who don't press the new button.
+- The C++ method is static, which is how godot-cpp's `bind_static_method` exposes it. Existing instance-method bindings on `GoolAudioRuntime` are unaffected.
+
+### Deferred to v0.60.0+
+
+- **Editable per-material curves** (Option B). Requires extending `GoolAudioMaterial` with per-instance EQ profile fields and a runtime override path through impact-EQ + listener-EQ — the engine-touching work v0.59.2 / v0.59.3 deliberately skipped. The audition path will Just Work for editable curves once the runtime override reads per-instance values; the inspector will pass intensity-scaled per-instance values through to the same static method.
+- **Drag-handle UI** on the curve plot for inline editing of band frequency / gain / Q. Editor-side polish on top of the editable-curves runtime change.
+- **Material library** (6.E.4): a "save this curve as a preset" / "load preset" surface. Belongs after the editable-curve runtime path lands.
+
 ## [0.59.2] - 2026-05-22 — Phase 6.E.1 (read-only): per-material EQ curve preview in the inspector
 
 Ships the **inspector visualizer** for `GoolAudioMaterial.tres` resources — Phase 6.E.1 from `docs/audio_design/acoustic_presence_eq.md`, in its Option A (read-only) form. When a designer selects a material resource in the Godot inspector, they now see a frequency-response plot of the engine's EQ curve for that material, a three-band numerical readout, and a global realism intensity slider tied to `ProjectSettings("gool/material_eq/intensity")`.

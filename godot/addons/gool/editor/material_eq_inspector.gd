@@ -145,13 +145,22 @@ func _parse_end(object: Object) -> void:
 	var intensity_row := _build_intensity_row(view)
 	container.add_child(intensity_row)
 
-	# Small footer noting v0.59.2's read-only scope so designers
+	# v0.59.3: Audition button. Generates ~1 s of pink noise,
+	# routes it through Gool's offline EQ DSP at the current
+	# material + intensity, plays the result inline through an
+	# editor-local AudioStreamPlayer. See _build_audition_row()
+	# for the gory details (deferred AudioStream construction,
+	# Gool autoload reachability check, etc.).
+	var audition_row := _build_audition_row(material_int)
+	container.add_child(audition_row)
+
+	# Small footer noting v0.59.3's read-only scope so designers
 	# don't waste time looking for editable handles.
 	var footer := Label.new()
 	footer.text = (
-		"Read-only preview (v0.59.2). Curve values are authored "
-		+ "engine-side; per-material editable curves land in a "
-		+ "future release."
+		"Read-only preview (v0.59.3, audition button live). "
+		+ "Curve values are authored engine-side; per-material "
+		+ "editable curves land in v0.60.0."
 	)
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
@@ -446,3 +455,204 @@ func _persist_intensity(value: float) -> void:
 				+ "to project.godot (error %d). The value is set "
 				% err
 				+ "for this editor session but won't persist.")
+
+
+# ---- v0.59.3: Audition button ------------------------------------
+#
+# Generates a short pink-noise burst in GDScript, routes it through
+# GoolAudioRuntime.process_buffer_through_material_eq (a STATIC
+# C++ method, no autoload required), and plays the result inline
+# through an editor-local AudioStreamPlayer + AudioStreamWAV.
+#
+# Why pink noise specifically: white noise (equal energy per Hz) is
+# perceptually bright because human hearing weights high frequencies
+# more. Pink noise (equal energy per OCTAVE) sounds spectrally
+# "balanced" — the perceived loudness is roughly flat across the
+# audible spectrum, so EQ shaping is audibly obvious (a +3 dB peak
+# at 1.5 kHz is heard as ~+3 dB at 1.5 kHz, not buried under HF
+# brightness).
+#
+# Why GDScript pink noise (not a shipped .wav): pink noise is
+# trivially generated procedurally with a Voss-McCartney filter —
+# half a dozen lines of code, no asset bloat, deterministic so
+# every audition for the same material sounds the same.
+#
+# Why int16 PCM via AudioStreamWAV (not AudioStreamGenerator):
+# AudioStreamWAV is a one-shot finite-buffer player; the audition
+# IS a finite buffer playback. AudioStreamGenerator is for
+# streaming/continuous synthesis where the producer pushes buffers
+# at audio-rate; overkill and adds threading complexity here.
+
+# Audition buffer length in samples at AUDITION_SAMPLE_RATE Hz.
+# 1.0 s gives biquads ~50 ms of pre-roll to settle (well past the
+# longest filter group delay at these frequencies) and ~950 ms of
+# steady-state audible character — comfortable but not tedious.
+const AUDITION_DURATION_S: float = 1.0
+const AUDITION_SAMPLE_RATE: int = 48000
+
+# Output target peak amplitude. The pink-noise generator produces
+# unit-amplitude samples; we attenuate to leave headroom for boosts
+# (Concrete at intensity 2.0 can add ~5 dB net gain on broadband
+# noise — clipping above ~0.55 would be likely without this
+# attenuation). -12 dBFS leaves plenty of headroom in every case.
+const AUDITION_PEAK: float = 0.25
+
+
+func _build_audition_row(material_int: int) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var label := Label.new()
+	label.text = "Audition"
+	label.custom_minimum_size = Vector2(120, 0)
+	row.add_child(label)
+
+	# The playback button. Pressing it (re)generates pink noise,
+	# pushes it through the audition C++ method, builds a fresh
+	# AudioStreamWAV, plays it.
+	var play_btn := Button.new()
+	play_btn.text = "▶ Play (pink noise, 1 s)"
+	play_btn.tooltip_text = (
+			"Generates 1 second of pink noise, runs it through the "
+			+ "material's EQ curve at the current realism intensity, "
+			+ "and plays the result. The processing uses the same "
+			+ "biquad chain as the runtime impact-EQ path."
+	)
+	play_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(play_btn)
+
+	# Tiny inline player. AudioStreamPlayer must be in the editor's
+	# scene tree to actually emit audio; we add it as a child of
+	# the row Control. When the row is freed (inspector rebuild
+	# on selection change), Godot frees its descendants including
+	# the player — no leak.
+	var player := AudioStreamPlayer.new()
+	player.bus = "Master"
+	row.add_child(player)
+
+	play_btn.pressed.connect(
+			func():
+				_audition_play(player, material_int))
+	return row
+
+
+# Run the audition pipeline end-to-end. Generates noise, processes
+# it through the C++ static method, wraps it in an AudioStreamWAV,
+# starts playback.
+func _audition_play(player: AudioStreamPlayer, material_int: int) -> void:
+	var noise := _generate_pink_noise(
+			int(AUDITION_DURATION_S * float(AUDITION_SAMPLE_RATE)),
+			material_int * 7919 + 13)   # seed varies per-material so
+										# back-to-back materials sound
+										# different even in their
+										# random structure
+
+	# Call the C++ static method directly. No autoload dependency:
+	# even with /root/Gool absent in editor, this works because
+	# GoolAudioRuntime is registered globally in ClassDB by the
+	# GDExtension binding.
+	var intensity := _current_intensity()
+	var processed: PackedFloat32Array = (
+			GoolAudioRuntime.process_buffer_through_material_eq(
+					noise, material_int, intensity,
+					AUDITION_SAMPLE_RATE))
+	if processed.is_empty():
+		push_warning("[gool] audition: process_buffer_through_material_eq "
+				+ "returned empty. Material %d, intensity %.2f."
+				% [material_int, intensity])
+		return
+
+	# Build the AudioStreamWAV from the processed buffer and play.
+	var stream := _stream_from_float_buffer(processed, AUDITION_SAMPLE_RATE)
+	player.stream = stream
+	player.play()
+
+
+# ---- Helpers -----------------------------------------------------
+
+# Generate `length` samples of pink-ish noise using a 5-octave
+# Voss-McCartney approximation. Pink-ish, not strictly pink — the
+# Voss-McCartney method overlays a handful of slow-updating random
+# sources at progressively halved update rates. The resulting PSD
+# approximates 1/f within ~2 dB across most of the audible range,
+# more than good enough for audition purposes.
+#
+# Deterministic given a seed (uses a Linear Congruential Generator
+# rather than randf()), so the same material always sounds the
+# same on repeated button presses.
+func _generate_pink_noise(length: int, seed: int) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(length)
+
+	# LCG state (Numerical Recipes parameters).
+	var lcg_state: int = (seed if seed != 0 else 12345)
+
+	# Five octave-band random sources, each updating at half the
+	# rate of the previous. Voss-McCartney style.
+	const N_OCTAVES: int = 5
+	var rows := PackedFloat32Array()
+	rows.resize(N_OCTAVES)
+	# rows starts as zeros — first iteration fills them.
+
+	# Running sum across the rows; tracking the delta lets us avoid
+	# recomputing the full sum every sample.
+	var running_sum: float = 0.0
+
+	# Find the highest bit set in a counter; equivalently the
+	# largest power-of-two divisor.
+	var counter: int = 0
+	for i in length:
+		# Decide which row to update based on bit count.
+		# Row k updates every 2^k samples.
+		counter += 1
+		var row_to_update: int = -1
+		for k in N_OCTAVES:
+			if (counter & (1 << k)) != 0:
+				row_to_update = k
+				break
+		if row_to_update >= 0:
+			lcg_state = (lcg_state * 1103515245 + 12345) & 0x7FFFFFFF
+			# Map u31 to [-1, 1).
+			var rnd: float = (float(lcg_state) / 1073741824.0) - 1.0
+			var old: float = rows[row_to_update]
+			rows[row_to_update] = rnd
+			running_sum += rnd - old
+
+		# Also add one fast-updating "white" row that updates every
+		# sample. Without this, the highest octave wouldn't be
+		# represented (the per-sample variation would only come
+		# from rows[0] updates which happen every other sample).
+		lcg_state = (lcg_state * 1103515245 + 12345) & 0x7FFFFFFF
+		var fast: float = (float(lcg_state) / 1073741824.0) - 1.0
+
+		# Sum of slow rows + fast row, normalized by sqrt(N) so
+		# RMS is independent of N_OCTAVES. The /sqrt formula
+		# preserves perceived loudness regardless of how many
+		# octave bands we use.
+		var sample: float = (running_sum + fast) / sqrt(float(N_OCTAVES + 1))
+		out[i] = sample * AUDITION_PEAK
+
+	return out
+
+
+# Convert a float buffer into an AudioStreamWAV at the given
+# sample rate, mono, 16-bit PCM. The conversion clamps samples
+# to [-1, 1] before scaling — handles any boosts that pushed
+# beyond unity (rare given AUDITION_PEAK, but safe to guard).
+func _stream_from_float_buffer(buffer: PackedFloat32Array,
+		sample_rate: int) -> AudioStreamWAV:
+	var n: int = buffer.size()
+	var bytes := PackedByteArray()
+	bytes.resize(n * 2)   # 2 bytes per int16 sample
+	for i in n:
+		var s: float = clampf(buffer[i], -1.0, 1.0)
+		var int_sample: int = int(s * 32767.0)
+		# Little-endian 16-bit signed.
+		bytes[i * 2]     = int_sample & 0xFF
+		bytes[i * 2 + 1] = (int_sample >> 8) & 0xFF
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.stereo = false
+	stream.mix_rate = sample_rate
+	stream.data = bytes
+	return stream

@@ -2189,6 +2189,43 @@ func apply_material_eq_to_bus(bus_name: String, material: int) -> bool:
 		return false
 	return _runtime.apply_material_eq_to_bus(bus_name, material)
 
+## v0.59.3 (Phase 6.E.1 audition): pure-DSP offline processing of a
+## sample buffer through a material's EQ curve. Used by the editor
+## inspector's audition button so designers can hear what a material
+## sounds like without running an F5 session.
+##
+## Bit-identical to what the runtime impact / listener EQ paths
+## produce for the same input (uses the same BiquadFilterEffect
+## class with the same RBJ cookbook coefficients).
+##
+## NOTE: This calls a STATIC method on GoolAudioRuntime; it does not
+## require the autoload to be initialized. Editor inspector code
+## can equivalently call `GoolAudioRuntime.process_buffer_through_material_eq`
+## directly — both routes hit the same C++ entry point. This wrapper
+## exists so game-context callers have a stable Gool.* API surface
+## consistent with every other gool getter.
+##
+## buffer    : a PackedFloat32Array of mono input samples. Typical
+##             length is 1 second at the target sample rate.
+## material  : AudioMaterial int. Same range/semantics as the rest
+##             of the material API.
+## intensity : the realism-intensity multiplier scaling all three
+##             band gains. Defaults to 1.0 (curves as-tabled).
+## sample_rate : 48000 default. Should match whatever the caller
+##             plays the returned buffer back at.
+##
+## Returns: a PackedFloat32Array of the same length as input.
+## Empty array on invalid input.
+func process_buffer_through_material_eq(buffer: PackedFloat32Array,
+		material: int, intensity: float = 1.0,
+		sample_rate: int = 48000) -> PackedFloat32Array:
+	# No is_initialized() check: the underlying C++ method is static
+	# and works regardless of runtime init state. Editor inspector
+	# code calls GoolAudioRuntime.process_buffer_through_material_eq()
+	# directly, bypassing this wrapper.
+	return GoolAudioRuntime.process_buffer_through_material_eq(
+			buffer, material, intensity, sample_rate)
+
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
 					 fade_in_ms: float = 0.0) -> int:

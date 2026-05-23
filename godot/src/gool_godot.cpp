@@ -17,6 +17,7 @@
 #include "audio_engine/bus.h"
 #include "audio_engine/bus_config_loader.h"
 #include "audio_engine/config.h"
+#include "audio_engine/dsp/biquad_filter.h"   // v0.59.3 — material EQ audition
 #include "audio_engine/emitter.h"
 #include "audio_engine/events.h"
 #include "audio_engine/geometry_query.h"  // AudioMaterial (Phase 5.1)
@@ -464,6 +465,18 @@ public:
         ClassDB::bind_method(D_METHOD("apply_material_eq_to_bus",
                                        "bus_name", "material"),
                               &GoolAudioRuntime::apply_material_eq_to_bus);
+
+        // v0.59.3 (Phase 6.E.1 audition): offline DSP processing of a
+        // user-provided sample buffer through a material's EQ curve.
+        // Used by the editor inspector's audition button. STATIC so
+        // the editor inspector can call it without needing the
+        // /root/Gool autoload to be reachable. See
+        // process_buffer_through_material_eq() for the surface.
+        ClassDB::bind_static_method("GoolAudioRuntime",
+                                     D_METHOD("process_buffer_through_material_eq",
+                                               "buffer", "material",
+                                               "intensity", "sample_rate"),
+                                     &GoolAudioRuntime::process_buffer_through_material_eq);
 
         // v0.31.0 (Phase 5.2): live occlusion controls.
         ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"),
@@ -1583,6 +1596,118 @@ public:
         runtime_->SetEffectParameter(bus_id, 2, EP::Biquad_CutoffHz, c.highFreqHz);
         runtime_->SetEffectParameter(bus_id, 2, EP::Biquad_GainDb,   c.highGainDb);
         return true;
+    }
+
+    // v0.59.3 (Phase 6.E.1 audition): take a mono float buffer in, run
+    // it through a three-biquad chain configured for the given
+    // material's EQ curve at the given intensity, return the processed
+    // buffer. Used by the editor inspector's "Audition" button so
+    // designers can hear what each material does without booting an
+    // F5 game session.
+    //
+    // The output is bit-identical to what the runtime impact-EQ /
+    // listener-EQ paths produce when fed the same input, because this
+    // method uses the same BiquadFilterEffect class with the same RBJ
+    // cookbook coefficients that the runtime uses. The only thing this
+    // doesn't share with the runtime is the bus chain topology (no
+    // mix-down from other sources, no sidechain ducking, etc.) — by
+    // design, since the audition is a pure preview of the EQ stage in
+    // isolation.
+    //
+    // STATIC by design: the audition is pure math over stack-local
+    // BiquadFilterEffect instances and the engine's per-material EQ
+    // table. It doesn't read or modify any GoolAudioRuntime instance
+    // state, doesn't touch the audio device, doesn't need init() to
+    // have been called. Making it static lets the editor inspector
+    // call it as `GoolAudioRuntime.process_buffer_through_material_eq`
+    // without needing the /root/Gool autoload to be reachable — which
+    // it isn't, since runtime_singleton.gd is not @tool and the
+    // autoload only spins up in F5 game sessions, not the editor's
+    // own SceneTree.
+    //
+    // Inputs:
+    //   buffer    : a PackedFloat32Array of mono input samples
+    //               (typically pink noise generated client-side in
+    //               GDScript). Length is the audition duration in
+    //               samples. The method processes the buffer in-place
+    //               conceptually but returns a new array to avoid
+    //               mutating the caller's data.
+    //   material  : the AudioMaterial int (same range / semantics as
+    //               get_material_eq_for_material).
+    //   intensity : the realism-intensity multiplier applied to all
+    //               three band gains (matching the runtime path
+    //               _apply_scaled_material_eq_to_bus). Defaults to 1.0.
+    //   sample_rate : 48000 by default; the BiquadFilterEffect computes
+    //               its coefficients against this. Should match
+    //               whatever the inspector then plays the buffer back
+    //               at to keep the audible result honest.
+    //
+    // Returns: a PackedFloat32Array of the same length as input.
+    // Returns an empty array on invalid material or empty input.
+    //
+    // Performance: ~3 multiplies per sample per biquad × 3 biquads =
+    // ~9 multiplies/sample, plus housekeeping. At a 1 s 48 kHz buffer
+    // that's ~430k multiplies — sub-millisecond on any modern host.
+    // Called once per Audition button press, never on a render-thread
+    // hot path.
+    static PackedFloat32Array process_buffer_through_material_eq(
+            const PackedFloat32Array& buffer,
+            int material,
+            double intensity,
+            int sample_rate) {
+        PackedFloat32Array out;
+        const int frames = buffer.size();
+        if (frames <= 0) return out;
+        if (sample_rate <= 0) sample_rate = 48000;
+
+        // Resolve material to a curve. Out-of-range materials get the
+        // Default neutral curve — audition is then a near-passthrough,
+        // which is the right behavior (no EQ = no coloring).
+        audio::AudioMaterial m = audio::AudioMaterial::Default;
+        if (material >= 0
+            && material < static_cast<int>(audio::kAudioMaterialCount)) {
+            m = static_cast<audio::AudioMaterial>(material);
+        }
+        const audio::MaterialEqCurve curve = audio::MaterialEqByMaterial(m);
+        const float gain_scale = static_cast<float>(intensity);
+
+        // Construct three biquads matching the runtime's
+        // LowShelf → Peak → HighShelf authoring contract. Shelf
+        // filters use a Q of 1.0 in the runtime impact / listener
+        // chains (the cookbook shelf math interprets Q as transition
+        // sharpness; 1.0 is the standard "no resonance" value, also
+        // matching what apply_material_eq_to_bus writes). The peak
+        // band uses the curve's authored Q.
+        audio::BiquadFilterEffect low(
+            audio::BiquadType::LowShelf,
+            curve.lowFreqHz, 1.0f,
+            curve.lowGainDb * gain_scale);
+        audio::BiquadFilterEffect mid(
+            audio::BiquadType::Peak,
+            curve.midFreqHz, curve.midQ,
+            curve.midGainDb * gain_scale);
+        audio::BiquadFilterEffect high(
+            audio::BiquadType::HighShelf,
+            curve.highFreqHz, 1.0f,
+            curve.highGainDb * gain_scale);
+
+        const uint32_t sr = static_cast<uint32_t>(sample_rate);
+        low.Prepare(sr,  1);
+        mid.Prepare(sr,  1);
+        high.Prepare(sr, 1);
+
+        // Copy input → out, then process in-place. The BiquadFilterEffect
+        // Process API is in-place (output buffer is both input and
+        // output), so we run the three filters sequentially on the
+        // same buffer.
+        out.resize(frames);
+        float* dst = out.ptrw();
+        const float* src = buffer.ptr();
+        for (int i = 0; i < frames; ++i) dst[i] = src[i];
+        low.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
+        mid.Process(dst,  static_cast<uint32_t>(frames), 1, nullptr, 0);
+        high.Process(dst, static_cast<uint32_t>(frames), 1, nullptr, 0);
+        return out;
     }
 
     // v0.31.0 (Phase 5.2): live occlusion controls. Both safe to call
