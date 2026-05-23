@@ -22,6 +22,119 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.65.0] - 2026-05-23 — register_sound_definition_dict: ergonomic sound registration API
+
+The positional `register_sound_definition` has 8 optional args
+after the sound name. GDScript doesn't support named arguments,
+so a caller who wants to set just one or two end up specifying
+all the intermediate defaults verbatim, which is verbose and
+makes argument-position errors easy to introduce. Real example
+from the sandbox's `audio_setup.gd`:
+
+```gdscript
+# To register the wind as a looping ambience routed to Ambient:
+Gool.register_sound_definition(
+    "wind",
+    false,                 # spatialized
+    true,                  # looping
+    0.0,                   # min_distance (unused when not spatialized)
+    0.0,                   # max_distance (unused when not spatialized)
+    0.0,                   # loop_crossfade_ms
+    Gool.CATEGORY_AMBIENCE # category
+)
+# Seven positional args, half of them just to fill seats and
+# reach the keys we care about (looping + category).
+```
+
+### New API
+
+`Gool.register_sound_definition_dict(name, options)` accepts a
+Dictionary with named keys. Missing keys fall through to the
+same defaults as the positional version's DEFVAL entries. Same
+example, rewritten:
+
+```gdscript
+Gool.register_sound_definition_dict("wind", {
+    "spatialized": false,
+    "looping": true,
+    "category": Gool.CATEGORY_AMBIENCE,
+})
+# Three keys explicit, distances/crossfade/target_bus/occlusion
+# all fall through to defaults.
+```
+
+Recognized keys mirror the positional argument names exactly,
+so migration is mechanical:
+
+  - `spatialized`        bool    default `true`
+  - `looping`            bool    default `false`
+  - `min_distance`       float   default `1.0`
+  - `max_distance`       float   default `50.0`
+  - `loop_crossfade_ms`  float   default `0.0`
+  - `category`           int     default `0` (SFX)
+  - `target_bus_name`    String  default `""` (use category routing)
+  - `occlusion_enabled`  bool    default `true`
+
+### Typo protection
+
+Unrecognized keys are reported via `push_warning` instead of
+silently ignored — the whole motivation for moving to a dict
+was to catch misspellings, so accepting `"lopping": true` with
+no diagnostic would defeat the purpose. The warning includes
+the full recognized-keys list to help locate the typo:
+
+```
+GoolAudioRuntime: register_sound_definition_dict("wind") unknown
+option key 'lopping' (typo? recognized keys: spatialized, looping,
+min_distance, max_distance, loop_crossfade_ms, category,
+target_bus_name, occlusion_enabled)
+```
+
+Registration still succeeds — the warning is non-fatal. The
+sound gets registered with whatever recognized keys WERE valid
+plus defaults for everything missing.
+
+### Implementation
+
+~110 lines added to `godot/src/gool_godot.cpp`. The dict method
+validates keys against a static recognized-keys array, unpacks
+each known key via `Dictionary::get(key, fallback)` (one call
+per key, fallback identical to the positional DEFVAL), then
+delegates to the existing positional implementation. So all the
+validation logic — category clamping to a valid enum range,
+`target_bus_name` resolution against the live bus map, the
+push_warning on unknown bus name — lives in one place. No
+duplication.
+
+### Compatibility
+
+Positional `register_sound_definition` is unchanged and unmarked.
+It will remain in the public API indefinitely; no deprecation
+planned, since (a) it has existing callers in the wild, including
+the sandbox's own `audio_setup.gd` that I don't want to force
+into a migration, and (b) it's a perfectly correct API for
+callers who set all arguments explicitly. Use whichever fits
+the call site.
+
+### C++ engine unchanged
+
+This is a binding-layer addition only. No changes to
+`audio::SoundDefinition`, the runtime's
+`RegisterSoundDefinition`, or any of the audio kernel paths.
+Library output identical to v0.64.2 aside from the version-pin
+file and the new binding method.
+
+### Verified
+
+- `version_test` reports 0.65.0 from both local build and
+  roundtripped tarball.
+- `bus_config_loader` regression: typo'd sidechain_bus still
+  errors hard (no behavior change to that path).
+- Added code is brace/paren balanced when inspected in isolation;
+  the apparent imbalance in whole-file regex sweeps comes from
+  string-stripping artifacts (comments containing quote chars),
+  matches what v0.64.2 produced under the same sweep.
+
 ## [0.64.2] - 2026-05-23 — Master Control preset picker: submenu with all five presets
 
 v0.64.1 added Master Control to the Add Effect dropdown but only
@@ -19423,6 +19536,7 @@ Headlines:
 [0.64.0]: https://github.com/siliconight/gool/releases/tag/v0.64.0
 [0.64.1]: https://github.com/siliconight/gool/releases/tag/v0.64.1
 [0.64.2]: https://github.com/siliconight/gool/releases/tag/v0.64.2
+[0.65.0]: https://github.com/siliconight/gool/releases/tag/v0.65.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

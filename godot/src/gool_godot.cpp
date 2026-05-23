@@ -491,6 +491,20 @@ public:
                               DEFVAL(1.0), DEFVAL(50.0), DEFVAL(0.0),
                               DEFVAL(0), DEFVAL(String()),
                               DEFVAL(true));
+        // v0.65.0: dict-based variant for cleaner partial overrides.
+        // The positional version above has 8 optional args after
+        // name; GDScript can't skip middle args, so callers who
+        // want to set just one or two end up specifying all the
+        // intermediate defaults. The dict variant takes named
+        // keys and accepts partial dicts (missing keys → defaults
+        // identical to the positional DEFVALs).
+        //
+        // No DEFVAL for the dict itself — callers must pass at
+        // least an empty {}. Passing {} is equivalent to calling
+        // the positional version with no args after name.
+        ClassDB::bind_method(D_METHOD("register_sound_definition_dict",
+                                       "name", "options"),
+                              &GoolAudioRuntime::register_sound_definition_dict);
         // Bus-name → BusId resolver. Returns -1 if no bus matches.
         // Useful for hosts that need to call other BusId-taking
         // bindings (set_bus_gain_db, set_effect_parameter) by name.
@@ -1517,6 +1531,107 @@ public:
         def.attenuation.maxDistance = static_cast<float>(max_distance);
         def.loopCrossfadeMs   = static_cast<float>(loop_crossfade_ms);
         runtime_->RegisterSoundDefinition(def);
+    }
+
+    // v0.65.0: dict-based variant of register_sound_definition.
+    //
+    // The positional version has 8 optional arguments after the
+    // sound name. GDScript doesn't support named arguments, so a
+    // caller who wants to set just looping + category has to either
+    // pass the three intermediate args at their defaults (verbose
+    // and easy to miscount) or accept the positional defaults for
+    // the trailing args (no way to do that).
+    //
+    // This dict variant accepts a Dictionary with named keys. Each
+    // key is optional — missing keys fall through to the same
+    // defaults the positional version uses (matching the DEFVAL
+    // entries in _bind_methods so behavior is identical).
+    //
+    //   Gool.register_sound_definition_dict("wind", {
+    //       "looping": true,
+    //       "category": Gool.CATEGORY_AMBIENCE,
+    //   })
+    //
+    // Unknown keys (typos like "spatialised") are flagged via
+    // push_warning rather than silently ignored — the whole point
+    // of moving to a dict was to catch misspellings, so silently
+    // accepting "lopping": true would defeat the purpose.
+    //
+    // Recognized keys (mirror of positional argument names):
+    //   spatialized        bool    (default true)
+    //   looping            bool    (default false)
+    //   min_distance       float   (default 1.0)
+    //   max_distance       float   (default 50.0)
+    //   loop_crossfade_ms  float   (default 0.0)
+    //   category           int     (default 0 = SFX)
+    //   target_bus_name    String  (default "" = use category routing)
+    //   occlusion_enabled  bool    (default true)
+    //
+    // Delegates to register_sound_definition above so all the
+    // validation (category clamping, target_bus resolution, the
+    // push_warning on unknown bus name) lives in one place.
+    void register_sound_definition_dict(const String& name,
+                                        const Dictionary& options) {
+        if (!runtime_) return;
+
+        // Validate keys before unpacking. Anything not in the
+        // recognized set is a likely typo — warn but proceed
+        // (don't fail registration over a key the caller didn't
+        // know would be ignored).
+        static const char* kRecognizedKeys[] = {
+            "spatialized", "looping",
+            "min_distance", "max_distance",
+            "loop_crossfade_ms",
+            "category", "target_bus_name",
+            "occlusion_enabled",
+        };
+        constexpr size_t kRecognizedKeyCount =
+            sizeof(kRecognizedKeys) / sizeof(kRecognizedKeys[0]);
+        const Array key_list = options.keys();
+        for (int i = 0; i < key_list.size(); ++i) {
+            const String key = key_list[i];
+            bool recognized = false;
+            for (size_t k = 0; k < kRecognizedKeyCount; ++k) {
+                if (key == String(kRecognizedKeys[k])) {
+                    recognized = true;
+                    break;
+                }
+            }
+            if (!recognized) {
+                UtilityFunctions::push_warning(
+                    String("GoolAudioRuntime: register_sound_definition_dict(\"")
+                    + name + String("\") unknown option key '") + key
+                    + String("' (typo? recognized keys: spatialized, looping, "
+                            "min_distance, max_distance, loop_crossfade_ms, "
+                            "category, target_bus_name, occlusion_enabled)"));
+            }
+        }
+
+        // Unpack with DEFVAL-matching defaults. Each lookup uses
+        // Dictionary::get which returns the second arg when the
+        // key isn't present, so no separate has() check needed.
+        const bool spatialized =
+            static_cast<bool>(options.get("spatialized", true));
+        const bool looping =
+            static_cast<bool>(options.get("looping", false));
+        const double min_distance =
+            static_cast<double>(options.get("min_distance", 1.0));
+        const double max_distance =
+            static_cast<double>(options.get("max_distance", 50.0));
+        const double loop_crossfade_ms =
+            static_cast<double>(options.get("loop_crossfade_ms", 0.0));
+        const int category =
+            static_cast<int>(options.get("category", 0));
+        const String target_bus_name =
+            String(options.get("target_bus_name", String()));
+        const bool occlusion_enabled =
+            static_cast<bool>(options.get("occlusion_enabled", true));
+
+        register_sound_definition(name, spatialized, looping,
+                                  min_distance, max_distance,
+                                  loop_crossfade_ms,
+                                  category, target_bus_name,
+                                  occlusion_enabled);
     }
 
     int find_bus_id_by_name(const String& name) const {
