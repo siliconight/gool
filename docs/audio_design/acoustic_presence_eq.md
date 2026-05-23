@@ -392,18 +392,20 @@ collider's metadata; the whole acoustic identity is set in one
 gesture. Save your own materials back to the library to share
 across projects.
 
-**Status: ⚠️ Phase 6.E.4 partially complete (v0.61.2) — EQ presets only.**
+**Status: ⚠️ Phase 6.E.4 mostly complete (v0.61.2 + v0.61.3) — EQ tonal-character library; full profile bundling deferred.**
 
-v0.61.2 ships the first cut: a `GoolMaterialEqPreset` Resource type holding the seven EQ band parameters, plus a "Save…" / "Load…" preset row on the inspector. Presets live as individual `.tres` files under `res://gool/material_eq_presets/`, which means each preset is version-controllable and shareable across projects via the usual Godot resource workflow (copy the .tres file).
+v0.61.2 shipped the per-project save/load infrastructure: `GoolMaterialEqPreset` Resource type, Save…/Load… inspector buttons, presets stored as `.tres` files under `res://gool/material_eq_presets/`.
 
-What's deferred (candidate work for v0.62.x or later, requires its own design pass):
+v0.61.3 shipped the **built-in tonal-character library** at `res://addons/gool/material_eq_presets/` — twelve curated presets covering common acoustic situations: hard reflective ("Tile bathroom", "Concrete bunker", "Empty warehouse", "Cathedral stone"), warm/wooden ("Wooden cabin", "Library"), damped ("Carpeted office", "Forest clearing"), and stylistic ("Underwater", "Phone speaker", "Through a wall", "Old radio"). The Load… picker shows built-ins (★ prefix) above user presets, with descriptions inline and tooltips disclosing the source path. This delivers the design-doc principle "Defaults that 'just work'" extended from per-material defaults to per-space starting points: a Godot dev installing gool can immediately pick a preset that's close to the space they're designing, and tune from there rather than authoring from scratch.
+
+What's deferred (full Phase 6.E.4 per design-doc literal; candidate work for v0.62.x with its own design pass):
 
 1. **Occlusion overrides on materials.** Currently per-material absorption/damping coefficients live only in the engine table; there's no `.tres`-level override path equivalent to v0.60.0's EQ override fields. Adding that would let presets bundle "punchier concrete" with "less occlusive concrete" together.
-2. **Reverb preset binding.** Materials don't currently influence which reverb preset gets applied. The design-doc vision of "drag a material → set the acoustic identity" requires associating reverb presets (or send levels per zone type) with material profiles.
-3. **Full GoolMaterialProfile Resource.** Once 1 and 2 land, the preset Resource grows from "EQ curve only" into "complete acoustic identity". The v0.61.2 schema_version field is in place for forward-compatible loading.
-4. **Inspector drag-to-apply on colliders.** Drop a material profile onto a CollisionShape3D in the inspector and have the right metadata set automatically. This is the design-doc workflow but requires an inspector plugin for CollisionShape3D, which is currently outside gool's editor scope.
+2. **Reverb preset binding.** Materials don't currently influence which reverb preset gets applied. The design-doc vision of "drag a material → set the full acoustic identity" requires associating reverb presets (or send levels per zone type) with material profiles — substantial engine work.
+3. **Full GoolMaterialProfile Resource bundling EQ + occlusion + reverb.** Once 1 and 2 land, the preset Resource grows from "EQ curve only" into "complete acoustic identity". The v0.61.2 `preset_schema_version` field is in place for forward-compatible loading.
+4. **Inspector drag-to-apply on colliders.** Drop a material profile onto a CollisionShape3D in the inspector and have the right metadata set automatically. The design-doc workflow, but requires an inspector plugin for CollisionShape3D, which is currently outside gool's editor scope.
 
-The deferred items are scoped as v0.62.x because (1) and (2) require schema changes to `GoolAudioMaterial` itself with thoughtful backward compatibility, and (3) reorganizes what a "material" is. That's design-doc work, not an addon-side patch. v0.61.2 ships the EQ-preset slice that's genuinely useful today, with the schema set up to grow into the larger vision.
+The deferred items are scoped as v0.62.x because (1) and (2) require schema changes to `GoolAudioMaterial` itself with thoughtful backward compatibility, and (3) reorganizes what a "material" is. That's design-doc work, not an addon-side patch. The v0.61.x cluster ships the EQ slice that's genuinely useful today, with the schema set up to grow into the larger vision.
 
 ---
 

@@ -214,10 +214,11 @@ func _parse_end(object: Object) -> void:
 	# Small footer reflecting current Phase 6.E status.
 	var footer := Label.new()
 	footer.text = (
-		"v0.61.2: Phase 6.E.1/2/4 shipped. Override + drag handles "
+		"v0.61.3: Phase 6.E.1/2/4 shipped. Override + drag handles "
 		+ "for per-instance EQ; mixer dock shows live bus EQ; "
-		+ "save/load named curve presets under "
-		+ "res://gool/material_eq_presets/."
+		+ "Load… picker includes ~12 built-in tonal-character "
+		+ "presets shipping with gool, alongside any project-level "
+		+ "presets at res://gool/material_eq_presets/."
 	)
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
@@ -1042,11 +1043,20 @@ func _show_load_preset_dialog(resource: Resource) -> void:
 	vbox.add_theme_constant_override("separation", 6)
 
 	if presets.is_empty():
+		# v0.61.3 ships with built-in presets at res://addons/gool/
+		# material_eq_presets/, so a completely empty picker should
+		# never happen in normal installations — it implies the addon
+		# directory is missing or unreadable. Message names both
+		# directories so the user can investigate.
 		var empty_label := Label.new()
 		empty_label.text = (
-				"No presets found under res://gool/material_eq_presets/. "
-				+ "Save your first preset via the 'Save…' button after "
-				+ "tweaking an override curve."
+				"No presets found. Built-in presets are normally "
+				+ "shipped at res://addons/gool/material_eq_presets/; "
+				+ "user presets are saved to "
+				+ "res://gool/material_eq_presets/. If the addon "
+				+ "directory looks empty, reinstall gool. Otherwise, "
+				+ "save your first preset via the 'Save…' button "
+				+ "after tweaking an override curve."
 		)
 		empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty_label.custom_minimum_size = Vector2(360, 0)
@@ -1064,7 +1074,9 @@ func _show_load_preset_dialog(resource: Resource) -> void:
 
 	var hint := Label.new()
 	hint.text = (
-			"Select a preset to apply. The curve values will be "
+			"Select a preset to apply. ★ prefix marks built-in "
+			+ "presets that ship with gool; un-prefixed are your "
+			+ "project's saved presets. The curve values will be "
 			+ "copied onto this material's override fields and "
 			+ "'Override curve' will be turned on."
 	)
@@ -1076,14 +1088,37 @@ func _show_load_preset_dialog(resource: Resource) -> void:
 	var item_list := ItemList.new()
 	item_list.custom_minimum_size = Vector2(360, 200)
 	item_list.allow_reselect = true
+	# v0.61.3: distinguish built-in presets (★ prefix, slightly muted
+	# tint) from user presets. Designers immediately see "these are
+	# the ones gool shipped with" vs "these are mine". Tooltip on
+	# each item carries the full path so the source is unambiguous
+	# when a user has saved a preset with the same name as a built-in.
 	for entry in presets:
 		var e: Dictionary = entry as Dictionary
-		var line: String = String(e.get("name", "(unnamed)"))
+		var is_builtin: bool = bool(e.get("is_builtin", false))
+		var display: String = String(e.get("name", "(unnamed)"))
 		var desc: String = String((e.get("preset") as Resource).get(
 				"description"))
+		var line: String = display
+		if is_builtin:
+			line = "★  " + line
 		if not desc.is_empty():
 			line += "  —  " + desc
-		item_list.add_item(line)
+		var item_idx: int = item_list.add_item(line)
+		# Tooltip carries the path so the user can disambiguate a
+		# built-in vs a same-named user preset, or copy the path
+		# for FileSystem-dock navigation.
+		var tip: String = String(e.get("path", ""))
+		if is_builtin:
+			tip = "Built-in (ships with gool)\n" + tip
+		else:
+			tip = "User preset\n" + tip
+		item_list.set_item_tooltip(item_idx, tip)
+		# Slight color tint on built-ins so a glance at the picker
+		# distinguishes them even without the prefix.
+		if is_builtin:
+			item_list.set_item_custom_fg_color(item_idx,
+					Color(0.85, 0.95, 1.0))
 	if item_list.item_count > 0:
 		item_list.select(0)
 	vbox.add_child(item_list)

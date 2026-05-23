@@ -22,7 +22,73 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
-## [0.61.2] - 2026-05-23 — Phase 6.E.4 (first cut): named EQ curve presets
+## [0.61.3] - 2026-05-23 — Phase 6.E.4 mostly complete: built-in tonal-character library
+
+v0.61.2 shipped the EQ-preset *infrastructure* (save/load on the inspector, per-project `.tres` storage). v0.61.3 ships the **content** that makes that infrastructure immediately useful: twelve curated built-in presets bundled with gool, named for the acoustic situations they fit. A Godot dev installing gool can open any `GoolAudioMaterial.tres`, click Load…, pick "Tile bathroom" or "Wooden cabin" or "Underwater", and have a reasonable starting point for that space — no need to author the EQ from scratch.
+
+This finishes Phase 6.E.4 in spirit: "a fresh project with gool installed sounds acoustically grounded out of the box". It does NOT finish 6.E.4 per the design-doc literal scope, which envisions full *material profiles* bundling EQ + occlusion overrides + reverb preset bindings into one drag-and-drop acoustic identity. Those additions require engine work upstream of any preset system (occlusion is engine-table-only today; reverb isn't material-bound at all) and are deferred to v0.62.x with their own design-doc pass.
+
+### The twelve built-in presets
+
+Stored at `res://addons/gool/material_eq_presets/` — read-only by the user (saving over a built-in writes a same-named user preset to `res://gool/material_eq_presets/` instead, so the addon directory stays pristine).
+
+Categories and intended use cases:
+
+**Hard reflective spaces** (HF lift, brightness)
+- **Tile bathroom** — small bathrooms, kitchens, locker rooms
+- **Concrete bunker** — underground rooms, parking garages, weighty hard interiors
+- **Empty warehouse** — warehouses, hangars, large empty interiors
+- **Cathedral stone** — cathedrals, large halls, stone interiors
+
+**Warm / wooden spaces** (low-mid emphasis, gentle HF damping)
+- **Wooden cabin** — cabins, wooden interiors, intimate small rooms
+- **Library** — libraries, studies, quiet interiors
+
+**Damped / soft-furnished spaces** (HF cut)
+- **Carpeted office** — offices, classrooms, conference rooms
+- **Forest clearing** — outdoor natural environments
+
+**Stylistic** (where the EQ is the dominant effect)
+- **Underwater** — submerged levels, underwater cutscenes
+- **Phone speaker** — telephony, radio chatter, walkie-talkies
+- **Through a wall** — off-screen sources, sounds behind walls
+- **Old radio** — vintage broadcasts, period pieces
+
+Each preset's `description` field carries the use-case hint, visible in the picker dialog beside the name.
+
+### Picker UX
+
+Built-in presets appear with a **★ prefix** at the top of the Load… picker, distinguished from user presets by a slight color tint and a tooltip identifying their source ("Built-in (ships with gool)" vs "User preset"). The picker is now ordered:
+1. Built-ins (alphabetical, ★ prefixed)
+2. User presets (alphabetical, no prefix)
+
+A designer's mental model: "the curated ones gool ships are at the top; my project's variants are below". When the user wants to derive from a built-in, they Load… it, tweak the override values with drag handles, then Save… under their own name — the result lands in the project's `res://gool/material_eq_presets/` directory and shows up below the ★ list on the next picker open.
+
+The hint text in the picker dialog calls out the ★ convention so the meaning is discoverable. The empty-state message (which should now never trigger in normal installs) names both directories to help diagnose missing-addon situations.
+
+### Why "tonal characters" not "acoustic identities"
+
+EQ alone can't fully convey a space. "Cathedral stone" and "Tile bathroom" both produce mid-range brightness, but a real cathedral has 4-second decay tails and a real bathroom has tight flutter echoes — that's *reverb*, not EQ. The v0.61.3 presets capture each space's **tonal character** (the spectral signature you'd hear in a single isolated reflection), not its **acoustic identity** (which adds reverb time, early reflection density, occlusion behind walls, etc.).
+
+That's why the v0.61.3 deliverable is honest about being "Phase 6.E.4 mostly complete in spirit" rather than "complete per design-doc literal". The full design-doc vision lands when reverb-by-material binding and occlusion overrides arrive in v0.62.x.
+
+### Implementation
+
+- **Twelve new `.tres` files** at `godot/addons/gool/material_eq_presets/`. Each is a `GoolMaterialEqPreset` resource with the seven band fields plus `preset_name`, `description`, and `preset_schema_version`. Static format-3 .tres written via the standard `script_class` + `ExtResource` pattern.
+- **`material_eq_preset_manager.gd`** — `list_presets()` now scans both `BUILTIN_PRESET_DIR` and `USER_PRESET_DIR`, sets `is_builtin: bool` on each returned entry, and orders the result so built-ins come first (alphabetical), then user presets (alphabetical). `save_preset()` and `would_overwrite()` continue to target the user directory only — built-ins are never written by the inspector. The previous `PRESET_DIR` constant is kept as an alias for `USER_PRESET_DIR` so any external consumer that referenced it continues working.
+- **`material_eq_inspector.gd`** — Load… picker item rendering loop reads `is_builtin` from each entry, prepends ★ to the display label, applies a slight color tint via `set_item_custom_fg_color`, and sets a per-item tooltip naming the source directory. Hint text and empty-state message updated for the new ordering convention.
+- **Audit pass** — all twelve presets verified at preset-write time against the `GoolAudioMaterial` setter ranges (low/mid/high gain in `[-12, +12]` dB, frequencies in `[20, 20000]` Hz, Q in `[0.1, 10.0]`). No values out of advertised range.
+
+### Migration
+
+None. v0.61.3 is purely additive over v0.61.2. Existing user presets at `res://gool/material_eq_presets/` are scanned exactly as before and appear below the new built-in list. Existing `GoolAudioMaterial.tres` files are unchanged. C++ engine library, godot binding, and runtime behavior are unchanged. Pulling v0.61.3 onto a project that already had v0.61.2 user presets shows the user presets in their familiar positions, with twelve new ★ entries above them.
+
+### Status
+
+Phase 6.E.4 design-doc status updated to **⚠️ mostly complete (v0.61.2 + v0.61.3) — EQ tonal-character library; full profile bundling deferred**. The full-profile vision (EQ + occlusion + reverb in one identity, drag-to-apply on colliders) is now scoped as v0.62.x work with its own design pass.
+
+Phase 6.E.3 (A/B compare with realism slider) remains the only unstarted Phase E sub-phase and is the natural completion candidate before moving on to Phase 6.D or Phase 7.
+
 
 Closes the EQ-preset slice of Phase 6.E.4. Designers can save the override curve from a `GoolAudioMaterial.tres` as a named preset, browse saved presets, and apply a preset back to any material later. Presets are individual `.tres` files under `res://gool/material_eq_presets/` — version-controllable, shareable across projects via the standard Godot resource workflow.
 
