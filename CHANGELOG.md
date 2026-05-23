@@ -22,6 +22,112 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.64.2] - 2026-05-23 — Master Control preset picker: submenu with all five presets
+
+v0.64.1 added Master Control to the Add Effect dropdown but only
+wrote the Standard FPS preset. gool ships five calibrated master
+FX presets in `addons/gool/master_fx_presets/` — Standard FPS,
+Subtle Glue, Cinema/Quiet, Loud and Aggressive, None/Bypass —
+each tuned for a different game-mix profile. v0.64.1's flat
+"Master Control" menu entry meant adding any of them required
+hand-editing config.json after the fact, defeating the point of
+the dropdown.
+
+v0.64.2 replaces the flat entry with a submenu: hovering over
+"Master Control >" expands to the five preset names, picking
+one appends a master_control effect with that preset's
+calibrated parameters.
+
+### How it lays out
+
+`+ Add Effect` opens the picker. Five basic kinds top-level
+(Gain / Biquad Filter / Compressor / Saturation / Reverb), then
+a sixth entry `Master Control >` with a submenu indicator.
+Hovering reveals five preset choices in this order:
+
+  - **Standard FPS** — v0.63.0 default, -16 LUFS / -1 dBTP, moderate glue
+  - **Subtle glue** — -18 LUFS, light compression for narrative games
+  - **Cinema / quiet** — -22 LUFS, very light, preserves cinematic dynamics
+  - **Loud and aggressive** — -12 LUFS, heavier compression for PvP
+  - **None / bypass** — all stages disabled, A/B compare against raw mix
+
+Order is "most common first" (Standard FPS as the v0.63.0 default
+new-project preset), then ascending compression intensity, with
+None/Bypass at the end as the "off" position.
+
+### How the data flows
+
+The presets live in two places at editor-time, by design:
+
+  - The five `.tres` resource files in `addons/gool/master_fx_presets/`
+    are the authoritative source for runtime use. `GoolMasterFxProfile`
+    loads them during gameplay to push parameters to the live
+    master_control effect via the runtime API.
+  - A new constant `MASTER_CONTROL_PRESETS: Dictionary` in
+    `config_model.gd` mirrors those five preset values for the
+    editor-time path. The Add Effect picker runs before any
+    runtime exists, so it can't use ResourceLoader; the dict is
+    the editor-time copy of what the .tres files contain.
+
+If a preset's calibration changes, both places need updating.
+The .tres files are the audio-source-of-truth (they're what the
+runtime processes against); the dict is just the editor-time
+mirror. Documented as a sync requirement in the dict's leading
+comment.
+
+### Architectural notes
+
+`add_effect()` in `config_model.gd` gains an optional `preset_id`
+parameter. When non-empty for `master_control` kind, looks up the
+matching entry in `MASTER_CONTROL_PRESETS` and uses ITS params
+(not the `EFFECT_DEFAULTS_BY_KIND` fallback). Unknown preset_id
+is treated as an error rather than silent fallback — silent
+fallback would mask a UI bug. Other kinds ignore preset_id, so
+callers that don't care can pass empty string.
+
+`add_effect_requested` signal on `_EffectsPanel` gains the
+preset_id as a third arg. Empty string means "use kind defaults"
+(the v0.64.1 behavior), preserving backward compatibility for any
+external script that connects to this signal.
+
+The submenu is built via `PopupMenu.add_submenu_item(label,
+submenu_name)`, with a child PopupMenu added as a Node child of
+the parent. The child has its own `id_pressed` signal which fires
+when the user picks one of its items — distinct from the parent
+menu's `id_pressed`. Wired to a new handler `_on_master_preset_selected`
+that looks up the preset_id from a parallel `_MASTER_CONTROL_PRESETS`
+list (UX labels) and emits the signal. The two-list arrangement
+(labels in mixer_dock, params in config_model) keeps the dock
+ignorant of audio calibration and the config_model ignorant of
+display strings.
+
+### Known limitation carried forward
+
+MasterControl parameter introspection is still incomplete in the
+editor-time path — when a user expands the effect to see its
+sliders, master_control's 17 individual parameter sliders won't
+render until `KIND_INT_TO_JSON_KEYS` and `KIND_INT_TO_KEY_TO_PARAM_ID`
+in `config_model.gd` are populated for kind=6. v0.64.2's preset
+picker writes the JSON correctly, the engine loads it correctly
+at game-time, and the FX chain pill renders `[MSTR]` correctly,
+but per-parameter tuning from the dock's effects panel still
+requires either hand-editing config.json or running the game and
+tuning during the live F5 session.
+
+This was deferred in v0.64.0 and remains the right shape for a
+focused future release covering all 17 parameter slider metadata
+entries.
+
+### Verified
+
+- C++ engine unchanged from v0.64.1; library binary identical
+  aside from the version-pin file.
+- `version_test` reports 0.64.2 from both local build and the
+  roundtripped tarball.
+- `master_control_test` regression green.
+- Structural checks pass on edited GDScript: bracket balance,
+  no reserved-word identifiers, tab-only indent.
+
 ## [0.64.1] - 2026-05-23 — Add Effect dropdown completeness
 
 Three coordinated fixes for the dock's "+ Add Effect" picker
@@ -19316,6 +19422,7 @@ Headlines:
 [0.63.1]: https://github.com/siliconight/gool/releases/tag/v0.63.1
 [0.64.0]: https://github.com/siliconight/gool/releases/tag/v0.64.0
 [0.64.1]: https://github.com/siliconight/gool/releases/tag/v0.64.1
+[0.64.2]: https://github.com/siliconight/gool/releases/tag/v0.64.2
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

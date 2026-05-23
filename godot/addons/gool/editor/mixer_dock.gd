@@ -1195,12 +1195,17 @@ func _lookup_effects_for_bus(bus_name: String) -> Array:
 
 # --- Effect topology: _EffectsPanel signal handlers ---
 
-func _on_panel_add_effect_requested(bus_name: String, kind_string: String) -> void:
+func _on_panel_add_effect_requested(bus_name: String, kind_string: String,
+		preset_id: String) -> void:
 	if _config_model == null:
 		return
-	if not _config_model.add_effect(bus_name, kind_string):
+	if not _config_model.add_effect(bus_name, kind_string, preset_id):
+		# v0.64.2: include preset_id in the warning if it was set.
+		var ctx: String = kind_string
+		if preset_id != "":
+			ctx = "%s (preset '%s')" % [kind_string, preset_id]
 		push_warning("[gool] add_effect failed for bus '%s' kind '%s'"
-				% [bus_name, kind_string])
+				% [bus_name, ctx])
 
 
 func _on_panel_remove_effect_requested(bus_name: String,
@@ -3266,7 +3271,13 @@ class _EffectsPanel extends PanelContainer:
 	# v0.28.8 topology signals. Outer dock routes to GoolConfigModel.
 	# Direction is -1 for "move up" (toward index 0, earlier in signal
 	# flow) and +1 for "move down".
-	signal add_effect_requested(bus_name: String, kind_string: String)
+	# v0.64.2: add_effect_requested gains preset_id (third arg).
+	# Empty string means "use kind defaults" (the v0.64.1 behavior);
+	# non-empty means "use this preset" — currently only
+	# master_control honors a non-empty preset_id, but the signal
+	# shape is generic for future use.
+	signal add_effect_requested(bus_name: String, kind_string: String,
+			preset_id: String)
 	signal remove_effect_requested(bus_name: String, effect_index: int)
 	signal move_effect_requested(bus_name: String, effect_index: int,
 			direction: int)
@@ -3497,31 +3508,57 @@ class _EffectsPanel extends PanelContainer:
 	# Kind labels matching EFFECT_KIND_ORDER in GoolConfigModel.
 	# Kept local so _EffectsPanel doesn't need to import the model.
 	#
-	# v0.64.1: master_control added. Placed at end of the list to
-	# reflect signal-chain convention — mastering goes last in the
-	# chain. When the user picks "Master Control" from the menu,
-	# add_effect appends a master_control block with the Standard
-	# FPS preset defaults (see EFFECT_DEFAULTS_BY_KIND["master_control"]
-	# in config_model.gd). The new effect lands AT THE END of the
-	# bus's existing effect chain, which is correct placement for
-	# all mastering processing.
+	# v0.64.2: master_control moved out of this flat list and into
+	# its own submenu (see _MASTER_CONTROL_PRESETS below). The
+	# Add Effect picker now has 5 top-level entries plus one
+	# "Master Control >" submenu_item that expands to 5 preset
+	# choices — better UX than picking the effect type and getting
+	# silently fixed Standard FPS defaults.
 	const _KIND_PICKER_LABELS: Array = [
 		["gain", "Gain"],
 		["biquad", "Biquad Filter"],
 		["compressor", "Compressor"],
 		["saturation", "Saturation"],
 		["reverb", "Reverb"],
-		["master_control", "Master Control"],
+	]
+	# v0.64.2: preset entries for the Master Control submenu.
+	# [preset_id, display_label] tuples — the preset_id is the key
+	# into config_model.gd's MASTER_CONTROL_PRESETS dict. Order is
+	# Standard first (most-common case), then ascending intensity,
+	# with Bypass last. Display labels match what the .tres files
+	# carry in their preset_name fields for consistency.
+	const _MASTER_CONTROL_PRESETS: Array = [
+		["standard_fps",        "Standard FPS"],
+		["subtle_glue",         "Subtle glue"],
+		["cinema_quiet",        "Cinema / quiet"],
+		["loud_and_aggressive", "Loud and aggressive"],
+		["none_bypass",         "None / bypass"],
 	]
 
 	func _on_add_effect_button_pressed(anchor_btn: Button) -> void:
 		var menu := PopupMenu.new()
 		# IDs match the index in _KIND_PICKER_LABELS so id_pressed
-		# can look up the kind string.
+		# can look up the kind string. Five basic kinds get top-level
+		# entries; master_control is a submenu (see below).
 		for i in range(_KIND_PICKER_LABELS.size()):
 			menu.add_item(String((_KIND_PICKER_LABELS[i] as Array)[1]), i)
+		# v0.64.2: master_control submenu. add_submenu_item attaches
+		# a child PopupMenu by name; the parent menu doesn't fire
+		# id_pressed for submenu items (instead the child menu fires
+		# its OWN id_pressed when one of its items is picked).
+		var preset_menu := PopupMenu.new()
+		preset_menu.name = "MasterControlPresets"
+		for i in range(_MASTER_CONTROL_PRESETS.size()):
+			preset_menu.add_item(
+					String((_MASTER_CONTROL_PRESETS[i] as Array)[1]), i)
+		preset_menu.id_pressed.connect(_on_master_preset_selected)
+		menu.add_child(preset_menu)
+		menu.add_submenu_item("Master Control", preset_menu.name)
 		menu.id_pressed.connect(_on_kind_picker_selected)
-		# Free the menu when it closes so we don't leak one per click.
+		# Free the menu (and its submenu, transitively) when it
+		# closes so we don't leak one per click. The submenu is a
+		# child of the parent menu, so queue_freeing the parent
+		# also frees the child.
 		menu.close_requested.connect(menu.queue_free)
 		menu.popup_hide.connect(menu.queue_free)
 		anchor_btn.add_child(menu)
@@ -3544,10 +3581,25 @@ class _EffectsPanel extends PanelContainer:
 		menu.popup(Rect2i(Vector2i(origin), Vector2i(0, 0)))
 
 	func _on_kind_picker_selected(id: int) -> void:
+		# Only fires for the 5 basic kinds. master_control comes
+		# through _on_master_preset_selected since it's a submenu.
 		if id < 0 or id >= _KIND_PICKER_LABELS.size():
 			return
 		var kind_string: String = String((_KIND_PICKER_LABELS[id] as Array)[0])
-		add_effect_requested.emit(bus_name, kind_string)
+		add_effect_requested.emit(bus_name, kind_string, "")
+
+	# v0.64.2: master_control submenu's id_pressed handler. Fires
+	# when the user picks a specific preset from the "Master
+	# Control >" submenu. Looks up the preset_id from the parallel
+	# _MASTER_CONTROL_PRESETS list and emits add_effect_requested
+	# with kind="master_control" plus the preset_id, so the outer
+	# dock can route it through GoolConfigModel.add_effect with
+	# the matching params dict.
+	func _on_master_preset_selected(id: int) -> void:
+		if id < 0 or id >= _MASTER_CONTROL_PRESETS.size():
+			return
+		var preset_id: String = String((_MASTER_CONTROL_PRESETS[id] as Array)[0])
+		add_effect_requested.emit(bus_name, "master_control", preset_id)
 
 	func _on_move_up_pressed(idx: int) -> void:
 		move_effect_requested.emit(bus_name, idx, -1)

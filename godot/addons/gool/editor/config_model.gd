@@ -1273,6 +1273,131 @@ const EFFECT_DEFAULTS_BY_KIND: Dictionary = {
 	},
 }
 
+# v0.64.2: master_control preset values, mirroring the five .tres
+# files in godot/addons/gool/master_fx_presets/. Used by the Add
+# Effect dropdown's Master Control submenu — the user picks a
+# preset name, add_effect() looks up the matching entry here, and
+# the resulting effect block lands in config.json with that
+# preset's calibrated parameter values.
+#
+# Why mirrored here instead of loaded from the .tres files: the
+# Add Effect picker runs in the editor-time path before any
+# runtime/engine is involved. The .tres files are designed for
+# the runtime path (GoolMasterFxProfile node loads them at
+# game-start to push params to the live engine), so they're
+# behind ResourceLoader which only works once the project has
+# loaded. Editor-time tooling that needs the same values has to
+# carry them inline.
+#
+# If a preset's calibration changes, BOTH places need updating:
+# the .tres file (runtime) and this dict (editor-time). The
+# preset names and IDs here must match what _MASTER_CONTROL_PRESETS
+# in mixer_dock.gd uses to build the submenu — that table is the
+# UX-facing source for label text, this table is the params-facing
+# source for what gets written to config.json.
+const MASTER_CONTROL_PRESETS: Dictionary = {
+	"standard_fps": {
+		"kind":                       "master_control",
+		"mc_glue_enabled":            true,
+		"mc_rider_enabled":           true,
+		"mc_limiter_enabled":         true,
+		"mc_glue_threshold_db":      -12.0,
+		"mc_glue_ratio":               2.0,
+		"mc_glue_attack_ms":          10.0,
+		"mc_glue_release_ms":        250.0,
+		"mc_glue_knee_db":             6.0,
+		"mc_glue_makeup_db":           0.0,
+		"mc_rider_target_lufs":      -16.0,
+		"mc_rider_time_constant_ms": 3000.0,
+		"mc_rider_max_gain_db":        6.0,
+		"mc_rider_min_gain_db":       -6.0,
+		"mc_rider_freeze_below_lufs": -6.0,
+		"mc_limiter_ceiling_dbtp":    -1.0,
+		"mc_limiter_release_ms":      50.0,
+		"mc_limiter_lookahead_ms":     5.0,
+	},
+	"cinema_quiet": {
+		"kind":                       "master_control",
+		"mc_glue_enabled":            true,
+		"mc_rider_enabled":           true,
+		"mc_limiter_enabled":         true,
+		"mc_glue_threshold_db":      -16.0,
+		"mc_glue_ratio":               1.3,
+		"mc_glue_attack_ms":          25.0,
+		"mc_glue_release_ms":        600.0,
+		"mc_glue_knee_db":            10.0,
+		"mc_glue_makeup_db":           0.0,
+		"mc_rider_target_lufs":      -22.0,
+		"mc_rider_time_constant_ms": 5000.0,
+		"mc_rider_max_gain_db":        3.0,
+		"mc_rider_min_gain_db":       -3.0,
+		"mc_rider_freeze_below_lufs": -8.0,
+		"mc_limiter_ceiling_dbtp":    -1.5,
+		"mc_limiter_release_ms":     120.0,
+		"mc_limiter_lookahead_ms":     5.0,
+	},
+	"loud_and_aggressive": {
+		"kind":                       "master_control",
+		"mc_glue_enabled":            true,
+		"mc_rider_enabled":           true,
+		"mc_limiter_enabled":         true,
+		"mc_glue_threshold_db":      -10.0,
+		"mc_glue_ratio":               3.5,
+		"mc_glue_attack_ms":           5.0,
+		"mc_glue_release_ms":        150.0,
+		"mc_glue_knee_db":             4.0,
+		"mc_glue_makeup_db":           1.5,
+		"mc_rider_target_lufs":      -12.0,
+		"mc_rider_time_constant_ms": 2000.0,
+		"mc_rider_max_gain_db":        8.0,
+		"mc_rider_min_gain_db":       -8.0,
+		"mc_rider_freeze_below_lufs": -6.0,
+		"mc_limiter_ceiling_dbtp":    -1.0,
+		"mc_limiter_release_ms":      30.0,
+		"mc_limiter_lookahead_ms":     5.0,
+	},
+	"subtle_glue": {
+		"kind":                       "master_control",
+		"mc_glue_enabled":            true,
+		"mc_rider_enabled":           true,
+		"mc_limiter_enabled":         true,
+		"mc_glue_threshold_db":      -14.0,
+		"mc_glue_ratio":               1.5,
+		"mc_glue_attack_ms":          15.0,
+		"mc_glue_release_ms":        400.0,
+		"mc_glue_knee_db":             8.0,
+		"mc_glue_makeup_db":           0.0,
+		"mc_rider_target_lufs":      -18.0,
+		"mc_rider_time_constant_ms": 4000.0,
+		"mc_rider_max_gain_db":        4.0,
+		"mc_rider_min_gain_db":       -4.0,
+		"mc_rider_freeze_below_lufs": -6.0,
+		"mc_limiter_ceiling_dbtp":    -1.0,
+		"mc_limiter_release_ms":      80.0,
+		"mc_limiter_lookahead_ms":     5.0,
+	},
+	"none_bypass": {
+		"kind":                       "master_control",
+		"mc_glue_enabled":            false,
+		"mc_rider_enabled":           false,
+		"mc_limiter_enabled":         false,
+		"mc_glue_threshold_db":      -12.0,
+		"mc_glue_ratio":               2.0,
+		"mc_glue_attack_ms":          10.0,
+		"mc_glue_release_ms":        250.0,
+		"mc_glue_knee_db":             6.0,
+		"mc_glue_makeup_db":           0.0,
+		"mc_rider_target_lufs":      -16.0,
+		"mc_rider_time_constant_ms": 3000.0,
+		"mc_rider_max_gain_db":        6.0,
+		"mc_rider_min_gain_db":       -6.0,
+		"mc_rider_freeze_below_lufs": -6.0,
+		"mc_limiter_ceiling_dbtp":    -1.0,
+		"mc_limiter_release_ms":      50.0,
+		"mc_limiter_lookahead_ms":     5.0,
+	},
+}
+
 # Display order for the effect kind picker. Five kinds, signal-flow
 # logical order: source-shaping first, then dynamics, then space.
 const EFFECT_KIND_ORDER: Array = ["gain", "biquad", "compressor", "saturation", "reverb"]
@@ -1303,7 +1428,14 @@ signal bus_removed(bus_name: String)
 # Effect is populated with EFFECT_DEFAULTS_BY_KIND[kind_string] —
 # the user can adjust params via the existing sliders afterward.
 # Returns true on success.
-func add_effect(bus_name: String, kind_string: String) -> bool:
+#
+# v0.64.2: preset_id parameter. For master_control kind only: when
+# preset_id is non-empty, looks up the matching entry in
+# MASTER_CONTROL_PRESETS and uses ITS params (not the
+# EFFECT_DEFAULTS_BY_KIND fallback). Other kinds ignore preset_id.
+# Unknown preset_id for master_control is an error — silent
+# fallback would mask a UI bug, so we return false and push_error.
+func add_effect(bus_name: String, kind_string: String, preset_id: String = "") -> bool:
 	if not EFFECT_DEFAULTS_BY_KIND.has(kind_string):
 		push_error("[gool config] add_effect: unknown kind '%s'" % kind_string)
 		return false
@@ -1319,7 +1451,18 @@ func add_effect(bus_name: String, kind_string: String) -> bool:
 		push_error("[gool config] add_effect: bus '%s' has non-array effects" % bus_name)
 		return false
 	var effects: Array = effects_v
-	var new_effect: Dictionary = (EFFECT_DEFAULTS_BY_KIND[kind_string] as Dictionary).duplicate(true)
+	# v0.64.2: pick the params dict. Master Control with a preset
+	# uses MASTER_CONTROL_PRESETS; everything else uses
+	# EFFECT_DEFAULTS_BY_KIND.
+	var params_source: Dictionary
+	if kind_string == "master_control" and preset_id != "":
+		if not MASTER_CONTROL_PRESETS.has(preset_id):
+			push_error("[gool config] add_effect: unknown master_control preset '%s'" % preset_id)
+			return false
+		params_source = MASTER_CONTROL_PRESETS[preset_id] as Dictionary
+	else:
+		params_source = EFFECT_DEFAULTS_BY_KIND[kind_string] as Dictionary
+	var new_effect: Dictionary = params_source.duplicate(true)
 	effects.append(new_effect)
 	_mark_topology_dirty(bus_name)
 	topology_changed.emit(bus_name)
