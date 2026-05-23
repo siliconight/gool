@@ -231,6 +231,7 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             else if (kind == "compressor")  fx.kind = EffectKind::Compressor;
             else if (kind == "reverb")      fx.kind = EffectKind::Reverb;
             else if (kind == "saturation")  fx.kind = EffectKind::Saturation;
+            else if (kind == "master_control") fx.kind = EffectKind::MasterControl;
             else {
                 err = "unknown effect kind '" + kind + "'";
                 errLine = s.line(); return false;
@@ -333,6 +334,27 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
                 const float raw = static_cast<float>(n);
                 fx.saturationTone = raw < -1.0f ? -1.0f : (raw > 1.0f ? 1.0f : raw);
             }
+            // v0.63.0: MasterControl (Phase 7 Master FX Lite). Each
+            // stage has its own enable; missing keys default to the
+            // "Standard FPS" preset (all stages on, -16 LUFS, -1 dBTP).
+            // See audio_engine/dsp/master_control.h for semantics.
+            else if (key == "mc_glue_enabled")    { bool b=false; if (!s.parseBool(b, err, errLine)) return false; fx.mcGlueEnabled    = b; }
+            else if (key == "mc_rider_enabled")   { bool b=false; if (!s.parseBool(b, err, errLine)) return false; fx.mcRiderEnabled   = b; }
+            else if (key == "mc_limiter_enabled") { bool b=false; if (!s.parseBool(b, err, errLine)) return false; fx.mcLimiterEnabled = b; }
+            else if (key == "mc_glue_threshold_db")      { if (!s.parseNumber(n, err, errLine)) return false; fx.mcGlueThresholdDb     = static_cast<float>(n); }
+            else if (key == "mc_glue_ratio")             { if (!s.parseNumber(n, err, errLine)) return false; fx.mcGlueRatio           = static_cast<float>(n); }
+            else if (key == "mc_glue_attack_ms")         { if (!s.parseNumber(n, err, errLine)) return false; fx.mcGlueAttackMs        = static_cast<float>(n); }
+            else if (key == "mc_glue_release_ms")        { if (!s.parseNumber(n, err, errLine)) return false; fx.mcGlueReleaseMs       = static_cast<float>(n); }
+            else if (key == "mc_glue_knee_db")           { if (!s.parseNumber(n, err, errLine)) return false; fx.mcGlueKneeDb          = static_cast<float>(n); }
+            else if (key == "mc_glue_makeup_db")         { if (!s.parseNumber(n, err, errLine)) return false; fx.mcGlueMakeupDb        = static_cast<float>(n); }
+            else if (key == "mc_rider_target_lufs")      { if (!s.parseNumber(n, err, errLine)) return false; fx.mcRiderTargetLufs     = static_cast<float>(n); }
+            else if (key == "mc_rider_time_constant_ms") { if (!s.parseNumber(n, err, errLine)) return false; fx.mcRiderTimeConstantMs = static_cast<float>(n); }
+            else if (key == "mc_rider_max_gain_db")      { if (!s.parseNumber(n, err, errLine)) return false; fx.mcRiderMaxGainDb      = static_cast<float>(n); }
+            else if (key == "mc_rider_min_gain_db")      { if (!s.parseNumber(n, err, errLine)) return false; fx.mcRiderMinGainDb      = static_cast<float>(n); }
+            else if (key == "mc_rider_freeze_below_lufs"){ if (!s.parseNumber(n, err, errLine)) return false; fx.mcRiderFreezeBelowLufs = static_cast<float>(n); }
+            else if (key == "mc_limiter_ceiling_dbtp")   { if (!s.parseNumber(n, err, errLine)) return false; fx.mcLimiterCeilingDbtp  = static_cast<float>(n); }
+            else if (key == "mc_limiter_release_ms")     { if (!s.parseNumber(n, err, errLine)) return false; fx.mcLimiterReleaseMs    = static_cast<float>(n); }
+            else if (key == "mc_limiter_lookahead_ms")   { if (!s.parseNumber(n, err, errLine)) return false; fx.mcLimiterLookaheadMs  = static_cast<float>(n); }
             // Tolerate unknown keys for forward-compat.
             else { if (!s.skipValue(err, errLine)) return false; }
         }

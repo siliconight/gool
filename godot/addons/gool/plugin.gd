@@ -80,6 +80,13 @@ const PREFABS := [
 	# scene's reverb bus is configured at scene load. ReverbZones
 	# still override per-region on top.
 	["GoolSceneProfile",          "Node",   "gool_scene_profile.gd",          "gool_scene_profile.svg"],
+	# v0.63.0: Phase 7 Master FX Lite profile prefab. Drop into the
+	# scene tree, pick a GoolMasterFxPreset from the dropdown (5
+	# built-ins ship with gool at res://addons/gool/master_fx_presets/;
+	# user presets save to res://gool/master_fx_presets/), F5. The
+	# master bus chain is reconfigured at scene load. Pairs with
+	# GoolSceneProfile (which handles per-scene reverb).
+	["GoolMasterFxProfile",       "Node",   "gool_master_fx_profile.gd",      "gool_master_fx_profile.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"
@@ -98,7 +105,36 @@ const DEFAULT_CONFIG := {
 	"sample_rate": 48000,
 	"buffer_size": 512,
 	"buses": [
-		{ "name": "Master", "gain_db": 0.0 },
+		# v0.63.0: Master bus ships with the Phase 7 Master FX Lite
+		# chain pre-installed — glue compressor + LUFS gain rider +
+		# true-peak limiter. Defaults are the "Standard FPS" preset
+		# (target -16 LUFS, ceiling -1 dBTP). Fresh projects sound
+		# loudness-safe and glued without any setup. Drop a
+		# GoolMasterFxProfile node to switch presets at runtime.
+		#
+		# To opt out: remove the master_control effect from this
+		# bus, or bypass each stage by setting mc_*_enabled = false.
+		{ "name": "Master", "gain_db": 0.0,
+		  "effects": [
+			{ "kind": "master_control",
+			  "mc_glue_enabled":         true,
+			  "mc_rider_enabled":        true,
+			  "mc_limiter_enabled":      true,
+			  "mc_glue_threshold_db":    -12.0,
+			  "mc_glue_ratio":           2.0,
+			  "mc_glue_attack_ms":       10.0,
+			  "mc_glue_release_ms":      250.0,
+			  "mc_glue_knee_db":         6.0,
+			  "mc_glue_makeup_db":       0.0,
+			  "mc_rider_target_lufs":    -16.0,
+			  "mc_rider_time_constant_ms": 3000.0,
+			  "mc_rider_max_gain_db":    6.0,
+			  "mc_rider_min_gain_db":    -6.0,
+			  "mc_rider_freeze_below_lufs": -6.0,
+			  "mc_limiter_ceiling_dbtp": -1.0,
+			  "mc_limiter_release_ms":   50.0,
+			  "mc_limiter_lookahead_ms": 5.0 }
+		  ] },
 
 		# Music bus: ducks under the local-player SFX so the player's
 		# own gun wins the mix, AND ducks under Dialogue so NPC

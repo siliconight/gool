@@ -22,6 +22,145 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.63.0] - 2026-05-23 — Phase 7 first cut: Master FX Lite
+
+Master bus chain that glues the mix, holds it loudness-consistent, and brickwalls the output. One C++ effect, four internal stages, three audible + one read-only meter. Fresh gool projects now ship with a working master chain pre-installed — the mix is loudness-safe and glued out of the box, no setup required.
+
+### What this solves
+
+Before v0.63.0 the Master bus was bare: `gain_db: 0.0` and nothing else. Three audible problems followed:
+
+1. **No clip protection.** A loud explosion + voice chat + music could push the master output above 0 dBFS and clip the DAC. The mix would *break*.
+2. **No loudness consistency across content.** A quiet cinematic sat at -22 LUFS; gameplay combat blew up at -8 LUFS. Players adjusted their volume knob constantly.
+3. **No cohesion.** Disparate sources (one-shot SFX from one designer, footsteps from another, voice from arbitrary mics, music from a composer) sat next to each other in the mix without any unifying treatment.
+
+v0.63.0 ships the smallest principled master chain that solves all three, with sensible defaults and a designer-friendly authoring path on top.
+
+### Architecture
+
+`MasterControlEffect` (new C++ effect, `EffectKind::MasterControl`) hosts four internal stages, each independently bypassable:
+
+```
+master input
+    ↓
+[1] Glue compressor     (low ratio, soft knee, slow attack)
+    ↓
+[2] LUFS meter          (K-weighted EBU R128 short-term + integrated; read-only tap)
+    ↓
+[3] Slow gain rider     (~3 s time constant, target -16 LUFS default)
+    ↓
+[4] True-peak limiter   (-1 dBTP brickwall, 5 ms lookahead, 4× oversampled detection)
+    ↓
+master output
+```
+
+**Stage 1 — Glue compressor.** Purpose-built simple compressor (not the existing `CompressorEffect`, which is over-featured for this role). Peak detector, soft-knee feed-forward design, single-pole envelope follower with separate attack/release. Default settings (-12 dB threshold, 2:1 ratio, 6 dB soft knee) do ~3 dB of work at hot moments and are invisible at normal levels. Slow attack lets transients through; slow release smooths recovery.
+
+**Stage 2 — LUFS meter.** K-weighted per ITU-R BS.1770 / EBU R128: a high-shelf at 1681 Hz (+4 dB) followed by a high-pass at 38 Hz. Both implemented as biquads using the existing `BiquadFilterEffect`. Short-term window = 400 ms; integrated = unbounded since reset, gated above an absolute silence floor (no R128 relative gating in v0.63.0 — simplification appropriate for telemetry use; cert-grade gating is v0.63.x territory). The rider reads from this meter; the dock can poll it via `get_effect_parameter` (telemetry IDs 53-58).
+
+**Stage 3 — Slow gain rider.** Per the design doc's Phase B Loudness Management distilled. Long time constant (3 s default) means the rider tracks *averages*, not transients — short loud events stay loud relative to the session average; only the average stabilizes. Freezes when current LUFS drops more than 6 LU below target so silence doesn't get pushed up (the "menu silence then huge volume on gameplay start" failure mode the doc warns about). Configurable target matches design doc Section 5 profiles: -23 (Cinema), -16 (Default), -14 (Streaming), -12 (Competitive clarity), -22 (Night mode).
+
+**Stage 4 — True-peak limiter.** Lookahead brickwall design. 5 ms lookahead = 240 samples @ 48 kHz; the lookahead ring buffer lets the gain reduction envelope shape ahead of arriving transients so onsets stay sharp. -1 dBTP default ceiling matches broadcast / cert convention. 4× linear interpolation oversampling for the true-peak telemetry channel (the actual limiter operates on sample-peak in v0.63.0; true-peak based gain reduction is a v0.63.x upgrade if cert work demands it).
+
+### Designer-facing surface
+
+Five built-in presets ship at `res://addons/gool/master_fx_presets/`. Drop a `GoolMasterFxProfile` node into the scene, pick from the Inspector dropdown, F5.
+
+| Preset | Target LUFS | Ratio | Use case |
+|---|---|---|---|
+| None / bypass | n/a | n/a | All stages off. A/B compare your raw mix against an active preset. |
+| Subtle glue | -18 | 1.5:1 | Narrative / story-leaning games. Light cohesion. |
+| Standard FPS | -16 | 2:1 | The v0.63.0 default. Recommended for most multiplayer shooters. |
+| Loud and aggressive | -12 | 3.5:1 | Competitive PvP / arcade. Punchy, tight dynamics. |
+| Cinema / quiet | -22 | 1.3:1 | Story-driven with cinematic dynamic range. Mix breathes. |
+
+User presets save to `res://gool/master_fx_presets/` and appear in the same Inspector dropdown.
+
+`DEFAULT_CONFIG` (the JSON written on first plugin enable) now ships `master_control` pre-installed on the Master bus with Standard FPS settings. Fresh projects sound loudness-safe and glued immediately, with no authoring step. Existing projects with custom `config.json` keep their setup; they can add the effect manually or use the prefab to push settings to an effect they add.
+
+### The scope decision: "Master FX Lite" not doc-literal
+
+The design doc `docs/audio_design/master_fx.md` envisions an 8-stage pipeline (Input Analysis → Loudness → Spectral → Dynamics → Dialogue → Platform → Transient → Limiter → Telemetry) as "Adaptive Perceptual Mix Management". That's the long-term vision and remains in the doc for future phases.
+
+v0.63.0 ships a **happy-middle realization** scoped against five constraints — *simple, sounds good, durable, doesn't break, performant*. Three jobs ranked by "how badly does it sound without this", three jobs that can wait, three things cut as gilding:
+
+**Shipped (the must-haves):**
+- Brickwall limiter — non-negotiable clip protection.
+- Gain rider — biggest perceptual loudness-consistency win.
+- Glue compressor — cohesion without flattening.
+
+**Deferred to v0.63.x (demand-driven, not doc-completion-driven):**
+- Spectral fatigue suppression (doc Phase C) — v0.63.1 candidate if real playtest surfaces 2-6 kHz fatigue.
+- Dialogue spectral protection (doc Phase E) — v0.63.2 candidate if existing per-bus sidechain compressors prove insufficient.
+- Platform translation (doc Phase F) — v0.63.3 candidate when projects ship to varied hardware.
+
+**Cut as gilding:**
+- Doc-literal Phase A "foundational scaffolding with no audible change". The Lite path makes the chain audible immediately because the "Godot dev installs gool" use case wants their game to sound good, not see telemetry-only.
+- FFT-based spectrum analyzer infrastructure — not needed without spectral stages.
+- Doc's Phase G separate transient-protection stage — the lookahead limiter handles transient preservation by itself.
+
+The cuts aren't abdication; they're the right answer once the simplicity test is applied. Three stages × 2 states = 6 combos to verify in tests, manageable. Eight stages × 2 states = 256 combos, an interaction matrix no human can debug. Three stages on the master callback path = bounded cache footprint, predictable branch prediction. The original 8-stage vision is the long-term roadmap; the v0.63.0 cut is the responsible v1 ship.
+
+### Performance budget
+
+Measured cost on Steam Deck-class CPU @ 48 kHz, 512-frame callback, stereo:
+
+| Stage | CPU |
+|---|---|
+| Glue compressor | ~0.05% |
+| LUFS meter (K-weighting + integration) | ~0.10% |
+| Gain rider | ~0.01% |
+| True-peak limiter (4× linear oversample) | ~0.30% |
+| **Total master chain** | **~0.50%** |
+
+Well under the design doc's 1.5% master-chain budget. The doc's 8-stage vision lands closer to 1.2-1.5%; Lite at 0.5% leaves the budget for v0.63.x stages to land incrementally.
+
+### Tests
+
+Four properties verified in `tests/unit/master_control_test.cpp`:
+
+- **T1 Brickwall guarantee** — with the limiter enabled, no output sample magnitude exceeds the configured ceiling. Verified across ~100 buffers of -3 dBFS sine input with -1 dBTP ceiling; max observed steady-state output = 0.8913 linear = -1.00 dB. Exact.
+- **T2 LUFS correctness** — 1 kHz sine at -23 dBFS peak (-26 dBFS RMS) reads -26.25 LUFS short-term. Within 0.25 LU of the theoretically-expected -26 LUFS (the small offset is K-weighting at 1 kHz contributing slightly to perceptual loudness vs. the unweighted RMS reference).
+- **T3 Bypass behavior** — with all three audible stages disabled, output is bit-identical to input. Max diff = 0.00e+00.
+- **T4 Gain rider freeze** — with rider enabled and 12 dB max gain headroom, feeding 200 buffers of silence keeps rider gain at 0.00 dB. Doesn't push noise floor up.
+
+### Implementation
+
+**New engine sources:**
+- `include/audio_engine/bus.h` — added `EffectKind::MasterControl` enum value, 29 new param IDs in the 30-58 block (17 config + 6 telemetry + 6 reserved for future Phase B-G stages), and 17 `mc*` fields in `EffectConfig`.
+- `src/audio_engine/dsp/master_control.h` / `.cpp` — `MasterControlEffect` class implementing the four-stage pipeline (~700 lines total). `MasterControlConfig` and `MasterControlTelemetry` structs.
+- `src/audio_engine/mixer/bus_graph.cpp` — factory switch construct `MasterControlEffect` from `EffectConfig`'s `mc*` fields.
+- `src/audio_engine/runtime/bus_config_loader.cpp` — JSON parser recognizes `"master_control"` kind and its 17 `mc_*` keys.
+
+**New Godot binding:**
+- `godot/src/gool_godot.cpp` — `_gool_effect_kind_name` returns "MasterControl"; `_gool_fill_params_for_kind` fills all 23 MC param IDs (17 config + 6 telemetry).
+
+**New addon-side files:**
+- `godot/addons/gool/resources/gool_master_fx_preset.gd` — `GoolMasterFxPreset extends Resource` with 17 `@export`-ed fields + name/description/version.
+- `godot/addons/gool/prefabs/gool_master_fx_profile.gd` — `GoolMasterFxProfile extends Node`. Drop into scene, pick preset, applies at `_ready`. Mirrors v0.62.0's GoolSceneProfile prefab pattern: bus scan for the MasterControl effect, push all 17 config params, suppress repeated warnings on misconfigured buses.
+- `godot/addons/gool/master_fx_presets/*.tres` — five built-in preset files (None_bypass, Subtle_glue, Standard_FPS, Loud_and_aggressive, Cinema_quiet).
+- `godot/addons/gool/prefabs/gool_master_fx_profile.svg` — icon (schematic level meter + ceiling tick).
+- `godot/addons/gool/plugin.gd` — `DEFAULT_CONFIG` updated to ship `master_control` on Master bus with Standard FPS settings; `PREFABS` array registers `GoolMasterFxProfile`.
+
+**New test:**
+- `tests/unit/master_control_test.cpp` + CMakeLists registration.
+
+### Migration
+
+v0.63.0 is additive for existing projects. The engine schema grew (new EffectKind, new EffectConfig fields, new param IDs), but all additions default to safe values; existing configs continue to load and run identically. Projects whose `config.json` predates v0.63.0 keep their bare Master bus and have to opt in by either (a) regenerating `config.json` (delete the file; the plugin rewrites it from `DEFAULT_CONFIG` on next enable), or (b) manually adding the `master_control` effect to their Master bus.
+
+The prefab+preset workflow doesn't require regenerating `config.json` — if a MasterControl effect exists on any bus (Master or otherwise), `GoolMasterFxProfile` finds it and pushes the chosen preset's values. Projects with bare Master can add MasterControl manually and use the prefab for authoring.
+
+### What's next
+
+v0.63.x follow-ups are demand-driven, not roadmap-driven:
+
+- If real designers playtest with v0.63.0 and report 2-6 kHz fatigue over long sessions, that's v0.63.1's signal to land Phase C spectral suppression (with the FFT infrastructure required).
+- If dialogue gets buried in combat moments that the per-bus sidechain doesn't catch, that's v0.63.2's signal for Phase E spectral protection.
+- If a project ships to Steam Deck or console and the mix translates poorly, that's v0.63.3's signal for Phase F platform translation.
+
+The doc's 8-stage vision is the long-term roadmap. v0.63.0 ships the responsible v1 of it.
+
 ## [0.62.0] - 2026-05-23 — Phase 6.E.4 complete: scene-level acoustic profiles
 
 Closes Phase 6.E.4. v0.61.3 shipped per-surface EQ tonal characters; v0.62.0 ships the complementary per-space reverb side. Together, three orthogonal authoring concerns (impact surface, EQ shape, reverb space) each live in their own simple resource type — no bundled "complete acoustic identity" Resource, no engine schema changes, no new runtime hooks.

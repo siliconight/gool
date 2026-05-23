@@ -47,6 +47,7 @@ enum class EffectKind : uint8_t {
     Compressor,     // envelope-driven gain reduction; supports sidechain
     Reverb,         // Schroeder/Freeverb-style algorithmic reverb
     Saturation,     // v0.40.0: 4-mode multi-shape waveshaper (Tanh, Tube, Tape, Diode)
+    MasterControl,  // v0.63.0: glue compressor + LUFS gain rider + true-peak limiter
 };
 
 enum class BiquadType : uint8_t {
@@ -184,6 +185,29 @@ struct EffectConfig {
     // dry-equivalent material so the net is character change, not
     // EQ change. See docs/audio_design/saturation_v2.md §9.
     float saturationTone        = 0.0f;
+
+    // ---- MasterControl (v0.63.0) ----
+    // See audio_engine/dsp/master_control.h (MasterControlConfig) for
+    // semantics. Field names match. Defaults here mirror the
+    // "Standard FPS" preset: glue + rider + limiter all on,
+    // -16 LUFS target, -1 dBTP ceiling.
+    bool  mcGlueEnabled              = true;
+    bool  mcRiderEnabled             = true;
+    bool  mcLimiterEnabled           = true;
+    float mcGlueThresholdDb          = -12.0f;
+    float mcGlueRatio                = 2.0f;
+    float mcGlueAttackMs             = 10.0f;
+    float mcGlueReleaseMs            = 250.0f;
+    float mcGlueKneeDb               = 6.0f;
+    float mcGlueMakeupDb             = 0.0f;
+    float mcRiderTargetLufs          = -16.0f;
+    float mcRiderTimeConstantMs      = 3000.0f;
+    float mcRiderMaxGainDb           = 6.0f;
+    float mcRiderMinGainDb           = -6.0f;
+    float mcRiderFreezeBelowLufs     = -6.0f;
+    float mcLimiterCeilingDbtp       = -1.0f;
+    float mcLimiterReleaseMs         = 50.0f;
+    float mcLimiterLookaheadMs       = 5.0f;
 };
 
 // v0.40.0: shape mode selector for the multi-character saturation
@@ -257,6 +281,46 @@ namespace EffectParameter {
     // v0.59.0: Saturation Phase 4 — tone tilt. -1..+1, smoothed
     // alongside drive/mix/bias. See saturation_v2.md §9.
     constexpr uint16_t Saturation_Tone          = 28;
+
+    // v0.63.0: MasterControl effect (Phase 7 Master FX Lite).
+    // Block reserved 30-59. See audio_engine/dsp/master_control.h
+    // for stage semantics and audio_design/master_fx.md for the
+    // broader design. The 6 telemetry IDs (53-58) are read-only:
+    // OnParameter ignores writes to them, GetParameter returns
+    // the most-recent Process() value.
+    //
+    // Stage enables (write 0.0 = off, !0 = on).
+    constexpr uint16_t MC_GlueEnabled           = 30;
+    constexpr uint16_t MC_RiderEnabled          = 31;
+    constexpr uint16_t MC_LimiterEnabled        = 32;
+    // Stage 1 — Glue compressor.
+    constexpr uint16_t MC_GlueThresholdDb       = 33;
+    constexpr uint16_t MC_GlueRatio             = 34;
+    constexpr uint16_t MC_GlueAttackMs          = 35;
+    constexpr uint16_t MC_GlueReleaseMs         = 36;
+    constexpr uint16_t MC_GlueKneeDb            = 37;
+    constexpr uint16_t MC_GlueMakeupDb          = 38;
+    // Stage 3 — Gain rider (LUFS-targeted).
+    constexpr uint16_t MC_RiderTargetLufs       = 39;
+    constexpr uint16_t MC_RiderTimeConstMs      = 40;
+    constexpr uint16_t MC_RiderMaxGainDb        = 41;
+    constexpr uint16_t MC_RiderMinGainDb        = 42;
+    constexpr uint16_t MC_RiderFreezeBelowLufs  = 43;
+    // Stage 4 — True-peak brickwall limiter.
+    constexpr uint16_t MC_LimiterCeilingDbtp    = 44;
+    constexpr uint16_t MC_LimiterReleaseMs      = 45;
+    constexpr uint16_t MC_LimiterLookaheadMs    = 46;
+    // 47-52 reserved for future MC config (Phase B+ stages, e.g.
+    // spectral suppression thresholds).
+    // Telemetry (read-only). GetParameter returns current values;
+    // OnParameter ignores writes.
+    constexpr uint16_t MC_TelLufsShortTerm      = 53;
+    constexpr uint16_t MC_TelLufsIntegrated     = 54;
+    constexpr uint16_t MC_TelPeakDb             = 55;
+    constexpr uint16_t MC_TelTruePeakDbtp       = 56;
+    constexpr uint16_t MC_TelGainReductionDb    = 57;
+    constexpr uint16_t MC_TelRiderGainDb        = 58;
+    // 59 reserved.
 }
 
 // ---- Bus configuration ----------------------------------------------------

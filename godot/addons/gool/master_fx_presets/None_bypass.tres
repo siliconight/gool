@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="GoolMasterFxPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_master_fx_preset.gd" id="1_preset"]
+
+[resource]
+script = ExtResource("1_preset")
+preset_name = "None / bypass"
+description = "Chain installed but all stages disabled. Use to A/B-compare your raw mix against any of the active presets. No glue, no rider, no limiter — your project's bus topology and per-effect settings carry the whole mix."
+preset_schema_version = 1
+glue_enabled = false
+rider_enabled = false
+limiter_enabled = false
+glue_threshold_db = -12.0
+glue_ratio = 2.0
+glue_attack_ms = 10.0
+glue_release_ms = 250.0
+glue_knee_db = 6.0
+glue_makeup_db = 0.0
+rider_target_lufs = -16.0
+rider_time_constant_ms = 3000.0
+rider_max_gain_db = 6.0
+rider_min_gain_db = -6.0
+rider_freeze_below_lufs = -6.0
+limiter_ceiling_dbtp = -1.0
+limiter_release_ms = 50.0
+limiter_lookahead_ms = 5.0

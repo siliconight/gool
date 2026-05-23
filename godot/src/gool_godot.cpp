@@ -83,13 +83,14 @@ static audio::AudioParameterId HashParam(const String& name) {
 
 static const char* _gool_effect_kind_name(audio::EffectKind k) {
     switch (k) {
-        case audio::EffectKind::Gain:         return "Gain";
-        case audio::EffectKind::BiquadFilter: return "BiquadFilter";
-        case audio::EffectKind::Compressor:   return "Compressor";
-        case audio::EffectKind::Reverb:       return "Reverb";
-        case audio::EffectKind::Saturation:   return "Saturation";
+        case audio::EffectKind::Gain:           return "Gain";
+        case audio::EffectKind::BiquadFilter:   return "BiquadFilter";
+        case audio::EffectKind::Compressor:     return "Compressor";
+        case audio::EffectKind::Reverb:         return "Reverb";
+        case audio::EffectKind::Saturation:     return "Saturation";
+        case audio::EffectKind::MasterControl:  return "MasterControl";
         case audio::EffectKind::None:
-        default:                              return "None";
+        default:                                return "None";
     }
 }
 
@@ -157,6 +158,37 @@ static void _gool_fill_params_for_kind(audio::AudioRuntime* rt,
             put(EP::Saturation_Mix);
             put(EP::Saturation_OutputGain);
             put(EP::Saturation_Bias);
+            break;
+        case audio::EffectKind::MasterControl:
+            // v0.63.0: Phase 7 Master FX Lite. Fill both config IDs
+            // (so the dock can show / edit the full state) and
+            // telemetry IDs (so the dock can show live LUFS, peak,
+            // and gain reduction readings). Telemetry IDs are
+            // read-only on the engine side — writes are ignored
+            // by MasterControlEffect::OnParameter.
+            put(EP::MC_GlueEnabled);
+            put(EP::MC_RiderEnabled);
+            put(EP::MC_LimiterEnabled);
+            put(EP::MC_GlueThresholdDb);
+            put(EP::MC_GlueRatio);
+            put(EP::MC_GlueAttackMs);
+            put(EP::MC_GlueReleaseMs);
+            put(EP::MC_GlueKneeDb);
+            put(EP::MC_GlueMakeupDb);
+            put(EP::MC_RiderTargetLufs);
+            put(EP::MC_RiderTimeConstMs);
+            put(EP::MC_RiderMaxGainDb);
+            put(EP::MC_RiderMinGainDb);
+            put(EP::MC_RiderFreezeBelowLufs);
+            put(EP::MC_LimiterCeilingDbtp);
+            put(EP::MC_LimiterReleaseMs);
+            put(EP::MC_LimiterLookaheadMs);
+            put(EP::MC_TelLufsShortTerm);
+            put(EP::MC_TelLufsIntegrated);
+            put(EP::MC_TelPeakDb);
+            put(EP::MC_TelTruePeakDbtp);
+            put(EP::MC_TelGainReductionDb);
+            put(EP::MC_TelRiderGainDb);
             break;
         case audio::EffectKind::None:
         default:

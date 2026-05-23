@@ -39,6 +39,7 @@ add_executable(audio_engine_material_eq_curve_test        unit/material_eq_curve
 # listener EQ paths so the audition can never lie about what the
 # runtime sounds like.
 add_executable(audio_engine_material_eq_audition_test     unit/material_eq_audition_test.cpp)
+add_executable(audio_engine_master_control_test           unit/master_control_test.cpp)
 add_executable(audio_engine_thread_priority_test          unit/thread_priority_test.cpp)
 add_executable(audio_engine_global_parameter_test         unit/global_parameter_test.cpp)
 add_executable(audio_engine_sound_rtpc_test               unit/sound_rtpc_test.cpp)
@@ -91,6 +92,7 @@ target_link_libraries(audio_engine_aligned_float_buffer_test      PRIVATE audio_
 target_link_libraries(audio_engine_material_occlusion_test        PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_material_eq_curve_test         PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_material_eq_audition_test      PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_master_control_test            PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_thread_priority_test           PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_global_parameter_test          PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_sound_rtpc_test                PRIVATE audio_engine::audio_engine)
@@ -134,6 +136,7 @@ add_test(NAME aligned_float_buffer_test     COMMAND audio_engine_aligned_float_b
 add_test(NAME material_occlusion_test       COMMAND audio_engine_material_occlusion_test)
 add_test(NAME material_eq_curve_test        COMMAND audio_engine_material_eq_curve_test)
 add_test(NAME material_eq_audition_test     COMMAND audio_engine_material_eq_audition_test)
+add_test(NAME master_control_test           COMMAND audio_engine_master_control_test)
 add_test(NAME thread_priority_test          COMMAND audio_engine_thread_priority_test)
 add_test(NAME global_parameter_test         COMMAND audio_engine_global_parameter_test)
 add_test(NAME sound_rtpc_test               COMMAND audio_engine_sound_rtpc_test)

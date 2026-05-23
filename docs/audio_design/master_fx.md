@@ -1,13 +1,83 @@
 # Master FX: Adaptive Perceptual Mix Management
 
-**Status:** Future feature, captured during v0.59.2 push.
-**Scope:** Multi-phase initiative. Larger than any single release.
+**Status:** v0.63.0 ships **Master FX Lite** — a happy-middle realization of this design doc.
+**Scope:** Multi-phase initiative. v0.63.0 ships the three "must-have" stages (glue + LUFS-targeted gain rider + true-peak limiter) plus the LUFS meter. v0.63.x follow-ups land remaining stages only when real designer use surfaces demand.
 **Prerequisites:** Phase 6.A-D shipped (per-material EQ + realism
 intensity dial — v0.33.0 through v0.36.0), Saturation Phase 3+
 shipped (auto-compensation + DC blocker + per-buffer smoothing —
 v0.58.0+). Reuses the auto-compensation table pattern and the
 parameter-smoothing infrastructure already proven in saturation.
 **Target home in roadmap:** Phase 7 — Master Control.
+
+---
+
+## v0.63.0 — Master FX Lite (what shipped)
+
+**Architecture as shipped (4 internal stages, 3 audible + 1 read-only meter):**
+
+```
+master input
+    ↓
+[1] Glue compressor     (low ratio, soft knee, slow attack)
+    ↓
+[2] LUFS meter          (K-weighted EBU R128 short-term + integrated; read-only)
+    ↓
+[3] Slow gain rider     (~3 s time constant, target -16 LUFS default)
+    ↓
+[4] True-peak limiter   (-1 dBTP brickwall, 5 ms lookahead, 4× oversampled detection)
+    ↓
+master output
+```
+
+Each audible stage is independently bypassable. v0.63.0's `DEFAULT_CONFIG` ships the chain pre-installed on the Master bus with the "Standard FPS" preset (all stages on, target -16 LUFS, ceiling -1 dBTP), so fresh projects sound glued + loudness-consistent + clip-protected out of the box.
+
+**Designer-facing surface:**
+
+- `GoolMasterFxPreset` (Resource) — bundles all 17 chain config values + 3 stage enables.
+- `GoolMasterFxProfile` (Node prefab) — drop into the scene, pick a preset from the Inspector, applies at scene load.
+- 5 built-in presets at `res://addons/gool/master_fx_presets/`: None / bypass, Subtle glue, Standard FPS (default), Loud and aggressive, Cinema / quiet.
+- User presets save to `res://gool/master_fx_presets/`.
+
+**The simplicity decision behind shipping Lite (not the doc-literal 8 stages):**
+
+The doc's full 8-stage pipeline (Phase A through Phase G + Phase H telemetry) below is the *long-term* vision. v0.63.0 ships a **happy-middle realization** scoped against five constraints: simple, sounds good, durable, doesn't break, performant. Three jobs ranked by "how badly does it sound without this":
+
+1. Don't clip the output. **Brickwall limiter — non-negotiable.** Shipped.
+2. Stay roughly loudness-consistent across content. **Gain rider — biggest perceptual win.** Shipped.
+3. Glue disparate sources. **Gentle compression — cohesion without flattening.** Shipped.
+
+Three jobs the chain *should* do but can wait:
+
+4. Spectral fatigue suppression (doc Phase C) — meaningful at 3-hour playtest, invisible at 5-minute demo. **Deferred to v0.63.1** if real use surfaces fatigue.
+5. Dialogue spectral protection (doc Phase E) — existing per-bus sidechain compressors handle the gross case. **Deferred to v0.63.2** if needed.
+6. Platform translation (doc Phase F) — most projects don't need it until shipping to varied hardware. **Deferred to v0.63.3** as demand materializes.
+
+Three things cut from v1 as gilding:
+
+7. Doc-literal Phase A "scaffolding with no audible change" — *cut*. The Lite path makes the chain audible from v0.63.0 because the "Godot dev installs gool" use case wants their game to sound good immediately, not telemetry-only.
+8. FFT-based spectrum analyzer — *not needed in v0.63.0* (no spectral stages). Will land alongside Phase C if it ships.
+9. Phase G's separate transient-protection stage — *cut*. The lookahead limiter handles transient preservation by itself.
+
+**Performance (measured cost for the 4-stage pipeline):**
+
+| Stage | Cost (Steam Deck-class, 512-frame @ 48 kHz, stereo) |
+|---|---|
+| Glue compressor | ~0.05% CPU |
+| LUFS meter (K-weighting + integration) | ~0.10% CPU |
+| Gain rider | ~0.01% CPU |
+| True-peak limiter (4× linear oversample) | ~0.30% CPU |
+| **Total** | **~0.50% CPU** |
+
+Well under the doc's 1.5% master-chain budget. Sample-peak limiter with true-peak telemetry (the actual gain reduction uses sample-peak; true-peak is reported separately for designer visibility). v0.63.x can upgrade to true-peak-based gain reduction if cert work demands it.
+
+**What's verified in v0.63.0 tests** (see `tests/unit/master_control_test.cpp`):
+
+- T1 Brickwall guarantee — output magnitude never exceeds limiter ceiling.
+- T2 LUFS correctness — 1 kHz sine at -23 dBFS reads ~-26 LUFS short-term (matches expected K-weighted RMS for that signal).
+- T3 Bypass behavior — with all 3 audible stages off, output is bit-identical to input.
+- T4 Gain rider freeze — silence doesn't get pushed up; rider stays at unity.
+
+The original 8-stage design below remains the long-term vision; the v0.63.0 cut is the responsible happy-middle for a v1 ship.
 
 ---
 

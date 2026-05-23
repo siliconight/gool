@@ -5,6 +5,7 @@
 #include "audio_engine/dsp/gain_effect.h"
 #include "audio_engine/dsp/biquad_filter.h"
 #include "audio_engine/dsp/compressor.h"
+#include "audio_engine/dsp/master_control.h"
 #include "audio_engine/dsp/reverb_effect.h"
 #include "audio_engine/dsp/saturation_effect.h"
 
@@ -270,6 +271,31 @@ AudioResult BusGraph::BuildEffectsForBus(Bus& bus, const BusConfig& cfg) {
                 // fast path identical to pre-v0.59.0 behavior.
                 sc.tone = ec.saturationTone;
                 fx = std::make_unique<SaturationEffect>(sc);
+            } break;
+            case EffectKind::MasterControl: {
+                // v0.63.0: Phase 7 Master FX Lite. See
+                // audio_engine/dsp/master_control.h for the
+                // four-stage internal pipeline (glue → meter →
+                // rider → limiter) and the design rationale.
+                MasterControlConfig mc;
+                mc.glueEnabled         = ec.mcGlueEnabled;
+                mc.riderEnabled        = ec.mcRiderEnabled;
+                mc.limiterEnabled      = ec.mcLimiterEnabled;
+                mc.glueThresholdDb     = ec.mcGlueThresholdDb;
+                mc.glueRatio           = ec.mcGlueRatio;
+                mc.glueAttackMs        = ec.mcGlueAttackMs;
+                mc.glueReleaseMs       = ec.mcGlueReleaseMs;
+                mc.glueKneeDb          = ec.mcGlueKneeDb;
+                mc.glueMakeupDb        = ec.mcGlueMakeupDb;
+                mc.riderTargetLufs     = ec.mcRiderTargetLufs;
+                mc.riderTimeConstantMs = ec.mcRiderTimeConstantMs;
+                mc.riderMaxGainDb      = ec.mcRiderMaxGainDb;
+                mc.riderMinGainDb      = ec.mcRiderMinGainDb;
+                mc.riderFreezeBelowLufs = ec.mcRiderFreezeBelowLufs;
+                mc.limiterCeilingDbtp  = ec.mcLimiterCeilingDbtp;
+                mc.limiterReleaseMs    = ec.mcLimiterReleaseMs;
+                mc.limiterLookaheadMs  = ec.mcLimiterLookaheadMs;
+                fx = std::make_unique<MasterControlEffect>(mc);
             } break;
         }
 
