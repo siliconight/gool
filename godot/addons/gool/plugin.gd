@@ -186,6 +186,15 @@ const DEFAULT_CONFIG := {
 
 const INSPECTOR_PLUGIN_PATH := "res://addons/gool/editor/sound_name_inspector.gd"
 
+# v0.59.2: Phase 6.E.1 — per-material EQ curve preview in the
+# inspector. Triggers when a GoolAudioMaterial.tres is selected;
+# renders a frequency-response plot of the engine's curve for the
+# selected material, plus a numerical readout and a realism-
+# intensity slider tied to ProjectSettings("gool/material_eq/
+# intensity"). See addons/gool/editor/material_eq_inspector.gd
+# for the full surface description.
+const MATERIAL_EQ_INSPECTOR_PATH := "res://addons/gool/editor/material_eq_inspector.gd"
+
 # v0.23.0: paths the auto-scaffolder creates on plugin enable.
 # Idempotent — anything that already exists is left alone, so a
 # project that's manually arranged its sounds/ folder differently
@@ -224,6 +233,11 @@ const DEBUGGER_PLUGIN_SCRIPT := "res://addons/gool/editor/debugger_plugin.gd"
 # a script path).
 var _sound_name_inspector: EditorInspectorPlugin = null
 
+# v0.59.2: Phase 6.E.1 inspector for GoolAudioMaterial resources.
+# Held alongside the sound-name inspector since both follow the
+# same EditorInspectorPlugin lifecycle.
+var _material_eq_inspector: EditorInspectorPlugin = null
+
 # v0.24.0: instance of the mixer dock Control, stored for symmetric
 # removal in _exit_tree via remove_control_from_bottom_panel.
 var _mixer_dock: Control = null
@@ -238,6 +252,7 @@ func _enter_tree() -> void:
 	_write_default_config_if_missing()
 	_scaffold_sounds_tree_if_missing()   # v0.23.0
 	_register_inspector_plugin()
+	_register_material_eq_inspector()    # v0.59.2 — Phase 6.E.1
 	_register_debugger_plugin()          # v0.25.0 (before mixer dock!)
 	_register_mixer_dock()               # v0.24.0
 	_connect_filesystem_watch()
@@ -249,6 +264,7 @@ func _exit_tree() -> void:
 	_disconnect_filesystem_watch()
 	_unregister_mixer_dock()             # v0.24.0
 	_unregister_debugger_plugin()        # v0.25.0
+	_unregister_material_eq_inspector()  # v0.59.2 — Phase 6.E.1
 	_unregister_inspector_plugin()
 	_unregister_prefabs()
 	_remove_autoload()
@@ -279,6 +295,34 @@ func _unregister_inspector_plugin() -> void:
 		return
 	remove_inspector_plugin(_sound_name_inspector)
 	_sound_name_inspector = null
+
+# v0.59.2: Phase 6.E.1 per-material EQ curve preview. Inspector
+# plugin that recognizes GoolAudioMaterial resources and adds a
+# frequency-response plot + numerical readout + realism intensity
+# slider under the resource's normal property fields. Read-only —
+# the engine's per-material curve table is the source of truth;
+# this is a designer-facing visualizer for it. See
+# addons/gool/editor/material_eq_inspector.gd for the full
+# implementation.
+func _register_material_eq_inspector() -> void:
+	var script := load(MATERIAL_EQ_INSPECTOR_PATH)
+	if script == null:
+		push_warning(
+			"[gool] could not load %s; the per-material EQ "
+			% MATERIAL_EQ_INSPECTOR_PATH
+			+ "curve preview is unavailable. GoolAudioMaterial "
+			+ "resources still work; you just won't see the "
+			+ "curve visualization in the inspector."
+		)
+		return
+	_material_eq_inspector = script.new()
+	add_inspector_plugin(_material_eq_inspector)
+
+func _unregister_material_eq_inspector() -> void:
+	if _material_eq_inspector == null:
+		return
+	remove_inspector_plugin(_material_eq_inspector)
+	_material_eq_inspector = null
 
 # v0.24.0: read-only mixer dock — bottom-panel Control that polls
 # Gool.get_bus_stats() at 30 Hz and renders per-bus peak meters.

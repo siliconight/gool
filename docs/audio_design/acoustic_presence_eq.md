@@ -143,6 +143,13 @@ the next.
 **Size:** M. Ships standalone value: materials shape their own sounds
 more accurately.
 
+**Status: ✅ shipped as v0.33.0.** See `CHANGELOG.md` for the
+final tabled values; the per-material curve table lives in
+`include/audio_engine/geometry_query.h::MaterialEqByMaterial()`
+and is pinned by `tests/unit/material_eq_curve_test.cpp`. The
+v0.56.0 retune adjusted Glass and Metal curves to better match
+their perceptual intent (see CHANGELOG).
+
 Extend `AudioMaterial` defaults beyond `{absorption, damping}` to
 include a 3-band EQ tuple:
 
@@ -190,6 +197,21 @@ primitive; the work is plumbing, not new math.
 **Size:** L. Ships standalone value: emitters in tagged zones
 inherit the zone's character.
 
+**Status: ✅ shipped as v0.34.0** — via the shared-bus approach,
+**not** per-emitter EQ. `play_impact_sound(name, position, material)`
+pushes the material's EQ to a designated `ImpactEq` bus's three
+biquads just before triggering the sound. The per-emitter path
+described below was acknowledged as the higher-fidelity option but
+deferred since it requires multi-file engine surgery (new per-voice
+DSP chain in EmitterDescriptor + VoiceSource + the mixer +
+create-emitter path). For typical FPS gameplay (rapid-fire into one
+wall = same material per shot) the shared-bus approach is invisible;
+the failure mode is back-to-back impacts of different materials in
+the same ~5 ms audio block sharing the most-recently-set EQ for their
+overlapping tails. **Per-emitter EQ remains future work** —
+worth promoting if profiling against a real game with mixed-material
+chaos shows the artifact in practice.
+
 When an emitter is inside a `GoolAudioMaterial`-tagged volume
 (walls, rooms, environments), apply that material's EQ on the
 emitter's output chain — before spatializer, before bus send. So
@@ -219,6 +241,17 @@ the same `material_from_collider` logic from Phase 5.1.
 ### Phase C — Listener-aware acoustic spaces
 **Size:** L. Builds directly on Phase 5.3 (source-aware acoustic
 environment) infrastructure if shipped first. Otherwise standalone L.
+
+**Status: ✅ shipped as v0.35.0.** Implemented as an opt-in
+`apply_listener_eq` field on `ReverbZone`. When the listener is
+inside a Wood zone with the flag set, every diegetic sound gets
+the wood EQ curve via a dedicated `ListenerEq` bus that sits
+between Sfx (and other diegetic buses) and Master. Opt-in by
+default — a global listener-EQ stage is a stronger editorial
+effect than reverb alone, so designers must explicitly enable it
+per zone. The 250-500 ms boundary-crossing crossfade is wired
+through the existing reverb parameter ramp using the same
+`transition_ms` so listener-EQ and reverb ramp in lockstep.
 
 When the listener is in a tagged space (cavern, corridor, forest),
 apply a global EQ to the master bus that colors every source the
@@ -251,6 +284,16 @@ where the world goes "quiet"). At 2.0, every band's deviation
 from flat doubles (concrete's +3 dB mid becomes +6 dB; carpet's
 -8 dB high becomes -16 dB). Designers exaggerate the world's
 acoustic identity by pushing past 1.0.
+
+**Status: ✅ shipped as v0.36.0** — a single global dial,
+`ProjectSettings("gool/material_eq/intensity")`, scales every
+per-material EQ gain uniformly across both 6.B impact EQ and
+6.C listener EQ. Cutoff frequencies and Q stay put — only the
+three gain_db values per curve get multiplied. The runtime
+setter is `Gool.set_eq_intensity(value)` and reads from
+ProjectSettings on _ready. Implemented as a GDScript-only
+change to the autoload; no engine binary rebuild needed for
+projects already on v0.34.0+.
 
 #### D.2 — Temporal frequency effects
 Beyond what biquads can model:
@@ -310,6 +353,22 @@ inspector, they see:
   library
 - Audition button — play a reference sample (pink noise, voice,
   drum hit) through the current curve in the editor
+
+**Status: ⏳ partial — read-only visualizer shipped as v0.59.2.**
+The frequency-response plot (log freq axis 20 Hz–20 kHz, dB
+axis ±24 dB to accommodate intensity ≤ 2.0), per-material hint
+text, three-band numerical readout, and realism intensity slider
+wired to ProjectSettings ship in v0.59.2. **Not** yet shipped:
+draggable handles, Q right-click adjust, preset dropdown,
+audition button. The handles and editable curves require
+extending `GoolAudioMaterial` with per-instance EQ profile fields
+(currently the resource is just a `material: int` pointer to the
+engine's built-in table) and an override path through the runtime
+EQ application code — that's Option B / v0.60.0 territory.
+Audition is deferred to v0.59.3 since it has subtle editor-runtime
+caveats (the autoload doesn't run in editor; needs either a temp
+bus through an in-editor mini-runtime or pre-rendered per-material
+samples) that don't belong in v0.59.2's tight scope.
 
 #### E.2 — Mixer dock EQ visualization
 The existing mixer dock gets a section showing the active per-bus

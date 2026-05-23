@@ -22,6 +22,55 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.59.2] - 2026-05-22 — Phase 6.E.1 (read-only): per-material EQ curve preview in the inspector
+
+Ships the **inspector visualizer** for `GoolAudioMaterial.tres` resources — Phase 6.E.1 from `docs/audio_design/acoustic_presence_eq.md`, in its Option A (read-only) form. When a designer selects a material resource in the Godot inspector, they now see a frequency-response plot of the engine's EQ curve for that material, a three-band numerical readout, and a global realism intensity slider tied to `ProjectSettings("gool/material_eq/intensity")`.
+
+This closes the "designers can't reach the system" gap for the 90 % case: opening any `*.tres` material now shows what gool is doing, instead of requiring the designer to read the C++ table source or trace through `Gool.get_material_eq_for_material()` calls. Pure addon-side GDScript change — no engine code touched, no DSP behavior changes.
+
+### What designers see
+
+Selecting `concrete.tres` (or any other `GoolAudioMaterial`) in the inspector now shows, below the resource's normal `material` dropdown:
+
+- **EQ curve preview** — a frequency-response plot with a log frequency axis (20 Hz–20 kHz), dB amplitude axis (±24 dB to leave headroom for intensity ≤ 2.0), and the cumulative magnitude response of the material's three biquads (low shelf + peaking + high shelf) drawn as a filled curve. Grid lines at standard octave anchors (31 Hz, 62 Hz, 125 Hz, ..., 16 kHz) and ±6 dB marks. Three small dots on the zero-dB line mark each band's center frequency, sized by the band's gain magnitude.
+- **Per-material hint** — one-liner perceptual description ("Concrete — bright upper-mid bite at 1.5 kHz, the most present curve.") so designers can map the visual to a sound.
+- **Numerical readout** — a four-column grid: band / freq / gain / Q. Shows exact authored values (intensity-scaled gains) so designers can correlate the curve shape with concrete numbers and report bugs precisely.
+- **Realism intensity slider** — range 0.0 to 2.0, default 1.0. Live-updates the plot as you drag (multiplies the three band gains uniformly, leaving freqs and Q alone — same math the runtime applies via `_apply_scaled_material_eq_to_bus`). Persists to `ProjectSettings("gool/material_eq/intensity")` on drag-end; the runtime reads that on next F5. A Reset button restores 1.0.
+- **v0.59.2 scope footer** — a small note explaining the read-only nature so designers don't waste time looking for editable handles. Per-material editable curves (Option B from the inspector-design discussion) land in v0.60.0+.
+
+### Added
+
+- `godot/addons/gool/editor/material_eq_curve_view.gd` — custom-drawn `Control` (~400 lines) that renders the cumulative biquad magnitude response. Uses the RBJ audio-EQ cookbook formulas (low shelf / peaking / high shelf) to compute closed-form magnitude at every pixel column of the widget's width, log-frequency-mapped. Sample-rate-locked to 48 kHz for display purposes; the host audio device's actual SR may differ by a few %, well below the perceptual resolution of the plot. Editor-theme-aware: picks up `dark_color_1`, `accent_color`, `font_color` from `EditorInterface.get_editor_theme()` so the plot integrates visually with light/dark themes and survives live theme changes.
+- `godot/addons/gool/editor/material_eq_inspector.gd` — `EditorInspectorPlugin` (~450 lines) that recognizes `GoolAudioMaterial` resources via `_can_handle()` (path-match on `gool_audio_material.gd`) and adds the preview panel via `add_custom_control()` in `_parse_end()`. Includes a hardcoded mirror of the engine's `MaterialEqByMaterial()` table from `geometry_query.h` so the inspector works without the Gool autoload running (which it doesn't in editor context — the autoload only spins up at F5). Mirror values pinned against the C++ source as of v0.59.2; future engine table changes must update both sides.
+- Inspector plugin registration / lifecycle in `godot/addons/gool/plugin.gd`: a `_material_eq_inspector` held instance alongside the existing `_sound_name_inspector`, with symmetric `_register_material_eq_inspector()` / `_unregister_material_eq_inspector()` helpers wired into `_enter_tree` / `_exit_tree`.
+
+### Why read-only first (Option A)
+
+The design doc envisioned the inspector with editable handles — drag a dot, the material's EQ curve changes. That requires extending `GoolAudioMaterial` itself with per-instance EQ profile fields (currently it's just `material: int = 0` pointing into the engine's built-in 13-entry table) AND adding a per-instance override path through the runtime impact-EQ and listener-EQ code paths. Both are real work and meaningfully widen v0.59.2's blast radius.
+
+Shipping the visualizer-only form first does two things: (1) it unblocks the 90 % case immediately — most of the current designer pain is "I can't see what's happening," not "I want to invent a new Concrete"; (2) it validates the visualization design (plot bounds, hint text, intensity slider behavior, layout) before betting on writable curves, so any UX-shape feedback we'd want to incorporate into editable handles can be folded in before that engine-touching work begins. Editable per-material curves (Option B) is the natural v0.60.0 follow-up.
+
+### Documentation updates
+
+`docs/audio_design/acoustic_presence_eq.md` was authored at v0.30.1 push and hadn't been updated since. Marked Phase 6.A (shipped v0.33.0), 6.B (shipped v0.34.0 — with explicit note that the shared-bus approach won over per-emitter and the per-emitter upgrade remains future work), 6.C (shipped v0.35.0), and 6.D.1 (shipped v0.36.0) as ✅ in the doc itself. Marked 6.E.1 as ⏳ partial — read-only visualizer shipped here, editable handles + audition button still pending.
+
+### Deferred to v0.59.x+ / v0.60.0
+
+- **Audition button** (v0.59.3+): play a 1-second pink-noise burst or a designer-picked short SFX sample through a temp bus with the current EQ applied, so designers can hear the curve, not just see it. Editor-runtime audio routing has subtle caveats (autoload doesn't run in editor) that need a small engine surface — likely a "temp bus + biquads, no scene context" mode on the runtime that the inspector can drive directly.
+- **Editable per-material curves** (v0.60.0 — Option B): grow `GoolAudioMaterial` with per-instance `low_shelf_freq_hz` / `low_shelf_gain_db` / `mid_bell_*` / `mid_q` / `high_shelf_*` fields defaulting to the engine table values. Replace the read-only dots in the plot with draggable handles (drag the dot = move the band's freq/gain; right-click = open small Q adjustment popup). Add a runtime override path so the impact-EQ and listener-EQ code paths pick up per-instance values when present.
+- **Mixer dock EQ visualization** (6.E.2): the existing mixer dock gains a panel showing per-bus EQ chains currently active, so the same plot widget shows "what's actually applied to each bus right now during F5." Reuses the curve view widget; needs a small dock integration.
+- **A/B compare toggle** (6.E.3) and **material library** (6.E.4): polish on top of the above.
+
+### Backward compatibility
+
+Fully backward compatible:
+
+- No engine code changes; v0.59.1 → v0.59.2 binary surface identical.
+- All existing tests pass unchanged (the saturation suite, profile, bus_config_loader, integration_kitchen_sink, version triple all rebuilt and re-ran clean against the new tree).
+- Existing `GoolAudioMaterial.tres` files work without modification — the inspector adds the preview panel below the existing `material: int` field; nothing in the resource itself changed.
+- Existing addon installations that strip the new `/editor/material_eq_*.gd` files (e.g. dist optimizers) degrade gracefully: the `_register_material_eq_inspector()` helper logs a warning and continues without the preview. The resources still work.
+
+
 ## [0.59.1] - 2026-05-22 — Bundled Ubuntu font for runtime UI (addon-side polish)
 
 Ships the **Ubuntu Font Family** (UFL-1.0) with the gool addon so the runtime UI prefabs render with stable, predictable typography across hosts. Pure addon-side change — no C++ engine code touched, no API changes, no DSP behavior changes.
