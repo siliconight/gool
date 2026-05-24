@@ -13,17 +13,21 @@ For each operation, the snippet assumes:
 
 ## 1. Play a sound at a position
 
-The "I just want to make a noise" call. Returns a handle you can
-ignore for one-shots.
+The "I just want to make a noise" call. Fire and forget — the sound
+auto-frees when it finishes.
 
 ```gdscript
 Gool.register_sound_from_file("blip", "res://sfx/blip.ogg")
-Gool.create_emitter("blip", Vector3(5, 0, 0))
+Gool.play_one_shot("blip", Vector3(5, 0, 0))
 ```
 
 `register_sound_from_file` is idempotent — calling it twice with
 the same name is fine, it just won't reload. Do registrations
 once at startup (e.g. in your audio_setup autoload's `_ready`).
+
+`play_one_shot` is a v0.71.0 convenience wrapper around the more
+general `create_emitter`. Use `create_emitter` when you need
+looping, fade-in, or to keep the handle for later destruction.
 
 ## 2. Play a looping sound and stop it later
 

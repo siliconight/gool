@@ -22,6 +22,105 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.71.0] - 2026-05-24 — API ergonomics (Phase 2 of 3)
+
+The second of the three onboarding phases. v0.70.0 fixed *discovery*
+(restructured docs and examples so new users find what they need).
+This release fixes two ergonomic frictions for users who've found
+the right thing and are now writing code against it:
+
+1. The "I just want to play a sound" call took five arguments
+   even when four of them were always defaults.
+2. Calling any Gool API method before the runtime finished
+   initializing silently returned 0 / null / false / [] — the
+   classic timing trap that makes new users think their install
+   is broken.
+
+### `Gool.play_one_shot(name, position = Vector3.ZERO)`
+
+Convenience wrapper for the most common case in gameplay code.
+Returns the emitter handle for parity with `create_emitter`, but
+you can ignore the return value for true fire-and-forget — the
+sound auto-frees when it finishes.
+
+```gdscript
+# Before (still works, more flexible):
+Gool.create_emitter("ui_click", Vector3.ZERO, false, 0.0)
+
+# After (the 90% case, friendlier):
+Gool.play_one_shot("ui_click")
+
+# With position:
+Gool.play_one_shot("hit_sfx", enemy.global_position)
+```
+
+Equivalent to `Gool.create_emitter(name, position, false, 0.0)` —
+just sheds the `looping` and `fade_in_ms` arguments for the case
+when neither is wanted. For looping sounds, fade-in, or holding
+the handle for later destruction, use `create_emitter` directly.
+
+The README's leading code example and `docs/CHEATSHEET.md`'s
+"Play a sound at a position" recipe now both use `play_one_shot`
+as the entry point. `create_emitter` is documented as the
+more-flexible alternative when you need its features.
+
+### Loud first-call errors
+
+The autoload's API methods used to silently return defaults when
+called before the C++ runtime finished initializing. New users
+encountered this when calling things from `_ready` before the
+`ready_to_play` signal had fired, and there was no message to
+help them diagnose it — `register_sound_from_file` had a
+`push_error` (three sites), but the other 50+ API methods didn't.
+
+New helper at autoload scope:
+
+```gdscript
+func _check_init(method_name: String) -> bool:
+    if is_initialized():
+        return true
+    if not _not_init_warned.get(method_name, false):
+        push_warning(_NOT_INITIALIZED_WARNING % method_name)
+        _not_init_warned[method_name] = true
+    return false
+```
+
+The warning fires **once per method per session** so a tight
+loop hammering an API before init doesn't spam Output. The
+message:
+
+> [gool] create_emitter() called before the runtime is ready.
+> Call this after the Gool autoload's `ready_to_play` signal
+> fires, or guard with `if Gool.is_initialized():`. (This warning
+> fires once per method per session.)
+
+All 54 init-guarded API methods on the autoload converted to use
+the helper. The three sites that already had a `push_error` got
+their redundant error stripped (the helper handles it now).
+
+Hot-path cost: identical to the previous guard. The dict-lookup
+slow path only fires when the runtime isn't ready, which is the
+rare case we want to surface.
+
+### Migration
+
+`play_one_shot` is purely additive — no existing call sites
+break. The init-check change is also backward-compatible in
+behavior: a Gool call before init still returns 0/null/false/[]
+as before; the only difference is a one-time push_warning in
+Output identifying the timing issue. If anything previously
+relied on absolute silence from pre-init calls (it shouldn't
+have), it'll get a single warning per method now.
+
+### Phase 3 (queued, not in this release)
+
+Editor onboarding: Getting Started panel in the mixer dock that
+appears the first time the dock opens on a project that has no
+`gool/config.json` yet. Inspector tooltip pass for the 14 prefab
+nodes so dragging in an `AudioEmitter3D` or `ReverbZone` and
+selecting it gives you the "what this does, what to set, what to
+look at next" info right there in the inspector.
+
 ## [0.70.0] - 2026-05-23 — Onboarding restructure (Phase 1 of 3)
 
 The materials for a new Godot dev to succeed with gool already
@@ -20394,6 +20493,7 @@ Headlines:
 [0.69.1]: https://github.com/siliconight/gool/releases/tag/v0.69.1
 [0.69.2]: https://github.com/siliconight/gool/releases/tag/v0.69.2
 [0.70.0]: https://github.com/siliconight/gool/releases/tag/v0.70.0
+[0.71.0]: https://github.com/siliconight/gool/releases/tag/v0.71.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

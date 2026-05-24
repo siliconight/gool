@@ -424,7 +424,7 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 
 
 func _handle_set_bus_gain(bus_name: String, db: float) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_gain"):
 		return
 	# Clamp to a sensible range matching the mixer dock's fader.
 	# Out-of-range values shouldn't crash the runtime, just clamp.
@@ -447,7 +447,7 @@ func _handle_set_bus_gain(bus_name: String, db: float) -> void:
 # autoload-level wrapper, per the discipline in
 # docs/engineering/lessons_learned.md §"Wrappers vs direct member calls").
 func _handle_set_bus_mute(bus_name: String, muted: bool) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_mute"):
 		return
 	var ok: bool = _runtime.set_bus_muted(bus_name, muted)
 	if not ok:
@@ -455,7 +455,7 @@ func _handle_set_bus_mute(bus_name: String, muted: bool) -> void:
 
 
 func _handle_set_bus_solo(bus_name: String, soloed: bool) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_solo"):
 		return
 	var ok: bool = _runtime.set_bus_soloed(bus_name, soloed)
 	if not ok:
@@ -463,7 +463,7 @@ func _handle_set_bus_solo(bus_name: String, soloed: bool) -> void:
 
 
 func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_bypass"):
 		return
 	var ok: bool = _runtime.set_bus_effects_bypassed(bus_name, bypassed)
 	if not ok:
@@ -477,7 +477,7 @@ func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
 # at the OnParameter layer).
 func _handle_set_effect_parameter(bus_name: String, effect_index: int,
 		param_id: int, value: float) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_effect_parameter"):
 		return
 	var ok: bool = _runtime.set_effect_parameter(
 			bus_name, effect_index, param_id, value)
@@ -750,6 +750,42 @@ func _exit_tree() -> void:
 
 func is_initialized() -> bool:
 	return _runtime != null and _runtime.is_initialized()
+
+
+# v0.71.0: Loud first-call errors. Previously, calling any Gool API
+# method before the autoload finished initializing silently returned
+# 0/null/false/[] — and new users hit this and didn't understand why
+# their sounds weren't playing. The classic "register_sound called
+# from _ready" timing trap.
+#
+# _check_init() replaces the bare `if not is_initialized()` guard at
+# every API site. First time it sees a pre-init call for a given
+# method name, it pushes a warning explaining the timing and pointing
+# the user at the ready_to_play signal. Subsequent pre-init calls
+# from the same method stay quiet (so we don't spam Output when an
+# autoload-local loop hammers an API in _ready).
+#
+# Hot-path cost: one is_initialized() check, identical to the
+# previous guard. The dict-lookup slow path only fires when the
+# runtime isn't ready, which is the rare case we want to surface.
+const _NOT_INITIALIZED_WARNING: String = (
+	"[gool] %s() called before the runtime is ready. "
+	+ "Call this after the Gool autoload's `ready_to_play` signal "
+	+ "fires, or guard with `if Gool.is_initialized():`. "
+	+ "(This warning fires once per method per session.)"
+)
+var _not_init_warned: Dictionary = {}
+
+# Returns true if the runtime is ready (caller may proceed).
+# Returns false otherwise, having emitted a one-time warning for
+# the given method name.
+func _check_init(method_name: String) -> bool:
+	if is_initialized():
+		return true
+	if not _not_init_warned.get(method_name, false):
+		push_warning(_NOT_INITIALIZED_WARNING % method_name)
+		_not_init_warned[method_name] = true
+	return false
 
 
 # ---- v0.67.0: session log dump (game-thread API) ---------------------
@@ -1096,7 +1132,7 @@ func get_backend_description() -> String:
 
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
 						 sr: int = 48000, ch: int = 1) -> int:
-	if not is_initialized():
+	if not _check_init("register_pcm_sound"):
 		return 0
 	return _runtime.register_pcm_sound(name, samples, sr, ch)
 
@@ -1131,8 +1167,7 @@ const FORMAT_OPUS:        int = 4
 ## to keep resident, see the upcoming streaming-from-file binding
 ## (deferred to a follow-up release; see CHANGELOG).
 func register_sound_from_file(name: String, path: String) -> int:
-	if not is_initialized():
-		push_error("[gool] register_sound_from_file called before init")
+	if not _check_init("register_sound_from_file"):
 		return 0
 	return _runtime.register_sound_from_file(name, path)
 
@@ -1145,8 +1180,7 @@ func register_sound_from_file(name: String, path: String) -> int:
 ## OggS+Vorbis for Vorbis, fLaC for FLAC.
 func register_sound_from_bytes(name: String, bytes: PackedByteArray,
 								  format_hint: int = FORMAT_AUTO) -> int:
-	if not is_initialized():
-		push_error("[gool] register_sound_from_bytes called before init")
+	if not _check_init("register_sound_from_bytes"):
 		return 0
 	return _runtime.register_sound_from_bytes(name, bytes, format_hint)
 
@@ -1170,8 +1204,7 @@ func register_sound_from_bytes(name: String, bytes: PackedByteArray,
 ##
 ## Returns the AudioSoundId on success, 0 on failure.
 func register_sound_from_stream(name: String, stream: AudioStream) -> int:
-	if not is_initialized():
-		push_error("[gool] register_sound_from_stream called before init")
+	if not _check_init("register_sound_from_stream"):
 		return 0
 	return _runtime.register_sound_from_stream(name, stream)
 
@@ -1207,7 +1240,7 @@ func register_sound_definition(name: String, spatialized: bool = true,
 								 category: int = CATEGORY_SFX,
 								 target_bus_name: String = "",
 								 occlusion_enabled: bool = true) -> void:
-	if not is_initialized():
+	if not _check_init("register_sound_definition"):
 		return
 	# v0.55.0: pre-check target_bus_name against the cache to avoid
 	# the C++ side's "unknown bus" log when it's missing. Without
@@ -1266,7 +1299,7 @@ func register_sound_definition(name: String, spatialized: bool = true,
 ## the keys, and a wrong key prints a warning instead of silently
 ## using the default.
 func register_sound(name: String, opts: Dictionary = {}) -> void:
-	if not is_initialized():
+	if not _check_init("register_sound"):
 		return
 
 	# Validate keys so typos surface as warnings rather than
@@ -1305,7 +1338,7 @@ func register_sound(name: String, opts: Dictionary = {}) -> void:
 ## set_effect_parameter). O(N) over kMaxBuses; fine for init/
 ## registration time, not per-frame.
 func find_bus_id_by_name(name: String) -> int:
-	if not is_initialized():
+	if not _check_init("find_bus_id_by_name"):
 		return -1
 	return _runtime.find_bus_id_by_name(name)
 
@@ -1325,7 +1358,7 @@ func find_bus_id_by_name(name: String) -> int:
 ## unchanged; this wrapper makes it actually work.)
 func set_effect_parameter(bus_name: String, effect_index: int,
 							 param_id: int, value: float) -> bool:
-	if not is_initialized():
+	if not _check_init("set_effect_parameter"):
 		return false
 	return _runtime.set_effect_parameter(bus_name, effect_index,
 										   param_id, value)
@@ -1359,7 +1392,7 @@ func set_effect_parameter(bus_name: String, effect_index: int,
 ## { "wet_gain_db": -6.0 } to dip it.
 func apply_reverb_preset(bus_name: String, effect_index: int,
 						   preset: Dictionary) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_reverb_preset"):
 		return false
 	# JSON key → EffectParameter ID. Mirrors GoolPresets._REVERB_PARAM_ID;
 	# duplicated as a local const so this method has no hard dependency
@@ -1408,7 +1441,7 @@ func apply_reverb_preset(bus_name: String, effect_index: int,
 ## it to forward, but the autoload didn't expose it. Now it
 ## does.)
 func get_bus_effects(bus_name: String) -> Array:
-	if not is_initialized():
+	if not _check_init("get_bus_effects"):
 		return []
 	return _runtime.get_bus_effects(bus_name)
 
@@ -1437,7 +1470,7 @@ func get_bus_effects(bus_name: String) -> Array:
 ## and are skipped; partial presets are valid.
 func apply_compressor_preset(bus_name: String, effect_index: int,
 								preset: Dictionary) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_compressor_preset"):
 		return false
 	# JSON key → EffectParameter ID. Mirrors GoolPresets._COMPRESSOR_PARAM_ID;
 	# duplicated as a local const so this method has no hard dependency on
@@ -1506,7 +1539,7 @@ func apply_eq_preset(bus_name: String, preset: Dictionary,
 					   low_effect_index: int = 0,
 					   mid_effect_index: int = 1,
 					   high_effect_index: int = 2) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_eq_preset"):
 		return false
 	# JSON key → EffectParameter ID for biquad params, used per band.
 	# Mirrors GoolPresets._BIQUAD_PARAM_ID; local const for the same
@@ -1604,7 +1637,7 @@ func _apply_biquad_band(bus_name: String, effect_index: int,
 ## Same return / warning semantics as apply_reverb_preset.
 func apply_saturation_preset(bus_name: String, effect_index: int,
 								preset: Dictionary) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_saturation_preset"):
 		return false
 	# Mirrors GoolPresets._SATURATION_PARAM_ID; same load-order pattern.
 	const PARAM_ID: Dictionary = {
@@ -1660,7 +1693,7 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 ##   stealth.label = "stealth"
 ##   ResourceSaver.save(stealth, "res://mixes/stealth.tres")
 func capture_mix_snapshot(bus_names: PackedStringArray) -> GoolMixSnapshot:
-	if not is_initialized():
+	if not _check_init("capture_mix_snapshot"):
 		return null
 	return GoolMixSnapshot.capture_from(bus_names)
 
@@ -1693,7 +1726,7 @@ func apply_mix_snapshot(snap: GoolMixSnapshot) -> bool:
 ## Gool.set_master_volume_db before v0.37.0 would have hit
 ## "Nonexistent function".)
 func set_master_volume_db(db: float) -> void:
-	if not is_initialized():
+	if not _check_init("set_master_volume_db"):
 		return
 	_runtime.set_master_volume_db(db)
 
@@ -1708,7 +1741,7 @@ func set_master_volume_db(db: float) -> void:
 ##
 ## (Same auto-load wrapper hole as set_master_volume_db.)
 func set_bus_gain_db(bus_name: String, gain_db: float) -> void:
-	if not is_initialized():
+	if not _check_init("set_bus_gain_db"):
 		return
 	_runtime.set_bus_gain_db(bus_name, gain_db)
 
@@ -1728,7 +1761,7 @@ func set_bus_gain_db(bus_name: String, gain_db: float) -> void:
 ## doesn't write back to project settings — it's a runtime
 ## override for this session.
 func set_occlusion_enabled(enabled: bool) -> void:
-	if not is_initialized():
+	if not _check_init("set_occlusion_enabled"):
 		return
 	_runtime.set_occlusion_enabled(enabled)
 
@@ -1748,7 +1781,7 @@ func set_occlusion_enabled(enabled: bool) -> void:
 ## cleanly. Useful for dramatic moments: bump intensity during a
 ## cutscene corridor, drop it during a critical conversation.
 func set_occlusion_intensity(intensity: float) -> void:
-	if not is_initialized():
+	if not _check_init("set_occlusion_intensity"):
 		return
 	_runtime.set_occlusion_intensity(intensity)
 
@@ -1764,12 +1797,12 @@ func set_occlusion_intensity(intensity: float) -> void:
 ## to consult, and the feature silently no-op'd in every scene
 ## using gool_listener_3d. This wrapper closes that loop.
 func set_audio_world_space_rid(rid: RID) -> void:
-	if not is_initialized():
+	if not _check_init("set_audio_world_space_rid"):
 		return
 	_runtime.set_audio_world_space_rid(rid)
 
 func play_sound_at_location(name: String, position: Vector3) -> void:
-	if not is_initialized():
+	if not _check_init("play_sound_at_location"):
 		return
 	_runtime.play_sound_at_location(name, position)
 
@@ -1800,7 +1833,7 @@ func play_sound_at_location(name: String, position: Vector3) -> void:
 func load_sound_bank_from_json(json_string: String,
 								 gpak_path: String = "",
 								 skip_validation: bool = false) -> bool:
-	if not is_initialized():
+	if not _check_init("load_sound_bank_from_json"):
 		return false
 	return _runtime.load_sound_bank_from_json(
 			json_string, gpak_path, skip_validation)
@@ -1867,7 +1900,7 @@ var _next_custom_material_id: int = MATERIAL_CUSTOM_BASE
 ##
 ## v0.49.0: also resolves custom-registered materials (IDs >= 100).
 func material_name(material: int) -> String:
-	if not is_initialized():
+	if not _check_init("material_name"):
 		return ""
 	if material >= 0 and material < _MATERIAL_NAMES.size():
 		return _MATERIAL_NAMES[material]
@@ -1923,7 +1956,7 @@ func material_name(material: int) -> String:
 ##     # Requires you've registered a sound named "footstep_wet_stone"
 ##     # in your bank (or matching whatever suffix you chose).
 func register_material(opts: Dictionary) -> int:
-	if not is_initialized():
+	if not _check_init("register_material"):
 		return MATERIAL_DEFAULT
 	var id: int = _next_custom_material_id
 	_next_custom_material_id += 1
@@ -1941,7 +1974,7 @@ func register_material(opts: Dictionary) -> int:
 ## referenced by ReverbZone / AudioMaterialTag / etc. will fall
 ## through to Default after unregistration.
 func unregister_material(id: int) -> bool:
-	if not is_initialized():
+	if not _check_init("unregister_material"):
 		return false
 	if id < MATERIAL_CUSTOM_BASE:
 		return false
@@ -1953,7 +1986,7 @@ func unregister_material(id: int) -> bool:
 ## v0.49.0: return all custom material IDs currently registered.
 ## Useful for debug UIs that enumerate the material catalog.
 func get_custom_material_ids() -> Array:
-	if not is_initialized():
+	if not _check_init("get_custom_material_ids"):
 		return []
 	return _custom_materials.keys()
 
@@ -1990,7 +2023,7 @@ func get_custom_material_ids() -> Array:
 ## The old name is preserved as a deprecated alias below for one
 ## release; migrate calls to this `get_` form.
 func get_reverb_preset_for_material(material: int) -> Dictionary:
-	if not is_initialized():
+	if not _check_init("get_reverb_preset_for_material"):
 		return {}
 	# v0.49.0: custom materials take precedence. Built-in IDs (0-12)
 	# fall through to the C++ engine table.
@@ -2036,7 +2069,7 @@ func reverb_preset_for_material(material: int) -> Dictionary:
 ## getter. The old name is preserved as a deprecated alias below
 ## for one release; migrate calls to this `get_` form.
 func get_material_eq_for_material(material: int) -> Dictionary:
-	if not is_initialized():
+	if not _check_init("get_material_eq_for_material"):
 		return {}
 	# v0.49.0: custom materials take precedence. Built-in IDs (0-12)
 	# fall through to the C++ engine table.
@@ -2170,7 +2203,7 @@ func material_from_collider(node: Node) -> int:
 ## apply helper (same path v0.36.0 intensity scaling uses).
 func play_impact_sound(name: String, position: Vector3,
 		material) -> void:
-	if not is_initialized():
+	if not _check_init("play_impact_sound"):
 		return
 
 	# v0.60.0: unwrap Resource → (material_int, override_curve_or_null).
@@ -2489,7 +2522,7 @@ func get_eq_intensity() -> float:
 # bus doesn't exist, or first 3 effects aren't biquads.
 func _apply_scaled_material_eq_to_bus(bus_name: String,
 									   material: int) -> bool:
-	if not is_initialized():
+	if not _check_init("_apply_scaled_material_eq_to_bus"):
 		return false
 	var curve: Dictionary = material_eq_for_material(material)
 	if curve.is_empty():
@@ -2530,7 +2563,7 @@ func _apply_scaled_material_eq_to_bus(bus_name: String,
 ## (e.g. a custom UI sound, a cinematic moment, a one-off whose
 ## bus isn't the default impact bus).
 func apply_material_eq_to_bus(bus_name: String, material: int) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_material_eq_to_bus"):
 		return false
 	return _runtime.apply_material_eq_to_bus(bus_name, material)
 
@@ -2571,38 +2604,62 @@ func process_buffer_through_material_eq(buffer: PackedFloat32Array,
 	return GoolAudioRuntime.process_buffer_through_material_eq(
 			buffer, material, intensity, sample_rate)
 
+## v0.71.0: Convenience wrapper around `create_emitter` for the
+## most common case: "just make a sound play at a position, I don't
+## need to control it."
+##
+## Returns the emitter handle for parity with `create_emitter`, but
+## you can ignore the return value for true fire-and-forget. The
+## sound auto-frees when it finishes.
+##
+## Defaults: not looping, no fade-in. If you need either, use
+## `create_emitter` directly.
+##
+## Equivalent to: `Gool.create_emitter(name, position, false, 0.0)`
+##
+## Example:
+##   [codeblock]
+##   func _on_button_pressed() -> void:
+##       Gool.play_one_shot("ui_click")            # at origin
+##   
+##   func _on_enemy_hit(pos: Vector3) -> void:
+##       Gool.play_one_shot("hit_sfx", pos)        # at a 3D pos
+##   [/codeblock]
+func play_one_shot(name: String, position: Vector3 = Vector3.ZERO) -> int:
+	return create_emitter(name, position, false, 0.0)
+
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
 					 fade_in_ms: float = 0.0) -> int:
-	if not is_initialized():
+	if not _check_init("create_emitter"):
 		return 0
 	return _runtime.create_emitter(name, position, looping, fade_in_ms)
 
 func destroy_emitter(handle: int, fade_out_ms: float = 0.0) -> void:
-	if not is_initialized():
+	if not _check_init("destroy_emitter"):
 		return
 	_runtime.destroy_emitter(handle, fade_out_ms)
 
 func set_emitter_transform(handle: int, position: Vector3,
 							  forward: Vector3, velocity: Vector3) -> void:
-	if not is_initialized():
+	if not _check_init("set_emitter_transform"):
 		return
 	_runtime.set_emitter_transform(handle, position, forward, velocity)
 
 func set_emitter_playback_speed(handle: int, speed: float,
 								   smoothing_ms: float = 50.0) -> void:
-	if not is_initialized():
+	if not _check_init("set_emitter_playback_speed"):
 		return
 	_runtime.set_emitter_playback_speed(handle, speed, smoothing_ms)
 
 func set_listener_transform(position: Vector3, forward: Vector3,
 							  velocity: Vector3 = Vector3.ZERO) -> void:
-	if not is_initialized():
+	if not _check_init("set_listener_transform"):
 		return
 	_runtime.set_listener_transform(position, forward, velocity)
 
 func register_voice_source(player_id: int) -> bool:
-	if not is_initialized():
+	if not _check_init("register_voice_source"):
 		return false
 	var ok: bool = _runtime.register_voice_source(player_id)
 	# v0.44.0: track registered player IDs so the editor's Live
@@ -2631,19 +2688,19 @@ func submit_voice_packet(player_id: int, bytes: PackedByteArray,
 							sequence_number: int,
 							send_timestamp_ms: int,
 							arrival_timestamp_ms: int = -1) -> bool:
-	if not is_initialized():
+	if not _check_init("submit_voice_packet"):
 		return false
 	return _runtime.submit_voice_packet(
 		player_id, bytes, sequence_number,
 		send_timestamp_ms, arrival_timestamp_ms)
 
 func get_voice_jitter_ms(player_id: int) -> float:
-	if not is_initialized():
+	if not _check_init("get_voice_jitter_ms"):
 		return 0.0
 	return _runtime.get_voice_jitter_ms(player_id)
 
 func get_voice_packet_loss_ratio(player_id: int) -> float:
-	if not is_initialized():
+	if not _check_init("get_voice_packet_loss_ratio"):
 		return 0.0
 	return _runtime.get_voice_packet_loss_ratio(player_id)
 
@@ -2654,7 +2711,7 @@ func get_voice_packet_loss_ratio(player_id: int) -> float:
 ## C++ binding existed all along, just not surfaced through the
 ## autoload that VoiceChatPlayer reaches through.
 func set_voice_source_muted(player_id: int, muted: bool) -> bool:
-	if not is_initialized():
+	if not _check_init("set_voice_source_muted"):
 		return false
 	return _runtime.set_voice_source_muted(player_id, muted)
 
@@ -2662,14 +2719,14 @@ func set_voice_source_muted(player_id: int, muted: bool) -> bool:
 ## Returns true on success. Same backfill reason as
 ## set_voice_source_muted above.
 func set_voice_source_volume(player_id: int, volume: float) -> bool:
-	if not is_initialized():
+	if not _check_init("set_voice_source_volume"):
 		return false
 	return _runtime.set_voice_source_volume(player_id, volume)
 
 # ---- Replication / multiplayer ----
 
 func on_tick_advanced(simulation_tick: int, server_time_ms: int) -> void:
-	if not is_initialized():
+	if not _check_init("on_tick_advanced"):
 		return
 	_runtime.on_tick_advanced(simulation_tick, server_time_ms)
 
@@ -2677,7 +2734,7 @@ func submit_event_local(sound_name: String, position: Vector3,
 						  prediction_id: int = 0,
 						  priority: int = 128,
 						  timestamp_ms: int = 0) -> void:
-	if not is_initialized():
+	if not _check_init("submit_event_local"):
 		return
 	_runtime.submit_event_local(sound_name, position,
 								  prediction_id, priority, timestamp_ms)
@@ -2686,7 +2743,7 @@ func submit_replicated_event(sound_name: String, position: Vector3,
 							   simulation_tick: int = 0,
 							   server_time_ms: int = 0,
 							   priority: int = 128) -> void:
-	if not is_initialized():
+	if not _check_init("submit_replicated_event"):
 		return
 	_runtime.submit_replicated_event(sound_name, position,
 									   simulation_tick, server_time_ms,
@@ -2694,20 +2751,20 @@ func submit_replicated_event(sound_name: String, position: Vector3,
 
 func cancel_predicted_event(prediction_id: int,
 							   fade_out_ms: float = 50.0) -> void:
-	if not is_initialized():
+	if not _check_init("cancel_predicted_event"):
 		return
 	_runtime.cancel_predicted_event(prediction_id, fade_out_ms)
 
 func update_replicated_transform(handle: int, position: Vector3,
 									forward: Vector3, velocity: Vector3,
 									simulation_tick: int) -> void:
-	if not is_initialized():
+	if not _check_init("update_replicated_transform"):
 		return
 	_runtime.update_replicated_transform(handle, position, forward,
 											velocity, simulation_tick)
 
 func make_prediction_id() -> int:
-	if not is_initialized():
+	if not _check_init("make_prediction_id"):
 		return 0
 	return _runtime.make_prediction_id()
 
@@ -2743,7 +2800,7 @@ func play_networked(sound_name: String,
 					   position: Vector3 = Vector3.ZERO,
 					   volume_db: float = 0.0,
 					   pitch: float = 1.0) -> void:
-	if not is_initialized():
+	if not _check_init("play_networked"):
 		# v0.54.2: rate-limit this warning. Auto-firing weapons or
 		# any sound triggered every frame can spam 40+ identical
 		# errors per second when init has failed; the underlying
@@ -2787,7 +2844,7 @@ func play_networked(sound_name: String,
 func _rpc_play_networked(sound_name: String, position: Vector3,
 							volume_db: float, pitch: float,
 							sender_t_ms: int) -> void:
-	if not is_initialized():
+	if not _check_init("_rpc_play_networked"):
 		return
 	# Optional staleness check: if the event is more than 250ms old
 	# by our clock, drop it. Matches the default category-staleness
@@ -2820,7 +2877,7 @@ func _rpc_play_networked(sound_name: String, position: Vector3,
 # Returns true if the event was queued; false if the runtime is not
 # initialized or the queue is full.
 func play_3d(name: String, position: Vector3, priority: int = 128) -> bool:
-	if not is_initialized():
+	if not _check_init("play_3d"):
 		return false
 	# v0.46.1 fix: submit_event_local is void on the C++ side. Pre-
 	# v0.46.1 this function tried to capture an int return value

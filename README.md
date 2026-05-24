@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.70.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.71.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## What gool feels like to use
@@ -21,7 +21,7 @@ func _ready() -> void:
     Gool.register_sound_from_file("blip", "res://sfx/blip.ogg")
 
     # Play a 3D-positioned sound at world coordinates.
-    Gool.create_emitter("blip", Vector3(5, 0, 0))
+    Gool.play_one_shot("blip", Vector3(5, 0, 0))
 
     # Adjust the music bus from script.
     Gool.set_bus_gain_db("Music", -6.0)
