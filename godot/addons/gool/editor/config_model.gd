@@ -88,11 +88,31 @@ const PARAM_ID_TO_JSON_KEY: Dictionary = {
 	20: "mix",                # Saturation_Mix
 	21: "output_gain",        # Saturation_OutputGain
 	22: "bias",               # Saturation_Bias
+	# v0.69.0: Saturation Mode (string in JSON, like detection_mode)
+	# and Tone (numeric, ±1 tilt). Both are existing engine params
+	# (Saturation_Mode = 27, Saturation_Tone = 28 in bus.h) that
+	# weren't surfaced in the dock until now.
+	27: "mode",               # Saturation_Mode (string!)
+	28: "tone",               # Saturation_Tone
 }
 
 # detection_mode is the one non-numeric param. Engine protocol
 # uses 0.0=peak, 1.0=rms; config JSON uses "peak"/"rms" strings.
 const _DETECTION_MODE_PARAM_ID: int = 18
+
+# v0.69.0: second non-numeric param — Saturation mode. Engine
+# protocol uses 0/1/2/3 (the SaturationMode enum order in bus.h);
+# config JSON uses the lowercase strings the bus_config_loader
+# parses (see bus_config_loader.cpp around line 322). Index into
+# this array IS the engine float value, so they must stay aligned
+# with the enum order.
+const _SATURATION_MODE_PARAM_ID: int = 27
+const _SATURATION_MODE_LABELS: Array = ["tanh", "tube", "tape", "diode"]
+
+# v0.69.0: tone is numeric but uses the upsert write path so dock
+# edits land for users whose pre-v0.69.0 saturation blocks didn't
+# have a "tone" key. Constant kept here for write-loop dispatch.
+const _SATURATION_TONE_PARAM_ID: int = 28
 
 # paramId → engine EffectKind. Used to attach kind/kind_name to
 # effects returned by get_effects() when serving rest-time queries.
@@ -103,7 +123,7 @@ const PARAM_ID_TO_KIND: Dictionary = {
 	4: 3,  5: 3,  6: 3,  7: 3,  8: 3,
 	13: 3, 14: 3, 15: 3, 16: 3, 17: 3, 18: 3,      # Compressor
 	9: 4,  10: 4, 11: 4, 23: 4, 24: 4, 25: 4, 26: 4, # Reverb
-	19: 5, 20: 5, 21: 5, 22: 5,                    # Saturation
+	19: 5, 20: 5, 21: 5, 22: 5, 27: 5, 28: 5,      # Saturation
 }
 
 # Reverse: config "kind" string → EffectKind int. Used when
@@ -158,7 +178,7 @@ const KIND_INT_TO_JSON_KEYS: Dictionary = {
 	# Reverb (v0.29.0): predelay → decay → lf/hf damping → diffusion → dry → wet.
 	# Matches PARAM_ORDER_BY_KIND in mixer_dock.gd. Dry added v0.29.5.
 	4: ["predelay_ms", "decay", "lf_damping", "hf_damping", "diffusion", "dry_gain_db", "wet_gain_db"],
-	5: ["drive", "mix", "output_gain", "bias"],
+	5: ["drive", "mix", "output_gain", "bias", "mode", "tone"],
 	# v0.64.0: MasterControl param-key list is intentionally empty —
 	# see the NOTE under KIND_INT_TO_ABBREV. Surfaces kind/name/abbrev
 	# correctly (enough for the FX chain pill to render); editor-time
@@ -182,7 +202,8 @@ const KIND_INT_TO_KEY_TO_PARAM_ID: Dictionary = {
 		"hf_damping": 10, "diffusion": 25, "dry_gain_db": 26,
 		"wet_gain_db": 11,
 	},
-	5: { "drive": 19, "mix": 20, "output_gain": 21, "bias": 22 },
+	5: { "drive": 19, "mix": 20, "output_gain": 21, "bias": 22,
+		"mode": 27, "tone": 28 },
 	# v0.64.0: empty stub — see NOTE under KIND_INT_TO_ABBREV.
 	6: {},
 }
@@ -351,6 +372,18 @@ func get_effects(bus_name: String) -> Array:
 			if e.has(k):
 				if pid == _DETECTION_MODE_PARAM_ID:
 					params[pid] = 1.0 if String(e[k]).to_lower() == "rms" else 0.0
+				elif pid == _SATURATION_MODE_PARAM_ID:
+					# v0.69.0: Saturation mode is a string in JSON
+					# ("tanh"/"tube"/"tape"/"diode") but a float in
+					# the engine protocol (0..3, matching the
+					# SaturationMode enum order). Unknown strings
+					# fall back to 0.0 (tanh) — the engine parser
+					# would have rejected them at load time, so
+					# this branch only sees valid values in
+					# practice, but the fallback is defensive.
+					var idx: int = _SATURATION_MODE_LABELS.find(
+							String(e[k]).to_lower())
+					params[pid] = float(idx if idx >= 0 else 0)
 				else:
 					params[pid] = float(e[k])
 			else:
@@ -397,6 +430,15 @@ func set_effect_param(bus_name: String, effect_index: int,
 	var key: String = String(PARAM_ID_TO_JSON_KEY[param_id])
 	if param_id == _DETECTION_MODE_PARAM_ID:
 		e[key] = "rms" if value >= 0.5 else "peak"
+	elif param_id == _SATURATION_MODE_PARAM_ID:
+		# v0.69.0: round-trip the OptionButton's int selection
+		# back into the lowercase string the engine parser expects.
+		# Clamp defensively — the dock should never emit out-of-
+		# range values for a 4-choice OptionButton, but defensive
+		# clamping costs nothing and prevents an out-of-bounds.
+		var idx: int = clampi(int(value), 0,
+				_SATURATION_MODE_LABELS.size() - 1)
+		e[key] = String(_SATURATION_MODE_LABELS[idx])
 	else:
 		e[key] = value
 	_mark_dirty(bus_name)
@@ -663,6 +705,24 @@ func _patch_bus_in_text(text: String, bus_name: String,
 				var mode_s: String = String(effect[key])
 				text = _patch_string_in_range(
 						text, effect_range, key, mode_s, errors)
+			elif pid == _SATURATION_MODE_PARAM_ID:
+				# v0.69.0: use the upsert variant so dock edits to
+				# the saturation mode persist even for users whose
+				# pre-v0.69.0 saturation blocks didn't have a "mode"
+				# key. The effect dict already contains "mode" by
+				# this point (set_effect_param adds it), so the
+				# insert branch fires when the JSON itself is missing
+				# the key.
+				var smode_s: String = String(effect[key])
+				text = _patch_or_insert_string_in_range(
+						text, effect_range, key, smode_s, errors)
+			elif pid == _SATURATION_TONE_PARAM_ID:
+				# Same reasoning as mode — tone is a v0.69.0 add,
+				# user configs predating it won't have the key,
+				# upsert handles both insert and update.
+				var tv: float = float(effect[key])
+				text = _patch_or_insert_number_in_range(
+						text, effect_range, key, tv, errors)
 			else:
 				var v: float = float(effect[key])
 				text = _patch_number_in_range(
@@ -817,6 +877,23 @@ func _patch_or_insert_number_in_range(text: String, block_range: Vector2i,
 		return _patch_number_in_range(text, block_range, key, value, errors)
 	return _insert_pair_in_block(text, block_range, key,
 			_format_number(value), errors)
+
+
+# v0.69.0: Replace OR insert a string key inside a JSON block
+# range. Parallel to the number version, used for saturation mode
+# so dock edits land even on configs that predate the v0.69.0
+# mode/tone exposure (and so didn't include the keys originally).
+# detection_mode intentionally keeps the strict UPDATE-only
+# variant — its v0.27.0-era behavior hasn't changed and changing
+# it now risks subtle regressions in existing compressor configs.
+func _patch_or_insert_string_in_range(text: String, block_range: Vector2i,
+		key: String, value: String, errors: Array) -> String:
+	if _find_key_in_block(text, block_range, key) >= 0:
+		return _patch_string_in_range(text, block_range, key, value, errors)
+	# _insert_pair_in_block takes the value as a pre-formatted
+	# string; for a JSON string we need to wrap in quotes.
+	return _insert_pair_in_block(text, block_range, key,
+			'"' + value + '"', errors)
 
 
 # Replace the value of an EXISTING numeric key in a block.
@@ -1222,6 +1299,11 @@ const EFFECT_DEFAULTS_BY_KIND: Dictionary = {
 		"mix": 0.0,
 		"output_gain": 1.0,
 		"bias": 0.0,
+		# v0.69.0: surface the existing engine params via the dock UI.
+		# Default mode "tanh" matches the engine's default; tone 0.0
+		# = flat tilt (no shaping bias toward lows or highs).
+		"mode": "tanh",
+		"tone": 0.0,
 	},
 	# v0.64.1: master_control defaults block. Mirrors the Standard
 	# FPS preset that fresh projects ship with on their Master bus

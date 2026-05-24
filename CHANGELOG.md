@@ -22,6 +22,140 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.69.1] - 2026-05-23 — Hotfix: session log dump uses shell_show_in_file_manager
+
+v0.68.0 introduced the Ctrl+Shift+G session log dump hotkey, and on
+key press called `OS.shell_open(directory_path)` to pop open the
+host OS file manager pointing at the dumped `.jsonl`. On Windows
+that occasionally triggered the Microsoft Store's "which app
+should we use?" picker — clearly the wrong outcome for "show me
+where this file is" — because `ShellExecute` falls through to that
+dialog when the registered "open" verb on folders isn't responding
+cleanly.
+
+### Fix
+
+Switched to **`OS.shell_show_in_file_manager(file_path)`** (Godot
+4.3+; gool's compatibility minimum is 4.4 so it's always available).
+This function is purpose-built for the "reveal this file" use case
+and takes a different, more reliable code path per OS:
+
+  - **Windows:** opens Explorer with the `.jsonl` file selected
+  - **macOS:** reveals in Finder
+  - **Linux:** opens the containing folder via `xdg-open`
+
+A side benefit: the dumped file is now **highlighted** in the file
+manager, not just in some directory the user has to scan for the
+most recent `.jsonl`. Better UX than what v0.68.0 originally shipped.
+
+### Bonus: both paths printed to Output
+
+Previously v0.68.0 printed only the `user://` form of the path,
+which is the Godot-relative form (not directly pasteable into a
+file manager or bug report). v0.69.1 prints both:
+
+```
+[gool] session log dumped (1247 entries):
+    user://  user://gool_session_2026-05-23_19-43-12_847.jsonl
+    OS path  C:\Users\you\AppData\Roaming\Godot\app_userdata\proj\gool_session_2026-05-23_19-43-12_847.jsonl
+```
+
+So even if `shell_show_in_file_manager` fails on a user's system,
+they have a copyable OS-native path in plain text. The warning
+that fires on shell-call failure now points back at the OS path
+so the user can resolve the situation themselves.
+
+### No API or behavior change for callers
+
+`Gool.dump_session_log(path)` still returns the same value; the
+hotkey path is internal to the autoload. Project settings
+unchanged (`dump_log_open_dir` toggles the same opt-in revelation
+step). Code that called `Gool.dump_session_log()` from custom
+keybindings (like sandbox v5's G key) keeps working without
+change.
+
+### Why this slipped
+
+A static read of v0.68.0's `OS.shell_open(directory)` call looked
+fine — globalize the user:// path, take the parent dir, pass to
+shell_open. Plausible on the page; fails on Windows when ShellExecute's
+folder-open verb isn't behaving. Runtime exercise on a Windows host
+would have caught it. Same lesson, applied to a different surface:
+"static reading isn't verification."
+
+## [0.69.0] - 2026-05-23 — Saturation Mode + Tone exposed in mixer dock
+
+The v0.59.0-vintage saturation engine has had four character modes
+(Tanh / Tube / Tape / Diode) and a Tone tilt parameter (-1 to +1)
+since Phase 4, but the mixer dock UI only exposed Drive / Output /
+Bias / Mix. Users could set Mode and Tone by hand-editing
+`config.json` but couldn't reach them through the editor —
+engine capabilities invisible to the people the dock is for.
+
+### What's new
+
+**Saturation Mode dropdown.** New OptionButton in the saturation
+inspector row with four choices (Tanh / Tube / Tape / Diode),
+rendered via the same discrete-param path the Compressor's
+DetectionMode (Peak/RMS) has used since v0.27.0. Each mode is a
+distinct shape function with its own useful drive range
+internally — swapping modes is a real tonal change, not just a
+curve tweak. Default: Tanh (matches the engine default).
+
+**Saturation Tone slider.** New linear slider for the v0.59.0
+Phase 4 Tone tilt parameter. -1 darkens (more lows, fewer
+highs), +1 brightens, 0 = flat. Default: 0.
+
+**Reordered saturation panel** (PARAM_ORDER_BY_KIND[5]):
+previously [Drive, Output, Bias, Mix]; now [Mode, Drive, Tone,
+Output, Bias, Mix]. Mode at the top because it's the
+architectural choice that determines everything else; Tone
+right after Drive because they interact tonally; Mix stays
+last per dock convention.
+
+### Round-trip handling
+
+Both new params persist correctly to `config.json` via the
+dock's auto-save:
+
+- **Mode** is a JSON string (`"mode": "tube"`), mirroring how
+  detection_mode handles the int↔string conversion. New const
+  `_SATURATION_MODE_PARAM_ID` plus a 4-element
+  `_SATURATION_MODE_LABELS` array in `config_model.gd`.
+- **Tone** is a JSON number (`"tone": 0.3`), straight float
+  round-trip.
+
+For users whose pre-v0.69.0 saturation blocks don't have the
+`mode` or `tone` keys: a new `_patch_or_insert_string_in_range`
+helper (parallel to the existing `_patch_or_insert_number_in_range`)
+upserts the keys on first edit. The write loop uses the upsert
+variants for saturation specifically; the detection_mode write
+path keeps its strict UPDATE-only behavior (changing it now would
+risk subtle regressions in existing compressor configs unrelated
+to this work).
+
+### EFFECT_DEFAULTS_BY_KIND updated
+
+The "saturation" defaults now include `"mode": "tanh"` and
+`"tone": 0.0`, so saturations added via Add Effect → Saturation in
+the dock ship with explicit mode/tone keys from the start. Older
+saturations without these keys get the engine's defaults (Tanh,
+tone=0) at load time via the standard fallback path.
+
+### No template change
+
+`config_fps.json` doesn't currently include a saturation effect,
+so the template requires no update. Sandbox and example configs
+that DO use saturation (the audition example, the multiplayer
+sandbox) will pick up Mode and Tone the next time you save from
+the dock or hand-edit them in.
+
+### Engine-side: no change
+
+The Mode (id 27) and Tone (id 28) parameters were already wired
+through the engine and the C++ binding from v0.59.0. v0.69.0 is
+pure UI plumbing — `mixer_dock.gd` and `config_model.gd` only.
+
 ## [0.68.1] - 2026-05-23 — Template fixes: config_fps.json gets master_control, warning text fixed
 
 Patch release addressing two related gaps surfaced by the v0.66.x sandbox debug session.
@@ -20069,6 +20203,8 @@ Headlines:
 [0.67.1]: https://github.com/siliconight/gool/releases/tag/v0.67.1
 [0.68.0]: https://github.com/siliconight/gool/releases/tag/v0.68.0
 [0.68.1]: https://github.com/siliconight/gool/releases/tag/v0.68.1
+[0.69.0]: https://github.com/siliconight/gool/releases/tag/v0.69.0
+[0.69.1]: https://github.com/siliconight/gool/releases/tag/v0.69.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

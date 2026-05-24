@@ -869,8 +869,10 @@ func get_registered_sound_count() -> int:
 #   3. _unhandled_input listens for the action. On press, dumps the
 #      session log via GoolLog.dump_session_to_file(""), prints the
 #      resolved path + entry count to Output, and (optionally)
-#      OS.shell_open's the directory so the .jsonl is one click from
-#      "I have a bug" to "I have a file to attach."
+#      reveals the dumped file in the host OS file manager via
+#      OS.shell_show_in_file_manager. On Windows that opens Explorer
+#      with the .jsonl highlighted; on macOS, Finder; on Linux,
+#      the containing folder in the default file manager.
 #
 # Project settings (all under addons/gool/logging/):
 #
@@ -879,9 +881,11 @@ func get_registered_sound_count() -> int:
 #       don't want the hotkey active in shipped games.
 #
 #   dump_log_open_dir  (bool, default true)
-#       Whether to OS.shell_open the directory containing the
-#       dumped file. Disable if the file manager popping open is
-#       jarring (e.g. fullscreen game).
+#       Whether to reveal the dumped .jsonl in the host OS file
+#       manager via OS.shell_show_in_file_manager. Disable if the
+#       file-manager pop is jarring (e.g. fullscreen game). When
+#       disabled, the file path is still printed to Output for
+#       manual copy/attach.
 #
 # To rebind the key without code: Project Settings → Input Map,
 # find "gool_dump_session_log", change/add events.
@@ -951,21 +955,48 @@ func _do_dump_session_log() -> void:
 				+ "Check the Output panel for the underlying file-write error.")
 		return
 	var n: int = GoolLog.session_entry_count()
-	# Print to Output so the user knows it fired (visible feedback)
-	# AND has the path even without the file-manager pop.
-	print("[gool] session log dumped (%d entries) → %s" % [n, path])
+	# Globalize the path so we can show it in OS-native form and
+	# pass it to shell APIs. ProjectSettings.globalize_path on a
+	# "user://" path returns the absolute filesystem path (e.g.
+	# C:\Users\...\AppData\Roaming\Godot\app_userdata\<proj>\
+	# gool_session_...jsonl on Windows). On an already-absolute
+	# path it's a no-op.
+	var os_path: String = ProjectSettings.globalize_path(path)
+	# Print BOTH paths. The user:// form is what Godot scripts use
+	# internally; the OS path is what the user pastes into a bug
+	# report or copies into their file manager's address bar.
+	# Having both visible means even if shell_show_in_file_manager
+	# fails, the user has a copyable path printed in plain text.
+	print("[gool] session log dumped (%d entries):" % n)
+	print("    user://  %s" % path)
+	print("    OS path  %s" % os_path)
 	if _dump_log_open_dir:
-		# user:// paths need to be globalized before handing to the
-		# OS shell. ProjectSettings.globalize_path resolves them to
-		# the per-OS user data dir (e.g. %APPDATA%\Godot\app_userdata\
-		# <project>\ on Windows).
-		var os_path: String = ProjectSettings.globalize_path(path)
-		var os_dir: String  = os_path.get_base_dir()
-		var err: int = OS.shell_open(os_dir)
+		# v0.69.1: switched from OS.shell_open(dir) to
+		# OS.shell_show_in_file_manager(file).
+		#
+		# OS.shell_open on a directory uses Windows ShellExecute's
+		# default verb on a folder path; on some configurations
+		# that falls through to the Microsoft Store's "which app
+		# should we use?" picker — clearly the wrong outcome for
+		# "show me where this file is."
+		#
+		# OS.shell_show_in_file_manager (Godot 4.3+, gool compat
+		# min 4.4 so available) is purpose-built for this exact
+		# use case: on Windows it opens Explorer with the file
+		# selected; on macOS it reveals in Finder; on Linux it
+		# opens the containing folder via xdg-open. Different,
+		# more reliable code path per OS.
+		#
+		# As a bonus, "reveal the file with it highlighted" is
+		# better UX than "open the folder and let the user hunt
+		# for the most recent .jsonl" anyway.
+		var err: int = OS.shell_show_in_file_manager(os_path)
 		if err != OK:
-			push_warning("[gool] OS.shell_open(\"%s\") failed (err=%d); "
-					% [os_dir, err]
-					+ "the dumped file is still at the path printed above.")
+			push_warning("[gool] shell_show_in_file_manager(\"%s\") "
+					% os_path
+					+ "failed (err=%d). The dumped file is still at " % err
+					+ "the OS path printed above; paste it into your "
+					+ "file manager's address bar.")
 
 
 # v0.55.0: cheap bus-existence check. Reads from a cache built at

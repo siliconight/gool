@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.68.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.69.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## The problem
@@ -518,6 +518,12 @@ runtime.
 
 - **Sound bank schema:** [`docs/asset_pipeline.md`](docs/asset_pipeline.md)
   — JSON format, group selection policies, hot reload
+- **Saturation in the mixer dock (v0.69.0):** four character modes
+  (Tanh / Tube / Tape / Diode) selectable from a dropdown, plus a
+  Tone tilt parameter (-1 to +1) for shaping the harmonic balance.
+  All wired through the same config.json round-trip the dock uses
+  for every other parameter, so dragging the Tone slider or picking
+  a different mode persists across editor restarts.
 - **Terminology:** [`docs/terminology.md`](docs/terminology.md)
   — gool's vocabulary aligned with FMOD/Wwise so muscle memory
   transfers

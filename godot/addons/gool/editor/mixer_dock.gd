@@ -3236,6 +3236,20 @@ class _EffectsPanel extends PanelContainer:
 			"curve": "linear", "fmt": "%0.2f"},
 		22: {"label": "Bias", "unit": "", "min": -1.0, "max": 1.0,
 			"curve": "linear", "fmt": "%+0.2f"},
+		# v0.69.0: Mode and Tone — exposing existing engine params.
+		# Mode (id 27) is the SaturationMode enum (Tanh/Tube/Tape/Diode)
+		# — each maps to a different shape function with its own
+		# useful drive range internally, so swapping modes is a real
+		# tonal change, not just a curve tweak. Rendered via the same
+		# discrete-OptionButton path the Compressor DetectionMode
+		# (id 18) already uses.
+		# Tone (id 28) is the v0.59.0 Phase 4 tilt: -1 darkens (more
+		# lows, less highs), +1 brightens. Centered at 0 = flat.
+		27: {"label": "Mode", "unit": "", "min": 0.0, "max": 3.0,
+			"curve": "discrete",
+			"choices": ["Tanh", "Tube", "Tape", "Diode"]},
+		28: {"label": "Tone", "unit": "", "min": -1.0, "max": 1.0,
+			"curve": "linear", "fmt": "%+0.2f"},
 	}
 
 	# Per-kind display order (top-to-bottom within an effect section).
@@ -3260,7 +3274,11 @@ class _EffectsPanel extends PanelContainer:
 		# them in tandem; Dry/Wet pair stays trailing per the dock
 		# convention (Dry added v0.29.5).
 		4: [23, 9, 24, 10, 25, 26, 11],
-		5: [19, 21, 22, 20],
+		# v0.69.0: Saturation expanded from [19, 21, 22, 20] to include
+		# Mode (27) at top — the architectural choice that determines
+		# everything else — followed by Drive, Tone, Output, Bias,
+		# Mix (Mix last per dock convention).
+		5: [27, 19, 28, 21, 22, 20],
 	}
 
 	# Emitted on slider/option change. Outer dock forwards via
