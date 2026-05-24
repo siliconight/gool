@@ -2759,6 +2759,29 @@ func submit_replicated_event(sound_name: String, position: Vector3,
 									   simulation_tick, server_time_ms,
 									   priority)
 
+# v0.75.0: per-peer + per-category replicated event submission.
+# Production game code typically uses the multiplayer_bridge's RPC path
+# which derives peer identity from Godot's MultiplayerAPI. This direct
+# form is for stress tests, replay tools, and integration tests that
+# need to simulate specific peers without a real network.
+#
+# Category indices match AudioCategory:
+#   0 = SFX (default)    3 = Ambience
+#   1 = Voice            4 = UI
+#   2 = Music            5 = Dialogue
+# Out-of-range category falls back to SFX in the binding.
+func submit_replicated_event_as_peer(peer_id: int, sound_name: String,
+									   position: Vector3,
+									   simulation_tick: int = 0,
+									   server_time_ms: int = 0,
+									   priority: int = 128,
+									   category: int = 0) -> void:
+	if not _check_init("submit_replicated_event_as_peer"):
+		return
+	_runtime.submit_replicated_event_as_peer(peer_id, sound_name, position,
+											   simulation_tick, server_time_ms,
+											   priority, category)
+
 func cancel_predicted_event(prediction_id: int,
 							   fade_out_ms: float = 50.0) -> void:
 	if not _check_init("cancel_predicted_event"):

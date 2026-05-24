@@ -643,6 +643,14 @@ public:
                                        "priority"),
                               &GoolAudioRuntime::submit_replicated_event,
                               DEFVAL(0), DEFVAL(0), DEFVAL(128));
+        // v0.75.0: per-peer/per-category event submission for stress-test
+        // and multi-client simulation. See the method body for rationale.
+        ClassDB::bind_method(D_METHOD("submit_replicated_event_as_peer",
+                                       "peer_id", "sound_name", "position",
+                                       "simulation_tick", "server_time_ms",
+                                       "priority", "category"),
+                              &GoolAudioRuntime::submit_replicated_event_as_peer,
+                              DEFVAL(0), DEFVAL(0), DEFVAL(128), DEFVAL(0));
         ClassDB::bind_method(D_METHOD("cancel_predicted_event",
                                        "prediction_id", "fade_out_ms"),
                               &GoolAudioRuntime::cancel_predicted_event,
@@ -983,6 +991,84 @@ public:
         // with no SFX currently playing.
         d["active_emitters"] =
             static_cast<int64_t>(runtime_->GetActiveEmitterCount());
+        // v0.75.0: priority-eviction telemetry. Two counters that
+        // monotonically grow over the session — neither resets — so
+        // callers should poll and diff for "evictions since last
+        // sample" if they want per-second rates. Both are useful in
+        // game debug UI ("is my voice budget being thrashed?") and
+        // are the primary signal the stress test rig reads to verify
+        // that priority mode is doing its job under contention.
+        //
+        // one_shot_evictions has existed since v0.19.0 (always-on,
+        // not gated by eviction_mode). emitters_evicted_by_priority
+        // only ticks when budget.eviction_mode is "priority" — see
+        // CHEATSHEET entry #11 and the v0.75.0 CHANGELOG entry for
+        // the full picture.
+        const auto stats = runtime_->GetStats();
+        d["one_shot_evictions"] =
+            static_cast<int64_t>(stats.oneShotEvictions);
+        d["emitters_evicted_by_priority"] =
+            static_cast<int64_t>(stats.emittersEvictedByPriority);
+
+        // v0.75.0 expansion: multiplayer-side counters. These existed
+        // in the C++ Stats struct from earlier releases (predictions
+        // since v0.18.0, rate limiter since v0.19.0, voice budget
+        // since v0.46.x) but were never bound to GDScript — making
+        // it impossible for game debug UIs (or the stress test) to
+        // observe replication/voice behavior under load. Surfacing
+        // them here is purely additive; no kernel changes.
+        //
+        // Naming convention: snake_case versions of the C++ field
+        // names, prefixed with the subsystem the field describes
+        // (replication_, predictions_, transforms_, voice_) so a
+        // single Dictionary stays scannable by humans.
+        d["predictions_cancelled"] =
+            static_cast<int64_t>(stats.predictionsCancelled);
+        d["predictions_cancelled_not_found"] =
+            static_cast<int64_t>(stats.predictionsCancelledNotFound);
+        // Replication rate-limit counters, broken out by AudioCategory
+        // index (0=SFX, 1=Voice, 2=Music, 3=Ambience, 4=UI,
+        // 5=Dialogue). Aggregated across all players; for per-player
+        // diagnostics, use GetPerPlayerReplicationStats — not
+        // currently bound, but the C++ accessor exists.
+        Array rate_limited;
+        for (int i = 0; i < 6; ++i) {
+            rate_limited.push_back(
+                static_cast<int64_t>(stats.replicationEventsRateLimited[i]));
+        }
+        d["replication_rate_limited_by_category"] = rate_limited;
+        d["replication_rejected_by_validator"] =
+            static_cast<int64_t>(stats.replicationEventsRejectedByValidator);
+        d["replication_policy_violations"] =
+            static_cast<int64_t>(stats.replicationPolicyViolations);
+        d["replication_rejected_new_id_budget"] =
+            static_cast<int64_t>(stats.replicationEventsRejectedNewIdBudget);
+        // Transform replication. transforms_dropped_by_priority ticks
+        // when the network thread sees ring pressure and refuses an
+        // UpdateReplicatedTransform whose shadow priority is below the
+        // threshold for that pressure level (v0.19.0 Tier-B).
+        d["transforms_dropped_by_priority"] =
+            static_cast<int64_t>(stats.transformsDroppedByPriority);
+        // Voice. mute drops fire when frames arrive for a muted
+        // VoiceSource (the host configured the mute; we count the
+        // savings). budget_dropped fires when the host-set bandwidth
+        // budget is exhausted and the suggester returned "skip frame";
+        // budget_downgraded fires when a lower bitrate rung was picked
+        // instead of dropping.
+        d["voice_frames_dropped_due_to_mute"] =
+            static_cast<int64_t>(stats.voiceFramesDroppedDueToMute);
+        d["voice_frames_budget_downgraded"] =
+            static_cast<int64_t>(stats.voiceFramesBudgetDowngraded);
+        d["voice_frames_budget_dropped"] =
+            static_cast<int64_t>(stats.voiceFramesBudgetDropped);
+        d["voice_bytes_sent"] =
+            static_cast<int64_t>(stats.voiceBytesSent);
+        // Currently-registered voice sources. Existed in Stats since
+        // the voice subsystem went in but was never bound — useful in
+        // game debug UIs and the v0.75.0 voice flood stress scenario
+        // to verify N peers actually registered.
+        d["active_voice_sources"] =
+            static_cast<int64_t>(stats.activeVoiceSources);
         return d;
     }
 
@@ -2490,6 +2576,61 @@ public:
             static_cast<audio::AudioPriority>(priority),
             static_cast<audio::TimestampMs>(server_time_ms));
         ev.simulationTick = static_cast<audio::SimulationTick>(simulation_tick);
+        runtime_->SubmitReplicatedEvent(ev);
+    }
+
+    // v0.75.0: per-peer + per-category event submission for multi-client
+    // simulation (stress test, replay tools, network testing harnesses).
+    // The plain submit_replicated_event leaves playerId at the default,
+    // which makes per-player rate limiter behavior unobservable from
+    // GDScript — every event looks like it came from the same peer.
+    //
+    // This variant lets the caller specify:
+    //   - peer_id  → AudioEvent.playerId; drives the per-player token
+    //                bucket rate limiter (one bucket per peer).
+    //   - category → AudioEvent.category; selects which of the six
+    //                per-category buckets is consulted (0=SFX, 1=Voice,
+    //                2=Music, 3=Ambience, 4=UI, 5=Dialogue).
+    //
+    // Use cases:
+    //   - Stress test scenarios that simulate N peers at varying rates,
+    //     verifying that a flooding peer doesn't starve a well-behaved
+    //     one (per-peer bucket isolation).
+    //   - Replay tools that need to replicate captured network traffic
+    //     with original peer attribution.
+    //   - Anti-cheat / integration tests that need to assert specific
+    //     rate-limit thresholds fire for specific peers.
+    //
+    // Production game code generally should NOT call this directly —
+    // the multiplayer_bridge's `_rpc_replicated_event` RPC handler
+    // already runs in a context where Godot's MultiplayerAPI knows the
+    // sender. A future v0.76.0 polish could route bridge RPCs through
+    // this method to make the peer attribution end-to-end automatic.
+    void submit_replicated_event_as_peer(int64_t peer_id,
+                                           const String& sound_name,
+                                           const Vector3& position,
+                                           int64_t simulation_tick,
+                                           int64_t server_time_ms,
+                                           int priority,
+                                           int category) {
+        if (!runtime_) return;
+        audio::AudioSoundId id = audio::kInvalidSoundId;
+        if (bank_) {
+            const auto utf8 = sound_name.utf8();
+            id = bank_->Find(std::string_view(utf8.get_data(), utf8.length()));
+        }
+        if (id == audio::kInvalidSoundId) id = HashName(sound_name);
+        auto ev = audio::AudioEvent::MakePlaySoundAtLocation(
+            id, V3(position),
+            audio::AudioReplicationPolicy::ServerAuthoritative,
+            static_cast<audio::AudioPriority>(priority),
+            static_cast<audio::TimestampMs>(server_time_ms));
+        ev.simulationTick = static_cast<audio::SimulationTick>(simulation_tick);
+        ev.playerId       = static_cast<audio::AudioPlayerId>(peer_id);
+        // Bounds-check category. The AudioCategory enum has 6 values
+        // (0..5); out-of-range inputs default to SFX rather than UB.
+        if (category < 0 || category > 5) category = 0;
+        ev.category = static_cast<audio::AudioCategory>(category);
         runtime_->SubmitReplicatedEvent(ev);
     }
 

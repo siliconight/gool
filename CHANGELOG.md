@@ -22,6 +22,83 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.75.1] - 2026-05-24 — GDScript-side observability + multi-peer test surface
+
+A small, pure-additive follow-up to v0.75.0. The kernel-side eviction
+work in v0.75.0 was already complete, but the GDScript surface for
+*observing* and *exercising* multiplayer behavior was missing —
+several Stats counters tracked by the C++ kernel had no path to
+GDScript, and the existing `submit_replicated_event` didn't expose
+`peer_id`, making per-player rate-limiter behavior unobservable from
+game code. v0.75.1 closes those gaps without touching any kernel
+logic.
+
+### Added
+
+- **Multiplayer / replication telemetry exposed to GDScript.**
+  `Gool.get_render_stats()` now returns these previously-internal
+  Stats fields:
+  - `one_shot_evictions` (existed since v0.19.0 but never bound)
+  - `emitters_evicted_by_priority` (introduced this point release)
+  - `predictions_cancelled`, `predictions_cancelled_not_found`
+  - `replication_rate_limited_by_category` (6-element Array,
+    indexed by AudioCategory: 0=SFX, 1=Voice, 2=Music, 3=Ambience,
+    4=UI, 5=Dialogue)
+  - `replication_rejected_by_validator`, `replication_policy_violations`,
+    `replication_rejected_new_id_budget`
+  - `transforms_dropped_by_priority`
+  - `voice_frames_dropped_due_to_mute`, `voice_frames_budget_downgraded`,
+    `voice_frames_budget_dropped`, `voice_bytes_sent`, `active_voice_sources`
+
+  These were always tracked by the C++ kernel but unreadable from
+  game code — making it impossible to build debug UIs or stress
+  tests that observe multiplayer behavior under load. v0.75.1 makes
+  them visible. No kernel changes; the C++ structs already had the
+  fields.
+
+- **`Gool.submit_replicated_event_as_peer()` binding.** Per-peer +
+  per-category event submission for multi-client simulation. The
+  existing `submit_replicated_event` leaves `playerId` at the
+  default, making per-player rate-limiter behavior unobservable
+  from GDScript — every event looks like it came from the same
+  peer. This variant lets stress tests, replay tools, and
+  integration tests inject events as if from specific peers, with
+  specific category attribution.
+
+  Production game code typically uses `multiplayer_bridge.gd`'s RPC
+  path; this direct form is for testing infrastructure. Signature:
+
+  ```gdscript
+  Gool.submit_replicated_event_as_peer(
+      peer_id, sound_name, position,
+      simulation_tick=0, server_time_ms=0,
+      priority=128, category=0)
+  ```
+
+  All three multiplayer stress-test scenarios (Replication Storm,
+  Pred Cancel Churn, Voice Packet Flood) shipped in `gool_stress_test`
+  depend on this binding + the get_render_stats keys above. On a
+  v0.75.0 install they self-detect the missing surface and refuse to
+  run rather than producing garbage data; on v0.75.1+ they run.
+
+### No changes to
+
+- Kernel logic (the priority eviction implementation, `TryEvictForPersistent`,
+  budget parser, AudioRuntime accessors, Stats struct, `BudgetExceeded`
+  warning) — all unchanged from v0.75.0. v0.75.1 is a binding-layer
+  release only.
+- Existing GDScript APIs — `submit_replicated_event` is untouched;
+  the new variant is a separate method.
+- Default behavior — no project will see any difference unless its
+  game code or stress test rig calls into the new bindings.
+
+### Upgrade
+
+GDScript-only change; the v0.75.0 DLL still works. If you're already
+running v0.75.0 and want the new observability + per-peer injection,
+just update the addon's `runtime_singleton.gd` and rebuild
+`gool_godot.cpp` from the new source. CI builds the DLL on tag push.
+
 ## [0.75.0] - 2026-05-24 — Priority-based voice eviction (Phase 2 of 2) + actionable budget message
 
 ### Added
@@ -83,6 +160,27 @@ Nothing shipping yet. Next-up candidates:
   v0.75.0 actionable error message is the practical replacement:
   users edit the JSON and reopen, becoming the "dynamic" mechanism
   themselves. Reopens if a real use case ever surfaces.
+
+### Known gaps closed in v0.75.1
+
+- Multiplayer-side observability and per-peer event injection — see
+  the v0.75.1 section above.
+
+### Remaining v0.76.0 candidates
+
+- **Per-player replication stats** (`GetPerPlayerReplicationStats`) are
+  in C++ but not bound to GDScript. The Replication Storm stress
+  scenario can verify "rate limiter fires" but not "rate limiter doesn't
+  punish well-behaved peers specifically." Exposing the per-player
+  accessor would close this verification gap.
+- **`unregister_voice_source` binding** — voice sources registered for
+  the voice flood scenario persist until engine shutdown. Adding the
+  binding (the C++ method exists already) would let scenarios clean up
+  properly.
+- **Real-Opus voice flood variant** — current flood uses synthetic
+  packets that the decoder rejects, testing the ingress path only. A
+  variant with real Opus-encoded frames would exercise the decoder
+  math too.
 
 ## [0.74.1] - 2026-05-24 — Onboarding banner visibility fix
 
