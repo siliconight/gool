@@ -22,6 +22,117 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.72.0] - 2026-05-24 — Editor onboarding (Phase 3 of 3)
+
+The third and final onboarding phase. v0.70.0 fixed *discovery*
+(restructured docs and examples). v0.71.0 fixed *API ergonomics*
+(`play_one_shot`, loud first-call errors). This release finishes
+the onboarding work in the editor itself.
+
+### Inspector tooltips on all 14 prefabs
+
+When a new user drags an `AudioEmitter3D`, `ReverbZone`,
+`Listener3D`, etc. into their scene and selects it in the inspector,
+the property panel now shows:
+
+- A class-level docstring at the top explaining what the node does
+- A per-property tooltip on hover for every `@export` field
+  explaining what it controls and reasonable defaults
+
+Prior state: most prefabs already had `#`-comment docs above each
+exported property — they just weren't being picked up by Godot's
+inspector tooltip system because Godot only surfaces `##` docstrings,
+not regular `#` comments. The v0.72.0 work:
+
+- **Mechanical pass:** converted 287 `#`-comment lines across 13
+  prefabs to `##` docstrings (top-of-class + above-each-@export).
+  Pure content preservation — the existing carefully-written docs
+  just become visible to tooltip system.
+- **Wrote new docstrings** for 4 previously-undocumented properties:
+  - `NetworkedAudioEmitter3D.loop_crossfade_ms`
+  - `NetworkedAudioEmitter3D.max_distance` (and tightened
+    `min_distance` doc)
+  - `NetworkedAudioEvent.mode` (the SERVER_AUTHORITATIVE /
+    CLIENT_PREDICTED / CLIENT_AUTHORITATIVE distinction)
+  - `NetworkedAudioEvent.late_threshold_ms`
+
+After the pass: **68/68 = 100% `@export` properties documented**
+across all 14 prefabs, and every prefab has a class-level docstring
+between 9 and 30 lines.
+
+### Getting Started banner in the mixer dock
+
+When the mixer dock opens on a project that doesn't yet have a
+`res://gool/config.json`, a panel appears at the top of the Mixer
+tab with:
+
+- A short "Welcome to gool" explanation
+- **Use FPS template** button — copies
+  `addons/gool/templates/config_fps.json` to `res://gool/config.json`.
+  11-bus layout: Master, Music, SfxAll (with sub-buses LocalSfx,
+  RemoteSfx, Explosions, Footsteps, ImpactEq), Dialogue, Voice,
+  Ambient. Includes a Master Control preset on Master.
+- **Use minimal template** button — writes a 3-bus config (Master,
+  Sfx with one reverb, Music) inline. The leanest baseline gool
+  runs with.
+- **Don't show again** button — sets a project setting to suppress
+  the banner permanently.
+
+The banner self-removes from view as soon as a config exists, so
+it's a no-op for any project that already has one. Users on
+existing projects never see it. The Phase 1 README's "Where to
+start" table now has a complete path from "I just installed gool"
+through to "I have a config and I'm building."
+
+### Architecture: minimum-surface integration
+
+The banner is a self-contained file
+(`addons/gool/editor/getting_started_banner.gd`) with a single
+integration point in `mixer_dock.gd`:
+
+```gdscript
+# v0.72.0: Getting Started banner. Self-decides whether to show
+# based on whether res://gool/config.json exists and whether the
+# user has dismissed it. No-op visually for any project that
+# already has a config, so this is safe to mount unconditionally.
+var banner_script := load(
+        "res://addons/gool/editor/getting_started_banner.gd")
+if banner_script != null:
+    var banner: PanelContainer = PanelContainer.new()
+    banner.set_script(banner_script)
+    root_vbox.add_child(banner)
+```
+
+Dock grew by 13 lines total. The banner's `_should_show` check
+returns false if the config exists, so the dock's behavior for
+projects-that-have-a-config is byte-identical to v0.71.0.
+
+### Migration
+
+None. Backward compatible everywhere. Existing projects with a
+config see no change. New projects see one new banner the first
+time they open the mixer dock.
+
+The dismiss flag lives in `project.godot` as
+`addons/gool/editor/getting_started_dismissed = true`. To
+re-enable the banner on a project that's been dismissed, remove
+that key.
+
+### What's NOT in v0.72.0 (out of scope for this release)
+
+- A "fresh sound bank" template — once you have a `config.json`
+  you still need sounds to play. Out of scope; this would need
+  default WAVs or a procedural-generation mechanism, neither of
+  which is a small addition.
+- Inspector hints for the `Gool` autoload's 87 public methods.
+  The `##` docstrings on each function in `runtime_singleton.gd`
+  already become Godot autocomplete hints — `Gool.<Ctrl+Space>`
+  surfaces each function with its description. Inspector
+  tooltips on instance properties aren't really applicable for
+  an autoload (no instance the user customizes).
+- Editor scene templates for "drop these nodes in and you have
+  a working scene." Would be useful but is its own design pass.
+
 ## [0.71.0] - 2026-05-24 — API ergonomics (Phase 2 of 3)
 
 The second of the three onboarding phases. v0.70.0 fixed *discovery*
@@ -20494,6 +20605,7 @@ Headlines:
 [0.69.2]: https://github.com/siliconight/gool/releases/tag/v0.69.2
 [0.70.0]: https://github.com/siliconight/gool/releases/tag/v0.70.0
 [0.71.0]: https://github.com/siliconight/gool/releases/tag/v0.71.0
+[0.72.0]: https://github.com/siliconight/gool/releases/tag/v0.72.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

@@ -447,6 +447,19 @@ func _ready() -> void:
 	root_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_tab_container.add_child(root_vbox)
 
+	# v0.72.0: Getting Started banner. Self-decides whether to show
+	# based on whether res://gool/config.json exists and whether the
+	# user has dismissed it. No-op visually for any project that
+	# already has a config, so this is safe to mount unconditionally.
+	var banner_script := load(
+			"res://addons/gool/editor/getting_started_banner.gd")
+	if banner_script != null:
+		var banner: PanelContainer = PanelContainer.new()
+		banner.set_script(banner_script)
+		# Banner goes ABOVE the toolbar (first child of root_vbox)
+		# so it's the first thing the user sees if they need it.
+		root_vbox.add_child(banner)
+
 	# v0.51.0: themed toolbar — banner with a title on the left, the
 	# Save Mix to Config action on the right. Replaces the v0.48.0
 	# plain HBox of [Button + Label] which used Godot defaults and

@@ -1,33 +1,33 @@
 # addons/gool/prefabs/networked_audio_event.gd
 #
-# Bridge between game code and Godot's MultiplayerAPI for one-shot
-# audio events. Encapsulates three replication patterns:
+## Bridge between game code and Godot's MultiplayerAPI for one-shot
+## audio events. Encapsulates three replication patterns:
 #
-#   1. SERVER_AUTHORITATIVE
-#      Server fires the event locally and RPCs all relevant
-#      clients. Clients hear it after one network round-trip.
-#      Use for: explosions, gunshots, environment events, anything
-#      where authority must be the server (anti-cheat, fairness).
+##   1. SERVER_AUTHORITATIVE
+##      Server fires the event locally and RPCs all relevant
+##      clients. Clients hear it after one network round-trip.
+##      Use for: explosions, gunshots, environment events, anything
+##      where authority must be the server (anti-cheat, fairness).
 #
-#   2. CLIENT_PREDICTED
-#      Client predicts locally (instant), RPCs the server to
-#      validate, server reconciles. On rejection, client cancels
-#      the predicted sound with a quick fade. On approval, server
-#      RPCs OTHER clients (not the predictor, who already heard it).
-#      Use for: weapon fire, ability casts — anything where client
-#      latency would be unacceptable but server still owns truth.
+##   2. CLIENT_PREDICTED
+##      Client predicts locally (instant), RPCs the server to
+##      validate, server reconciles. On rejection, client cancels
+##      the predicted sound with a quick fade. On approval, server
+##      RPCs OTHER clients (not the predictor, who already heard it).
+##      Use for: weapon fire, ability casts — anything where client
+##      latency would be unacceptable but server still owns truth.
 #
-#   3. CLIENT_AUTHORITATIVE
-#      Client fires locally and RPCs other clients directly. No
-#      server validation. Cheap, low-latency; vulnerable to clients
-#      sending junk events. Use for: footsteps, locomotion sounds,
-#      cosmetic effects — things where the cheating cost is low.
+##   3. CLIENT_AUTHORITATIVE
+##      Client fires locally and RPCs other clients directly. No
+##      server validation. Cheap, low-latency; vulnerable to clients
+##      sending junk events. Use for: footsteps, locomotion sounds,
+##      cosmetic effects — things where the cheating cost is low.
 #
-# All three use the same play() entry point; the `mode` property
-# selects the pattern.
+## All three use the same play() entry point; the `mode` property
+## selects the pattern.
 #
-# Peer relevancy is filtered through an AudioRelevancyFilter the
-# host attaches at runtime. See examples/quickstart for the wiring.
+## Peer relevancy is filtered through an AudioRelevancyFilter the
+## host attaches at runtime. See examples/quickstart for the wiring.
 
 @tool
 class_name NetworkedAudioEvent
@@ -39,6 +39,11 @@ enum Mode {
 	CLIENT_AUTHORITATIVE,
 }
 
+## Authority model for this event. SERVER_AUTHORITATIVE means only
+## the server can fire the event (clients receive it via replication).
+## CLIENT_PREDICTED lets a client play locally immediately and the
+## server reconciles. CLIENT_AUTHORITATIVE lets any client fire and
+## the server replays.
 @export var mode: Mode = Mode.SERVER_AUTHORITATIVE
 
 ## Default audible radius for distance culling (meters). Per-event
@@ -53,6 +58,12 @@ enum Mode {
 ## `late_threshold_ms` after its sim tick. Lets a fast-moving game
 ## drop "old" events instead of playing them retroactively.
 @export var late_event_dropping: bool = true
+
+## Max delay between an event's sim-tick origin and its receive time
+## on a peer before the event is dropped (when `late_event_dropping`
+## is on). Set higher for laggy networks where a 200ms gunshot is
+## still useful; set lower for fast-moving games where stale events
+## hurt feel.
 @export_range(50.0, 5000.0, 10.0, "suffix:ms") var late_threshold_ms: float = 200.0
 
 signal predicted_locally(prediction_id: int, sound_name: String)

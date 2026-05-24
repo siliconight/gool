@@ -1,15 +1,15 @@
 # addons/gool/prefabs/footstep_surface_player.gd
 #
-# Plays footstep sounds at the parent's feet position. Surface is
-# determined by raycasting downward and looking up the result's
-# collision group in surface_sounds. Supports per-surface random
-# variants to avoid repetitive playback.
+## Plays footstep sounds at the parent's feet position. Surface is
+## determined by raycasting downward and looking up the result's
+## collision group in surface_sounds. Supports per-surface random
+## variants to avoid repetitive playback.
 #
-# Usage:
-#   1. Add as a child of your character node.
-#   2. Configure surface_sounds in the inspector.
-#   3. Call step() from your locomotion code (e.g. on a step
-#      animation key, or every N units of horizontal movement).
+## Usage:
+##   1. Add as a child of your character node.
+##   2. Configure surface_sounds in the inspector.
+##   3. Call step() from your locomotion code (e.g. on a step
+##      animation key, or every N units of horizontal movement).
 
 @tool
 class_name FootstepSurfacePlayer

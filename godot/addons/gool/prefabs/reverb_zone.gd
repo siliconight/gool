@@ -1,40 +1,40 @@
 # addons/gool/prefabs/reverb_zone.gd
 #
-# Area3D that paints a space's acoustic character onto the reverb
-# bus when a listener walks in. Two ways to author:
+## Area3D that paints a space's acoustic character onto the reverb
+## bus when a listener walks in. Two ways to author:
 #
-#   1. **Material-aware (the easy path).** Set `material` to one of
-#      the Gool.MATERIAL_* constants — Concrete, Wood, Foliage, etc.
-#      The zone pulls the matching engine preset (decay + dampings +
-#      diffusion) and applies it. Drop the node, pick the material,
-#      done.
+##   1. **Material-aware (the easy path).** Set `material` to one of
+##      the Gool.MATERIAL_* constants — Concrete, Wood, Foliage, etc.
+##      The zone pulls the matching engine preset (decay + dampings +
+##      diffusion) and applies it. Drop the node, pick the material,
+##      done.
 #
-#   2. **Per-parameter override (for fine-tuning).** Leave material
-#      at MATERIAL_DEFAULT and dial decay / lf_damping / hf_damping /
-#      diffusion in the inspector. The zone uses those values
-#      verbatim. Use this when no preset feels exactly right and
-#      you want to author the room by hand.
+##   2. **Per-parameter override (for fine-tuning).** Leave material
+##      at MATERIAL_DEFAULT and dial decay / lf_damping / hf_damping /
+##      diffusion in the inspector. The zone uses those values
+##      verbatim. Use this when no preset feels exactly right and
+##      you want to author the room by hand.
 #
-# Either way, the zone targets a named reverb bus in your gool
-# config (default "Sfx", the standard mixer's reverb-bearing bus).
-# It scans the bus's effect chain for the first effect of kind
-# "Reverb" and pushes parameters to that effect. If no reverb is on
-# the bus, the zone warns once at _ready and goes inert.
+## Either way, the zone targets a named reverb bus in your gool
+## config (default "Sfx", the standard mixer's reverb-bearing bus).
+## It scans the bus's effect chain for the first effect of kind
+## "Reverb" and pushes parameters to that effect. If no reverb is on
+## the bus, the zone warns once at _ready and goes inert.
 #
-# On entry the zone smoothly ramps the four reverb parameters
-# toward the target values over `transition_ms`. On exit it ramps
-# back to whatever the parameters were before the zone first
-# applied (captured at first entry). `wet_gain_db` is also pushed
-# the same way; it's the most direct control over "how much
-# reverb you hear" and the most natural designer knob for spaces
-# that should feel more or less reverberant overall.
+## On entry the zone smoothly ramps the four reverb parameters
+## toward the target values over `transition_ms`. On exit it ramps
+## back to whatever the parameters were before the zone first
+## applied (captured at first entry). `wet_gain_db` is also pushed
+## the same way; it's the most direct control over "how much
+## reverb you hear" and the most natural designer knob for spaces
+## that should feel more or less reverberant overall.
 #
-# Stacked / overlapping zones aren't fully supported yet: only the
-# most recently entered zone wins, and on exit the params restore
-# to the captured defaults regardless of whether another zone is
-# still active. For 99% of layouts (a level's rooms don't usually
-# overlap) this is fine. Track <github issue link> if you hit a
-# layout where stacking matters.
+## Stacked / overlapping zones aren't fully supported yet: only the
+## most recently entered zone wins, and on exit the params restore
+## to the captured defaults regardless of whether another zone is
+## still active. For 99% of layouts (a level's rooms don't usually
+## overlap) this is fine. Track <github issue link> if you hit a
+## layout where stacking matters.
 
 @tool
 class_name ReverbZone

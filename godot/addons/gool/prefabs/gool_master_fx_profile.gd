@@ -1,35 +1,35 @@
 # addons/gool/prefabs/gool_master_fx_profile.gd
 #
-# v0.63.0 — Phase 7 Master FX Lite profile prefab.
+## v0.63.0 — Phase 7 Master FX Lite profile prefab.
 #
-# Drop into the scene tree, pick a GoolMasterFxPreset, F5 — the
-# master bus chain is reconfigured at scene load. Five built-in
-# presets ship with gool at res://addons/gool/master_fx_presets/:
+## Drop into the scene tree, pick a GoolMasterFxPreset, F5 — the
+## master bus chain is reconfigured at scene load. Five built-in
+## presets ship with gool at res://addons/gool/master_fx_presets/:
 #
-#   - None / bypass        — chain installed but all stages off.
-#                              For A/B comparing your raw mix.
-#   - Subtle glue          — conservative, -18 LUFS, light limiter.
-#   - Standard FPS         — the v0.63.0 default that ships with
-#                              fresh projects. -16 LUFS, -1 dBTP.
-#   - Loud and aggressive  — competitive shooter loudness target.
-#                              -14 LUFS, harder compression.
-#   - Cinema/quiet         — story-driven, -22 LUFS, light touch.
+##   - None / bypass        — chain installed but all stages off.
+##                              For A/B comparing your raw mix.
+##   - Subtle glue          — conservative, -18 LUFS, light limiter.
+##   - Standard FPS         — the v0.63.0 default that ships with
+##                              fresh projects. -16 LUFS, -1 dBTP.
+##   - Loud and aggressive  — competitive shooter loudness target.
+##                              -14 LUFS, harder compression.
+##   - Cinema/quiet         — story-driven, -22 LUFS, light touch.
 #
-# User presets live at res://gool/master_fx_presets/ and appear
-# in the Resource picker alongside the built-ins.
+## User presets live at res://gool/master_fx_presets/ and appear
+## in the Resource picker alongside the built-ins.
 #
-# How this differs from GoolSceneProfile (v0.62.0):
+## How this differs from GoolSceneProfile (v0.62.0):
 #
-#   GoolSceneProfile targets the REVERB bus and configures the
-#   space's reverb characteristics. ReverbZones override per-room.
+##   GoolSceneProfile targets the REVERB bus and configures the
+##   space's reverb characteristics. ReverbZones override per-room.
 #
-#   GoolMasterFxProfile targets the MASTER bus and configures the
-#   loudness / clip-protection chain. Applies to the entire mix.
+##   GoolMasterFxProfile targets the MASTER bus and configures the
+##   loudness / clip-protection chain. Applies to the entire mix.
 #
-# These are orthogonal — most multiplayer FPS projects will have
-# both: one GoolMasterFxProfile in the persistent game scene to
-# set master-bus character, plus one GoolSceneProfile per level
-# scene to set per-level reverb.
+## These are orthogonal — most multiplayer FPS projects will have
+## both: one GoolMasterFxProfile in the persistent game scene to
+## set master-bus character, plus one GoolSceneProfile per level
+## scene to set per-level reverb.
 
 @tool
 class_name GoolMasterFxProfile

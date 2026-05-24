@@ -1,31 +1,31 @@
 # addons/gool/prefabs/gool_sound_bank_loader.gd
 #
-# Drag-and-drop sound registration. Assign a GoolSoundBank
-# resource to the `bank` field and every (name → AudioStream)
-# entry gets registered with the gool runtime on _ready, no
-# script required.
+## Drag-and-drop sound registration. Assign a GoolSoundBank
+## resource to the `bank` field and every (name → AudioStream)
+## entry gets registered with the gool runtime on _ready, no
+## script required.
 #
-# Replaces the boilerplate every gool project otherwise needs:
+## Replaces the boilerplate every gool project otherwise needs:
 #
-#     # before:
-#     func _ready():
-#         await Gool.ready_to_play
-#         Gool.register_sound_from_file("coin", "res://sfx/coin.wav")
-#         Gool.register_sound_from_file("engine", "res://sfx/engine.ogg")
-#         ...20 more lines for 20 more sounds...
+##     # before:
+##     func _ready():
+##         await Gool.ready_to_play
+##         Gool.register_sound_from_file("coin", "res://sfx/coin.wav")
+##         Gool.register_sound_from_file("engine", "res://sfx/engine.ogg")
+##         ...20 more lines for 20 more sounds...
 #
-#     # after:
-#     # (drop a GoolSoundBankLoader, assign main_bank.tres, done)
+##     # after:
+##     # (drop a GoolSoundBankLoader, assign main_bank.tres, done)
 #
-# The loader reads each AudioStream's `resource_path` and feeds
-# the bytes to `Gool.register_sound_from_bytes()` with FORMAT_AUTO
-# detection. Supported formats: WAV, OGG Vorbis, FLAC. Opus
-# requires AUDIO_ENGINE_DECODERS_OPUS=ON at build time.
+## The loader reads each AudioStream's `resource_path` and feeds
+## the bytes to `Gool.register_sound_from_bytes()` with FORMAT_AUTO
+## detection. Supported formats: WAV, OGG Vorbis, FLAC. Opus
+## requires AUDIO_ENGINE_DECODERS_OPUS=ON at build time.
 #
-# Multiple loaders per scene are supported and additive — useful
-# for level-specific banks layered on top of a global bank.
-# Duplicate names across banks: last-loaded wins (the engine
-# overwrites the previous registration).
+## Multiple loaders per scene are supported and additive — useful
+## for level-specific banks layered on top of a global bank.
+## Duplicate names across banks: last-loaded wins (the engine
+## overwrites the previous registration).
 
 @tool
 class_name GoolSoundBankLoader

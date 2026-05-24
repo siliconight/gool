@@ -1,29 +1,29 @@
 # addons/gool/prefabs/gool_listener_3d.gd
 #
-# Drag-and-drop 3D audio listener. Parent this under your camera
-# (or any Node3D whose transform represents "where the player's
-# ears are") and gool tracks that transform every frame, feeding
-# position + forward + velocity into the engine.
+## Drag-and-drop 3D audio listener. Parent this under your camera
+## (or any Node3D whose transform represents "where the player's
+## ears are") and gool tracks that transform every frame, feeding
+## position + forward + velocity into the engine.
 #
-# Replaces the otherwise-mandatory hand-rolled _process loop that
-# every gool project needs:
+## Replaces the otherwise-mandatory hand-rolled _process loop that
+## every gool project needs:
 #
-#     # before:
-#     func _process(delta):
-#         var fwd = -$Camera3D.global_transform.basis.z
-#         Gool.set_listener_transform($Camera3D.global_position, fwd)
+##     # before:
+##     func _process(delta):
+##         var fwd = -$Camera3D.global_transform.basis.z
+##         Gool.set_listener_transform($Camera3D.global_position, fwd)
 #
-#     # after:
-#     # (drop a GoolListener3D under Camera3D, done)
+##     # after:
+##     # (drop a GoolListener3D under Camera3D, done)
 #
-# Note the name: Godot 4 already has a built-in `AudioListener3D`
-# for its own audio system. The `Gool` prefix avoids the collision
-# and signals which engine owns this listener.
+## Note the name: Godot 4 already has a built-in `AudioListener3D`
+## for its own audio system. The `Gool` prefix avoids the collision
+## and signals which engine owns this listener.
 #
-# A scene with multiple GoolListener3D nodes is supported but only
-# one "wins" per frame (whichever node's _process runs last). The
-# node warns on _ready if it sees siblings, since this is almost
-# always a bug.
+## A scene with multiple GoolListener3D nodes is supported but only
+## one "wins" per frame (whichever node's _process runs last). The
+## node warns on _ready if it sees siblings, since this is almost
+## always a bug.
 
 @tool
 class_name GoolListener3D

@@ -1,21 +1,21 @@
 # addons/gool/prefabs/music_state_controller.gd
 #
-# Adaptive music controller. Drop into a scene; configure named
-# states (each pointing at a registered sound); call set_state()
-# to crossfade between them.
+## Adaptive music controller. Drop into a scene; configure named
+## states (each pointing at a registered sound); call set_state()
+## to crossfade between them.
 #
-# Usage:
-#   var music: MusicStateController = $Music
-#   music.add_state("explore", "music_explore", 1500.0)
-#   music.add_state("combat",  "music_combat",  600.0)
-#   music.add_state("victory", "music_victory", 3000.0)
-#   music.set_state("explore")     # initial
-#   ...later...
-#   music.set_state("combat")      # crossfades to combat track
+## Usage:
+##   var music: MusicStateController = $Music
+##   music.add_state("explore", "music_explore", 1500.0)
+##   music.add_state("combat",  "music_combat",  600.0)
+##   music.add_state("victory", "music_victory", 3000.0)
+##   music.set_state("explore")     # initial
+##   ...later...
+##   music.set_state("combat")      # crossfades to combat track
 #
-# Internally wraps GoolMusicChannel from the binding, which
-# implements the equal-power crossfade and tracks the active sound
-# id so concurrent set_state calls don't pile up overlapping fades.
+## Internally wraps GoolMusicChannel from the binding, which
+## implements the equal-power crossfade and tracks the active sound
+## id so concurrent set_state calls don't pile up overlapping fades.
 
 @tool
 class_name MusicStateController

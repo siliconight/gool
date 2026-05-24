@@ -1,38 +1,38 @@
 # addons/gool/prefabs/gool_scene_profile.gd
 #
-# v0.62.0 — Phase 6.E.4 follow-up: scene-level acoustic profile prefab.
+## v0.62.0 — Phase 6.E.4 follow-up: scene-level acoustic profile prefab.
 #
-# The "drop me in, pick a profile, done" Node. Designer's workflow:
+## The "drop me in, pick a profile, done" Node. Designer's workflow:
 #
-#   1. Add a GoolSceneProfile node to the scene root (or anywhere
-#      in the tree — position doesn't matter, it's not spatial).
-#   2. In the inspector, click the `profile` field and pick a
-#      GoolAcousticProfile.tres — either one of the ~8 built-in
-#      profiles shipped with gool (Tight corridor, Open atrium,
-#      Wet cave, Dry forest, Industrial bunker, Suburban interior,
-#      Underwater, Outdoor field) or a custom one the project has
-#      saved under res://gool/acoustic_profiles/.
-#   3. Press F5. The reverb bus is configured with the profile's
-#      decay/damping/diffusion/predelay/wet at scene load. The
-#      scene sounds like the profile.
+##   1. Add a GoolSceneProfile node to the scene root (or anywhere
+##      in the tree — position doesn't matter, it's not spatial).
+##   2. In the inspector, click the `profile` field and pick a
+##      GoolAcousticProfile.tres — either one of the ~8 built-in
+##      profiles shipped with gool (Tight corridor, Open atrium,
+##      Wet cave, Dry forest, Industrial bunker, Suburban interior,
+##      Underwater, Outdoor field) or a custom one the project has
+##      saved under res://gool/acoustic_profiles/.
+##   3. Press F5. The reverb bus is configured with the profile's
+##      decay/damping/diffusion/predelay/wet at scene load. The
+##      scene sounds like the profile.
 #
-# That's the whole workflow. ReverbZones still work on top — they
-# override the reverb params on entry, restore them on exit. The
-# "restore" target is whatever the GoolSceneProfile applied at
-# scene load, so the layering is "scene profile = baseline, zones
-# = sub-region overrides".
+## That's the whole workflow. ReverbZones still work on top — they
+## override the reverb params on entry, restore them on exit. The
+## "restore" target is whatever the GoolSceneProfile applied at
+## scene load, so the layering is "scene profile = baseline, zones
+## = sub-region overrides".
 #
-# Customization path (per v0.62.0 simplicity decision): a designer
-# who wants to tune doesn't tweak the Node's fields. They open the
-# profile .tres and tweak its fields; the Node re-applies on next
-# scene load. Or they Save… a new profile.tres and assign it.
-# Keeping the Node's surface minimal (just a profile reference)
-# means there's exactly one source of truth for any given sound.
+## Customization path (per v0.62.0 simplicity decision): a designer
+## who wants to tune doesn't tweak the Node's fields. They open the
+## profile .tres and tweak its fields; the Node re-applies on next
+## scene load. Or they Save… a new profile.tres and assign it.
+## Keeping the Node's surface minimal (just a profile reference)
+## means there's exactly one source of truth for any given sound.
 #
-# Threading: apply() runs on the game thread (Node._ready) and
-# pushes parameters through Gool.set_effect_parameter, which the
-# engine ramps internally on the render thread (~5 ms ramp). No
-# clicks at scene load.
+## Threading: apply() runs on the game thread (Node._ready) and
+## pushes parameters through Gool.set_effect_parameter, which the
+## engine ramps internally on the render thread (~5 ms ramp). No
+## clicks at scene load.
 
 @tool
 class_name GoolSceneProfile

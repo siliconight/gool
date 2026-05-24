@@ -1,82 +1,82 @@
 # addons/gool/prefabs/gool_debug_overlay.gd
 #
-# Drop-in debug HUD that displays gool's real-time runtime stats.
-# Add a single GoolDebugOverlay node to your scene root and the
-# overlay appears in-game with no further setup.
+## Drop-in debug HUD that displays gool's real-time runtime stats.
+## Add a single GoolDebugOverlay node to your scene root and the
+## overlay appears in-game with no further setup.
 #
-# What it shows:
-#   - Engine info: version, audio device name, sample rate, buffer
-#     size, bus count, config source
-#   - Render health: callback rate per second, peak amplitude in
-#     the last window, master bus pre-gain peak, active voice count,
-#     master gain, exception count
-#   - Cumulative: total frames rendered since engine init
+## What it shows:
+##   - Engine info: version, audio device name, sample rate, buffer
+##     size, bus count, config source
+##   - Render health: callback rate per second, peak amplitude in
+##     the last window, master bus pre-gain peak, active voice count,
+##     master gain, exception count
+##   - Cumulative: total frames rendered since engine init
 #
-# Polled every `update_interval_ms` milliseconds (default 250 = 4 Hz).
-# The render stats are all lock-free atomic reads on the C++ side,
-# so polling cost is negligible. The Label text replacement is the
-# only non-trivial cost, and at 4 Hz it's invisible.
+## Polled every `update_interval_ms` milliseconds (default 250 = 4 Hz).
+## The render stats are all lock-free atomic reads on the C++ side,
+## so polling cost is negligible. The Label text replacement is the
+## only non-trivial cost, and at 4 Hz it's invisible.
 #
-# Use cases:
-#   - Verify gool is running healthy during local development
-#   - Spot voice-budget exhaustion or peak-zero (silent mixer) in
-#     production playtests
-#   - Compare audio thread health across machines / sessions
-#   - Capture screenshots of the overlay for bug reports
+## Use cases:
+##   - Verify gool is running healthy during local development
+##   - Spot voice-budget exhaustion or peak-zero (silent mixer) in
+##     production playtests
+##   - Compare audio thread health across machines / sessions
+##   - Capture screenshots of the overlay for bug reports
 #
-# Production note: ship your release without this node added, OR
-# leave it added but set `visible_at_startup = false` and bind a
-# secret keybinding. The overlay's CPU cost while hidden is zero
-# (the polling timer pauses).
+## Production note: ship your release without this node added, OR
+## leave it added but set `visible_at_startup = false` and bind a
+## secret keybinding. The overlay's CPU cost while hidden is zero
+## (the polling timer pauses).
 
 @tool
 class_name GoolDebugOverlay
 extends CanvasLayer
 
-# How often to poll Gool for fresh stats and redraw the label.
-# 250 ms (4 Hz) is plenty for a human reading the values; lower
-# numbers update faster but redraw the label more often.
+## How often to poll Gool for fresh stats and redraw the label.
+## 250 ms (4 Hz) is plenty for a human reading the values; lower
+## numbers update faster but redraw the label more often.
 @export_range(50, 5000, 10, "suffix:ms")
 var update_interval_ms: int = 250
 
-# Whether the overlay is visible when the scene starts. Set to
-# false in shipping builds; the user can toggle it on with the
-# toggle_action below.
+## Whether the overlay is visible when the scene starts. Set to
+## false in shipping builds; the user can toggle it on with the
+## toggle_action below.
 @export var visible_at_startup: bool = true
 
-# Optional InputMap action name to toggle visibility at runtime.
-# Leave empty to disable the toggle. If you bind it, the overlay
-# only redraws when visible — hidden overlays have zero runtime
-# cost.
+## Optional InputMap action name to toggle visibility at runtime.
+## Leave empty to disable the toggle. If you bind it, the overlay
+## only redraws when visible — hidden overlays have zero runtime
+## cost.
 @export var toggle_action: String = ""
 
-# Direct keycode toggle (used if toggle_action is empty). Default
-# F3 matches Minecraft / many engines. Set to KEY_NONE (0) to
-# disable.
+## Direct keycode toggle (used if toggle_action is empty). Default
+## F3 matches Minecraft / many engines. Set to KEY_NONE (0) to
+## disable.
 @export var toggle_key: Key = KEY_F3
 
-# Where the overlay sits on screen. Useful for avoiding overlap
-# with your own UI elements.
+## Where the overlay sits on screen. Useful for avoiding overlap
+## with your own UI elements.
 @export_enum("Top Left:0", "Top Right:1", "Bottom Left:2", "Bottom Right:3")
 var anchor_corner: int = 0   # default: top-left
 
-# Background opacity. 0 = transparent (text reads against world);
-# 1 = fully opaque. Default 0.6 is readable over most game art.
+## Background opacity. 0 = transparent (text reads against world);
+## 1 = fully opaque. Default 0.6 is readable over most game art.
 @export_range(0.0, 1.0, 0.05)
 var background_opacity: float = 0.6
 
-# Text color. White on dark background is readable in most games;
-# override per-project if you want to match your HUD style.
+## Text color. White on dark background is readable in most games;
+## override per-project if you want to match your HUD style.
 @export var text_color: Color = Color(0.95, 0.95, 0.95)
 
-# When true, use the bundled Ubuntu Regular font (v0.59.1+) shipped
-# under res://addons/gool/fonts/. When false, inherit the host
-# project's theme font — useful when the project already standardizes
-# on Roboto/Inter/etc. and you want the HUD to match. The property
-# name is a v0.37.0 holdover; pre-v0.59.1 this loaded
-# `ThemeDB.fallback_font` which advertised itself as monospace but was
-# actually proportional Noto. Ubuntu Regular is proportional with
-# tabular figures, which keeps numeric columns aligned.
+## When true, use the bundled Ubuntu Regular font (v0.59.1+) shipped
+## under res://addons/gool/fonts/. When false, inherit the host
+## project's theme font — useful when the project already standardizes
+## on Roboto/Inter/etc. and you want the HUD to match. The property
+## name is a v0.37.0 holdover; pre-v0.59.1 this loaded
+## `ThemeDB.fallback_font` which advertised itself as monospace but was
+## actually proportional Noto. Ubuntu Regular is proportional with
+## tabular figures, which keeps numeric columns aligned.
 @export var monospace: bool = true
 
 # ─── private state ────────────────────────────────────────────

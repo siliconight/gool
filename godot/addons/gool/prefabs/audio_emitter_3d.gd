@@ -1,16 +1,16 @@
 # addons/gool/prefabs/audio_emitter_3d.gd
 #
-# Drag-and-drop 3D positional audio emitter. Equivalent to
-# AudioStreamPlayer3D but routed through gool — gets occlusion,
-# Doppler, reverb sends, distance attenuation, and sidechain
-# ducking from the engine's bus graph.
+## Drag-and-drop 3D positional audio emitter. Equivalent to
+## AudioStreamPlayer3D but routed through gool — gets occlusion,
+## Doppler, reverb sends, distance attenuation, and sidechain
+## ducking from the engine's bus graph.
 #
-# Usage:
-#   1. Add an AudioEmitter3D node to your scene
-#   2. Set sound_name in the inspector (must match a registered sound)
-#   3. Tick autoplay if you want it to play on _ready, or call play()
+## Usage:
+##   1. Add an AudioEmitter3D node to your scene
+##   2. Set sound_name in the inspector (must match a registered sound)
+##   3. Tick autoplay if you want it to play on _ready, or call play()
 #
-# All scripting beyond this is optional.
+## All scripting beyond this is optional.
 
 @tool
 class_name AudioEmitter3D

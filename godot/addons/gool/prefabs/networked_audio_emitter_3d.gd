@@ -1,25 +1,25 @@
 # addons/gool/prefabs/networked_audio_emitter_3d.gd
 #
-# Persistent 3D audio emitter that replicates its transform across
-# peers. Built on top of AudioEmitter3D's local-playback semantics,
-# adds:
+## Persistent 3D audio emitter that replicates its transform across
+## peers. Built on top of AudioEmitter3D's local-playback semantics,
+## adds:
 #
-#   - Multiplayer authority: one peer (typically the server, or the
-#     player who owns the entity) is authoritative for transform.
-#   - Network-rate transform broadcast: authority RPCs the
-#     transform every `network_tick_ms`; receivers update the
-#     engine's emitter via update_replicated_transform.
-#   - Receiver interpolation: between received transforms,
-#     receivers smoothly interpolate position so movement isn't
-#     stairstepped at 30/60Hz tick rate.
-#   - Distance culling: transform updates are only RPC'd to peers
-#     within audible range (via the relevancy filter, if set).
+##   - Multiplayer authority: one peer (typically the server, or the
+##     player who owns the entity) is authoritative for transform.
+##   - Network-rate transform broadcast: authority RPCs the
+##     transform every `network_tick_ms`; receivers update the
+##     engine's emitter via update_replicated_transform.
+##   - Receiver interpolation: between received transforms,
+##     receivers smoothly interpolate position so movement isn't
+##     stairstepped at 30/60Hz tick rate.
+##   - Distance culling: transform updates are only RPC'd to peers
+##     within audible range (via the relevancy filter, if set).
 #
-# Use this for moving spatial sources owned by one peer that other
-# peers should hear: a vehicle's engine, a moving turret, an
-# enemy's footsteps. For one-shot events, use NetworkedAudioEvent.
-# For purely local sounds (UI, local listener music), use
-# AudioEmitter3D directly.
+## Use this for moving spatial sources owned by one peer that other
+## peers should hear: a vehicle's engine, a moving turret, an
+## enemy's footsteps. For one-shot events, use NetworkedAudioEvent.
+## For purely local sounds (UI, local listener music), use
+## AudioEmitter3D directly.
 
 @tool
 class_name NetworkedAudioEmitter3D
@@ -31,6 +31,9 @@ extends Node3D
 ## Whether the sound loops.
 @export var looping: bool = true
 
+## Crossfade length when a looping sound restarts from the end.
+## 0 = hard restart at the loop point. A few tens of ms eliminates
+## the click some loops have at the boundary.
 @export_range(0.0, 500.0, 1.0, "suffix:ms") var loop_crossfade_ms: float = 0.0
 
 ## Fade-in when the emitter is created on receivers.
@@ -39,8 +42,13 @@ extends Node3D
 ## Fade-out when the emitter is destroyed on receivers.
 @export_range(0.0, 5000.0, 1.0, "suffix:ms") var fade_out_ms: float = 100.0
 
-## Distance attenuation.
+## Distance attenuation. Below `min_distance` the sound plays at full
+## volume; between `min_distance` and `max_distance` it falls off;
+## past `max_distance` it's culled.
 @export_range(0.0, 1000.0, 0.1, "suffix:m") var min_distance: float = 1.0
+
+## Past this distance from the listener the sound is fully culled
+## (no audio rendered, saves CPU on far-away events).
 @export_range(1.0, 10000.0, 0.1, "suffix:m") var max_distance: float = 50.0
 
 ## Network-tick interval for transform broadcasting (ms). The
