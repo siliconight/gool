@@ -461,7 +461,7 @@ gool-specific, but useful framing when tuning:
 - `docs/roadmap.md` — Phase 3.3b/c/d will add an interactive mixer
   editor for tuning these values in real-time, with config.json
   round-trip.
-- `examples/multiplayer_audio_sandbox/gool/config.json` — current
+- `examples/05_multiplayer_audio_sandbox/gool/config.json` — current
   reference config using the Action-shooter default.
 - `src/audio_engine/dsp/compressor.cpp` — implementation. The level
   detector uses peak detection (not RMS); single-band; soft knee

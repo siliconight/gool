@@ -1,0 +1,61 @@
+; Godot project file for the gool multiplayer audio sandbox.
+;
+; Session 1: scaffolding + ENet host/join. The Gool autoload is
+; declared here so that the engine boots audio-ready even on the
+; lobby scene (saves us a frame of latency when the user reaches
+; the box_level and starts producing audio events in later
+; sessions). NetworkManager is our own autoload wrapping the ENet
+; transport.
+;
+; The Gool autoload path assumes addons/gool/runtime_singleton.gd
+; is present. If you haven't installed the addon yet, see README.md
+; Setup section. The project will fail to load this autoload until
+; the addon is installed, but the editor will tolerate the missing
+; reference (and complain in the Output panel).
+
+config_version=5
+
+[application]
+
+config/name="Gool Multiplayer Audio Sandbox"
+run/main_scene="res://scenes/lobby.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+config/icon="res://icon.svg"
+
+[autoload]
+
+; gool's audio runtime singleton. Auto-registered by the gool plugin
+; when enabled, but pre-declared here so the example project boots
+; cleanly even if the plugin's _enter_tree hasn't run yet.
+Gool="*res://addons/gool/runtime_singleton.gd"
+; Our ENet wrapper. Provides host_game() / join_game() with signals.
+NetworkManager="*res://scripts/network_manager.gd"
+; Programmatically generates + registers gunshot + music sounds at
+; startup. Must come AFTER Gool so it can call Gool.register_pcm_sound
+; in its _ready (which it defers one frame to be extra safe).
+AudioSetup="*res://scripts/audio_setup.gd"
+
+[debug]
+
+; Be strict about untyped declarations in this example to match
+; the gool addon's style and catch typos early.
+gdscript/warnings/untyped_declaration=1
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/resizable=true
+; v0.23.x: stretch_mode=canvas_items keeps lobby UI readable across
+; resolutions without ad-hoc scaling logic.
+window/stretch/mode="canvas_items"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gool/plugin.cfg")
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+; Lightweight defaults; this rig doesn't need fancy lighting.
+environment/defaults/default_clear_color=Color(0.1, 0.1, 0.12, 1)

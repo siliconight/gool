@@ -1,0 +1,10 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://audition_builder.gd" id="1_builder"]
+[ext_resource type="PackedScene" path="res://fps_player.tscn" id="2_player"]
+
+[node name="Audition" type="Node3D"]
+script = ExtResource("1_builder")
+
+[node name="FpsPlayer" parent="." instance=ExtResource("2_player")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.0, 5.0)

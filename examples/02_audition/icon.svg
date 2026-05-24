@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="16" fill="#2a2a3a"/>
+  <circle cx="64" cy="64" r="40" fill="none" stroke="#6db6ff" stroke-width="6"/>
+  <path d="M44 64 L84 64 M64 44 L64 84" stroke="#6db6ff" stroke-width="6" stroke-linecap="round"/>
+  <text x="64" y="118" font-family="monospace" font-size="14" text-anchor="middle" fill="#6db6ff">gool</text>
+</svg>

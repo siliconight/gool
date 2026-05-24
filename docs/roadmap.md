@@ -38,7 +38,7 @@ Baseline against which everything below is measured.
 | Bus graph + sidechain compressor + EQ palette | shipped, L4D2-style multi-tier ducking demo runnable  |
 | Replication patterns (server-auth, predicted, client-auth) | shipped, deterministic replay verified     |
 | GDExtension binding + 7 prefab Nodes        | shipped, editor plugin auto-installs `/root/Gool` autoload |
-| Quickstart example Godot project            | shipped at `examples/quickstart/`                       |
+| Quickstart example Godot project            | shipped at `examples/01_quickstart/`                       |
 | Migration docs (FMOD, Wwise, terminology)   | shipped                                                 |
 | Workflow-focused README                     | shipped, 535 lines                                      |
 
@@ -88,7 +88,7 @@ modifying anything. Audio plays.
 the Godot editor's AssetLib tab. One click installs.
 
 **Work:**
-- Trim `examples/quickstart/` to a clean Asset Library submission:
+- Trim `examples/01_quickstart/` to a clean Asset Library submission:
   no build artifacts, only `addons/gool/` + `main.tscn` + `main.gd`
   + `project.godot` + a thumbnail screenshot.
 - Write the AssetLib description (~120 words, outcome-framed).
@@ -236,7 +236,7 @@ shooter audio stack: 4 players, footsteps, gun tails, combat
 music, ducking, proximity voice. Press Play, hear it work.
 
 **Work:**
-- Build `examples/coop_shooter_template/` as a new Godot project.
+- Build `examples/04_coop_shooter_template/` as a new Godot project.
 - Include: 4-player local lobby (split-screen or single-host),
   three weapon types with distinct fire/tail/reload sounds,
   surface-aware footsteps, looping ambient world, combat
@@ -245,11 +245,11 @@ music, ducking, proximity voice. Press Play, hear it work.
   players using the existing voice prefab.
 - Source all sound assets from CC0 freesound.org packs; ship
   them as a `.gpak`.
-- Document the audio architecture in `examples/coop_shooter_template/README.md`:
+- Document the audio architecture in `examples/04_coop_shooter_template/README.md`:
   how each subsystem is wired, where to swap in your own assets.
 
 **DoD:** a Godot dev clones the repo, opens
-`examples/coop_shooter_template/`, presses Play, and is
+`examples/04_coop_shooter_template/`, presses Play, and is
 playing 4-player co-op shooter audio without writing any code.
 
 ### 1.6 Stress test + benchmark demo — **S**
@@ -828,7 +828,7 @@ disabled). Update step 12 emits via accumulator-based scheduling
 that catches up rather than dropping samples on long host frames,
 and wraps the sink call in `try`/`catch` so a misbehaving host sink
 can't break Update mid-flight. Working sample at
-`examples/telemetry/main.cpp`.
+`examples/cpp/telemetry/main.cpp`.
 
 **DoD:** `tests/unit/telemetry_test.cpp` (9 sub-tests) covers each
 sink's output format, runtime emit cadence (9 samples over 1 s at

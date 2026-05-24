@@ -440,9 +440,9 @@ The build produces the GDExtension shared library:
 The fastest way to confirm everything is wired up is to run the
 quickstart example project:
 
-1. In Godot, open the project at `examples/quickstart/` (inside the
+1. In Godot, open the project at `examples/01_quickstart/` (inside the
    gool repo)
-2. Copy your built binary into `examples/quickstart/addons/gool/bin/`
+2. Copy your built binary into `examples/01_quickstart/addons/gool/bin/`
    the same way you did for your own project
 3. Press Play
 
@@ -454,7 +454,7 @@ initialized` log line.
 
 For a richer demonstration with actual gameplay (one playable
 character + three AI bots, three weapon types, multi-tier sidechain
-ducking via the v0.10+ bus config), open `examples/coop_shooter_template/`
+ducking via the v0.10+ bus config), open `examples/04_coop_shooter_template/`
 and press Play.
 
 ---
@@ -708,9 +708,9 @@ Once gool is loaded in your project:
 
 - The [README](README.md) covers what the API looks like (`Gool.play_3d`,
   RTPC bindings, music transitions).
-- `examples/quickstart/` is the seven-prefab demo — open it to see
+- `examples/01_quickstart/` is the seven-prefab demo — open it to see
   every feature wired up at once.
-- `examples/coop_shooter_template/` is the gameplay-shaped demo with
+- `examples/04_coop_shooter_template/` is the gameplay-shaped demo with
   weapons, AI, and multi-tier sidechain ducking.
 - `docs/multiplayer.md` is the design doc for the
   replicate-events / play-locally pattern that defines how to wire

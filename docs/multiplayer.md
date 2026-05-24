@@ -414,7 +414,7 @@ Before shipping, verify each of these:
 - `docs/predictive_playback.md` — client-side prediction with
   `CancelPredictedEvent`
 - `docs/determinism.md` — replay and spectator mode
-- `examples/multi_tier_ducking/` — L4D2-style "your shot ducks
+- `examples/cpp/multi_tier_ducking/` — L4D2-style "your shot ducks
   music + remote shots" pattern
 - `tests/unit/jitter_buffer_test.cpp` — exact numbers under
   simulated loss/jitter/reorder

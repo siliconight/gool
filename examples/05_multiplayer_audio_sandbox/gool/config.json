@@ -1,0 +1,28 @@
+{
+	"_comment": "Multiplayer audio sandbox bus config. v0.23.17: simplified from the v0.23.16 version which tried to use sfx_local/sfx_remote categories — those aren't in gool's allowed set ({music, voice, sfx, ambience, ui, dialogue}), so the parser rejected the config and runtime init failed. The fix uses a single Sfx bus that sidechains the Music bus, so any gunshot (yours OR a remote peer's) ducks the music. Per-peer ducking (only your own actions duck music) requires a play-time bus override API gool doesn't currently expose; tracked as a roadmap item.",
+
+	"sample_rate": 48000,
+	"buffer_size": 512,
+
+	"buses": [
+		{ "name": "Master", "gain_db": 0.0 },
+
+		{ "name": "Music", "parent": "Master", "gain_db": -3.0,
+		  "effects": [
+		    { "kind": "compressor",
+		      "threshold_db": -20.0, "ratio": 6.0,
+		      "attack_ms":     5.0,  "release_ms": 200.0,
+		      "knee_width_db": 4.0,
+		      "max_reduction_db": 10.0,
+		      "sidechain_bus": "Sfx" }
+		  ] },
+
+		{ "name": "Sfx", "parent": "Master" }
+	],
+
+	"category_routing": {
+		"music": "Music",
+		"sfx":   "Sfx",
+		"ui":    "Master"
+	}
+}

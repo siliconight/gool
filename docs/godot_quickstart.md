@@ -223,7 +223,7 @@ You've got the plumbing working. Now you can:
   emitters, mute a player, fade music, ducking SFX during
   dialogue, custom occlusion, etc.
 - **Try the demo scenes.** Clone the gool repo, drop the addon
-  into `examples/quickstart/` or `examples/coop_shooter_template/`,
+  into `examples/01_quickstart/` or `examples/04_coop_shooter_template/`,
   open in Godot, press Play. Reference scenes you can pick apart.
 
 ## Troubleshooting

@@ -1,0 +1,35 @@
+; gool voice chat loopback example
+;
+; Single-process demo of the voice-chat integration pipeline.
+; Captures mic → stub encoder → loopback → gool.submit_voice_packet.
+; The stubbed encoder means no audible playback; the demo's purpose
+; is to surface the integration shape for FPS devs wiring a real
+; Opus encoder.
+
+config_version=5
+
+[application]
+
+config/name="gool voice chat loopback"
+config/description="Mic capture + packet pipeline integration demo"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.2")
+config/icon="res://icon.svg"
+
+[audio]
+
+driver/enable_input=true
+
+[autoload]
+
+Gool="*res://addons/gool/runtime_singleton.gd"
+GoolMultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gool/plugin.cfg")
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

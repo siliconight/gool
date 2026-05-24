@@ -8,8 +8,44 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.69.2 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.70.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
+
+## What gool feels like to use
+
+```gdscript
+extends Node3D
+
+func _ready() -> void:
+    # Register your sound files once at startup.
+    Gool.register_sound_from_file("blip", "res://sfx/blip.ogg")
+
+    # Play a 3D-positioned sound at world coordinates.
+    Gool.create_emitter("blip", Vector3(5, 0, 0))
+
+    # Adjust the music bus from script.
+    Gool.set_bus_gain_db("Music", -6.0)
+```
+
+That's it for the basics. Drag-and-drop nodes (`AudioEmitter3D`,
+`ReverbZone`, `MusicStateController`, `VoiceChatPlayer`,
+`FootstepSurfacePlayer`) cover the rest — no per-feature
+script-coordination dance.
+
+## Where to start
+
+| If you want to... | Open this |
+|-------------------|-----------|
+| Make a sound play in your project, end to end | [`examples/01_quickstart/`](examples/01_quickstart/) |
+| Look up "how do I do X" while coding | [`docs/CHEATSHEET.md`](docs/CHEATSHEET.md) |
+| See every gool feature in one walkthrough scene | [`examples/02_audition/`](examples/02_audition/) |
+| Pick the right example for your problem | [`examples/README.md`](examples/README.md) |
+| Install gool from scratch with screenshots | [`docs/godot_quickstart.md`](docs/godot_quickstart.md) |
+| Install gool the fast way | [Setup section below](#quick-start-godot-42) |
+
+If you've never installed a Godot addon, start with
+`docs/godot_quickstart.md`. If you have, go straight to
+`examples/01_quickstart/`.
 
 ## The problem
 
@@ -567,7 +603,7 @@ thread.
   sinks (JSON Lines, Prometheus exposition, in-memory ring buffer
   for time series). Wires the runtime's `Stats` snapshot into your
   observability stack at a configurable cadence. See
-  [`examples/telemetry/main.cpp`](examples/telemetry/main.cpp) for a
+  [`examples/cpp/telemetry/main.cpp`](examples/cpp/telemetry/main.cpp) for a
   working integration that produces a Prometheus `/metrics` body
   verbatim.
 - **Event-level logging:** `IRuntimeLogSink` seam plus JSON Lines
@@ -809,7 +845,7 @@ hit reinforcement, and a Freeverb-derived reverb send.
 The L4D2 multi-tier ducking pattern (local gun > nearby remote
 gun > music) composes from primitives: hierarchical buses plus
 sidechain compressors keyed off a `LocalSfx` bus. See
-`examples/multi_tier_ducking/` for a runnable end-to-end example.
+`examples/cpp/multi_tier_ducking/` for a runnable end-to-end example.
 
 Baseline measured at -17.20 dB before ducking, -32.0 dB at
 deepest duck, ~250 ms recovery. Reproduces at every CI run.

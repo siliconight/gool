@@ -44,7 +44,7 @@ ls third_party/miniaudio/miniaudio.h    # should print the path
 ```
 
 If the file is present, `cmake -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON` will use
-it directly (skipping FetchContent), and `examples/playback` becomes
+it directly (skipping FetchContent), and `examples/cpp/playback` becomes
 buildable.
 
 ## License

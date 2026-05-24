@@ -417,7 +417,7 @@ var loss_ratio: float = Gool.get_voice_packet_loss_ratio(peer_id)
 Voice routes to the dedicated Voice bus from the FPS config —
 intentionally NOT ducked, intelligibility priority.
 
-> **v0.49.0:** `examples/voice_chat/` ships a runnable loopback
+> **v0.49.0:** `examples/03_voice_chat/` ships a runnable loopback
 > demo showing the integration shape (mic capture → encoder
 > step → packet send → submit_voice_packet). The encoder is a
 > stub — no audible playback — but the wiring, sequence numbers,
@@ -497,7 +497,7 @@ Stats, AudioRelevancyFilter usage, priority conventions, and a
 
 ## Try-this-now: the audition example
 
-Open `examples/audition/` in Godot, press F5. Walk through the
+Open `examples/02_audition/` in Godot, press F5. Walk through the
 hub-and-spokes scene to hear all the features above in one
 runnable demo:
 
@@ -541,11 +541,11 @@ reference for "what does this look like working?"
   ducking wiring + tuning guide
 - **`docs/terminology.md`** — gool's vocabulary vs FMOD / Wwise
 - **`docs/asset_pipeline.md`** — the sound bank schema in detail
-- **`examples/audition/`** — runnable feature showcase (Step 12)
-- **`examples/voice_chat/`** — runnable voice chat integration
+- **`examples/02_audition/`** — runnable feature showcase (Step 12)
+- **`examples/03_voice_chat/`** — runnable voice chat integration
   demo (Step 11) showing mic capture + packet pipeline with
   stubbed encoder
-- **`examples/coop_shooter_template/`** — a fuller multiplayer
+- **`examples/04_coop_shooter_template/`** — a fuller multiplayer
   example with weapon firing + AI bots + combat music
 - **Tools menu** — Project ▸ Tools ▸ gool ▸ "Run FPS scene
   smoke test" (v0.50.0) walks all .tscn files in your project

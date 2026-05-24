@@ -22,6 +22,133 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.70.0] - 2026-05-23 — Onboarding restructure (Phase 1 of 3)
+
+The materials for a new Godot dev to succeed with gool already
+existed — 14 examples, 18 docs, ~700 lines of `##` API docstrings,
+14 prefab nodes. The problem was discovery order. A new dev
+landing on gool today had to scroll past 100 lines of multiplayer
+pitch + three-track installation guide before they saw what gool
+USE feels like, and the examples directory mixed C++ engine demos
+in alphabetical order with the Godot ones a beginner actually
+needed.
+
+This release is **pure documentation and file structure** — no
+code changes, no API changes, no behavior changes. The goal is
+making sure the work we've already done is *findable* by the
+audience gool exists to serve.
+
+### Examples directory restructured
+
+The 14 examples are now grouped and ordered for the path a new
+Godot dev actually takes:
+
+```
+examples/
+├── 01_quickstart/                  (was: quickstart)
+├── 02_audition/                    (was: audition)
+├── 03_voice_chat/                  (was: voice_chat)
+├── 04_coop_shooter_template/       (was: coop_shooter_template)
+├── 05_multiplayer_audio_sandbox/   (was: multiplayer_audio_sandbox)
+├── cpp/                            ← C++ engine demos (advanced)
+│   ├── minimal/
+│   ├── hello_audio/
+│   ├── playback/
+│   ├── ducking/
+│   ├── multi_tier_ducking/
+│   ├── music_crossfade/
+│   ├── sound_bank/
+│   ├── streaming/
+│   └── telemetry/
+├── CMakeLists.txt
+└── README.md                       (new — the "where to start" map)
+```
+
+The new `examples/README.md` opens with a "→ New to gool? Open
+`01_quickstart/` first" arrow, has a learning-path table for the
+5 Godot examples, a feature-to-example reverse index ("want to
+know how to do X? look at Y"), and an honest "the C++ examples
+are for non-Godot integrations — skip unless you know you need
+them" callout.
+
+Cross-references in 10 files (README, SETUP.md, CHANGELOG, 4 docs,
+2 example READMEs) updated to the new paths.
+
+### README leads with code, not installation
+
+Previously the README opened with "## The problem" — 100+ lines of
+explaining why multiplayer audio is hard before showing what gool
+looks like in use. New structure inserts two sections above "The
+problem":
+
+- **What gool feels like to use** — a 6-line GDScript snippet
+  showing register-sound, play-positioned-sound, set-bus-gain
+  followed by one line on the drag-and-drop node story.
+- **Where to start** — a navigation table mapping reader intent
+  ("Make a sound play end-to-end" / "Look up X while coding" /
+  etc.) to the right doc or example.
+
+Everything else stays in place. The pitch material, the install
+tracks, the comparison-with-built-in-audio section — same content,
+just no longer the FIRST thing a new visitor reads.
+
+### New `docs/CHEATSHEET.md`
+
+One-page reference with the 10 most common operations as
+paste-able snippets:
+
+1. Play a sound at a position
+2. Play a looping sound and stop it later
+3. Move a sound around in 3D
+4. Set a bus volume from script
+5. Add a reverb zone to a scene
+6. Position the listener
+7. Crossfade between music tracks
+8. React to a sound finishing
+9. Check if a sound exists before playing it
+10. Dump a session log for debugging
+
+Plus a "Common gotchas" section answering the four most likely
+"why doesn't my sound play" questions, and pointers to deeper
+material (cookbook, asset pipeline, terminology).
+
+Designed for the case where someone is mid-code, knows roughly
+what they want, and just needs the syntax. Bookmark-it material.
+
+### What this isn't
+
+This release doesn't ship **new examples** for topics not yet
+covered by a dedicated minimal demo (like `02_3d_positional`,
+`03_music_loop`, `04_footsteps_by_surface`, `05_reverb_zones`).
+That was the original plan, but each new example is real code
+that needs runtime verification on real Godot — exactly the
+failure pattern v0.66.0 and v0.69.1 surfaced. Shipping four
+brand-new untested example projects in one batch was the wrong
+risk profile for a docs-focused release.
+
+Those minimal topic demos are queued for v0.70.1 or v0.71.0 as
+focused single-topic ships where each one gets the real-Godot
+verification it deserves. Until then, `02_audition` covers every
+feature in one walkthrough, and the new `examples/README.md`
+points readers at the specific section of audition relevant to
+each topic.
+
+### Phase 2 and 3 (queued, not in this release)
+
+- **Phase 2 — API ergonomics:** `Gool.play_one_shot(name, position)`
+  convenience wrapper for the 90% case. Loud first-call errors
+  when `create_emitter` is called before runtime is ready.
+- **Phase 3 — editor onboarding:** Getting Started panel in the
+  mixer dock on first open. Inspector tooltip pass for the
+  prefab nodes.
+
+### Migration
+
+None for users. Users with hard-coded paths to `examples/X/` in
+their own docs or scripts will need to update — find/replace
+the 5 Godot example dirs and the 9 C++ example dirs (which moved
+to `examples/cpp/X/`). The CMakeLists.txt update is handled.
+
 ## [0.69.2] - 2026-05-23 — Reverb preset dial-down (8 presets)
 
 User-driven retune: the 8 reverb presets in `GoolPresets` were
@@ -233,7 +360,7 @@ having the post-Reverb slot pre-populated.
 **Fixed:** Both warning strings now point to `config_fps.json` with
 consistent guidance. Two files updated:
 `godot/addons/gool/prefabs/reverb_zone.gd` and the example copy at
-`examples/audition/addons/gool/prefabs/reverb_zone.gd`.
+`examples/02_audition/addons/gool/prefabs/reverb_zone.gd`.
 
 ### Fix 2: Template lacked master_control on the Master bus
 
@@ -3469,7 +3596,7 @@ uses sine input → no DC, no constant-input issue, still works.
   reverb_zone.material = wet_stone  # works just like a built-in
   ```
 
-- **`examples/voice_chat/`** — runnable single-process loopback
+- **`examples/03_voice_chat/`** — runnable single-process loopback
   demo of the voice chat integration pipeline. Demonstrates:
   - `AudioStreamMicrophone` + `AudioEffectCapture` for mic capture
   - Packet structuring with sequence numbers + send timestamps
@@ -3492,7 +3619,7 @@ uses sine input → no DC, no constant-input issue, still works.
     (Dict form) as the recommended path
   - Step 6 (Footsteps / materials): documents `register_material`
     with a complete Wet Stone example
-  - Step 11 (Voice chat): points at `examples/voice_chat/` as
+  - Step 11 (Voice chat): points at `examples/03_voice_chat/` as
     the canonical integration reference
   - Common pitfalls table updated to reflect that the 9-arg
     footgun is closed
@@ -3565,7 +3692,7 @@ uses sine input → no DC, no constant-input issue, still works.
   - Step 0 of `quickstart_fps.md` instructs `cp` into
     `res://gool/config.json`. Closes friction point #6 ("No
     FPS-ready config.json template with reverb chain pre-wired").
-- **`examples/audition/`** — runnable feature showcase. Promotes
+- **`examples/02_audition/`** — runnable feature showcase. Promotes
   the hub-and-spokes audition from the sandbox into a standalone
   Godot example project alongside `quickstart` and
   `coop_shooter_template`. Includes:
@@ -3607,7 +3734,7 @@ uses sine input → no DC, no constant-input issue, still works.
 - The audition example does NOT exercise multiplayer
   (intentionally — it's the audio feature showcase, not the
   networking showcase). For multiplayer integration patterns
-  see `examples/coop_shooter_template/` and
+  see `examples/04_coop_shooter_template/` and
   `docs/networking_bridge.md`.
 - "Save Mix to Config" is honestly a **panic button** more than
   a new persistence feature. The dock's auto-save (v0.28.4) was
@@ -9774,7 +9901,7 @@ DAWs use for their meter views.
 - All 35 audio-engine C++ source files compile clean at 0.24.0
 - `version_test` reports `0.24.0`
 - No remaining space-indented lines in any `.gd` file under
-  `godot/addons/gool/`, `examples/multiplayer_audio_sandbox/`,
+  `godot/addons/gool/`, `examples/05_multiplayer_audio_sandbox/`,
   or `tests/godot/smoke/` (tab convention preserved from v0.23.14)
 - No new patterns triggered in CI's KNOWN_REAL_ERRORS list
 
@@ -9824,7 +9951,7 @@ muscle that makes Phase 5 debugging easier.
 
 ### Two unrelated fixes shipped together
 
-#### Fix 1 — `examples/multiplayer_audio_sandbox/gool/config.json`: invalid categories
+#### Fix 1 — `examples/05_multiplayer_audio_sandbox/gool/config.json`: invalid categories
 
 Brannen's screenshot from running v0.23.16's sandbox showed:
 
@@ -9950,11 +10077,11 @@ but masked by the earlier compile failure.
 
 ### Files touched
 
-- `examples/multiplayer_audio_sandbox/gool/config.json` — bus
+- `examples/05_multiplayer_audio_sandbox/gool/config.json` — bus
   layout simplified to 3 buses, valid categories only.
-- `examples/multiplayer_audio_sandbox/scripts/audio_setup.gd` —
+- `examples/05_multiplayer_audio_sandbox/scripts/audio_setup.gd` —
   updated comment to reflect the actual routing.
-- `examples/multiplayer_audio_sandbox/README.md` — "what you
+- `examples/05_multiplayer_audio_sandbox/README.md` — "what you
   should hear" table corrected; architecture-notes section
   matches the actual config; explicit note that per-peer
   ducking is a roadmap item.
@@ -10024,7 +10151,7 @@ not against an idealized model of them.
 
 ### What's new
 
-Expanded the `examples/multiplayer_audio_sandbox/` example from
+Expanded the `examples/05_multiplayer_audio_sandbox/` example from
 session 1's static-cubes scaffolding into a full vertical slice
 that exercises gool's networked audio chain with two clients:
 
@@ -10072,20 +10199,20 @@ Master
 ```
 
 Adapted from the existing pattern in
-`examples/coop_shooter_template/gool/config.json` (which has
+`examples/04_coop_shooter_template/gool/config.json` (which has
 been in the repo since v0.22.0 as an aspirational template but
 was never wired into an actual playable scene).
 
 ### Files added/modified in this release
 
 **New files:**
-- `examples/multiplayer_audio_sandbox/gool/config.json` — bus
+- `examples/05_multiplayer_audio_sandbox/gool/config.json` — bus
   layout with sidechain ducker (~30 lines)
-- `examples/multiplayer_audio_sandbox/scripts/audio_setup.gd` —
+- `examples/05_multiplayer_audio_sandbox/scripts/audio_setup.gd` —
   programmatic sound generation autoload (~120 lines)
-- `examples/multiplayer_audio_sandbox/scripts/fps_player.gd` —
+- `examples/05_multiplayer_audio_sandbox/scripts/fps_player.gd` —
   CharacterBody3D FPS controller with fire input (~150 lines)
-- `examples/multiplayer_audio_sandbox/scenes/fps_player.tscn` —
+- `examples/05_multiplayer_audio_sandbox/scenes/fps_player.tscn` —
   player scene with Camera + GoolListener3D + Synchronizer
 
 **Replaced (session 1 → session 2/3):**
@@ -10121,7 +10248,7 @@ realistic load:
 
 ### Test instructions
 
-See `examples/multiplayer_audio_sandbox/README.md`. Short
+See `examples/05_multiplayer_audio_sandbox/README.md`. Short
 version: open the example in Godot, install gool addon, F5 →
 Host on one instance + Join on another with `127.0.0.1`. Move
 around with WASD + mouse, left-click to fire. You should hear:
@@ -10411,7 +10538,7 @@ https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_sty
 
 Converted all `.gd` files in this release to tab indentation:
 - 17 addon scripts (`godot/addons/gool/*.gd`, prefabs/, resources/, editor/)
-- 4 example scripts (`examples/multiplayer_audio_sandbox/scripts/*.gd`)
+- 4 example scripts (`examples/05_multiplayer_audio_sandbox/scripts/*.gd`)
 - 1 smoke script (`tests/godot/smoke/main.gd`)
 - **Total: 22 files converted** via `unexpand --first-only -t 4`
 
@@ -10450,7 +10577,7 @@ v0.23.13 or earlier:
 ### Verified
 
 - 0 space-indented lines remain in any `.gd` file under
-  `godot/addons/gool/`, `examples/multiplayer_audio_sandbox/`, or
+  `godot/addons/gool/`, `examples/05_multiplayer_audio_sandbox/`, or
   `tests/godot/smoke/`.
 - All 22 converted files retain their semantic content (the
   conversion only touches leading whitespace).
@@ -10871,7 +10998,7 @@ blocking).
 
 ---
 
-### Added — `examples/multiplayer_audio_sandbox/` (session 1 scaffolding)
+### Added — `examples/05_multiplayer_audio_sandbox/` (session 1 scaffolding)
 
 A new minimal Godot project that builds incrementally toward
 validating gool's networked audio chain with two clients. Built
@@ -10922,7 +11049,7 @@ The sandbox does NOT bundle the gool addon. Users install via
 `gool-install.cmd` (the standard install path) or a manual
 dev-copy from `../../godot/addons/gool`. This avoids the
 stale-bundled-addon problem visible in
-`examples/coop_shooter_template/` (created in v0.22.0, bundles a
+`examples/04_coop_shooter_template/` (created in v0.22.0, bundles a
 copy of the addon source tree that has drifted from the current
 addon by ~30 releases). Cleaning up coop_shooter_template is a
 separate task, not blocking session 1.
@@ -10930,7 +11057,7 @@ separate task, not blocking session 1.
 #### Files added
 
 ```
-examples/multiplayer_audio_sandbox/
+examples/05_multiplayer_audio_sandbox/
 ├── README.md          (setup, session-by-session test instructions)
 ├── project.godot      (Godot 4.6 project, Gool + NetworkManager autoloads)
 ├── icon.svg           (placeholder project icon)
@@ -10949,7 +11076,7 @@ Total: ~340 lines of GDScript + ~190 lines of scene markup.
 
 #### Test instructions (session 1)
 
-1. Pull v0.23.11. Open `examples/multiplayer_audio_sandbox/` in
+1. Pull v0.23.11. Open `examples/05_multiplayer_audio_sandbox/` in
    Godot 4.6.2.
 2. Install gool addon into the example: `gool-install.cmd` from
    within the folder, OR copy from the dev addon directory.
@@ -10966,7 +11093,7 @@ controller + transform sync) whenever you are.
 
 #### Out of scope for this release
 
-- Cleaning up `examples/coop_shooter_template/`. Stale bundled
+- Cleaning up `examples/04_coop_shooter_template/`. Stale bundled
   addon; separate cleanup task.
 - Any addon or engine changes. v0.23.11 ships an identical addon
   + binary as v0.23.10 — no API drift.
@@ -15984,7 +16111,7 @@ before. The C++ engine is mature; the on-ramp wasn't.
   cancel a predicted sound. Each recipe is under 10 lines of
   GDScript.
 
-- **`examples/quickstart/README.md`** rewritten. Leads with
+- **`examples/01_quickstart/README.md`** rewritten. Leads with
   "Download from Releases" with explicit per-OS archive names;
   build-from-source demoted to Path 2 (for contributors and
   custom platforms). New Troubleshooting section walks through
@@ -19108,7 +19235,7 @@ behavior at runtime initialization with no engine code changes.
   audio mix architecture proven by the C++ `multi_tier_ducking`
   example.
 
-- **`examples/coop_shooter_template/`** — synced to use the new
+- **`examples/04_coop_shooter_template/`** — synced to use the new
   binding. Ships its own `gool/config.json` with the multi-tier
   ducking topology. README updated to reflect the new wiring AND
   to honestly document the remaining gap (per-emitter bus
@@ -19178,7 +19305,7 @@ This is a Godot-side-only release; no engine code changed. All
 
 ### Added
 
-- **`examples/coop_shooter_template/`** — new Godot 4.2+ project.
+- **`examples/04_coop_shooter_template/`** — new Godot 4.2+ project.
   Six GDScript files (~700 LOC), one main scene, full README. Uses
   the existing `addons/gool/` prefabs; no new public API.
 
@@ -19231,7 +19358,7 @@ This is a Godot-side-only release; no engine code changed. All
   uses a default flat bus graph; bus-graph configuration with
   sidechain compressors isn't exposed to GDScript yet. The C++
   engine ships full sidechain compression
-  (`examples/multi_tier_ducking/main.cpp`); exposing that to
+  (`examples/cpp/multi_tier_ducking/main.cpp`); exposing that to
   GDScript is a roadmap follow-up.
 - **Voice chat not exercised.** The `VoiceChatPlayer` prefab is
   available; this demo just doesn't use it because there's no
@@ -19742,7 +19869,7 @@ built-in implementations. Closes Phase 4.7.
   Update, rather than losing samples. Sink call wrapped in
   `try`/`catch` so a misbehaving host implementation can't break
   Update mid-flight.
-- **`examples/telemetry/main.cpp`** — working demo wiring all three
+- **`examples/cpp/telemetry/main.cpp`** — working demo wiring all three
   sinks side-by-side. Prints a JSON Lines stream, a Prometheus
   scrape body, and the last 5 ring-buffer samples.
 
@@ -20054,7 +20181,7 @@ input.
 
 ### Fixed
 
-- `examples/hello_audio` include path (was breaking miniaudio
+- `examples/cpp/hello_audio` include path (was breaking miniaudio
   builds).
 - `release.yml` multi-line cmake invocation flattened to single
   line (YAML scalar fragility).
@@ -20266,6 +20393,7 @@ Headlines:
 [0.69.0]: https://github.com/siliconight/gool/releases/tag/v0.69.0
 [0.69.1]: https://github.com/siliconight/gool/releases/tag/v0.69.1
 [0.69.2]: https://github.com/siliconight/gool/releases/tag/v0.69.2
+[0.70.0]: https://github.com/siliconight/gool/releases/tag/v0.70.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

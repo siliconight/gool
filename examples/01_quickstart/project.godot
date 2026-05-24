@@ -1,0 +1,23 @@
+; gool quickstart project
+; Open this folder in Godot 4.2+ and press Play.
+; You'll hear adaptive music + spatial audio + footsteps + (mock) voice chat
+; without any setup. The plugin auto-configures buses, the prefabs handle
+; the wiring, all you do is press Play.
+
+config_version=5
+
+[application]
+
+config/name="Gool Quickstart"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.2", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gool/plugin.cfg")
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
