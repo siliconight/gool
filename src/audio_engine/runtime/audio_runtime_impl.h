@@ -209,6 +209,19 @@ public:
     // descriptor without copying the record. Returns -1 if the
     // handle no longer maps to a live slot.
     int32_t               GetEmitterPriority(EmitterHandle handle) const noexcept;
+    // v0.75.0: configuration introspection for the Godot binding's
+    // BudgetExceeded warning. Both are cheap inline-style reads of
+    // already-stored fields.
+    uint32_t              GetMaxActiveEmitters() const noexcept;
+    EvictionMode          GetEvictionMode() const noexcept;
+    // v0.75.0: priority-eviction helper for the persistent CreateEmitter
+    // path. Scans active emitters, finds the lowest-priority slot whose
+    // priority is strictly less than the incoming sound's priority, and
+    // destroys it (20 ms fade). Returns true on successful eviction
+    // (caller may retry Allocate); false if no candidate beats the
+    // incoming priority. Only called when budget.evictionMode is
+    // EvictionMode::Priority — HardFail mode skips this entirely.
+    bool                  TryEvictForPersistent(int32_t incomingPriority);
     AudioResult           SetEmitterTransform(EmitterHandle h,
                                                const Vec3& pos,
                                                const Vec3& fwd,

@@ -468,29 +468,50 @@ bool parseBudget(Scanner& s, AudioRuntimeBudget& out,
         if (!s.parseString(key, err, errLine)) return false;
         s.expect(':', "after budget key", err, errLine);
         if (!err.empty()) return false;
-        double n = 0.0;
-        if (!s.parseNumber(n, err, errLine)) return false;
-        if (n < 0.0 || n > 4294967295.0) {
-            err = "budget value for '" + key
-                + "' out of range (must be 0..4294967295)";
-            errLine = s.line(); return false;
-        }
-        const uint32_t v = static_cast<uint32_t>(n);
+        s.skipWs();
 
-        if      (key == "max_active_emitters")          out.maxActiveEmitters          = v;
-        else if (key == "max_spatial_emitters")         out.maxSpatialEmitters         = v;
-        else if (key == "max_voice_sources")            out.maxVoiceSources            = v;
-        else if (key == "max_occlusion_checks_per_frame") out.maxOcclusionChecksPerFrame = v;
-        else if (key == "max_streaming_assets")         out.maxStreamingAssets         = v;
-        else if (key == "max_streaming_voices")         out.maxStreamingVoices         = v;
-        else if (key == "max_registered_sounds")        out.maxRegisteredSounds        = v;
-        else if (key == "max_game_events_per_frame")    out.maxGameEventsPerFrame      = v;
-        else if (key == "max_network_events_per_frame") out.maxNetworkEventsPerFrame   = v;
-        // Unknown keys are silently ignored for forward-compat. If a
-        // future field is added, an older parser running an updated
-        // config will skip it without erroring; users get the field's
-        // default value, which is the safe behavior. Strict mode
-        // could be added later behind a config flag if desired.
+        // v0.75.0: budget keys can now be string-valued (eviction_mode)
+        // in addition to numeric. Peek the upcoming token to dispatch.
+        // Backward-compat: every pre-0.75.0 key remains numeric and goes
+        // through the same parseNumber+range-check path it always did.
+        if (s.peek() == '"') {
+            std::string sv;
+            if (!s.parseString(sv, err, errLine)) return false;
+            if (key == "eviction_mode") {
+                if      (sv == "hard_fail") out.evictionMode = EvictionMode::HardFail;
+                else if (sv == "priority")  out.evictionMode = EvictionMode::Priority;
+                // Unknown string value: leave default (HardFail) and continue.
+                // Strict-validation could surface a warning here in a future
+                // release behind a config flag; silent fall-through matches
+                // the forward-compat philosophy used for unknown numeric keys
+                // below.
+            }
+            // Unknown string-valued keys are ignored for forward-compat.
+        } else {
+            double n = 0.0;
+            if (!s.parseNumber(n, err, errLine)) return false;
+            if (n < 0.0 || n > 4294967295.0) {
+                err = "budget value for '" + key
+                    + "' out of range (must be 0..4294967295)";
+                errLine = s.line(); return false;
+            }
+            const uint32_t v = static_cast<uint32_t>(n);
+
+            if      (key == "max_active_emitters")          out.maxActiveEmitters          = v;
+            else if (key == "max_spatial_emitters")         out.maxSpatialEmitters         = v;
+            else if (key == "max_voice_sources")            out.maxVoiceSources            = v;
+            else if (key == "max_occlusion_checks_per_frame") out.maxOcclusionChecksPerFrame = v;
+            else if (key == "max_streaming_assets")         out.maxStreamingAssets         = v;
+            else if (key == "max_streaming_voices")         out.maxStreamingVoices         = v;
+            else if (key == "max_registered_sounds")        out.maxRegisteredSounds        = v;
+            else if (key == "max_game_events_per_frame")    out.maxGameEventsPerFrame      = v;
+            else if (key == "max_network_events_per_frame") out.maxNetworkEventsPerFrame   = v;
+            // Unknown keys are silently ignored for forward-compat. If a
+            // future field is added, an older parser running an updated
+            // config will skip it without erroring; users get the field's
+            // default value, which is the safe behavior. Strict mode
+            // could be added later behind a config flag if desired.
+        }
 
         s.skipWs();
         if (!s.match(',')) {

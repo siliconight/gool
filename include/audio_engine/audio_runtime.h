@@ -517,6 +517,23 @@ public:
     int32_t GetEmitterPriority(EmitterHandle handle) const noexcept
         AUDIO_REQUIRES(GameThread);
 
+    // v0.75.0: Read back the current persistent-emitter cap from the
+    // budget config. Used by the Godot binding to format actionable
+    // BudgetExceeded warnings ("you hit your cap of N, raise it in
+    // config.json"). Reflects the active runtime value — whatever was
+    // configured at init time, including any cap raised by the user
+    // editing gool/config.json's budget block. Returns 0 if the
+    // runtime is not yet initialized.
+    uint32_t GetMaxActiveEmitters() const noexcept AUDIO_REQUIRES(GameThread);
+
+    // v0.75.0: Read back the active eviction mode. The Godot binding
+    // uses this to tailor the BudgetExceeded warning: in HardFail mode
+    // the message suggests raising the cap OR enabling priority mode;
+    // in Priority mode the message suggests raising the cap OR raising
+    // the priority of important sounds. Returns EvictionMode::HardFail
+    // if the runtime is not yet initialized.
+    EvictionMode GetEvictionMode() const noexcept AUDIO_REQUIRES(GameThread);
+
     // ---- Global (RTPC) parameters (game thread) --------------------------
     // A flat name → float store for "real-time parameter control" values
     // that authored sound definitions can reference. Common examples:
@@ -979,6 +996,16 @@ public:
         // One-shots that triggered eviction of a lower-priority playing one-shot.
         // High = priority system is doing its job under contention.
         uint64_t oneShotEvictions          = 0;
+        // v0.75.0: Persistent (CreateEmitter-owned) emitters destroyed
+        // to make room for a higher-priority incoming persistent
+        // emitter. Only increments when AudioRuntimeBudget.evictionMode
+        // is EvictionMode::Priority. In the default HardFail mode this
+        // stays at 0 — persistent emitters are not eligible eviction
+        // targets, and a full pool returns BudgetExceeded instead.
+        // Sustained nonzero growth indicates the cap is too small for
+        // the project's persistent-emitter load; tell the user to
+        // raise budget.max_active_emitters in gool/config.json.
+        uint64_t emittersEvictedByPriority = 0;
         // Predicted events successfully cancelled (matched an active
         // emitter; faded Stop posted). High after server reconciliation
         // failures means lots of mispredictions; tune your prediction

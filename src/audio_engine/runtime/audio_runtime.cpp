@@ -167,6 +167,14 @@ Result<EmitterHandle> AudioRuntime::CreateEmitter(const EmitterDescriptor& d) {
 int32_t AudioRuntime::GetEmitterPriority(EmitterHandle h) const noexcept {
     return impl_->GetEmitterPriority(h);
 }
+// v0.75.0: budget introspection for actionable BudgetExceeded
+// messages on the host side. Both reads are O(1) and noexcept.
+uint32_t AudioRuntime::GetMaxActiveEmitters() const noexcept {
+    return impl_->GetMaxActiveEmitters();
+}
+EvictionMode AudioRuntime::GetEvictionMode() const noexcept {
+    return impl_->GetEvictionMode();
+}
 AudioResult AudioRuntime::DestroyEmitter(EmitterHandle h, float fadeOutMs) { return impl_->DestroyEmitter(h, fadeOutMs); }
 AudioResult AudioRuntime::SetEmitterTransform(EmitterHandle h,
                                                 const Vec3& p,
@@ -747,6 +755,23 @@ void AudioRuntimeImpl::SetListener(const AudioListener& listener) {
 Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& desc) {
     if (!initialized_) return AudioResult::NotInitialized;
     auto h = emitters_->Create(desc, /*oneShot=*/false);
+
+    // v0.75.0: in Priority eviction mode, if the pool is full try to
+    // evict a lower-priority emitter and retry once. HardFail mode
+    // (default) preserves pre-0.75.0 behavior — BudgetExceeded
+    // propagates unchanged and the host decides how to react. The
+    // retry is bounded: if eviction frees a slot, the second Create
+    // succeeds; if it doesn't (e.g. some pathological state race),
+    // we return the second attempt's error rather than spin.
+    //
+    // Tie-breaking and candidate selection live in
+    // TryEvictForPersistent; see that function for design notes.
+    if (!h && h.error() == AudioResult::BudgetExceeded
+            && config_.budget.evictionMode == EvictionMode::Priority) {
+        if (TryEvictForPersistent(static_cast<int32_t>(desc.priority))) {
+            h = emitters_->Create(desc, /*oneShot=*/false);
+        }
+    }
     if (!h) return h.error();
 
     // v0.19.0 Tier-B: publish the per-emitter replication priority
@@ -855,6 +880,97 @@ int32_t AudioRuntimeImpl::GetEmitterPriority(EmitterHandle handle) const noexcep
         return static_cast<int32_t>(rec->descriptor.priority);
     }
     return -1;
+}
+
+// v0.75.0: cheap reads of already-stored AudioRuntimeBudget fields.
+// Both safely return defaults pre-init so the Godot binding can call
+// them during error formatting without crashing if it ever races
+// against shutdown.
+uint32_t AudioRuntimeImpl::GetMaxActiveEmitters() const noexcept {
+    if (!initialized_) return 0;
+    return config_.budget.maxActiveEmitters;
+}
+EvictionMode AudioRuntimeImpl::GetEvictionMode() const noexcept {
+    if (!initialized_) return EvictionMode::HardFail;
+    return config_.budget.evictionMode;
+}
+
+// v0.75.0: priority-eviction for persistent emitters.
+//
+// Walks the active emitter pool looking for the lowest-priority slot
+// whose priority is strictly less than `incomingPriority`. If found,
+// destroys it with a 20 ms fade (matches the existing one-shot eviction
+// fade — short enough to be inaudible as a hard cut, long enough to
+// avoid clicks). Returns true if a slot was freed; the caller can then
+// retry emitters_->Create. Returns false if no candidate beats the
+// incoming priority, in which case the caller surfaces BudgetExceeded
+// up to the host with an actionable message.
+//
+// Tie-breaking: first slot encountered in pool iteration order wins.
+// This is deterministic (slots_.ForEach iterates by slot index) but
+// not semantically meaningful — v0.76.0 polish can add explicit
+// strategies (oldest first, furthest from listener, category match).
+// For v0.75.0 the first-match-wins approach keeps scope contained
+// while still delivering the primary value: higher-priority sounds
+// win against lower-priority ones at the budget boundary.
+//
+// Unlike EvictLowestPriorityOneShotIfBeatenBy (which only considers
+// one-shots and is always-on), this function considers BOTH one-shots
+// and persistent emitters and is gated by the eviction_mode config.
+// One-shots being evictable here means a persistent "music" emitter
+// can knock out a low-priority gunshot one-shot to play, which is the
+// intended behavior — priority is priority, regardless of lifecycle.
+bool AudioRuntimeImpl::TryEvictForPersistent(int32_t incomingPriority) {
+    if (!emitters_) return false;
+
+    EmitterHandle victim{};
+    int32_t       victimPri  = INT32_MAX;
+    bool          haveVictim = false;
+
+    emitters_->ForEach([&](EmitterHandle h, EmitterRecord& rec) {
+        const int32_t pri = static_cast<int32_t>(rec.descriptor.priority);
+        if (!haveVictim || pri < victimPri) {
+            victim     = h;
+            victimPri  = pri;
+            haveVictim = true;
+        }
+    });
+
+    if (!haveVictim || victimPri >= incomingPriority) return false;
+
+    // Destroy the victim. Mirror the one-shot eviction path: post a
+    // 20 ms-faded Stop to the mixer if the slot has started, drop
+    // smoother state, free the slot. The fade is best-effort — if the
+    // caller immediately reallocates this slot for the incoming emitter
+    // and starts mixing, the fresh StartSound preempts the fade-out.
+    // This is fine for a 20 ms window and matches the existing
+    // one-shot pattern.
+    if (const auto* rec = emitters_->Get(victim)) {
+        StopMixerAndResetStreamingFor(*rec, /*fadeOutMs=*/20.0f);
+    }
+    if (orchestrator_) orchestrator_->Smoother().Forget(victim);
+    if (victim.index < emitterPriorities_.size()) {
+        emitterPriorities_[victim.index].store(0,
+            std::memory_order_relaxed);
+    }
+    emitters_->Destroy(victim);
+    ++statsLatest_.emittersEvictedByPriority;
+
+    if (ShouldLog_(LogLevel::Debug)) {
+        const LogField fields[] = {
+            LogField::UInt("victim_handle",
+                            static_cast<uint64_t>(victim.index)),
+            LogField::UInt("victim_generation",
+                            static_cast<uint64_t>(victim.generation)),
+            LogField::Int ("victim_priority",   victimPri),
+            LogField::Int ("incoming_priority", incomingPriority),
+        };
+        Log_(static_cast<uint8_t>(LogLevel::Debug),
+             LogCategory::kEmitter,
+             "persistent emitter evicted: lower-priority slot freed for incoming",
+             fields);
+    }
+    return true;
 }
 
 AudioResult AudioRuntimeImpl::DestroyEmitter(EmitterHandle handle, float fadeOutMs) {

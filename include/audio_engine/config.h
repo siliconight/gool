@@ -80,6 +80,33 @@ struct ReplicationRateLimitConfig {
     uint32_t maxNewPlayersPerTick = 8;
 };
 
+// v0.75.0: How the engine responds when CreateEmitter hits maxActiveEmitters.
+//
+//   HardFail (default, backward compat with v0.74.x and earlier):
+//     CreateEmitter returns BudgetExceeded. Caller decides what to do
+//     (typically logs a warning suggesting the user raise the cap).
+//     Existing one-shot eviction is unaffected — one-shots have always
+//     been allowed to evict each other, and they still are in this mode.
+//
+//   Priority:
+//     CreateEmitter scans active emitters (both one-shots and persistent),
+//     finds the lowest-priority emitter whose priority is strictly less
+//     than the incoming sound's priority, destroys it with a 20 ms fade,
+//     and retries the allocation. If no candidate beats the incoming
+//     priority, CreateEmitter still returns BudgetExceeded — meaning the
+//     incoming sound was less important than everything already playing.
+//
+// Persistent emitters in HardFail mode are "host-owned" and never evicted.
+// Switching to Priority mode opts into "engine may stop a long-running
+// persistent emitter to make room for a more important new one." Use this
+// when you have lots of competing background loops + dynamic SFX and want
+// the priority field on SoundDefinition to actually do something at the
+// budget boundary.
+enum class EvictionMode : uint8_t {
+    HardFail = 0,
+    Priority = 1,
+};
+
 struct AudioRuntimeBudget {
     uint32_t maxActiveEmitters         = 128;
     uint32_t maxSpatialEmitters        = 64;
@@ -90,6 +117,9 @@ struct AudioRuntimeBudget {
     uint32_t maxRegisteredSounds       = 256;
     uint32_t maxGameEventsPerFrame     = 256;
     uint32_t maxNetworkEventsPerFrame  = 256;
+    // v0.75.0: see EvictionMode comment above. Defaults to HardFail so
+    // existing v0.74.x projects upgrading get unchanged behavior.
+    EvictionMode evictionMode          = EvictionMode::HardFail;
     // Interest-management cap on per-tick spatial processing. When > 0,
     // each tick the runtime sorts active emitters by distance to the
     // listener and only runs the spatializer + posts UpdateParams for

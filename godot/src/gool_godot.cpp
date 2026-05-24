@@ -2318,23 +2318,81 @@ public:
             // v0.73.0: loud warning when the emitter pool is full.
             // Pre-v0.73.0 this returned 0 silently and the caller had
             // no signal to distinguish "I called create_emitter wrong"
-            // from "the engine is out of voices." Mirror the v0.66.0
-            // "no sound registered" warning pattern: one-shot per
-            // session so a tight create-loop hitting the cap doesn't
-            // flood Output, then quiet for subsequent calls.
+            // from "the engine is out of voices."
+            //
+            // v0.75.0: message is now actionable. Reports the actual
+            // current cap (not a hardcoded 128) and surfaces two
+            // concrete fixes — which two depends on the active
+            // eviction_mode. This is the "user is the dynamic part"
+            // affordance: the engine can't grow the pool at runtime,
+            // but the user can edit the JSON and reopen. The error
+            // tells them how, and teaches the priority feature by
+            // mentioning it inline.
+            //
+            // One-shot-per-session-per-message: a tight create-loop
+            // hitting the cap shouldn't flood Output. Subsequent
+            // failures are visible via the Stats counters
+            // (oneShotsDroppedFullPool, oneShotEvictions,
+            // emittersEvictedByPriority).
             if (h.error() == audio::AudioResult::BudgetExceeded) {
                 static bool warned = false;
                 if (!warned) {
                     warned = true;
-                    UtilityFunctions::push_warning(
-                        String("GoolAudioRuntime: create_emitter('")
-                        + name
-                        + String("') — emitter pool exhausted. Default ")
-                        + String("cap is 128 active emitters. Raise it by ")
-                        + String("adding a 'budget' block to gool/config.json: ")
-                        + String("{ \"budget\": { \"max_active_emitters\": 256 } }. ")
-                        + String("Each additional emitter costs ~2 KB of RAM. ")
-                        + String("(This warning fires once per session.)"));
+                    const uint32_t cap = runtime_->GetMaxActiveEmitters();
+                    const audio::EvictionMode mode = runtime_->GetEvictionMode();
+
+                    String msg = String("[gool] Voice budget hit: ")
+                        + String("could not create emitter for '") + name
+                        + String("' (priority=")
+                        + String::num_int64(priority) + String("). ")
+                        + String("Current cap: ")
+                        + String::num_uint64(cap)
+                        + String(" active emitters. ");
+
+                    if (mode == audio::EvictionMode::HardFail) {
+                        msg += String("Two ways to fix:\n")
+                            + String("  1. Raise the cap. Add to your ")
+                            + String("res://gool/config.json:\n")
+                            + String("       \"budget\": { ")
+                            + String("\"max_active_emitters\": ")
+                            + String::num_uint64(cap * 2)
+                            + String(" }\n")
+                            + String("     (Each extra slot costs ~2 KB RAM.)\n")
+                            + String("  2. Let gool steal voices automatically. ")
+                            + String("Add to the same budget block:\n")
+                            + String("       \"eviction_mode\": \"priority\"\n")
+                            + String("     Lower-priority sounds will then ")
+                            + String("yield to higher-priority ones when ")
+                            + String("the pool is full. Tag sounds via ")
+                            + String("register_sound_definition's priority ")
+                            + String("argument (0=Lowest, 128=Normal, ")
+                            + String("255=Critical). See ")
+                            + String("docs/CHEATSHEET.md entry #11 for ")
+                            + String("the full picture.");
+                    } else {
+                        // Priority mode but couldn't evict — incoming
+                        // priority wasn't higher than any active slot.
+                        msg += String("Eviction mode is 'priority' but ")
+                            + String("this sound's priority (")
+                            + String::num_int64(priority)
+                            + String(") is not higher than any of the ")
+                            + String("currently playing emitters, so no ")
+                            + String("slot could be freed. Two ways to ")
+                            + String("fix:\n")
+                            + String("  1. Raise this sound's priority ")
+                            + String("(via register_sound_definition or ")
+                            + String("the priority arg on create_emitter). ")
+                            + String("Lowest=0, Normal=128, Critical=255.\n")
+                            + String("  2. Raise the cap. Edit ")
+                            + String("res://gool/config.json's budget ")
+                            + String("block: ")
+                            + String("\"max_active_emitters\": ")
+                            + String::num_uint64(cap * 2)
+                            + String(" (each extra slot ~2 KB RAM).");
+                    }
+                    msg += String("\n(This warning fires once per session.)");
+
+                    UtilityFunctions::push_warning(msg);
                 }
             }
             return 0;

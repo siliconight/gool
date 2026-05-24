@@ -22,6 +22,68 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.75.0] - 2026-05-24 — Priority-based voice eviction (Phase 2 of 2) + actionable budget message
+
+### Added
+
+- **`budget.eviction_mode` config option in `gool/config.json`.** Two values:
+  - `"hard_fail"` (default, backward compat) — `create_emitter` returns
+    `BudgetExceeded` when the pool is full, matching v0.74.x behavior.
+    Existing projects upgrade with zero behavior change.
+  - `"priority"` — when the pool is full, the engine scans active
+    emitters and destroys the lowest-priority one (with a 20 ms fade)
+    if its priority is strictly less than the incoming sound's. Then
+    retries the allocation. Closes the loop on the v0.74.0 priority API:
+    priorities now *do something* at the budget boundary.
+- **`Stats::emittersEvictedByPriority` counter.** Increments once per
+  successful persistent-emitter eviction. Sustained nonzero growth means
+  the cap is too small for the project's load — raise it.
+- **`AudioRuntime::GetMaxActiveEmitters()`** and **`GetEvictionMode()`**
+  public accessors. Used by the Godot binding to format actionable
+  error messages with the *actual* current cap (not a hardcoded 128)
+  and tailor the suggested fix to the active mode.
+
+### Changed
+
+- **BudgetExceeded warning is now genuinely actionable.** v0.73.0
+  introduced a "loud warning" when the cap was hit, but it only ever
+  said "raise to 256." v0.75.0 reads back the real current cap, names
+  the sound that failed, includes its priority, and surfaces two
+  specific fixes:
+  - In `hard_fail` mode: "raise `max_active_emitters` OR enable
+    `eviction_mode: priority`" — teaches the priority feature inline.
+  - In `priority` mode (when nothing was evictable): "raise this
+    sound's priority OR raise the cap" — explains why eviction didn't
+    happen and what to do.
+  This is the "user is the dynamic part" affordance: the engine
+  doesn't grow the pool at runtime, but the error tells the user how
+  to do it themselves and points to the cheatsheet for details.
+
+### Design notes
+
+- Tie-breaking when multiple emitters share the lowest priority: first
+  match in `slots_.ForEach` iteration order wins. Deterministic but not
+  semantically meaningful. v0.76.0 polish can add explicit strategies
+  (oldest first, furthest from listener, category match). For v0.75.0
+  this keeps scope contained while delivering the core value.
+- Persistent-emitter eviction uses **raw priority** (not the
+  distance-weighted effective priority used by the existing one-shot
+  eviction). Simpler reasoning for v0.75.0; distance-weighted eviction
+  for persistent emitters can land in v0.76.0 if it proves needed.
+- The existing v0.19.0 one-shot eviction
+  (`EvictLowestPriorityOneShotIfBeatenBy`) is **untouched**. It still
+  runs always-on for one-shots regardless of `eviction_mode`. The new
+  mode only adds *persistent*-emitter eviction on top.
+
+### Dropped from roadmap
+
+- **Dynamic budget reconfiguration at runtime.** Evaluated three
+  designs (stop-the-world resize, wrap shutdown+reinit, pre-allocate
+  hard max) and none solved a concrete user-presented problem. The
+  v0.75.0 actionable error message is the practical replacement:
+  users edit the JSON and reopen, becoming the "dynamic" mechanism
+  themselves. Reopens if a real use case ever surfaces.
+
 ## [0.74.1] - 2026-05-24 — Onboarding banner visibility fix
 
 ### Fixed

@@ -153,9 +153,10 @@ Default ring buffer is 4096 entries; configurable via
 
 ## 11. Tag sounds by priority
 
-New in v0.74.0. Each emitter has a priority value (0–255) used by
-future eviction logic (v0.75.0+) to decide which voices survive when
-the emitter pool is full. The numeric bands match `AudioPriority`:
+Each emitter has a priority value (0–255) used by the priority
+eviction system (`eviction_mode: "priority"` in your `gool/config.json`)
+to decide which voices survive when the emitter pool is full. The
+numeric bands match `AudioPriority`:
 
 | Value | Band | Use for |
 |-------|------|---------|
@@ -187,11 +188,41 @@ var h := Gool.create_emitter(
 Read it back via `Gool.get_emitter_priority(handle)` — returns the
 value 0–255 (or -1 if the handle is invalid).
 
-**Heads up:** v0.74.0 only stores priorities; nothing acts on them
-yet. When eviction lands in v0.75.0, sounds tagged Lowest/Low will
-be the first to get stolen under pool pressure, and High/Critical
-will survive. Tag your sounds now so the v0.75.0 upgrade is a
-behavior change you've already planned for.
+**v0.75.0: priorities now do something at the budget boundary.** When
+the emitter pool is full and you try to create another emitter, the
+engine's behavior is controlled by `eviction_mode` in your
+`gool/config.json`:
+
+```json
+{
+  "budget": {
+    "max_active_emitters": 128,
+    "eviction_mode": "priority"
+  }
+}
+```
+
+| Mode | Behavior on full pool |
+|------|------------------------|
+| `"hard_fail"` (default) | `create_emitter` returns 0 and the binding logs an actionable warning. Existing v0.74.x behavior — no surprises on upgrade. |
+| `"priority"` | Engine scans active emitters, finds the lowest-priority slot whose priority is *strictly less* than the incoming sound's, destroys it (20 ms fade), then creates the new one. If nothing's lower, you still get the warning. |
+
+So tag your important sounds (music, dialogue, hit confirms) High or
+Critical, leave background loops at Normal or Low, and `"priority"`
+mode will keep the important stuff playing when the pool fills up.
+Track how often this happens via `Stats::emittersEvictedByPriority`
+— sustained nonzero growth means raise `max_active_emitters`.
+
+**Why two modes instead of always-on?** `hard_fail` preserves v0.74.x
+behavior and gives strict projects a deterministic "you're over
+budget, fix it" signal. `priority` is opt-in because evicting a
+long-running persistent emitter (an engine loop, an ambient bed) is
+behavior some games want and others would consider a bug. You decide.
+
+**Read back priorities** via `Gool.get_emitter_priority(handle)` —
+returns 0–255 (or -1 if the handle is invalid). Useful for
+debugging "did my priority parameter take effect?" and verifying
+inheritance from `register_sound_definition`.
 
 ## Common gotchas
 
