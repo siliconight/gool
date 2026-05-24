@@ -68,6 +68,7 @@
 #include "audio_engine/bus.h"
 #include "audio_engine/config.h"
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -76,6 +77,13 @@ namespace audio::BusConfigLoader {
 struct ParseResult {
     bool             ok          = false;
     BusGraphConfig   busGraph{};   // categoryMap is nested inside
+    // v0.73.0: optional top-level "budget" block. When std::nullopt
+    // (absent from JSON), AudioRuntimeBudget defaults apply. When
+    // present, hosts should copy this into AudioConfig::budget
+    // before calling Initialize. Backward-compatible — pre-v0.73.0
+    // configs without a budget block produce nullopt here and the
+    // hardcoded defaults (128 active emitters, etc.) stay in effect.
+    std::optional<AudioRuntimeBudget> budget;
     std::string      error;        // human-readable; populated when ok = false
     int              errorLine    = 0;
 };

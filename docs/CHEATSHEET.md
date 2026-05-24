@@ -184,6 +184,33 @@ points at a bus that has no `reverb` effect in its chain. Open
 the mixer dock and confirm the named bus has a `reverb` effect to
 modulate.
 
+**"Some of my sounds aren't playing during big moments (combat, large explosions, many footsteps)."**
+
+Check Output for `emitter pool exhausted` warnings. Default cap is
+**128 concurrent emitters** — enough for typical gameplay, tight
+under heavy combat. Raise it in `gool/config.json` by adding a
+top-level `budget` block (new in v0.73.0):
+
+```json
+{
+  "buses": [ ... ],
+  "budget": {
+    "max_active_emitters": 256,
+    "max_spatial_emitters": 128
+  }
+}
+```
+
+Each additional emitter costs ~2 KB of RAM. 256 is a comfortable
+default for action games; the FPS template ships with this preset.
+Other budget fields you can set (all match `AudioRuntimeBudget` in
+the C++ engine): `max_voice_sources`, `max_streaming_assets`,
+`max_streaming_voices`, `max_registered_sounds`,
+`max_game_events_per_frame`, `max_network_events_per_frame`.
+
+Note: budget changes require an engine restart to take effect —
+the pool sizes are fixed at `Initialize` time.
+
 ## Where to go from here
 
 - [`cookbook.md`](cookbook.md) — recipes longer than the snippets above
