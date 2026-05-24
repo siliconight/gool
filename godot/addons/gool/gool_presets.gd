@@ -97,7 +97,10 @@ const REVERB_SMALL_ROOM: Dictionary = {
 	"lf_damping":    0.10,
 	"hf_damping":    0.40,
 	"diffusion":     0.70,
-	"wet_gain_db":  -3.0,
+	# v0.69.2 dial-down: -3.0 → -5.0. Even small rooms shouldn't
+	# read as "featured" reverb in a typical game mix — the level
+	# cue should sit underneath the dry signal, not next to it.
+	"wet_gain_db":  -5.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   150.0,
@@ -108,11 +111,16 @@ const REVERB_SMALL_ROOM: Dictionary = {
 ## A bit more presence than SMALL_ROOM, still firmly "indoors."
 const REVERB_MEDIUM_ROOM: Dictionary = {
 	"predelay_ms":  20.0,
-	"decay":         0.55,
+	# v0.69.2 dial-down: 0.55 → 0.48. A typical living room has a
+	# ~0.4-0.6s RT60; 0.55 normalized was overshooting toward
+	# "warehouse-but-furnished" character. 0.48 reads more like
+	# "interior with soft furnishings."
+	"decay":         0.48,
 	"lf_damping":    0.15,
 	"hf_damping":    0.35,
 	"diffusion":     0.70,
-	"wet_gain_db":  -2.0,
+	# v0.69.2 dial-down: -2.0 → -5.0. Same reasoning as SMALL_ROOM.
+	"wet_gain_db":  -5.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   200.0,
@@ -123,7 +131,12 @@ const REVERB_MEDIUM_ROOM: Dictionary = {
 ## Clear tail with some sparkle preserved.
 const REVERB_LARGE_HALL: Dictionary = {
 	"predelay_ms":  50.0,
-	"decay":         0.80,
+	# v0.69.2 dial-down: 0.80 → 0.70. Concert halls do have long
+	# tails (~1.8-2.5s RT60), but on a normalized scale 0.80 was
+	# pushing into "Royal Albert Hall during a long-decay piece"
+	# territory. 0.70 sits in "medium-large performance space"
+	# which is more useful as a general-purpose hall preset.
+	"decay":         0.70,
 	"lf_damping":    0.20,
 	"hf_damping":    0.25,
 	# v0.46.1 retune: 0.65 → 0.78. Concert/event halls have soft
@@ -133,7 +146,9 @@ const REVERB_LARGE_HALL: Dictionary = {
 	# character (0.45) and cathedral's full wash (0.85) — gives the
 	# preset a distinct "spacious but defined" tail.
 	"diffusion":     0.78,
-	"wet_gain_db":  -1.0,
+	# v0.69.2 dial-down: -1.0 → -5.0. Halls in a mix usually sit
+	# 4-6 dB below dry to preserve dialogue/source clarity.
+	"wet_gain_db":  -5.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   250.0,
@@ -145,7 +160,12 @@ const REVERB_LARGE_HALL: Dictionary = {
 ## dry sound. Use sparingly; on dialogue it'll smear consonants.
 const REVERB_CATHEDRAL: Dictionary = {
 	"predelay_ms": 100.0,
-	"decay":         0.92,
+	# v0.69.2 dial-down: 0.92 → 0.85. Still by far the longest tail
+	# in the set — Cathedral is supposed to be extreme. 0.92 was
+	# saturating into "audibly-infinite" though; 0.85 keeps the
+	# multi-second tail but lets it resolve enough that subsequent
+	# sounds don't pile up indefinitely.
+	"decay":         0.85,
 	"lf_damping":    0.30,
 	# v0.46.1: bumped 0.20 → 0.18 to keep just a hint more brightness
 	# in the tail (cathedrals are stone — they don't absorb HF as
@@ -158,7 +178,11 @@ const REVERB_CATHEDRAL: Dictionary = {
 	# perceptually maps to high diffusion (smooth tail). Bringing
 	# this up is the biggest single perceptual win on the preset set.
 	"diffusion":     0.85,
-	"wet_gain_db":   0.0,
+	# v0.69.2 dial-down: 0.0 → -4.0. Cathedral at unity wet against
+	# dry was the most extreme cell in the set — the reverb was as
+	# loud as the source. -4 dB still makes the cathedral feel huge
+	# without the tail competing with the dry signal for foreground.
+	"wet_gain_db":  -4.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   300.0,
@@ -170,11 +194,18 @@ const REVERB_CATHEDRAL: Dictionary = {
 ## as natural-stone enclosure rather than built architecture.
 const REVERB_CAVE: Dictionary = {
 	"predelay_ms":  30.0,
-	"decay":         0.88,
+	# v0.69.2 dial-down: 0.88 → 0.75. Real caves have long tails
+	# but the irregular geometry + heavy LF/HF damping should make
+	# them sound enclosed rather than endless. 0.88 was reading
+	# closer to "abandoned subway tunnel that goes for kilometers";
+	# 0.75 with the existing damping reads as a contained cavern.
+	"decay":         0.75,
 	"lf_damping":    0.40,
 	"hf_damping":    0.55,
 	"diffusion":     0.80,
-	"wet_gain_db":  -2.0,
+	# v0.69.2 dial-down: -2.0 → -5.0. Same as the other long-tail
+	# presets — recede the tail under the dry signal.
+	"wet_gain_db":  -5.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   200.0,
@@ -195,11 +226,16 @@ const REVERB_BATHROOM_TILE: Dictionary = {
 	# decay maps to ~0.45-0.55. 0.65 was reading high-school-locker-
 	# room. The flutter-echo character (low diffusion, low damping)
 	# was correct; just the duration was overshooting.
-	"decay":         0.50,
+	# v0.69.2 dial-down: 0.50 → 0.45. Snapping the tail a touch
+	# shorter so the flutter character is heard but doesn't ring on.
+	"decay":         0.45,
 	"lf_damping":    0.05,
 	"hf_damping":    0.10,
 	"diffusion":     0.45,
-	"wet_gain_db":   0.0,
+	# v0.69.2 dial-down: 0.0 → -3.0. Tiled surfaces ARE reflective
+	# but at unity wet the preset was a one-note effect; dropping
+	# 3dB lets the flutter sit underneath the dry signal.
+	"wet_gain_db":  -3.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   200.0,
@@ -217,7 +253,12 @@ const REVERB_OUTDOOR_OPEN: Dictionary = {
 	"lf_damping":    0.50,
 	"hf_damping":    0.70,
 	"diffusion":     0.95,
-	"wet_gain_db":  -8.0,
+	# v0.69.2 dial-down: -8.0 → -12.0. Outdoor should feel "not
+	# anechoic" — a thin sense of air absorption and ground-bounce
+	# scattering — but reverb at -8 dB was reading as a perceptible
+	# tail, which doesn't match real outdoor acoustics. -12 dB is
+	# the "barely there" floor that still anchors the spatial cue.
+	"wet_gain_db": -12.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   100.0,
@@ -230,11 +271,17 @@ const REVERB_OUTDOOR_OPEN: Dictionary = {
 ## path (e.g. via the ListenerEq bus) for full effect.
 const REVERB_UNDERWATER: Dictionary = {
 	"predelay_ms":  60.0,
-	"decay":         0.75,
+	# v0.69.2 dial-down: 0.75 → 0.65. Underwater muffling is mostly
+	# carried by the HF damping (0.95) and the post-LPF (2500 Hz);
+	# the long tail at 0.75 was adding "deep cavern under the
+	# ocean" character. 0.65 keeps the stylistic feel without
+	# the cavern-tail.
+	"decay":         0.65,
 	"lf_damping":    0.80,
 	"hf_damping":    0.95,
 	"diffusion":     0.90,
-	"wet_gain_db":  -3.0,
+	# v0.69.2 dial-down: -3.0 → -6.0. Same as the long-tail set.
+	"wet_gain_db":  -6.0,
 	# v0.47.0 EQ shaping — mapped from Sound on Sound and
 	# MixingLessons article recipes. Game-audio context tweaked.
 	"send_hpf_hz":   100.0,

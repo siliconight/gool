@@ -22,6 +22,66 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.69.2] - 2026-05-23 — Reverb preset dial-down (8 presets)
+
+User-driven retune: the 8 reverb presets in `GoolPresets` were
+reading as "very echoey" in real-world testing. Two-axis dial-down
+applied across the set:
+
+- **Wet level reduced** so reverb sits *underneath* the dry signal
+  rather than alongside it. Game-mix convention puts reverb 4-8 dB
+  below dry; the presets previously sat at -3 to 0 dB.
+- **Decay shortened on the long-tail presets** (Cathedral, Cave,
+  Large Hall, Underwater, Medium Room) so tails resolve before
+  subsequent sounds pile up.
+
+### Before / after table
+
+| Preset              | `decay`     | `wet_gain_db` |
+|---------------------|-------------|---------------|
+| SMALL_ROOM          | 0.35 (no change) | -3.0 → **-5.0** |
+| MEDIUM_ROOM         | 0.55 → **0.48** | -2.0 → **-5.0** |
+| LARGE_HALL          | 0.80 → **0.70** | -1.0 → **-5.0** |
+| CATHEDRAL           | 0.92 → **0.85** | 0.0 → **-4.0**  |
+| CAVE                | 0.88 → **0.75** | -2.0 → **-5.0** |
+| BATHROOM_TILE       | 0.50 → **0.45** | 0.0 → **-3.0**  |
+| OUTDOOR_OPEN        | 0.20 (no change) | -8.0 → **-12.0** |
+| UNDERWATER          | 0.75 → **0.65** | -3.0 → **-6.0**  |
+
+Diffusion, damping, predelay, and EQ-shaping values all unchanged —
+those characterize *what kind of space* each preset evokes; only
+the level and tail-length values needed tuning.
+
+### Why this matters
+
+Reverb that's loud and long enough to be a featured effect can be
+the right call in cinematic mixing — but for general gameplay
+where reverb is supposed to read as a room-presence cue, the
+previous values pulled the listener's attention to the reverb
+itself rather than to the source sound. The dial-down keeps each
+preset's *character* (cave still feels enclosed, cathedral still
+has the longest tail, bathroom still flutters) but lets all of
+them sit in the supporting layer of a mix.
+
+### Compounding warning — see the architecture note
+
+If your config has reverb effects on multiple buses in the same
+signal path (e.g., a child bus AND its parent both have a reverb),
+the tails compound geometrically and even dialed-back presets will
+read as echoey. The design intent of the gool bus graph is **one
+reverb per signal path**, typically on a "world sfx" bus driven by
+ReverbZones. Sub-buses inherit the reverb through bus parenting —
+adding another reverb on a child bus stacks. Audit your config:
+the canonical `config_fps.json` template puts reverb only on Sfx.
+
+### Migration
+
+None. Existing configs that hard-code reverb parameters by hand
+(rather than calling `Gool.apply_reverb_preset`) are unaffected —
+the GoolPresets values are read at preset-application time. Any
+ReverbZone in the addon-default state will pick up the new values
+on next listener-entry ramp.
+
 ## [0.69.1] - 2026-05-23 — Hotfix: session log dump uses shell_show_in_file_manager
 
 v0.68.0 introduced the Ctrl+Shift+G session log dump hotkey, and on
@@ -20205,6 +20265,7 @@ Headlines:
 [0.68.1]: https://github.com/siliconight/gool/releases/tag/v0.68.1
 [0.69.0]: https://github.com/siliconight/gool/releases/tag/v0.69.0
 [0.69.1]: https://github.com/siliconight/gool/releases/tag/v0.69.1
+[0.69.2]: https://github.com/siliconight/gool/releases/tag/v0.69.2
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
