@@ -151,6 +151,48 @@ Default ring buffer is 4096 entries; configurable via
 
 ---
 
+## 11. Tag sounds by priority
+
+New in v0.74.0. Each emitter has a priority value (0–255) used by
+future eviction logic (v0.75.0+) to decide which voices survive when
+the emitter pool is full. The numeric bands match `AudioPriority`:
+
+| Value | Band | Use for |
+|-------|------|---------|
+| 0 | Lowest | Ambient hum, far-distance peripheral effects |
+| 64 | Low | Background SFX you can live without |
+| 128 | Normal | Default. Most gameplay sounds |
+| 192 | High | Critical gameplay feedback — gunshots, hit confirms |
+| 255 | Critical | Music beds, dialogue lines, anything that must not be stolen |
+
+Set it at registration time (applies to every emitter for that sound):
+
+```gdscript
+Gool.register_sound_definition_dict("gunshot", {
+    "priority": 192,  # High
+    "max_distance": 80.0,
+})
+```
+
+Or override per call (wins over the registered value):
+
+```gdscript
+# Pickup chime: usually Normal, but Critical for the final objective
+var h := Gool.create_emitter(
+    "pickup_chime", pos, false, 0.0,
+    192 if is_final_objective else -1  # -1 = use the registered value
+)
+```
+
+Read it back via `Gool.get_emitter_priority(handle)` — returns the
+value 0–255 (or -1 if the handle is invalid).
+
+**Heads up:** v0.74.0 only stores priorities; nothing acts on them
+yet. When eviction lands in v0.75.0, sounds tagged Lowest/Low will
+be the first to get stolen under pool pressure, and High/Critical
+will survive. Tag your sounds now so the v0.75.0 upgrade is a
+behavior change you've already planned for.
+
 ## Common gotchas
 
 **"My sound doesn't play."**

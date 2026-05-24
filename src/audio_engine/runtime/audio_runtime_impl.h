@@ -205,6 +205,10 @@ public:
     void                  SetListener(const AudioListener& listener);
     Result<EmitterHandle> CreateEmitter(const EmitterDescriptor& desc);
     AudioResult           DestroyEmitter(EmitterHandle handle, float fadeOutMs = 0.0f);
+    // v0.74.0: priority lookup. Reads from the EmitterRecord's
+    // descriptor without copying the record. Returns -1 if the
+    // handle no longer maps to a live slot.
+    int32_t               GetEmitterPriority(EmitterHandle handle) const noexcept;
     AudioResult           SetEmitterTransform(EmitterHandle h,
                                                const Vec3& pos,
                                                const Vec3& fwd,

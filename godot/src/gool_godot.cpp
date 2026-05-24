@@ -485,12 +485,12 @@ public:
                                        "min_distance", "max_distance",
                                        "loop_crossfade_ms",
                                        "category", "target_bus_name",
-                                       "occlusion_enabled"),
+                                       "occlusion_enabled", "priority"),
                               &GoolAudioRuntime::register_sound_definition,
                               DEFVAL(true), DEFVAL(false),
                               DEFVAL(1.0), DEFVAL(50.0), DEFVAL(0.0),
                               DEFVAL(0), DEFVAL(String()),
-                              DEFVAL(true));
+                              DEFVAL(true), DEFVAL(128));
         // v0.65.0: dict-based variant for cleaner partial overrides.
         // The positional version above has 8 optional args after
         // name; GDScript can't skip middle args, so callers who
@@ -603,13 +603,18 @@ public:
                               &GoolAudioRuntime::play_sound_at_location_for_material);
         ClassDB::bind_method(D_METHOD("create_emitter",
                                        "name", "position",
-                                       "looping", "fade_in_ms"),
+                                       "looping", "fade_in_ms",
+                                       "priority"),
                               &GoolAudioRuntime::create_emitter,
-                              DEFVAL(false), DEFVAL(0.0));
+                              DEFVAL(false), DEFVAL(0.0), DEFVAL(-1));
         ClassDB::bind_method(D_METHOD("destroy_emitter",
                                        "handle_packed", "fade_out_ms"),
                               &GoolAudioRuntime::destroy_emitter,
                               DEFVAL(0.0));
+        // v0.74.0: priority introspection on live emitters.
+        ClassDB::bind_method(D_METHOD("get_emitter_priority",
+                                       "handle_packed"),
+                              &GoolAudioRuntime::get_emitter_priority);
         ClassDB::bind_method(D_METHOD("set_emitter_transform",
                                        "handle_packed",
                                        "position", "forward", "velocity"),
@@ -1505,7 +1510,8 @@ public:
                                     double loop_crossfade_ms,
                                     int category,
                                     const String& target_bus_name,
-                                    bool occlusion_enabled) {
+                                    bool occlusion_enabled,
+                                    int priority) {
         if (!runtime_) return;
         audio::SoundDefinition def;
         def.soundId           = HashName(name);
@@ -1518,6 +1524,32 @@ public:
         // readability or clarity. Music sounds already auto-opt-out
         // via music_channel.cpp.
         def.occlusionEnabled  = occlusion_enabled;
+        // v0.74.0: per-sound priority. Range 0-255. Default 128
+        // (AudioPriority::Normal). Used by future eviction logic
+        // (v0.75.0+) to pick which active emitter to discard when
+        // the pool is full. Already plumbed through the C++
+        // EmitterDescriptor.priority; before this release the
+        // Godot binding had no path to set it, so every emitter
+        // got the struct default of Normal. Now hosts that
+        // register a sound at Critical (255) get a slot that
+        // outranks the music bed at Normal.
+        //
+        // Convention: Lowest=0, Low=64, Normal=128, High=192,
+        // Critical=255. The mid-values are useful for "this is
+        // a bit more important than default" without claiming
+        // High. Out-of-range values clamp to Normal with a
+        // warning so a typo (1000 instead of 100) is visible.
+        int priority_clamped = priority;
+        if (priority < 0 || priority > 255) {
+            UtilityFunctions::push_warning(
+                String("GoolAudioRuntime: register_sound_definition(\"")
+                + name + String("\") priority ")
+                + String::num_int64(priority)
+                + String(" out of range (0..255). Clamping to Normal (128). ")
+                + String("Use 0=Lowest, 64=Low, 128=Normal, 192=High, 255=Critical."));
+            priority_clamped = 128;
+        }
+        def.priority = static_cast<audio::AudioPriority>(priority_clamped);
         // Category determines which bus the runtime routes to when
         // targetBus stays at kInvalidBusId. Hosts that don't pass
         // category get SFX (the most common default for game-audio
@@ -1602,6 +1634,9 @@ public:
             "loop_crossfade_ms",
             "category", "target_bus_name",
             "occlusion_enabled",
+            // v0.74.0: priority — 0..255, default 128 (Normal). See
+            // register_sound_definition for the band convention.
+            "priority",
         };
         constexpr size_t kRecognizedKeyCount =
             sizeof(kRecognizedKeys) / sizeof(kRecognizedKeys[0]);
@@ -1621,7 +1656,8 @@ public:
                     + name + String("\") unknown option key '") + key
                     + String("' (typo? recognized keys: spatialized, looping, "
                             "min_distance, max_distance, loop_crossfade_ms, "
-                            "category, target_bus_name, occlusion_enabled)"));
+                            "category, target_bus_name, occlusion_enabled, "
+                            "priority)"));
             }
         }
 
@@ -1644,12 +1680,18 @@ public:
             String(options.get("target_bus_name", String()));
         const bool occlusion_enabled =
             static_cast<bool>(options.get("occlusion_enabled", true));
+        // v0.74.0: priority option. 128 (Normal) = struct default
+        // and matches the positional register_sound_definition
+        // default. Pass through unclamped; the underlying function
+        // does the range check + warns on out-of-range.
+        const int priority =
+            static_cast<int>(options.get("priority", 128));
 
         register_sound_definition(name, spatialized, looping,
                                   min_distance, max_distance,
                                   loop_crossfade_ms,
                                   category, target_bus_name,
-                                  occlusion_enabled);
+                                  occlusion_enabled, priority);
     }
 
     // v0.66.0: sound-registry introspection (GDScript-facing).
@@ -2165,7 +2207,8 @@ public:
     int64_t create_emitter(const String& name,
                              const Vector3& position,
                              bool looping,
-                             double fade_in_ms) {
+                             double fade_in_ms,
+                             int priority) {
         if (!runtime_) return 0;
         audio::EmitterDescriptor desc;
         desc.soundId       = HashName(name);
@@ -2182,19 +2225,25 @@ public:
         //                 sounds like music drones.
         // - attenuation → minDistance / maxDistance / falloff curve
         //
+        // v0.74.0: also inherit `priority` from SoundDefinition.
+        // This fixes a latent bug — pre-v0.74.0, SoundDefinition.priority
+        // existed in the C++ struct but the binding never copied it
+        // into EmitterDescriptor, so every emitter got the struct
+        // default (Normal=128) regardless of how the sound was
+        // registered. Now a sound registered as Critical (255) gets
+        // a Critical emitter unless the create call overrides it.
+        //
         // Hosts that don't call register_sound_definition fall through
         // to the EmitterDescriptor struct defaults (category=SFX,
-        // spatialized=true). This matches the pre-v0.25.2 behavior
-        // for those hosts. The change is: hosts that DO call
-        // register_sound_definition now get their metadata applied,
-        // instead of being silently ignored (the bug that misrouted
-        // the sandbox drone to Sfx through v0.25.1).
+        // spatialized=true, priority=Normal). This matches the
+        // pre-v0.25.2 behavior for those hosts.
         //
-        // The `looping` and `fade_in_ms` call-site parameters still
-        // win over any SoundDefinition values — explicit args from
-        // the caller have priority. SoundDefinition only fills in
-        // routing/spatial metadata that create_emitter doesn't expose
-        // as parameters.
+        // The `looping`, `fade_in_ms`, and `priority` call-site
+        // parameters still win over any SoundDefinition values —
+        // explicit args from the caller have priority. SoundDefinition
+        // only fills in metadata that create_emitter doesn't expose
+        // as parameters, OR provides a default that the caller can
+        // override.
         const audio::SoundDefinition* def =
             runtime_->GetSoundDefinition(desc.soundId);
         if (def != nullptr) {
@@ -2202,12 +2251,32 @@ public:
             desc.targetBus     = def->targetBus;
             desc.isSpatialized = def->spatialized;
             desc.attenuation   = def->attenuation;
+            desc.priority      = def->priority;
         } else {
             // No SoundDefinition registered; preserve pre-v0.25.2
             // behavior. The struct defaults already give SFX
             // category, so we only need to set the things the
             // old code set explicitly.
             desc.isSpatialized = true;
+        }
+
+        // v0.74.0: per-call priority override. Sentinel -1 = "use
+        // whatever desc.priority resolved to above" (SoundDefinition
+        // value or struct default). Valid 0..255 overrides that.
+        // Out-of-range (other than -1) is treated as a typo and
+        // ignored with a warning rather than clamped silently,
+        // since silently coercing 1000→255 hides the bug.
+        if (priority >= 0) {
+            if (priority > 255) {
+                UtilityFunctions::push_warning(
+                    String("GoolAudioRuntime: create_emitter('") + name
+                    + String("') priority ") + String::num_int64(priority)
+                    + String(" out of range (0..255). Ignoring; using ")
+                    + String("the sound's registered priority instead. ")
+                    + String("Use 0=Lowest, 64=Low, 128=Normal, 192=High, 255=Critical."));
+            } else {
+                desc.priority = static_cast<audio::AudioPriority>(priority);
+            }
         }
 
         // v0.66.0: warn loudly if this soundId has no playable asset
@@ -2277,6 +2346,22 @@ public:
         if (!runtime_) return;
         runtime_->DestroyEmitter(UnpackHandle(handle_packed),
                                    static_cast<float>(fade_out_ms));
+    }
+
+    // v0.74.0: read the priority assigned to a live emitter. Returns
+    // 0..255 if the emitter exists, -1 otherwise. Useful for:
+    //   - debugging "did my priority parameter actually take effect?"
+    //   - verifying SoundDefinition priority inheritance after a
+    //     create_emitter call that didn't pass an override
+    //   - future v0.75.0+ work: querying competing slot priorities
+    //     to understand why a specific eviction happened
+    //
+    // GDScript usage:
+    //   var h := Gool.create_emitter("explosion", pos, false, 0.0, 255)
+    //   assert(Gool.get_emitter_priority(h) == 255)
+    int get_emitter_priority(int64_t handle_packed) const {
+        if (!runtime_) return -1;
+        return runtime_->GetEmitterPriority(UnpackHandle(handle_packed));
     }
 
     void set_emitter_transform(int64_t handle_packed,

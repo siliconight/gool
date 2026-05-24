@@ -22,6 +22,148 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.74.0] - 2026-05-24 — Priority API surface (eviction prep, phase 1 of 2)
+
+First of two releases adding priority-based voice eviction (the v0.73.0
+"queued for future" item). This release exposes priority to GDScript
+without changing any runtime behavior — users can start tagging their
+sounds now, and v0.75.0 will add the eviction logic that acts on those
+tags.
+
+**Why split into two releases:** if priority API and eviction logic
+shipped together, the first time anyone tagged a priority would also
+be the first time they saw eviction behavior — any tagging bug would
+look like an eviction bug. Splitting lets users verify their tagging
+on a stable runtime before v0.75.0 lands.
+
+### Priority parameter on `create_emitter`
+
+```gdscript
+# Default Normal (128) — same as pre-v0.74.0 implicit behavior
+var h := Gool.create_emitter("footstep", pos, false, 0.0)
+
+# Per-call override — wins over any registered priority
+var h := Gool.create_emitter("explosion", pos, false, 0.0, 255)  # Critical
+
+# Sentinel -1: use the sound's registered priority (or struct default)
+var h := Gool.create_emitter("ambient_hum", pos, true, 100.0, -1)
+```
+
+The new `priority: int = -1` parameter is appended after the existing
+ones. All existing call sites continue to work unchanged — they get
+Normal (128) priority via the default path.
+
+### Priority key on `register_sound_definition` and dict variant
+
+```gdscript
+# Positional form: priority is the 10th parameter, default 128
+Gool.register_sound_definition("gunshot", true, false,
+        1.0, 80.0, 0.0, Gool.CATEGORY_SFX, "", true, 192)
+
+# Dict form — recommended, less footgun-prone
+Gool.register_sound_definition_dict("gunshot", {
+    "priority": 192,
+    "max_distance": 80.0,
+})
+```
+
+Range 0-255. Bands: `Lowest=0, Low=64, Normal=128, High=192,
+Critical=255`. Out-of-range values clamp to Normal with a warning
+(typos surface instead of silently coercing to 255).
+
+### Priority introspection
+
+New method to read back a live emitter's priority:
+
+```gdscript
+var h := Gool.create_emitter("hit", pos, false, 0.0, 192)
+assert(Gool.get_emitter_priority(h) == 192)
+
+# Returns -1 for invalid/destroyed handles
+Gool.destroy_emitter(h, 50.0)
+assert(Gool.get_emitter_priority(h) == -1)
+```
+
+Backed by a new public C++ API `AudioRuntime::GetEmitterPriority(handle)`
+that reads from the emitter slot without copying the EmitterRecord.
+Const-correct, allocation-free, returns `int32_t` so -1 is unambiguous.
+
+### Latent bug fixed: SoundDefinition priority now actually applies
+
+Pre-v0.74.0, the C++ struct `SoundDefinition::priority` existed and
+was settable through `RegisterSoundDefinition` from native callers,
+but the Godot binding's `create_emitter` never copied it into the
+`EmitterDescriptor.priority` field. Result: every emitter created
+from GDScript had `Normal (128)` priority regardless of registration.
+
+v0.74.0 adds the missing inheritance:
+
+```cpp
+// In gool_godot.cpp create_emitter
+if (def != nullptr) {
+    desc.category      = def->category;
+    desc.targetBus     = def->targetBus;
+    desc.isSpatialized = def->spatialized;
+    desc.attenuation   = def->attenuation;
+    desc.priority      = def->priority;   // v0.74.0
+}
+```
+
+For users who haven't been setting priority: no behavior change
+(every sound stays at Normal). For users who'd been setting priority
+in a SoundDefinition expecting it to do something: their sound
+finally gets the priority they set — but since v0.74.0 doesn't
+have eviction yet, the priority still has no observable effect.
+v0.75.0 will surface it.
+
+### Precedence
+
+Three layers, each overriding the previous:
+
+1. **EmitterDescriptor struct default**: Normal (128)
+2. **SoundDefinition.priority** at registration (overrides struct default)
+3. **Per-call priority parameter** on `create_emitter` (overrides #2)
+
+Sentinel value -1 on `create_emitter` means "skip step 3 — use whatever
+step 2 produced." Valid 0-255 values override.
+
+### What's NOT in this release
+
+- **Eviction logic.** Hitting `BudgetExceeded` still hard-fails with
+  the v0.73.0 warning. Priority is stored but never queried for
+  eviction decisions yet. Coming in v0.75.0 behind a `budget.eviction_mode`
+  config flag, default `"hard_fail"` (preserves v0.73.0 behavior),
+  opt-in to `"priority"`.
+
+- **Categorical preferences.** No "don't let a UI sound evict a music
+  slot." Single-axis priority for now; category-aware eviction is a
+  potential v0.76.0 polish item.
+
+- **Non-evictable flag.** No way to mark a specific emitter as
+  "absolutely never steal this one." Critical (255) is the closest
+  proxy — under priority eviction, a slot at 255 can only be evicted
+  by another 255 emitter, which doesn't help since equal priority
+  doesn't evict. Possible v0.76.0 addition.
+
+### Verification
+
+- **4 priority micro-tests** exercise EmitterManager::Create:
+  Critical priority stored, Normal default survives, three slots
+  hold independent priorities, destroy+recreate doesn't leak old
+  priority. All pass.
+- **2 v0.73.0 budget regression tests** confirm parser still
+  handles budget block with new code. All pass.
+- **`audio_runtime.cpp` compiles clean** under `-Wall -Wextra
+  -Wpedantic -Werror -O2` with CI's include paths.
+- **v0.73.1 pre-ship audit**: 0 const-with-+ hazards in the entire
+  addon. The lesson from the regression that bricked v0.71.0 → v0.73.0
+  remains enforced.
+
+### Migration
+
+None required. Pure additive API. Every existing `create_emitter` and
+`register_sound_definition` call continues to behave identically.
+
 ## [0.73.1] - 2026-05-24 — Hotfix: runtime_singleton.gd const fails to parse
 
 Critical hotfix. A v0.71.0-vintage form of the `_NOT_INITIALIZED_WARNING`
@@ -20836,6 +20978,7 @@ Headlines:
 [0.72.0]: https://github.com/siliconight/gool/releases/tag/v0.72.0
 [0.73.0]: https://github.com/siliconight/gool/releases/tag/v0.73.0
 [0.73.1]: https://github.com/siliconight/gool/releases/tag/v0.73.1
+[0.74.0]: https://github.com/siliconight/gool/releases/tag/v0.74.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

@@ -504,6 +504,19 @@ public:
                                     speed, smoothingMs);
     }
 
+    // v0.74.0: read the priority assigned to an active emitter.
+    // Returns 0..255 for a live emitter, -1 if the handle is
+    // invalid or the runtime isn't initialized. The companion to
+    // the new `priority` parameter on CreateEmitter / register_sound_definition.
+    //
+    // Pre-v0.75.0 (when eviction lands) this is mostly diagnostic:
+    // "did my priority setting actually take effect on this slot?"
+    // Once eviction is live, it answers "why didn't my high-priority
+    // sound survive when the pool filled?" by letting you read back
+    // the priorities of competing slots.
+    int32_t GetEmitterPriority(EmitterHandle handle) const noexcept
+        AUDIO_REQUIRES(GameThread);
+
     // ---- Global (RTPC) parameters (game thread) --------------------------
     // A flat name → float store for "real-time parameter control" values
     // that authored sound definitions can reference. Common examples:

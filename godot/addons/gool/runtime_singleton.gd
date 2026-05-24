@@ -1244,7 +1244,8 @@ func register_sound_definition(name: String, spatialized: bool = true,
 								 loop_crossfade_ms: float = 0.0,
 								 category: int = CATEGORY_SFX,
 								 target_bus_name: String = "",
-								 occlusion_enabled: bool = true) -> void:
+								 occlusion_enabled: bool = true,
+								 priority: int = 128) -> void:
 	if not _check_init("register_sound_definition"):
 		return
 	# v0.55.0: pre-check target_bus_name against the cache to avoid
@@ -1256,19 +1257,13 @@ func register_sound_definition(name: String, spatialized: bool = true,
 	if target_bus_name != "" and not has_bus(target_bus_name):
 		if not _warned_missing_target_buses.has(target_bus_name):
 			_warned_missing_target_buses[target_bus_name] = true
-			push_warning(
-				"[gool] register_sound_definition: target_bus_name '%s' "
-				% target_bus_name
-				+ "doesn't exist in res://gool/config.json. Sounds "
-				+ "targeting this bus will fall back to category routing. "
-				+ "(Further warnings for this bus suppressed.)"
-			)
+			push_warning("[gool] register_sound_definition: target_bus_name '%s' doesn't exist in res://gool/config.json. Sounds targeting this bus will fall back to category routing. (Further warnings for this bus suppressed.)" % target_bus_name)
 		resolved_target = ""
 	_runtime.register_sound_definition(name, spatialized, looping,
 										 min_distance, max_distance,
 										 loop_crossfade_ms,
 										 category, resolved_target,
-										 occlusion_enabled)
+										 occlusion_enabled, priority)
 
 ## v0.49.0: Dictionary-based form of register_sound_definition.
 ## Eliminates the 9-positional-argument footgun in the original
@@ -2635,15 +2630,25 @@ func play_one_shot(name: String, position: Vector3 = Vector3.ZERO) -> int:
 
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
-					 fade_in_ms: float = 0.0) -> int:
+					 fade_in_ms: float = 0.0,
+					 priority: int = -1) -> int:
 	if not _check_init("create_emitter"):
 		return 0
-	return _runtime.create_emitter(name, position, looping, fade_in_ms)
+	return _runtime.create_emitter(name, position, looping, fade_in_ms, priority)
 
 func destroy_emitter(handle: int, fade_out_ms: float = 0.0) -> void:
 	if not _check_init("destroy_emitter"):
 		return
 	_runtime.destroy_emitter(handle, fade_out_ms)
+
+## Returns the priority assigned to a live emitter (0..255), or -1 if
+## the handle is invalid / the emitter has been destroyed / the
+## runtime isn't initialized. New in v0.74.0. See create_emitter's
+## priority parameter for the band convention.
+func get_emitter_priority(handle: int) -> int:
+	if not _check_init("get_emitter_priority"):
+		return -1
+	return _runtime.get_emitter_priority(handle)
 
 func set_emitter_transform(handle: int, position: Vector3,
 							  forward: Vector3, velocity: Vector3) -> void:

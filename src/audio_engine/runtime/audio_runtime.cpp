@@ -160,6 +160,13 @@ void AudioRuntime::SetListener(const AudioListener& l) { impl_->SetListener(l); 
 Result<EmitterHandle> AudioRuntime::CreateEmitter(const EmitterDescriptor& d) {
     return impl_->CreateEmitter(d);
 }
+// v0.74.0: priority introspection. Returns 0..255 on success,
+// -1 if the handle is invalid or the runtime isn't initialized.
+// The impl walks the emitter slot pool to look up the descriptor
+// without exposing the internal EmitterRecord type.
+int32_t AudioRuntime::GetEmitterPriority(EmitterHandle h) const noexcept {
+    return impl_->GetEmitterPriority(h);
+}
 AudioResult AudioRuntime::DestroyEmitter(EmitterHandle h, float fadeOutMs) { return impl_->DestroyEmitter(h, fadeOutMs); }
 AudioResult AudioRuntime::SetEmitterTransform(EmitterHandle h,
                                                 const Vec3& p,
@@ -830,6 +837,24 @@ Result<EmitterHandle> AudioRuntimeImpl::CreateEmitter(const EmitterDescriptor& d
         }
     }
     return h.value();
+}
+
+// v0.74.0: priority introspection. Look up the descriptor on the
+// emitter's slot and return its priority as int32_t. The cast to
+// int32_t widens the uint8_t to a signed type so we can use -1
+// as the "invalid" sentinel without losing valid 0..255 range.
+//
+// Const-correct: never modifies runtime state. Cheap: one slot
+// lookup, no allocation. Returns -1 in three cases:
+//   - the runtime hasn't been initialized
+//   - the handle is malformed (e.g. UnpackHandle(0))
+//   - the slot has been freed (generation mismatch or empty slot)
+int32_t AudioRuntimeImpl::GetEmitterPriority(EmitterHandle handle) const noexcept {
+    if (!initialized_) return -1;
+    if (const auto* rec = emitters_->Get(handle); rec != nullptr) {
+        return static_cast<int32_t>(rec->descriptor.priority);
+    }
+    return -1;
 }
 
 AudioResult AudioRuntimeImpl::DestroyEmitter(EmitterHandle handle, float fadeOutMs) {
