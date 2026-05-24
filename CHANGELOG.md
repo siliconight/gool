@@ -22,6 +22,79 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.68.1] - 2026-05-23 — Template fixes: config_fps.json gets master_control, warning text fixed
+
+Patch release addressing two related gaps surfaced by the v0.66.x sandbox debug session.
+
+### Fix 1: ReverbZone warning pointed to a nonexistent file
+
+`reverb_zone.gd` warned users about a missing pre-Reverb Biquad slot
+with the message "copy the relevant entry from
+`addons/gool/templates/default_config.json`." That file doesn't exist
+in the addon — the canonical template is `config_fps.json`. Users
+following the error message hit a 404. The return-LPF warning
+didn't reference the template at all, despite the same template
+having the post-Reverb slot pre-populated.
+
+**Fixed:** Both warning strings now point to `config_fps.json` with
+consistent guidance. Two files updated:
+`godot/addons/gool/prefabs/reverb_zone.gd` and the example copy at
+`examples/audition/addons/gool/prefabs/reverb_zone.gd`.
+
+### Fix 2: Template lacked master_control on the Master bus
+
+`config_fps.json` had a bare `{ "name": "Master", "gain_db": 0.0 }`
+— no dynamics, no limiting. The v0.64.0 `master_control` effect is
+the gool-for-non-audio-experts story (Glue+Limiter+Rider in one
+effect, five presets), and dropping it on Master is the first thing
+any new project should do. Leaving it out of the template missed
+the chance to showcase the feature and shipped users a config they
+had to amend before being release-ready.
+
+**Fixed:** Template now includes `master_control` on the Master bus
+with the Standard FPS preset baked in — values copied verbatim from
+`addons/gool/master_fx_presets/Standard_FPS.tres`. Source of truth:
+the .tres file. The JSON has a `_comment` field pointing back to it
+so the lineage is discoverable.
+
+The Standard FPS preset:
+
+  - Glue: -12 dB threshold, 2:1 ratio, 10/250 ms attack/release, 6 dB knee
+  - Rider: -16 LUFS target (FPS-typical), ±6 dB range, 3 s time constant
+  - Limiter: -1 dBTP ceiling, 50 ms release, 5 ms lookahead
+
+Pick a different preset in the mixer dock (Add Effect → Master
+Control → preset submenu) if Standard FPS doesn't fit your game
+type, or hand-edit the mc_* params.
+
+### Fix 3: Template README didn't mention config_fps.json
+
+`addons/gool/templates/README.md` only documented `quickstart_3d.tscn`
+and `test_beep.wav`. The two JSON template files (`config_fps.json`,
+`dialogue_setup_example.json`) shipped undocumented — users had to
+discover them by `ls`'ing the templates directory.
+
+**Fixed:** Added a `config_fps.json` section explaining what's
+pre-wired (the master_control preset, the Sfx-bus reverb shape,
+the three-tier sidechain ducking, category routing), and a short
+`dialogue_setup_example.json` section explaining its role.
+
+### No code/API/behavior changes
+
+Existing projects with their own `gool/config.json` are unaffected
+— the template is a starting point, not loaded at runtime. The
+warning-text fix only changes what users *see* when ReverbZone
+detects a missing slot; the warning still fires under the same
+conditions.
+
+### Migration
+
+None required. Projects can opt into the improved template by
+re-copying `addons/gool/templates/config_fps.json` over their
+existing `res://gool/config.json` (the mixer dock has a "Use FPS
+template" action that does this), or by hand-adding the
+`master_control` block to their Master bus.
+
 ## [0.68.0] - 2026-05-23 — Default Ctrl+Shift+G hotkey for session log dump
 
 The v0.67.0 session log dump shipped the API (`Gool.dump_session_log()`)
@@ -19995,6 +20068,7 @@ Headlines:
 [0.67.0]: https://github.com/siliconight/gool/releases/tag/v0.67.0
 [0.67.1]: https://github.com/siliconight/gool/releases/tag/v0.67.1
 [0.68.0]: https://github.com/siliconight/gool/releases/tag/v0.68.0
+[0.68.1]: https://github.com/siliconight/gool/releases/tag/v0.68.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

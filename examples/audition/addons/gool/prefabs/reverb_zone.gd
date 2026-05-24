@@ -334,7 +334,7 @@ func _locate_reverb_effect() -> void:
 					+ "effect chain right before the Reverb effect — gool ships a "
 					+ "default config with this slot pre-populated as of v0.47.0; if "
 					+ "your config predates that, copy the relevant entry from "
-					+ "addons/gool/templates/default_config.json.")
+					+ "addons/gool/templates/config_fps.json.")
 			if _return_lpf_index < 0 and return_lpf_hz < 22000.0:
 				push_warning(
 					"ReverbZone: return_lpf_hz=%.0f set but no Biquad effect at index %d "

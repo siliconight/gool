@@ -350,14 +350,15 @@ func _locate_reverb_effect() -> void:
 					+ "effect chain right before the Reverb effect — gool ships a "
 					+ "default config with this slot pre-populated as of v0.47.0; if "
 					+ "your config predates that, copy the relevant entry from "
-					+ "addons/gool/templates/default_config.json.")
+					+ "addons/gool/templates/config_fps.json.")
 			if _return_lpf_index < 0 and return_lpf_hz < 22000.0:
 				push_warning(
 					"ReverbZone: return_lpf_hz=%.0f set but no Biquad effect at index %d "
 					% [return_lpf_hz, i + 1]
 					+ "(immediately after Reverb) on bus '%s'. " % bus_name
 					+ "Return-LPF will be skipped. To enable: add a Biquad to the bus's "
-					+ "effect chain right after the Reverb effect.")
+					+ "effect chain right after the Reverb effect — the slot is also "
+					+ "pre-populated in addons/gool/templates/config_fps.json.")
 			return
 	push_warning("ReverbZone: bus '%s' has no Reverb effect. Zone is inert. " % bus_name
 			+ "Add a Reverb effect to the bus's effect chain in your gool config.")
