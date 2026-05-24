@@ -768,12 +768,17 @@ func is_initialized() -> bool:
 # Hot-path cost: one is_initialized() check, identical to the
 # previous guard. The dict-lookup slow path only fires when the
 # runtime isn't ready, which is the rare case we want to surface.
-const _NOT_INITIALIZED_WARNING: String = (
-	"[gool] %s() called before the runtime is ready. "
-	+ "Call this after the Gool autoload's `ready_to_play` signal "
-	+ "fires, or guard with `if Gool.is_initialized():`. "
-	+ "(This warning fires once per method per session.)"
-)
+# v0.73.1 hotfix: a previous v0.71.0 form of this constant used
+# multi-line string concatenation with `+`. That syntax fails to
+# parse on real Godot because GDScript's constant-folding pass
+# does not evaluate `+` between string literals at parse time —
+# the operator stays runtime-only. Result: runtime_singleton.gd
+# wouldn't compile on fresh installs, the Gool autoload never
+# registered, every script referencing `Gool.X` errored. Static
+# analysis on this end missed it (it only checked shape, not
+# parse-time constant rules). Now uses a single literal —
+# unambiguously parser-friendly across all GDScript versions.
+const _NOT_INITIALIZED_WARNING: String = "[gool] %s() called before the runtime is ready. Call this after the Gool autoload's `ready_to_play` signal fires, or guard with `if Gool.is_initialized():`. (This warning fires once per method per session.)"
 var _not_init_warned: Dictionary = {}
 
 # Returns true if the runtime is ready (caller may proceed).

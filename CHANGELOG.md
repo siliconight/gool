@@ -22,6 +22,101 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.73.1] - 2026-05-24 — Hotfix: runtime_singleton.gd const fails to parse
+
+Critical hotfix. A v0.71.0-vintage form of the `_NOT_INITIALIZED_WARNING`
+constant in `runtime_singleton.gd` (the Gool autoload) used multi-line
+string concatenation:
+
+```gdscript
+const _NOT_INITIALIZED_WARNING: String = (
+	"[gool] %s() called before the runtime is ready. "
+	+ "Call this after the Gool autoload's `ready_to_play` signal "
+	+ "fires, or guard with `if Gool.is_initialized():`. "
+	+ "(This warning fires once per method per session.)"
+)
+```
+
+**GDScript does not constant-fold `+` between string literals at parse
+time** — the operator is runtime-only. The expression is therefore
+not a valid `const` initializer, and `runtime_singleton.gd` fails to
+compile on real Godot. Result on a fresh install:
+
+- The `Gool` autoload fails to register
+- Every script referencing `Gool.X` (other autoloads, prefab nodes,
+  user code) errors with `Identifier "Gool" not declared in the
+  current scope`
+- The mixer dock + Getting Started banner never load because their
+  parent plugin path is broken
+- The "fresh install" experience is completely non-functional
+
+### Fix
+
+The constant is now a single string literal — same text, same
+content, no `+` operator:
+
+```gdscript
+const _NOT_INITIALIZED_WARNING: String = "[gool] %s() called before the runtime is ready. Call this after the Gool autoload's `ready_to_play` signal fires, or guard with `if Gool.is_initialized():`. (This warning fires once per method per session.)"
+```
+
+Trivial textual change. Once `runtime_singleton.gd` compiles, the
+entire v0.71.0-v0.72.0-v0.73.0 stack starts working as documented.
+
+### How this got shipped
+
+The v0.71.0 verification pass checked the *shape* of the file
+(function defined, signatures correct, all expected refs present)
+but didn't check whether the constant's expression is parser-valid.
+Static analysis can confirm "the const declaration exists and is
+spelled right" without ever testing "this expression is something
+GDScript's `const` accepts." For parse-time concerns, the only real
+verification is loading the script on Godot — which I didn't do.
+
+This is the same failure pattern as v0.66.0 (CI broke on a header
+include) and v0.69.1 (Windows shell_open behavior) — shipping code
+that *reads* correctly but was never *executed*. Memory edit #3
+already named this pattern; the lesson is being applied at the C++
+side now (real `-Werror` compiles in v0.73.0), but GDScript parsing
+is its own world and needs its own verification path.
+
+### Pre-ship audit added
+
+A Python-based const-with-operator audit now runs as a pre-ship
+check. It walks every `.gd` file in the addon and flags any `const`
+declaration whose initializer contains a `+` operator outside string
+literals. For this release it confirms only the one issue existed.
+Future releases will fail this check before packaging if a similar
+hazard appears.
+
+### Audit results for this release
+
+```
+v0.73.1 audit: 0 const-with-operator hazards remaining (was 1 in v0.73.0)
+```
+
+### What this release does NOT change
+
+Pure hotfix. No new features, no API changes, no behavior changes
+beyond "the autoload now actually loads." The v0.73.0 budget block,
+loud BudgetExceeded warning, v0.72.0 tooltip pass, v0.72.0 Getting
+Started banner, v0.71.0 `play_one_shot`, v0.71.0 loud first-call
+errors — all of those work as documented now that the Gool autoload
+compiles.
+
+### Migration
+
+None. Users on v0.71.0-v0.73.0 with broken installs just need to
+update to v0.73.1.
+
+### Apology to early v0.71.0+ adopters
+
+This is a real regression that broke fresh installs across three
+versions of gool. The cap-discoverability fix in v0.73.0 was
+particularly painful because users couldn't even reach the error
+that demonstrates it — they hit this autoload failure first. The
+verification approach is being reworked to catch parse-time
+GDScript issues before packaging.
+
 ## [0.73.0] - 2026-05-24 — Configurable emitter cap + loud BudgetExceeded warning
 
 The stress test in v0.69.x discovered something we hadn't documented
@@ -20740,6 +20835,7 @@ Headlines:
 [0.71.0]: https://github.com/siliconight/gool/releases/tag/v0.71.0
 [0.72.0]: https://github.com/siliconight/gool/releases/tag/v0.72.0
 [0.73.0]: https://github.com/siliconight/gool/releases/tag/v0.73.0
+[0.73.1]: https://github.com/siliconight/gool/releases/tag/v0.73.1
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0
