@@ -1,11 +1,20 @@
 # addons/gool/editor/getting_started_banner.gd
 #
 # v0.72.0: First-launch onboarding banner for the mixer dock.
+# v0.74.1: visibility logic fixed (see note at the bottom of this
+# header). The original v0.72.0 form never actually rendered on a
+# fresh install because plugin.gd writes a default config.json on
+# enable, and the banner was checking "config.json absent" as its
+# "not yet onboarded" signal — a contradiction the plugin always
+# satisfied. Two whole releases (v0.72.0 + v0.73.x) shipped with
+# the banner permanently invisible; v0.74.1 makes the dismiss flag
+# the sole hide-trigger.
 #
 # Shows at the top of the Mixer tab when:
-#   - The project has no res://gool/config.json file yet, AND
-#   - The user hasn't dismissed the banner permanently via the
-#     "Don't show again" button.
+#   - The user hasn't dismissed the banner via the "Don't show
+#     again" button, AND
+#   - The user hasn't picked a template yet (template-pick also
+#     persists the dismiss flag, treating it as completed onboarding).
 #
 # Three actions, all idempotent and reversible by hand-editing
 # the resulting JSON file:
@@ -14,20 +23,32 @@
 #      to res://gool/config.json. This is the bus graph used by
 #      examples/04_coop_shooter_template and audition; sensible
 #      starting point for an FPS, action game, or anything with
-#      gameplay SFX + music + dialogue.
+#      gameplay SFX + music + dialogue. Also persists the dismiss
+#      flag so the banner stays gone next editor open.
 #
 #   2. "Use minimal template" — writes a 3-bus config to
 #      res://gool/config.json: Master, Sfx (with one reverb effect),
 #      Music. The leanest baseline you can run gool with. Good for
-#      smaller games, tutorials, or "just want sound to work."
+#      smaller games, tutorials, or "just want sound to work." Also
+#      persists the dismiss flag.
 #
-#   3. "Don't show again" — sets the editor-meta flag below and
-#      hides the banner permanently for this project. The banner
-#      can be brought back by deleting the metadata file or
-#      manually editing project.godot.
+#   3. "Don't show again" — persists the dismiss flag without
+#      touching the config. Use when the user already knows what
+#      they want and doesn't need the template helper.
 #
-# Once a config.json exists, the banner self-removes on next
-# mixer-dock open. No-op if the user already has one.
+# To re-enable the banner on a project where it's been dismissed,
+# remove the 'addons/gool/editor/getting_started_dismissed' setting
+# from project.godot (or set it to false).
+#
+# v0.74.1 visibility-fix rationale (more detail):
+# The previous form had `if FileAccess.file_exists(_PROJECT_CONFIG_PATH):
+# return false` as a hide-trigger. The intent was "if the user already
+# has a config, they're not new — hide the banner." But plugin.gd's
+# enable() writes that exact file as one of its setup steps, before
+# the user has a chance to see the banner. Net effect: the banner
+# could never show on a fresh project. The fix is to remove that
+# trigger and route all "user is done" signals through the dismiss
+# flag, which is set by all three button handlers.
 @tool
 extends PanelContainer
 
@@ -88,14 +109,31 @@ func _ready() -> void:
 func _should_show() -> bool:
 	if _DEBUG_FORCE_VISIBLE:
 		return true
-	# Auto-hide if a config already exists.
-	if FileAccess.file_exists(_PROJECT_CONFIG_PATH):
-		return false
-	# Auto-hide if the user dismissed it for this project.
+	# v0.74.1 fix: the only valid "user already onboarded" signal is the
+	# dismiss flag in ProjectSettings. The previous check (auto-hide when
+	# res://gool/config.json exists) was always satisfied on fresh
+	# installs because plugin.gd writes a default config as part of
+	# enable(). Result: the banner shipped in v0.72.0 never actually
+	# appeared to any new user. Fixed by letting the dismiss flag be the
+	# sole "I'm done with onboarding" signal; the flag is set when the
+	# user clicks any of the three buttons (template-pick or explicit
+	# dismiss), so the banner stays gone after the user has engaged.
 	if ProjectSettings.has_setting(_DISMISS_META_KEY) \
 			and bool(ProjectSettings.get_setting(_DISMISS_META_KEY)):
 		return false
 	return true
+
+
+# v0.74.1: extracted from _on_dismiss so _write_config_and_finish can
+# reuse it. Persists the "user has interacted with the banner" flag in
+# ProjectSettings so the banner stays hidden across editor restarts.
+# Returns true if the flag persisted successfully, false if the
+# ProjectSettings.save() call failed (caller may surface a warning).
+func _persist_dismiss_flag() -> bool:
+	ProjectSettings.set_setting(_DISMISS_META_KEY, true)
+	ProjectSettings.set_initial_value(_DISMISS_META_KEY, false)
+	var save_err: int = ProjectSettings.save()
+	return save_err == OK
 
 
 func _build_ui() -> void:
@@ -183,13 +221,9 @@ func _on_use_minimal_template() -> void:
 
 
 func _on_dismiss() -> void:
-	ProjectSettings.set_setting(_DISMISS_META_KEY, true)
-	# Make the setting persist across editor restarts.
-	ProjectSettings.set_initial_value(_DISMISS_META_KEY, false)
-	var save_err: int = ProjectSettings.save()
-	if save_err != OK:
-		push_warning("[gool] Could not persist dismiss flag (err=%d). "
-				% save_err
+	# v0.74.1: shared helper with _write_config_and_finish.
+	if not _persist_dismiss_flag():
+		push_warning("[gool] Could not persist dismiss flag. "
 				+ "Banner hidden for this session but may reappear next "
 				+ "editor launch.")
 	visible = false
@@ -217,6 +251,16 @@ func _write_config_and_finish(content: String, label: String) -> void:
 		return
 	f.store_string(content)
 	f.close()
+	# v0.74.1: persist the dismiss flag so the banner doesn't reappear on
+	# next editor restart. Picking a template is an act of completed
+	# onboarding — the user is engaged and set up. Without this, the
+	# banner would re-show on every editor open because _should_show no
+	# longer treats config.json existence as a dismiss signal (see
+	# comment on _should_show for why).
+	if not _persist_dismiss_flag():
+		push_warning("[gool] Wrote config but could not persist banner "
+				+ "dismiss flag. Banner will be hidden this session but "
+				+ "may reappear next editor launch.")
 	print("[gool] Wrote %s to %s using the %s. "
 			% [_PROJECT_CONFIG_PATH.get_file(),
 					_PROJECT_CONFIG_PATH, label]

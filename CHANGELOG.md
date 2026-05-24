@@ -22,6 +22,43 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.74.1] - 2026-05-24 — Onboarding banner visibility fix
+
+### Fixed
+
+- **Getting Started banner now actually appears on fresh installs.** The
+  v0.72.0 banner shipped with self-defeating visibility logic: it would
+  hide itself if `res://gool/config.json` existed, but the plugin's
+  enable code creates that exact file as one of its first-install steps.
+  Net effect: the banner has been permanently invisible to every new
+  user since v0.72.0 (two releases). v0.74.1 makes the explicit dismiss
+  flag the sole hide-trigger, and template-pick buttons now also
+  persist that flag so the banner stays gone after the user has
+  engaged with it.
+
+### Changed
+
+- `getting_started_banner.gd::_should_show()` no longer checks for
+  `config.json` existence. Only the
+  `addons/gool/editor/getting_started_dismissed` project setting
+  hides the banner.
+- `_write_config_and_finish()` now calls `_persist_dismiss_flag()`
+  alongside writing the chosen template, so picking a template
+  permanently dismisses the banner.
+- Refactored `_on_dismiss` and `_write_config_and_finish` to share a
+  `_persist_dismiss_flag()` helper.
+
+### Notes for existing users
+
+If you're on v0.72.0–v0.74.0 and never saw the onboarding banner,
+that's the bug fixed here — open the Gool Mixer tab after upgrading
+and the banner will appear at the top of a fresh project. If you've
+already set up a config you like, just click "Don't show again" and
+it'll stay gone.
+
+The fix is GDScript-only; no rebuild needed if you're upgrading from
+v0.74.0. The pre-built C++ DLL from v0.74.0 still works.
+
 ## [0.74.0] - 2026-05-24 — Priority API surface (eviction prep, phase 1 of 2)
 
 First of two releases adding priority-based voice eviction (the v0.73.0
