@@ -449,6 +449,60 @@ bool parseBus(Scanner& s, ParsedBus& bus, std::string& err, int& errLine) {
     return true;
 }
 
+// v0.73.0: parse a top-level "budget" object. Each key maps to a
+// uint32_t field in AudioRuntimeBudget. Unknown keys are silently
+// ignored (forward-compat — future versions can add fields without
+// breaking older parsers; reverse direction users will see the
+// "unknown key" only if the parser has a stricter mode toggled,
+// which we don't currently). Values that overflow uint32_t or are
+// negative produce a parse error.
+bool parseBudget(Scanner& s, AudioRuntimeBudget& out,
+                  std::string& err, int& errLine) {
+    s.expect('{', "to begin budget object", err, errLine);
+    if (!err.empty()) return false;
+
+    while (true) {
+        s.skipWs();
+        if (s.peek() == '}') { s.advance(); break; }
+        std::string key;
+        if (!s.parseString(key, err, errLine)) return false;
+        s.expect(':', "after budget key", err, errLine);
+        if (!err.empty()) return false;
+        double n = 0.0;
+        if (!s.parseNumber(n, err, errLine)) return false;
+        if (n < 0.0 || n > 4294967295.0) {
+            err = "budget value for '" + key
+                + "' out of range (must be 0..4294967295)";
+            errLine = s.line(); return false;
+        }
+        const uint32_t v = static_cast<uint32_t>(n);
+
+        if      (key == "max_active_emitters")          out.maxActiveEmitters          = v;
+        else if (key == "max_spatial_emitters")         out.maxSpatialEmitters         = v;
+        else if (key == "max_voice_sources")            out.maxVoiceSources            = v;
+        else if (key == "max_occlusion_checks_per_frame") out.maxOcclusionChecksPerFrame = v;
+        else if (key == "max_streaming_assets")         out.maxStreamingAssets         = v;
+        else if (key == "max_streaming_voices")         out.maxStreamingVoices         = v;
+        else if (key == "max_registered_sounds")        out.maxRegisteredSounds        = v;
+        else if (key == "max_game_events_per_frame")    out.maxGameEventsPerFrame      = v;
+        else if (key == "max_network_events_per_frame") out.maxNetworkEventsPerFrame   = v;
+        // Unknown keys are silently ignored for forward-compat. If a
+        // future field is added, an older parser running an updated
+        // config will skip it without erroring; users get the field's
+        // default value, which is the safe behavior. Strict mode
+        // could be added later behind a config flag if desired.
+
+        s.skipWs();
+        if (!s.match(',')) {
+            s.expect('}', "to close budget object", err, errLine);
+            if (!err.empty()) return false;
+            break;
+        }
+    }
+    return true;
+}
+
+
 bool parseCategoryRouting(Scanner& s, BusGraphConfig& g,
                             const std::unordered_map<std::string, BusId>& nameToId,
                             std::string& err, int& errLine) {
@@ -584,6 +638,12 @@ ParseResult ParseFromJson(std::string_view json) {
                 r.errorLine = s.line(); return r;
             }
             categoryRoutingDeferred = std::move(captured);
+        } else if (key == "budget") {
+            // v0.73.0: top-level budget block. Parses inline; no bus
+            // name references to defer for.
+            AudioRuntimeBudget b{};
+            if (!parseBudget(s, b, r.error, r.errorLine)) return r;
+            r.budget = b;
         } else {
             // Tolerate unknown root-level keys for forward compat.
             if (!s.skipValue(r.error, r.errorLine)) return r;

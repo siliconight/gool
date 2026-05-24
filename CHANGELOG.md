@@ -22,6 +22,139 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.73.0] - 2026-05-24 — Configurable emitter cap + loud BudgetExceeded warning
+
+The stress test in v0.69.x discovered something we hadn't documented
+or exposed: gool has a hardcoded 128-emitter ceiling
+(`AudioRuntimeBudget::maxActiveEmitters` in `config.h`) with no JSON
+override path, and when the cap is hit `create_emitter` silently
+returns 0 with no warning. Same failure shape as the v0.66.0
+"no sound registered" silent-failure pass — a missing-warning hole
+in a different place. This release closes both holes.
+
+### Budget block in `gool/config.json`
+
+New top-level `budget` block lets users override the
+`AudioRuntimeBudget` defaults from JSON instead of having to rebuild
+the C++ engine:
+
+```json
+{
+  "buses": [ ... ],
+  "category_routing": { ... },
+  "budget": {
+    "max_active_emitters": 256,
+    "max_spatial_emitters": 128
+  }
+}
+```
+
+All 9 fields of `AudioRuntimeBudget` are exposed:
+
+- `max_active_emitters` — emitter slot pool (default 128). The
+  cap the stress test discovered.
+- `max_spatial_emitters` — subset subject to spatial processing
+  per tick (default 64).
+- `max_voice_sources` — voice chat sources (default 16).
+- `max_occlusion_checks_per_frame` — raycasts per frame (default 12).
+- `max_streaming_assets` — concurrent streaming files (default 32).
+- `max_streaming_voices` — concurrent streaming playback (default 8).
+- `max_registered_sounds` — asset registry slots (default 256).
+- `max_game_events_per_frame` — gameplay event ring depth (default 256).
+- `max_network_events_per_frame` — network event ring depth (default 256).
+
+Each additional emitter slot costs ~2 KB of memory (per-voice DSP
+state plus binaural delay buffers). 256 emitters costs ~512 KB
+total; 1024 costs ~2 MB. CPU cost when below the cap is zero —
+unused slots aren't mixed.
+
+**Backward compatible:** configs without a `budget` block keep
+all the original defaults. The optional `std::optional<AudioRuntimeBudget>`
+field in `ParseResult` is `std::nullopt` for old configs.
+
+**Forward compatible:** unknown keys inside the budget block are
+silently skipped, so a future version that adds a new budget field
+doesn't break older parsers running on updated configs.
+
+### Loud `BudgetExceeded` warning in `create_emitter`
+
+Pre-v0.73.0 behavior: `create_emitter` returns 0 silently when the
+emitter pool is full. The host has no way to distinguish "I called
+the API wrong" from "the engine is out of voices."
+
+New behavior: when the runtime returns `AudioResult::BudgetExceeded`,
+the Godot binding emits a one-shot `push_warning` with a helpful
+message naming the cap, telling the user where to raise it, and
+quoting the JSON syntax:
+
+> GoolAudioRuntime: create_emitter('hit_sfx') — emitter pool
+> exhausted. Default cap is 128 active emitters. Raise it by adding
+> a 'budget' block to gool/config.json: `{ "budget": { "max_active_emitters": 256 } }`.
+> Each additional emitter costs ~2 KB of RAM. (This warning fires
+> once per session.)
+
+The warning fires once per session — like the Phase 2 init-checks,
+a tight loop hitting the cap doesn't spam Output.
+
+### FPS template ships with `max_active_emitters: 256`
+
+`addons/gool/templates/config_fps.json` now includes:
+
+```json
+"budget": {
+  "max_active_emitters": 256,
+  "max_spatial_emitters": 128
+}
+```
+
+New projects created via the Getting Started banner's "Use FPS
+template" button get a more comfortable cap by default — the
+templates are aimed at action games where the 128 default is tight
+under heavy combat. The minimal template (used by "Use minimal
+template") doesn't include a budget block, keeping the defaults
+for small/tutorial games.
+
+### Cheatsheet entry added
+
+New gotcha section in `docs/CHEATSHEET.md`:
+
+> **"My sounds aren't playing during big moments (combat, large
+> explosions, many footsteps)."** — Check Output for `emitter pool
+> exhausted` warnings. Default cap is 128. Raise via budget block.
+
+### Migration
+
+None for users. Pre-v0.73.0 configs continue to work with the same
+behavior (silent budget defaults). Users hitting the cap on an
+existing config update one file with one block.
+
+### Verification
+
+- 5 parser micro-tests pass (happy path, backward compat — absent
+  block stays nullopt, error handling — negative values rejected,
+  forward compat — unknown keys skipped, partial — unspecified
+  fields keep struct defaults).
+- `bus_config_loader.cpp` compiles clean under `-Wall -Wextra
+  -Wpedantic -Werror` (CI flags from `CMakeLists.txt:556-557`).
+  This is the lesson from v0.66.0 — real CI-flag compile, not
+  `-fsyntax-only`.
+- All 9 budget fields parseable and tested.
+- Godot binding's BudgetExceeded path uses `static bool warned`
+  for one-shot semantics matching the v0.66.0 pattern.
+
+### What's NOT in this release
+
+- **Priority-based eviction.** When the pool is full, the
+  failure is still hard (returns 0); we don't silently evict a
+  low-priority voice to make room for a high-priority one. This
+  was Option C in the design discussion. Worth doing as a future
+  release with a proper opt-in design — some games want hard
+  failure (don't let a footstep steal the music), others want
+  graceful degradation. Decoupling is its own feature.
+- **Dynamic budget reconfiguration.** Caps are still fixed at
+  `Initialize` time. Changing them requires restarting the engine.
+  Could be added later but is a meaningful refactor.
+
 ## [0.72.0] - 2026-05-24 — Editor onboarding (Phase 3 of 3)
 
 The third and final onboarding phase. v0.70.0 fixed *discovery*
@@ -20606,6 +20739,7 @@ Headlines:
 [0.70.0]: https://github.com/siliconight/gool/releases/tag/v0.70.0
 [0.71.0]: https://github.com/siliconight/gool/releases/tag/v0.71.0
 [0.72.0]: https://github.com/siliconight/gool/releases/tag/v0.72.0
+[0.73.0]: https://github.com/siliconight/gool/releases/tag/v0.73.0
 [0.5.0]: https://github.com/siliconight/gool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/siliconight/gool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/siliconight/gool/releases/tag/v0.3.0

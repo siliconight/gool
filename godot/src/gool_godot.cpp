@@ -834,6 +834,13 @@ public:
                 return false;
             }
             cfg.busGraph = pr.busGraph;
+            // v0.73.0: apply parsed budget if the JSON included one.
+            // Absent budget → cfg.budget keeps its struct defaults
+            // (maxActiveEmitters=128 etc.), preserving pre-v0.73.0
+            // behavior for configs without a "budget" block.
+            if (pr.budget.has_value()) {
+                cfg.budget = pr.budget.value();
+            }
         }
 
         runtime_ = std::make_unique<audio::AudioRuntime>();
@@ -2238,7 +2245,31 @@ public:
         desc.isLooping     = looping;
         desc.fadeInMs      = static_cast<float>(fade_in_ms);
         auto h = runtime_->CreateEmitter(desc);
-        if (!h) return 0;
+        if (!h) {
+            // v0.73.0: loud warning when the emitter pool is full.
+            // Pre-v0.73.0 this returned 0 silently and the caller had
+            // no signal to distinguish "I called create_emitter wrong"
+            // from "the engine is out of voices." Mirror the v0.66.0
+            // "no sound registered" warning pattern: one-shot per
+            // session so a tight create-loop hitting the cap doesn't
+            // flood Output, then quiet for subsequent calls.
+            if (h.error() == audio::AudioResult::BudgetExceeded) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    UtilityFunctions::push_warning(
+                        String("GoolAudioRuntime: create_emitter('")
+                        + name
+                        + String("') — emitter pool exhausted. Default ")
+                        + String("cap is 128 active emitters. Raise it by ")
+                        + String("adding a 'budget' block to gool/config.json: ")
+                        + String("{ \"budget\": { \"max_active_emitters\": 256 } }. ")
+                        + String("Each additional emitter costs ~2 KB of RAM. ")
+                        + String("(This warning fires once per session.)"));
+                }
+            }
+            return 0;
+        }
         return PackHandle(h.value());
     }
 
