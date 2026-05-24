@@ -1743,7 +1743,17 @@ AudioResult AudioRuntimeImpl::OnVoicePacket(AudioPlayerId  playerId,
     copy.timestampMs    = timestampMs;
     copy.arrivalMs      = arrivalMs;
     std::memcpy(copy.bytes.data(), bytes, size);
-    return voicePackets_->Push(std::move(copy)) ? AudioResult::Success : AudioResult::QueueFull;
+    if (voicePackets_->Push(std::move(copy))) {
+        // v0.75.2: count only packets that made it onto the ring.
+        // Rate-limited and oversized packets are intentionally
+        // excluded — those have their own counters (Voice category
+        // in `replicationEventsRateLimited`, returned-result for
+        // BudgetExceeded). The two together let a host reconstruct
+        // the full disposition of every submitted packet.
+        voicePacketsAccepted_.fetch_add(1, std::memory_order_relaxed);
+        return AudioResult::Success;
+    }
+    return AudioResult::QueueFull;
 }
 
 // ---- Helpers --------------------------------------------------------------
@@ -2753,6 +2763,12 @@ AudioRuntime::Stats AudioRuntimeImpl::GetStats() const {
         s.voiceFramesBudgetDowngraded = agg.framesBudgetDowngraded;
         s.voiceFramesBudgetDropped    = agg.framesBudgetDropped;
     }
+    // v0.75.2: inbound voice acceptance counter — independent of
+    // voices_->SnapshotCounters() because it ticks at the network-
+    // thread ingest point, before the packet ever reaches the voice
+    // source aggregator.
+    s.voicePacketsAccepted =
+        voicePacketsAccepted_.load(std::memory_order_relaxed);
     return s;
 }
 

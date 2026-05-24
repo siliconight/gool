@@ -1087,6 +1087,29 @@ public:
         // (across all voice sources). Monotonic uint64.
         uint64_t voiceBytesSent = 0;
 
+        // v0.75.2: inbound voice packets accepted into the network→
+        // control thread ring. Incremented once per call to
+        // OnVoicePacket that passes input validation (size, init,
+        // rate limiter) AND succeeds at pushing onto the queue.
+        //
+        // Production diagnostic: a game can compare this against its
+        // host-side voice-transport send counter to see how many
+        // packets actually made it through. Gaps indicate:
+        //   - Packet loss in the transport (sent > received by a lot)
+        //   - Per-peer rate-limit rejections (compare to
+        //     `replicationEventsRateLimited[Voice]`)
+        //   - Size violations (rejected before the limiter, not
+        //     counted; if the host's framing diverges from
+        //     `voiceMaxPacketBytes`, this is where it shows up as
+        //     "missing" packets)
+        //
+        // For the v0.75.0 stress test rig's Voice Flood scenario,
+        // this is the metric that verifies the ingest path actually
+        // saw the synthetic packets — the previous metric
+        // (voice_bytes_sent) was the OUTBOUND counter and stayed
+        // at zero for an inbound-only test.
+        uint64_t voicePacketsAccepted = 0;
+
         // Frames where SuggestVoiceBitrate returned a downgraded rung
         // (24000 or 16000 bps) instead of the default 32000. Incremented
         // when the host reports back with `bitrateUsedBps < 32000`.

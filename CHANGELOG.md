@@ -22,6 +22,122 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.75.2] - 2026-05-24 — Inbound voice packet acceptance counter + first-enable restart dialog
+
+Small, production-relevant additions driven by the v0.75.x stress test
+work and accumulated install-flow feedback.
+
+### Added — first-time-setup restart dialog
+
+When gool is enabled for the first time in a project, the GDScript
+parser may have already cached symbol tables for project scripts
+WITHOUT gool's three autoloads (`Gool`, `DialogueDirector`,
+`GoolMultiplayerBridge`) registered. The autoloads land in
+`project.godot` during `_enter_tree`, but the parser's stale cache
+emits a cascade of "Identifier 'Gool' not declared" errors — and in
+some cases hard-crashes the editor on the next project open.
+Reopening the project clears the cache and everything parses cleanly.
+
+This was reported by users twice on fresh installs ("crashes Godot,
+but works on second try"), now confirmed reproducible.
+
+**Fix:** detect first enable via a project setting (`addons/gool/editor/
+first_enable_completed`), pop a modal explaining the situation, and
+offer one-click restart via `EditorInterface.restart_editor(true)`.
+Project-setting-gated so the dialog never fires again after first
+enable, mirroring the v0.74.x getting-started banner dismiss
+pattern.
+
+The dialog gives the user two clear choices:
+- **Restart Editor Now** — calls `restart_editor(true)` to save the
+  project (including the just-flipped first-enable flag) and reopen.
+  Clean parser state on second open.
+- **I'll Restart Manually** — flag is still persisted (dialog won't
+  reappear), user lives with the cascade until they reopen on their
+  own schedule.
+
+The fix is pure GDScript in `plugin.gd`, no kernel changes, no DLL
+rebuild needed. The flag is saved via `ProjectSettings.save()` BEFORE
+the dialog appears, so the choice the user makes doesn't affect
+whether the dialog reappears — only whether they restart now.
+
+### Added — inbound voice packet acceptance counter
+
+Driven by the v0.75.x stress test work: the Voice Flood scenario
+needed a way to verify that the engine *saw* the packets the test
+was submitting, and the only existing voice counters were either
+outbound (`voice_bytes_sent` — `ReportVoiceBytesSent` increments
+this) or aggregate per-source decode counters (`voice_frames_*`).
+Neither answered "did the network thread accept my submitted packet."
+
+- **`Stats::voicePacketsAccepted` (uint64).** Increments once per
+  successful `OnVoicePacket` call — packets that pass input
+  validation (size, init state, rate limiter) AND are successfully
+  pushed onto the network→control SPSC ring. Atomic; safe to read
+  from the game thread via `GetStats`.
+
+- **`Gool.get_render_stats().voice_packets_accepted`** in the Godot
+  binding. The Voice Flood stress scenario reads this to verify
+  send-vs-receive symmetry. Production game voice debug UIs can
+  compare this against the host transport's send counter to detect:
+  - Packet loss in transport (host_sent > engine_accepted by a lot)
+  - Per-peer rate-limit rejections (cross-reference with
+    `replication_rate_limited_by_category[1]` — index 1 is Voice)
+  - Size violations (rejected pre-limiter, not counted; "missing"
+    packets here indicate framing divergence from
+    `voiceMaxPacketBytes`)
+
+### Why this matters for production
+
+The original Voice Flood scenario tracked `voice_bytes_sent` —
+which is the OUTBOUND counter. Submitting 16,000 inbound packets
+left it at zero, making "did the engine actually process the
+load" un-verifiable from GDScript. With `voice_packets_accepted`
+exposed, a real game running multi-peer voice can detect partial
+ingest failures (e.g., transport-layer reordering being rejected
+silently, or rate-limiter rejecting more than expected after a
+config change) before users notice the missing audio.
+
+The counter is monotonic, atomic-relaxed-read (no memory ordering
+needed for telemetry), and increments only inside the network
+thread's existing success path — zero added work on every other
+code path, no allocation, no contention.
+
+### No other changes
+
+- Existing kernel logic unchanged (priority eviction, rate limiter,
+  predictions, voice subsystem itself — all v0.75.0 and earlier).
+- Existing bindings unchanged.
+- `voice_bytes_sent` semantics unchanged (it remains the outbound
+  counter — renaming it would be a breaking change for anyone who's
+  already plotting it).
+
+### Stress test rig
+
+`gool_stress_test` ships parallel v0.75.2 updates to two scenarios
+that the v0.75.0 real-hardware run revealed as test-design bugs:
+
+- **Eviction Churn** — redesigned from one-shot-vs-persistent
+  (which hit the one-shot code path that can't evict persistent
+  emitters by design) to persistent-vs-persistent rotation that
+  triggers `TryEvictForPersistent` every cycle. Now produces ~R
+  evictions/sec sustained over the full window instead of
+  flat-lining after the first ~7 seconds.
+
+- **Voice Flood** — switched from the misnamed `voice_bytes_sent`
+  metric to the new `voice_packets_accepted` counter. Now does an
+  explicit send-vs-receive cross-check with a percentage threshold
+  and surfaces the AudioCategory::Voice rate-limit count for
+  rejected packets.
+
+The rig also pre-sets `addons/gool/editor/first_enable_completed=true`
+in its `project.godot` so the first-enable restart dialog doesn't
+fire on every re-extract — the rig is a test bench, not a fresh
+install.
+
+Both stress-test changes are GDScript-only in the rig; the rig's
+bundled addon synced to v0.75.2 picks up the new Stats key.
+
 ## [0.75.1] - 2026-05-24 — GDScript-side observability + multi-peer test surface
 
 A small, pure-additive follow-up to v0.75.0. The kernel-side eviction

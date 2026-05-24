@@ -39,6 +39,22 @@ const DIALOGUE_DIRECTOR_AUTOLOAD_PATH := "res://addons/gool/dialogue_director.gd
 const MULTIPLAYER_BRIDGE_AUTOLOAD_NAME := "GoolMultiplayerBridge"
 const MULTIPLAYER_BRIDGE_AUTOLOAD_PATH := "res://addons/gool/multiplayer_bridge.gd"
 
+# v0.75.2: first-enable restart dialog. The first time gool is enabled
+# in a project, Godot's GDScript parser may have already cached symbol
+# tables for project scripts WITHOUT the three autoloads (Gool,
+# DialogueDirector, GoolMultiplayerBridge) registered. The autoload
+# registrations land in project.godot during _enter_tree, but the
+# parser's stale cache still emits a cascade of "Identifier 'Gool' not
+# declared" errors — and in some cases hard-crashes the editor before
+# the user sees the cascade. Reopening the project clears the cache and
+# everything parses cleanly.
+#
+# Fix: detect first enable via a project setting, pop a modal explaining
+# the situation, offer one-click restart via EditorInterface.restart_editor().
+# Project-setting-gated so the dialog never fires again in this project,
+# mirroring the v0.74.x getting-started banner dismiss pattern.
+const _FIRST_ENABLE_KEY := "addons/gool/editor/first_enable_completed"
+
 const PREFAB_DIR := "res://addons/gool/prefabs/"
 
 # (class_name, base_node, script_path, icon_path)
@@ -301,6 +317,11 @@ func _enter_tree() -> void:
 	_connect_filesystem_watch()
 	_register_tools_menu()               # v0.23.0
 	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, debugger bridge, mixer dock, tools menu installed.")
+	# v0.75.2: prompt for editor restart on first enable so the
+	# GDScript parser sees the autoloads on its next sweep with a
+	# clean cache. No-op if this isn't the first enable. Called LAST
+	# so all setup has settled before we offer to restart.
+	_maybe_show_first_enable_restart_prompt()
 
 func _exit_tree() -> void:
 	_unregister_tools_menu()             # v0.23.0
@@ -527,6 +548,96 @@ func _remove_autoload() -> void:
 	remove_autoload_singleton(MULTIPLAYER_BRIDGE_AUTOLOAD_NAME)
 	remove_autoload_singleton(DIALOGUE_DIRECTOR_AUTOLOAD_NAME)
 	remove_autoload_singleton(AUTOLOAD_NAME)
+
+# v0.75.2: first-enable restart prompt. See _FIRST_ENABLE_KEY's comment
+# at the top of this file for the underlying parser-cache problem this
+# solves. Idempotent: after the first call, the project setting is
+# flipped and subsequent calls return immediately.
+func _maybe_show_first_enable_restart_prompt() -> void:
+	# Already prompted in this project — nothing to do.
+	# (Stays true across enable/disable cycles, so the dialog is
+	# strictly first-enable-per-project, not first-enable-per-session.)
+	if ProjectSettings.has_setting(_FIRST_ENABLE_KEY) \
+			and bool(ProjectSettings.get_setting(_FIRST_ENABLE_KEY)):
+		return
+
+	# Mark BEFORE showing the dialog. If the user accepts the restart,
+	# the editor will save project.godot (the restart_editor(true) call
+	# below does save-on-exit), so the setting persists. If the user
+	# dismisses, we still want the dialog to not reappear — so flip
+	# the setting first and call ProjectSettings.save() to persist it
+	# regardless of the user's choice.
+	ProjectSettings.set_setting(_FIRST_ENABLE_KEY, true)
+	# `set_initial_value(false)` ensures the setting is treated as
+	# "non-default" by Godot's project settings editor — it'll show
+	# up as a customized value rather than being filtered out as a
+	# default. Mirrors how the getting-started banner's dismiss flag
+	# is stored.
+	ProjectSettings.set_initial_value(_FIRST_ENABLE_KEY, false)
+	var save_result := ProjectSettings.save()
+	if save_result != OK:
+		# Saving project.godot can fail on read-only filesystems or
+		# when the file is checked out exclusive in some VCS layouts.
+		# Not fatal — we'll just show the dialog again next enable.
+		# Surface a warning so users on those setups know what's up.
+		push_warning(
+			"[gool] could not persist first-enable flag "
+			+ "(ProjectSettings.save returned %d). The first-time "
+			+ "restart prompt may reappear next enable." % save_result)
+
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "gool: first-time setup"
+	# Text is intentionally explicit about WHY the restart matters,
+	# not just THAT it does. Users who skip it should at least know
+	# what they're choosing to live with.
+	dialog.dialog_text = (
+		"gool installed.\n\n"
+		+ "Godot needs to restart so its GDScript parser sees the "
+		+ "three new autoloads (Gool, DialogueDirector, "
+		+ "GoolMultiplayerBridge) on a clean cache. Without a "
+		+ "restart, the parser's stale state from before the "
+		+ "autoloads were registered can emit a cascade of "
+		+ "\"Identifier 'Gool' not declared\" errors and may "
+		+ "crash the editor on the next project open.\n\n"
+		+ "Reopening the project clears the cache and everything "
+		+ "parses cleanly.\n\n"
+		+ "Restart Godot now?")
+	# Button labels mirror "I get it, do it" vs "I'll handle it myself."
+	dialog.ok_button_text       = "Restart Editor Now"
+	dialog.cancel_button_text   = "I'll Restart Manually"
+	# Best-effort dialog ownership: parent to the editor base control
+	# so it floats correctly and is destroyed when the editor closes.
+	# If EditorInterface isn't ready yet (rare; shouldn't happen
+	# inside _enter_tree but defensive coding), fall back to the
+	# plugin's own scene tree.
+	var editor_base := EditorInterface.get_base_control()
+	if editor_base != null:
+		editor_base.add_child(dialog)
+	else:
+		add_child(dialog)
+	# Wire signals. `confirmed` fires on OK; `canceled` on Cancel or
+	# escape. Both clean up the dialog node.
+	dialog.confirmed.connect(_on_first_enable_restart_confirmed.bind(dialog))
+	dialog.canceled.connect(_on_first_enable_restart_dismissed.bind(dialog))
+	# Defer popup until the editor finishes its current frame —
+	# popping up inside _enter_tree itself can interleave badly with
+	# Godot's plugin-init UI updates.
+	dialog.popup_centered.call_deferred(Vector2(560, 240))
+
+func _on_first_enable_restart_confirmed(dialog: ConfirmationDialog) -> void:
+	dialog.queue_free()
+	# `true` = save before restart, so the user's project settings
+	# (including our just-flipped _FIRST_ENABLE_KEY) get persisted
+	# along with anything else that's dirty. Available since Godot
+	# 4.0; the bool parameter is the save-on-exit flag.
+	EditorInterface.restart_editor(true)
+
+func _on_first_enable_restart_dismissed(dialog: ConfirmationDialog) -> void:
+	# User chose to handle it themselves. The flag is already
+	# persisted so the dialog won't reappear. They may see the
+	# parse-error cascade until they reopen the project on their
+	# own schedule.
+	dialog.queue_free()
 
 func _register_prefabs() -> void:
 	for entry in PREFABS:

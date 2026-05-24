@@ -1063,6 +1063,14 @@ public:
             static_cast<int64_t>(stats.voiceFramesBudgetDropped);
         d["voice_bytes_sent"] =
             static_cast<int64_t>(stats.voiceBytesSent);
+        // v0.75.2: inbound voice acceptance counter — number of
+        // voice packets that passed validation and entered the
+        // network→control queue. The Voice Flood stress scenario
+        // and any production voice debug UI should compare this
+        // against the host's send count to detect packet loss /
+        // rate-limit rejections / size violations.
+        d["voice_packets_accepted"] =
+            static_cast<int64_t>(stats.voicePacketsAccepted);
         // Currently-registered voice sources. Existed in Stats since
         // the voice subsystem went in but was never bound — useful in
         // game debug UIs and the v0.75.0 voice flood stress scenario

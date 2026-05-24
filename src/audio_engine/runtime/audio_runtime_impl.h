@@ -492,6 +492,24 @@ private:
     mutable std::atomic<uint64_t>  telemetrySinkExceptions_{0};
     mutable std::atomic<uint64_t>  logSinkExceptions_{0};
 
+    // v0.75.2: inbound voice packet acceptance counter. Increments
+    // once per packet that passes all input validation (size, init
+    // state, rate limiter) and is successfully pushed onto the
+    // network→control thread SPSC ring. Counts the "we accepted
+    // this packet" event, not the "we played the audio" event —
+    // downstream stages (decode, mix) have their own counters.
+    //
+    // Production telemetry value: a real game can compute "packets
+    // sent vs received" by comparing this against the host-side
+    // transport's send count. Gaps indicate packet loss, queue
+    // overruns, or rate-limit rejections.
+    //
+    // Atomic because OnVoicePacket runs on the network thread; read
+    // by GetStats on the game thread with relaxed ordering (counter
+    // is monotonic; a stale read is fine — we just don't need a
+    // happens-before guarantee with anything else).
+    std::atomic<uint64_t>          voicePacketsAccepted_{0};
+
     // Mixer underrun counter snapshot from the previous Update tick.
     // Used to deduce render-thread underrun events on the game
     // thread without crossing thread boundaries inside the sink call.
