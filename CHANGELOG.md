@@ -26,6 +26,87 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.4] - 2026-05-25 — Stress rig probe: cumulative-counter assertion (no engine change)
+
+GDScript-only patch. Fixes a v0.78.2 design bug in
+`gool_stress_perf_probe.gd` where `assert_peak_below()` applied to a
+cumulative counter (notably `gool/render/underruns`) reported false
+FAIL results whenever the absolute cumulative value at probe-start
+already exceeded the threshold — even when nothing new happened
+during the probe window. Same release model as v0.78.3: addon
+GDScript only, the v0.78.x DLL keeps working unchanged.
+
+### What broke
+
+The probe was designed assuming all monitored values are
+point-in-time snapshots, but `gool/render/underruns` is a cumulative
+counter that never resets. WASAPI/ASIO device negotiation at session
+startup typically logs underruns before the first scenario even
+runs, leaving the counter in the thousands. A subsequent
+`assert_peak_below("gool/render/underruns", 1.0, ...)` then trivially
+fails — not because the scenario caused underruns, but because the
+session-startup counter was already above 1.
+
+Surfaced via a real validation run against v0.78.3: 7 of 8
+scenarios PASSed on `update_tick_us` (worst case 96 μs, 0.58% of a
+60 Hz frame), but Voice Flood was reported FAIL with
+`peak_lt = 30000.00, threshold 1.00`. The 30,000 was session-wide
+WASAPI startup cruft, not a Voice Flood event — confirmed by Voice
+Flood's own internal metrics (`voice_frames_budget_dropped: 0`,
+frame time stable, 100% packets accepted). The audio engine was
+healthy; the assertion was the bug.
+
+### Added
+
+- **`_Series.growth()`** — returns `peak() - first_sample`. Returns
+  0 for empty series or no growth. The right primitive for asking
+  "did new events occur during the probe window?" for any monitor
+  whose absolute value is path-dependent on session history.
+- **`assert_growth_below(monitor, limit, description)`** — public
+  API that threshold-tests `_Series.growth()` instead of
+  `_Series.peak()`. Use for cumulative counters; continue using
+  `assert_peak_below()` for snapshot monitors like
+  `gool/runtime/update_tick_us` where the absolute value at any
+  moment is the quantity of interest.
+- **`"growth_lt"` threshold mode** wired into the `stop()` match
+  block alongside the existing `"peak_lt"` and `"mean_lt"`.
+
+### Changed
+
+- **Probe docstring example** updated to use `assert_growth_below`
+  for `gool/render/underruns`, with a comment flagging why the
+  switch is necessary. New users following the example get the
+  right pattern out of the box.
+
+### Not changed
+
+- No engine source change. No new Stats fields. No binding change.
+- `assert_peak_below` and `assert_mean_below` are untouched and
+  remain the correct tools for snapshot monitors (update_tick_us,
+  active_emitters, mixer_voices_active, etc.). The fix expands the
+  toolkit; it does not deprecate anything.
+- Historical scenarios that called `assert_peak_below` on
+  cumulative counters still need a per-callsite update. Only
+  `render_underruns` is a known cumulative in the v0.78.x monitor
+  set; everything else is a snapshot or a rate.
+
+### Process note
+
+The v0.78.2 verification pass would not have caught this — it was
+type-and-shape only, and the bug is semantic ("which assertion mode
+fits which counter shape?"). It needed a session with real audio
+device startup behind it, which is exactly what the v0.78.3
+validation run surfaced. The lesson generalizes: a stress rig that
+ships its own assertion library has to be validated against a real
+session, not just compiled and visually inspected.
+
+### Stress rig users
+
+If you have a stress rig that calls
+`assert_peak_below("gool/render/underruns", ...)`, replace it with
+`assert_growth_below("gool/render/underruns", 1.0, "...")`. No other
+changes needed; the rest of the probe API is unchanged.
+
 ## [0.78.3] - 2026-05-25 — Hotfix: v0.78.1 monitor binding name (no engine change)
 
 GDScript-only patch. Fixes a v0.78.1 regression where all 15 custom

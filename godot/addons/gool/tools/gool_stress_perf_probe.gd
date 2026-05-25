@@ -14,8 +14,10 @@
 #     var probe := preload("res://stress/gool_stress_perf_probe.gd").new()
 #
 #     # Baseline asserts that should be on EVERY scenario:
-#     probe.assert_peak_below("gool/render/underruns", 1.0,
-#                              "render thread missed a deadline")
+#     # render_underruns is CUMULATIVE — use growth_below, not peak_below
+#     # (see assert_growth_below docstring for why).
+#     probe.assert_growth_below("gool/render/underruns", 1.0,
+#                              "new render underruns occurred during scenario")
 #     probe.assert_peak_below("gool/runtime/update_tick_us", 2000.0,
 #                              "Update tick exceeded 2ms (>12% of frame budget)")
 #
@@ -58,8 +60,15 @@ class _Threshold:
 	var monitor:     String
 	var limit:       float
 	# mode is one of:
-	#   "peak_lt"   - assert max(samples) < limit
-	#   "mean_lt"   - assert mean(samples) < limit
+	#   "peak_lt"    - assert max(samples) < limit
+	#   "mean_lt"    - assert mean(samples) < limit
+	#   "growth_lt"  - assert (last - first) < limit. For CUMULATIVE
+	#                  counters (e.g. gool/render/underruns) where the
+	#                  monitor never resets and absolute value reflects
+	#                  the whole session history. peak_lt is the wrong
+	#                  tool for those: a counter at 30000 at probe.start
+	#                  trivially fails peak_lt(1) regardless of whether
+	#                  anything new happened during the window.
 	var mode:        String
 	var description: String
 
@@ -93,6 +102,16 @@ class _Series:
 		for s in samples:
 			total += s
 		return total / float(samples.size())
+
+	# v0.78.4: delta from the first sample to the peak. For cumulative
+	# counters that never reset, this is the right way to ask "did new
+	# events occur during the probe window?" — peak() alone confounds
+	# old (pre-window) accumulation with new (in-window) growth.
+	# Returns 0 for empty series or when nothing grew.
+	func growth() -> float:
+		if samples.is_empty():
+			return 0.0
+		return peak() - samples[0]
 
 class Result:
 	var passed:      bool                = true
@@ -152,6 +171,16 @@ func assert_peak_below(monitor: String, limit: float, description: String = "") 
 func assert_mean_below(monitor: String, limit: float, description: String = "") -> void:
 	_thresholds.append(_Threshold.new(monitor, limit, "mean_lt", description))
 
+# v0.78.4: assert that a cumulative counter grew by less than `limit`
+# during the probe window. Use this — NOT assert_peak_below — for any
+# monitor whose value never resets across a session: render_underruns,
+# session-wide event totals, etc. Specifically, gool/render/underruns
+# accumulates from AudioRuntime::Initialize forward; testing its
+# absolute peak is meaningless because startup audio-device negotiation
+# can leave the counter in the thousands before any scenario runs.
+func assert_growth_below(monitor: String, limit: float, description: String = "") -> void:
+	_thresholds.append(_Threshold.new(monitor, limit, "growth_lt", description))
+
 # Watch a monitor without asserting on it. Useful in calibration runs
 # where you want the value in summary() but haven't picked a limit yet.
 func watch(monitor: String) -> void:
@@ -204,8 +233,9 @@ func stop() -> Result:
 			continue
 		var observed: float = 0.0
 		match t.mode:
-			"peak_lt": observed = s.peak()
-			"mean_lt": observed = s.mean()
+			"peak_lt":   observed = s.peak()
+			"mean_lt":   observed = s.mean()
+			"growth_lt": observed = s.growth()
 			_:
 				result.passed = false
 				result.failures.append(("  %s: unknown mode %s"
