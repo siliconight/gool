@@ -896,6 +896,8 @@ EvictionMode AudioRuntimeImpl::GetEvictionMode() const noexcept {
 }
 
 // v0.75.0: priority-eviction for persistent emitters.
+// v0.78.0: tie-breaker among same-priority candidates is now configurable
+//          via AudioRuntimeBudget::evictionTieBreaker.
 //
 // Walks the active emitter pool looking for the lowest-priority slot
 // whose priority is strictly less than `incomingPriority`. If found,
@@ -906,13 +908,25 @@ EvictionMode AudioRuntimeImpl::GetEvictionMode() const noexcept {
 // incoming priority, in which case the caller surfaces BudgetExceeded
 // up to the host with an actionable message.
 //
-// Tie-breaking: first slot encountered in pool iteration order wins.
-// This is deterministic (slots_.ForEach iterates by slot index) but
-// not semantically meaningful — v0.76.0 polish can add explicit
-// strategies (oldest first, furthest from listener, category match).
-// For v0.75.0 the first-match-wins approach keeps scope contained
-// while still delivering the primary value: higher-priority sounds
-// win against lower-priority ones at the budget boundary.
+// Tie-breaking (v0.78.0):
+//   Priority always dominates. When multiple slots share the same
+//   lowest priority, EvictionTieBreaker decides between them:
+//
+//     SlotOrder  -> pre-0.78.0 behavior: first slot in iteration order
+//     Furthest   -> largest squared distance to primary listener
+//                   (default; matches one-shot path)
+//     Oldest     -> lowest createSequence (oldest emitter)
+//     Newest     -> highest createSequence (newest emitter)
+//
+//   The scan is single-pass: we track a composite (pri, tieKey) and
+//   minimize lexicographically. tieKey is computed per-candidate so
+//   the strategy is decided once per Create-retry, not per-slot.
+//
+//   Furthest uses EmitterRecord::position regardless of
+//   EmitterDescriptor::isSpatialized — matching the one-shot path's
+//   EffectivePriorityForCandidate. A future multi-listener world
+//   would change this to min(distSq across listeners); single-
+//   listener for now.
 //
 // Unlike EvictLowestPriorityOneShotIfBeatenBy (which only considers
 // one-shots and is always-on), this function considers BOTH one-shots
@@ -920,19 +934,78 @@ EvictionMode AudioRuntimeImpl::GetEvictionMode() const noexcept {
 // One-shots being evictable here means a persistent "music" emitter
 // can knock out a low-priority gunshot one-shot to play, which is the
 // intended behavior — priority is priority, regardless of lifecycle.
+// v0.79.0 will fold this function's logic into the unified effective-
+// priority formula so both eviction paths share one implementation.
 bool AudioRuntimeImpl::TryEvictForPersistent(int32_t incomingPriority) {
     if (!emitters_) return false;
 
+    const EvictionTieBreaker strategy = config_.budget.evictionTieBreaker;
+
+    // Listener position is only needed by the Furthest strategy.
+    // Computed once outside the scan to avoid repeated HasPrimary
+    // branches inside the lambda hot path.
+    const Vec3 listenerPos = listeners_->HasPrimary()
+        ? listeners_->Primary().position
+        : Vec3{};
+
     EmitterHandle victim{};
-    int32_t       victimPri  = INT32_MAX;
-    bool          haveVictim = false;
+    int32_t       victimPri    = INT32_MAX;
+    int64_t       victimTieKey = INT64_MAX;
+    bool          haveVictim   = false;
 
     emitters_->ForEach([&](EmitterHandle h, EmitterRecord& rec) {
         const int32_t pri = static_cast<int32_t>(rec.descriptor.priority);
-        if (!haveVictim || pri < victimPri) {
-            victim     = h;
-            victimPri  = pri;
-            haveVictim = true;
+
+        // Compute the tie-break key. Smaller key = preferred victim.
+        // Sign flips on Furthest and Newest convert "want largest" into
+        // "want smallest" so the comparison rule below is uniform.
+        int64_t tieKey = 0;
+        switch (strategy) {
+        case EvictionTieBreaker::SlotOrder:
+            tieKey = static_cast<int64_t>(h.index);
+            break;
+        case EvictionTieBreaker::Furthest: {
+            const float dx = rec.position.x - listenerPos.x;
+            const float dy = rec.position.y - listenerPos.y;
+            const float dz = rec.position.z - listenerPos.z;
+            // Quantize squared distance to int64 the same way the
+            // one-shot path quantizes distance: scale * 1000 and clamp.
+            // We use distSq (not distance) to skip a sqrt — comparison
+            // is monotonic so order is preserved. Cap at 1e15 to leave
+            // sign-flip room without underflow on the int64 negation.
+            const double d2 = static_cast<double>(dx) * dx
+                            + static_cast<double>(dy) * dy
+                            + static_cast<double>(dz) * dz;
+            const double clamped = std::min<double>(
+                std::max<double>(d2, 0.0), 1.0e15);
+            tieKey = -static_cast<int64_t>(clamped);  // larger d2 -> smaller key
+            break;
+        }
+        case EvictionTieBreaker::Oldest:
+            tieKey = static_cast<int64_t>(rec.createSequence);
+            break;
+        case EvictionTieBreaker::Newest:
+            // Negate so newest (largest sequence) becomes smallest key.
+            // createSequence is uint64_t; cap before negation to avoid
+            // INT64_MIN edge case on a pathological 2^63-stamped slot.
+            tieKey = -static_cast<int64_t>(std::min<uint64_t>(
+                rec.createSequence,
+                static_cast<uint64_t>(INT64_MAX)));
+            break;
+        }
+
+        // Lexicographic minimization: prefer strictly-lower pri; on tie,
+        // prefer strictly-lower tieKey. This collapses to "first slot
+        // with min pri" when all tieKeys are equal (e.g. all emitters at
+        // the same position under Furthest).
+        const bool better = !haveVictim
+                          || pri < victimPri
+                          || (pri == victimPri && tieKey < victimTieKey);
+        if (better) {
+            victim       = h;
+            victimPri    = pri;
+            victimTieKey = tieKey;
+            haveVictim   = true;
         }
     });
 
@@ -964,6 +1037,8 @@ bool AudioRuntimeImpl::TryEvictForPersistent(int32_t incomingPriority) {
                             static_cast<uint64_t>(victim.generation)),
             LogField::Int ("victim_priority",   victimPri),
             LogField::Int ("incoming_priority", incomingPriority),
+            LogField::UInt("tie_breaker",
+                            static_cast<uint64_t>(strategy)),
         };
         Log_(static_cast<uint8_t>(LogLevel::Debug),
              LogCategory::kEmitter,

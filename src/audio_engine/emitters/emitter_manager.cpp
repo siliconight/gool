@@ -26,6 +26,13 @@ Result<EmitterHandle> EmitterManager::Create(const EmitterDescriptor& desc, bool
         // a higher range; control thread caller is responsible for keeping
         // these from colliding (set via VoiceSourceManager.MixSlotBase()).
         allocated->assignedMixSlot = handle->index;
+        // v0.78.0: stamp the monotonic sequence number AFTER the slot
+        // is allocated, so only successful Creates consume a sequence.
+        // Stamping here (rather than in AudioRuntimeImpl::CreateEmitter)
+        // is critical: one-shots spawned by the event path go through
+        // this Create() with oneShot=true and would otherwise miss the
+        // stamp, breaking Oldest/Newest tie-breaking across lifecycles.
+        allocated->createSequence = nextCreateSequence_++;
     }
     return *handle;
 }

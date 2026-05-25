@@ -54,7 +54,10 @@ private:
 struct Fixture {
     AudioRuntime runtime;
 
-    Fixture(uint32_t maxEmitters, uint32_t maxSounds = 8) {
+    Fixture(uint32_t maxEmitters,
+            uint32_t maxSounds = 8,
+            EvictionMode mode = EvictionMode::HardFail,
+            EvictionTieBreaker tie = EvictionTieBreaker::Furthest) {
         AudioConfig cfg;
         cfg.sampleRate = 48000;
         cfg.bufferSize = 256;
@@ -64,6 +67,8 @@ struct Fixture {
         cfg.budget.maxStreamingAssets    = 4;
         cfg.budget.maxStreamingVoices    = 2;
         cfg.budget.maxVoiceSources       = 0;
+        cfg.budget.evictionMode          = mode;
+        cfg.budget.evictionTieBreaker    = tie;
 
         AudioRuntimeDependencies deps;
         deps.backend = std::make_unique<CountingBackend>();
@@ -248,6 +253,213 @@ void TestPersistentEmittersImmune() {
     if (h2) f.runtime.DestroyEmitter(h2.value());
 }
 
+// ===========================================================================
+// v0.78.0: EvictionTieBreaker tests for the persistent eviction path
+// (TryEvictForPersistent). These exercise CreateEmitter under
+// EvictionMode::Priority, where the tie-breaker decides which of several
+// same-priority candidates loses its slot. The pool is sized to 3 so we can
+// reach the saturation boundary deterministically.
+//
+// All six tests share the same shape:
+//   1. Fill the pool with 3 same-priority persistent emitters
+//   2. Attempt to create a 4th, higher-priority persistent emitter
+//   3. Assert which of the original 3 was evicted via GetEmitterPriority,
+//      which returns -1 for freed slots.
+// ===========================================================================
+
+// Helper: persistent emitter at a given position+priority. Returns the handle
+// from CreateEmitter so the test can probe GetEmitterPriority after eviction.
+static Result<EmitterHandle> CreatePersistent(AudioRuntime& rt,
+                                                AudioPriority pri,
+                                                Vec3          pos) {
+    EmitterDescriptor d;
+    d.soundId       = kSnd;
+    d.position      = pos;
+    d.priority      = pri;
+    d.isLooping     = true;
+    d.isSpatialized = false;  // position still used by Furthest, matching
+                              // the one-shot path's behavior in the older
+                              // TestDistanceBreaksPriorityTie above.
+    return rt.CreateEmitter(d);
+}
+
+void TestPersistentEvictionTieBreaker_Furthest() {
+    // Three Normal-priority emitters at 1m, 10m, 100m. Incoming Critical
+    // should evict the 100m one (largest squared distance to listener).
+    Fixture f(/*maxEmitters*/ 3, /*maxSounds*/ 8,
+              EvictionMode::Priority, EvictionTieBreaker::Furthest);
+
+    auto h1 = CreatePersistent(f.runtime, AudioPriority::Normal, {  1.0f, 0, 0});
+    auto h2 = CreatePersistent(f.runtime, AudioPriority::Normal, { 10.0f, 0, 0});
+    auto h3 = CreatePersistent(f.runtime, AudioPriority::Normal, {100.0f, 0, 0});
+    EXPECT(static_cast<bool>(h1));
+    EXPECT(static_cast<bool>(h2));
+    EXPECT(static_cast<bool>(h3));
+
+    auto h4 = CreatePersistent(f.runtime, AudioPriority::Critical, {0, 0, 0});
+    EXPECT(static_cast<bool>(h4));
+
+    // h3 (100m) should be evicted; h1 and h2 survive.
+    EXPECT(f.runtime.GetEmitterPriority(h1.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(h2.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(h3.value()) == -1);
+    EXPECT(f.runtime.GetEmitterPriority(h4.value()) ==
+            static_cast<int32_t>(AudioPriority::Critical));
+
+    EXPECT(f.Stats().emittersEvictedByPriority == 1);
+}
+
+void TestPersistentEvictionTieBreaker_Oldest() {
+    // Three Normal emitters created in known order. With Oldest, the
+    // incoming Critical should evict the FIRST one created (h1).
+    Fixture f(/*maxEmitters*/ 3, /*maxSounds*/ 8,
+              EvictionMode::Priority, EvictionTieBreaker::Oldest);
+
+    auto h1 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    auto h2 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    auto h3 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    EXPECT(static_cast<bool>(h1));
+    EXPECT(static_cast<bool>(h2));
+    EXPECT(static_cast<bool>(h3));
+
+    auto h4 = CreatePersistent(f.runtime, AudioPriority::Critical, {0, 0, 0});
+    EXPECT(static_cast<bool>(h4));
+
+    EXPECT(f.runtime.GetEmitterPriority(h1.value()) == -1);              // evicted
+    EXPECT(f.runtime.GetEmitterPriority(h2.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(h3.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.Stats().emittersEvictedByPriority == 1);
+}
+
+void TestPersistentEvictionTieBreaker_Newest() {
+    // Mirror of Oldest: Newest evicts h3 (created most recently).
+    Fixture f(/*maxEmitters*/ 3, /*maxSounds*/ 8,
+              EvictionMode::Priority, EvictionTieBreaker::Newest);
+
+    auto h1 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    auto h2 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    auto h3 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    EXPECT(static_cast<bool>(h1));
+    EXPECT(static_cast<bool>(h2));
+    EXPECT(static_cast<bool>(h3));
+
+    auto h4 = CreatePersistent(f.runtime, AudioPriority::Critical, {0, 0, 0});
+    EXPECT(static_cast<bool>(h4));
+
+    EXPECT(f.runtime.GetEmitterPriority(h1.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(h2.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(h3.value()) == -1);              // evicted
+    EXPECT(f.Stats().emittersEvictedByPriority == 1);
+}
+
+void TestPersistentEvictionTieBreaker_SlotOrder_Deterministic() {
+    // SlotOrder reproduces pre-0.78.0 behavior: first slot in ForEach order
+    // (= lowest slot index, since SlotMap iterates by index). With sequential
+    // Create calls the lowest-index slot is h1, so h1 is the victim.
+    // Pinning this prevents accidental future churn of "what's the legacy
+    // tie-break order?"
+    Fixture f(/*maxEmitters*/ 3, /*maxSounds*/ 8,
+              EvictionMode::Priority, EvictionTieBreaker::SlotOrder);
+
+    auto h1 = CreatePersistent(f.runtime, AudioPriority::Normal, {99.0f, 0, 0});  // far
+    auto h2 = CreatePersistent(f.runtime, AudioPriority::Normal, { 1.0f, 0, 0});  // close
+    auto h3 = CreatePersistent(f.runtime, AudioPriority::Normal, {50.0f, 0, 0});  // mid
+    EXPECT(static_cast<bool>(h1));
+    EXPECT(static_cast<bool>(h2));
+    EXPECT(static_cast<bool>(h3));
+
+    auto h4 = CreatePersistent(f.runtime, AudioPriority::Critical, {0, 0, 0});
+    EXPECT(static_cast<bool>(h4));
+
+    // h1 (first allocated slot) is evicted regardless of distance or age.
+    // Note: positions are deliberately varied so that Furthest would have
+    // picked h1 here too (it's the furthest), but Newest/Oldest would not.
+    // We don't separately distinguish those — the point of SlotOrder is the
+    // strategy is iteration-order, period.
+    EXPECT(f.runtime.GetEmitterPriority(h1.value()) == -1);              // evicted
+    EXPECT(f.runtime.GetEmitterPriority(h2.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(h3.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.Stats().emittersEvictedByPriority == 1);
+}
+
+void TestPersistentEvictionTieBreaker_AcrossLifecycles() {
+    // The strategy must apply uniformly across both lifecycles — one-shots
+    // and persistent emitters — because createSequence is stamped on every
+    // EmitterManager::Create() regardless of which path triggered it.
+    //
+    // Scenario: a Normal one-shot lands first, then a Normal persistent
+    // emitter. Under Oldest, an incoming Critical persistent should evict
+    // the one-shot (older sequence).
+    Fixture f(/*maxEmitters*/ 3, /*maxSounds*/ 8,
+              EvictionMode::Priority, EvictionTieBreaker::Oldest);
+
+    // Submit a Normal one-shot first, then tick so it's installed.
+    f.Submit(AudioPriority::Normal, {1.0f, 0, 0});
+    f.Tick();
+    EXPECT(f.Stats().activeEmitters == 1);
+
+    // Now create two persistent emitters; they get sequences 2 and 3.
+    // Note: activeEmitters in Stats() is only republished inside Update(),
+    // so we don't assert on it between CreateEmitter calls — instead we
+    // verify by handle validity below.
+    auto hPersist1 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    auto hPersist2 = CreatePersistent(f.runtime, AudioPriority::Normal, {1.0f, 0, 0});
+    EXPECT(static_cast<bool>(hPersist1));
+    EXPECT(static_cast<bool>(hPersist2));
+
+    // Incoming Critical persistent: under Oldest, the one-shot loses
+    // (createSequence = 1, lowest in the pool). Both persistent emitters
+    // survive. This proves the tie-breaker doesn't accidentally privilege
+    // one lifecycle over the other.
+    auto hCritical = CreatePersistent(f.runtime, AudioPriority::Critical, {0, 0, 0});
+    EXPECT(static_cast<bool>(hCritical));
+
+    EXPECT(f.runtime.GetEmitterPriority(hPersist1.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(hPersist2.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.Stats().emittersEvictedByPriority == 1);
+}
+
+void TestPersistentEvictionTieBreaker_DoesNotChangePriorityRule() {
+    // The tie-breaker only chooses among same-priority candidates. A
+    // strictly-lower-priority emitter must always be preferred as victim,
+    // even if a higher-priority emitter is "more attractive" under the
+    // tie-break key (e.g. further away under Furthest).
+    //
+    // Setup: one Low at 1m (close, but lowest priority) and two Normal
+    // emitters at 100m and 99m (far away, higher priority). Incoming High.
+    // Even though the Normals are furthest, the Low must lose its slot
+    // because its priority is strictly lower.
+    Fixture f(/*maxEmitters*/ 3, /*maxSounds*/ 8,
+              EvictionMode::Priority, EvictionTieBreaker::Furthest);
+
+    auto hLow    = CreatePersistent(f.runtime, AudioPriority::Low,    {  1.0f, 0, 0});
+    auto hNorm1  = CreatePersistent(f.runtime, AudioPriority::Normal, {100.0f, 0, 0});
+    auto hNorm2  = CreatePersistent(f.runtime, AudioPriority::Normal, { 99.0f, 0, 0});
+    EXPECT(static_cast<bool>(hLow));
+    EXPECT(static_cast<bool>(hNorm1));
+    EXPECT(static_cast<bool>(hNorm2));
+
+    auto hHigh = CreatePersistent(f.runtime, AudioPriority::High, {0, 0, 0});
+    EXPECT(static_cast<bool>(hHigh));
+
+    EXPECT(f.runtime.GetEmitterPriority(hLow.value())   == -1);          // evicted
+    EXPECT(f.runtime.GetEmitterPriority(hNorm1.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.runtime.GetEmitterPriority(hNorm2.value()) ==
+            static_cast<int32_t>(AudioPriority::Normal));
+    EXPECT(f.Stats().emittersEvictedByPriority == 1);
+}
+
 } // namespace
 
 int main() {
@@ -258,6 +470,13 @@ int main() {
     TestDistanceBreaksPriorityTie();
     TestSamePriorityAndCloserNotEvicted();
     TestPersistentEmittersImmune();
+    // v0.78.0: tie-breaker tests
+    TestPersistentEvictionTieBreaker_Furthest();
+    TestPersistentEvictionTieBreaker_Oldest();
+    TestPersistentEvictionTieBreaker_Newest();
+    TestPersistentEvictionTieBreaker_SlotOrder_Deterministic();
+    TestPersistentEvictionTieBreaker_AcrossLifecycles();
+    TestPersistentEvictionTieBreaker_DoesNotChangePriorityRule();
     if (gFails == 0) {
         std::printf("[priority_eviction_test] OK\n");
         return 0;

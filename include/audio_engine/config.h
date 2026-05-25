@@ -107,6 +107,49 @@ enum class EvictionMode : uint8_t {
     Priority = 1,
 };
 
+// v0.78.0: how same-priority candidates are disambiguated when
+// TryEvictForPersistent finds multiple emitters tied at the lowest
+// priority. Priority always dominates; the tie-breaker only chooses
+// among slots that share the minimum priority found in the scan.
+//
+// Strategies:
+//
+//   SlotOrder:
+//     Iteration-order-first wins. Deterministic (slot-map ForEach
+//     order) but not semantically meaningful. This is the pre-0.78.0
+//     behavior, kept available for tests and hosts that want a
+//     stable choice independent of world geometry or lifecycle.
+//
+//   Furthest (default):
+//     The emitter with the largest squared distance to the primary
+//     listener wins. Matches the existing one-shot eviction path
+//     (EvictLowestPriorityOneShotIfBeatenBy), so persistent-emitter
+//     eviction is now consistent with one-shot eviction. Distance
+//     is computed from EmitterRecord::position regardless of
+//     EmitterDescriptor::isSpatialized, matching how the one-shot
+//     path already behaves.
+//
+//   Oldest:
+//     The emitter created earliest (lowest createSequence) wins.
+//     Useful when stale long-running emitters should yield to new
+//     ones at the same priority. Note: this can evict long-running
+//     music or ambience in favor of newer same-priority SFX.
+//
+//   Newest:
+//     The emitter created most recently (highest createSequence)
+//     wins. The opposite intuition: protect established sounds and
+//     drop the latecomer at a tie.
+//
+// Applies only to TryEvictForPersistent (the CreateEmitter path
+// under EvictionMode::Priority). The one-shot eviction path uses
+// its own effective-priority formula. v0.79.0 unifies the two.
+enum class EvictionTieBreaker : uint8_t {
+    SlotOrder = 0,
+    Furthest  = 1,
+    Oldest    = 2,
+    Newest    = 3,
+};
+
 struct AudioRuntimeBudget {
     uint32_t maxActiveEmitters         = 128;
     uint32_t maxSpatialEmitters        = 64;
@@ -120,6 +163,13 @@ struct AudioRuntimeBudget {
     // v0.75.0: see EvictionMode comment above. Defaults to HardFail so
     // existing v0.74.x projects upgrading get unchanged behavior.
     EvictionMode evictionMode          = EvictionMode::HardFail;
+    // v0.78.0: when evictionMode == Priority and multiple emitters
+    // tie at the lowest priority, this strategy picks the victim.
+    // Default Furthest matches the one-shot path's behavior (closer-
+    // to-listener wins among ties) and is what v0.79.0's unified
+    // formula will use. SlotOrder reproduces pre-0.78.0 behavior.
+    // Ignored when evictionMode == HardFail. See EvictionTieBreaker.
+    EvictionTieBreaker evictionTieBreaker = EvictionTieBreaker::Furthest;
     // Interest-management cap on per-tick spatial processing. When > 0,
     // each tick the runtime sorts active emitters by distance to the
     // listener and only runs the spatializer + posts UpdateParams for

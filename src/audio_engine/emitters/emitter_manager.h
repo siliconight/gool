@@ -95,6 +95,19 @@ struct EmitterRecord {
     // re-enters the top-N. Acts as an edge-trigger so we don't spam
     // mute-commands every tick at idle.
     bool inInterestMute = false;
+
+    // v0.78.0: monotonically-increasing per-manager sequence number,
+    // stamped at Create() time. Used by EvictionTieBreaker::{Oldest,
+    // Newest} to disambiguate same-priority candidates in
+    // TryEvictForPersistent. Frame-based tagging would tie within a
+    // single Update tick (multiple Creates can land in the same tick);
+    // wall-clock would break determinism. A monotonic sequence is
+    // both tick-immune and replay-deterministic, and the stamp lives
+    // on EmitterManager (not AudioRuntimeImpl) so one-shots spawned
+    // by the event path receive a sequence number too — keeping
+    // Oldest/Newest correct across both lifecycles. A value of 0
+    // means "never stamped"; the first stamp is 1.
+    uint64_t createSequence = 0;
 };
 
 class EmitterManager {
@@ -161,6 +174,13 @@ public:
 
 private:
     util::SlotMap<EmitterHandle, EmitterRecord> slots_;
+
+    // v0.78.0: monotonic counter feeding EmitterRecord::createSequence.
+    // Incremented and stamped inside Create() on success. Per-manager
+    // (not per-runtime) so tests with multiple AudioRuntime instances
+    // don't share sequence space. uint64_t never wraps for any
+    // plausible game session length.
+    uint64_t nextCreateSequence_ = 1;
 };
 
 template <typename DestroyHook>

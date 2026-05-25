@@ -8,6 +8,113 @@ While the major version is `0`, minor bumps may include backward-incompatible
 changes; consult the per-release `Changed` and `Removed` sections before
 upgrading.
 
+## [0.78.0] - 2026-05-25 — Eviction tie-breaking strategies
+
+Persistent-emitter eviction (`EvictionMode::Priority`) now exposes a
+configurable strategy for disambiguating same-priority candidates,
+replacing the implementation-defined slot-iteration order that had
+been silently in effect since v0.75.0. Default is `Furthest`, which
+matches what the one-shot eviction path has been doing all along —
+closing a quiet inconsistency between the two paths.
+
+### Background
+
+gool has two eviction paths:
+
+1. **One-shot eviction** (`EvictLowestPriorityOneShotIfBeatenBy`) —
+   triggered by incoming `PlaySoundAtLocation` events. Always on.
+   Already used an effective-priority formula combining priority
+   and distance to the listener (`(pri << 32) - distance_mm`).
+2. **Persistent-emitter eviction** (`TryEvictForPersistent`) —
+   triggered by `CreateEmitter` under `EvictionMode::Priority`.
+   Considers both lifecycles as victims. Picked the lowest-priority
+   slot, but broke ties by slot-map iteration order — semantically
+   meaningless and not user-configurable.
+
+The README's "closer-to-listener wins" promise applied to the first
+path but not the second; the docs and behavior diverged whenever a
+host opted into persistent eviction. v0.78.0 closes that gap.
+
+### Added
+
+- **`EvictionTieBreaker` enum** in `include/audio_engine/config.h`
+  with four strategies:
+  - `SlotOrder` — pre-0.78.0 behavior (iteration-order-first). Kept
+    available for tests that want a deterministic choice independent
+    of geometry or lifecycle.
+  - `Furthest` (default) — largest squared distance to the primary
+    listener wins. Matches the one-shot path; matches the README.
+  - `Oldest` — lowest `createSequence` wins (longest-running emitter
+    yields its slot).
+  - `Newest` — highest `createSequence` wins (most recent emitter
+    yields; preserves established sounds).
+- **`AudioRuntimeBudget::evictionTieBreaker`** field, default
+  `EvictionTieBreaker::Furthest`. Ignored when `evictionMode ==
+  HardFail` (the global default), so projects upgrading from
+  v0.77.x that have not opted into priority eviction see zero
+  behavior change.
+- **`EmitterRecord::createSequence`** (`uint64_t`) — monotonic
+  per-`EmitterManager` sequence stamp set inside
+  `EmitterManager::Create()`. The stamp lives on the manager rather
+  than the runtime so one-shots spawned by the event path also get
+  a sequence — Oldest/Newest work uniformly across both lifecycles
+  without special-casing. Sequence 0 means "never stamped"; stamps
+  start at 1.
+
+### Changed
+
+- **`TryEvictForPersistent` rewrite** — single-pass composite-key
+  minimization `(priority, tieKey)` where `tieKey` is computed per
+  candidate from the configured strategy. Complexity is unchanged
+  (O(active emitters)). Priority continues to dominate strictly;
+  the tie-break key only decides between candidates that share the
+  minimum priority found in the scan.
+- **Eviction debug log** gains a `tie_breaker` field naming which
+  strategy decided the victim, so per-emitter eviction logs are
+  diagnosable without re-deriving the config.
+- **Default tie-breaker is `Furthest`, not `SlotOrder`.** Hosts
+  already running `EvictionMode::Priority` on v0.77.x will see
+  same-priority eviction targets shift from "first slot in
+  iteration order" to "furthest from listener." This is the
+  intended convergence with the one-shot path; the prior behavior
+  was an unintentional quirk, not a contract. Hosts who need the
+  legacy behavior can set
+  `cfg.budget.evictionTieBreaker = EvictionTieBreaker::SlotOrder`.
+
+### Tests
+
+Six new tests in `tests/unit/priority_eviction_test.cpp`:
+
+- `TestPersistentEvictionTieBreaker_Furthest` — three same-priority
+  emitters at 1/10/100 m; higher-priority incoming evicts the 100 m
+  one.
+- `TestPersistentEvictionTieBreaker_Oldest` / `_Newest` — three
+  same-priority emitters created in known order; assertions on
+  which `EmitterHandle` is freed after a higher-priority arrival.
+- `TestPersistentEvictionTieBreaker_SlotOrder_Deterministic` —
+  pins the legacy behavior so anyone explicitly opting into
+  `SlotOrder` gets a stable choice.
+- `TestPersistentEvictionTieBreaker_AcrossLifecycles` — one-shot
+  + persistent emitters at the same priority under `Oldest`;
+  higher-priority incoming evicts the older one-shot, proving the
+  strategy applies uniformly across both lifecycles via the shared
+  `createSequence`.
+- `TestPersistentEvictionTieBreaker_DoesNotChangePriorityRule` —
+  strictly-lower-priority candidate is preferred over a "more
+  attractive" same-priority one (priority still dominates).
+
+The existing `Fixture` constructor gains two optional parameters
+(`EvictionMode`, `EvictionTieBreaker`) with defaults that preserve
+the legacy tests' behavior bit-for-bit.
+
+### Forward path
+
+v0.79.0 folds the discrete strategies into a unified effective-
+priority formula shared with the one-shot path, with `Furthest`
+becoming the natural fall-out of `(pri << 32) - distance_mm`. The
+`createSequence` field carries forward to power age-aware variants
+in the unified formula if hosts ask for them.
+
 ## [Unreleased]
 
 Nothing shipping yet. Next-up candidates:
