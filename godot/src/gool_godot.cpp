@@ -53,6 +53,7 @@
 
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 
 using namespace godot;
 
@@ -666,6 +667,19 @@ public:
         // Voice chat (multiplayer).
         ClassDB::bind_method(D_METHOD("register_voice_source", "player_id"),
                               &GoolAudioRuntime::register_voice_source);
+        // v0.76.0: explicit unregister for clean scenario/peer teardown.
+        // See method body for the player_id ↔ VoiceSourceHandle mapping
+        // and why the binding keeps the map (game code thinks in peer
+        // IDs, engine speaks handles).
+        ClassDB::bind_method(D_METHOD("unregister_voice_source", "player_id"),
+                              &GoolAudioRuntime::unregister_voice_source);
+        // v0.76.0: per-player replication stats for multiplayer
+        // flood-protection verification. The C++ accessor
+        // GetPerPlayerReplicationStats has existed since the rate
+        // limiter went in; this finally surfaces it to GDScript.
+        ClassDB::bind_method(D_METHOD("get_per_player_replication_stats",
+                                       "player_id"),
+                              &GoolAudioRuntime::get_per_player_replication_stats);
         ClassDB::bind_method(D_METHOD("submit_voice_packet",
                                        "player_id", "bytes",
                                        "sequence_number",
@@ -2670,8 +2684,79 @@ public:
 
     bool register_voice_source(int64_t player_id) {
         if (!runtime_) return false;
-        return static_cast<bool>(runtime_->RegisterVoiceSource(
-            static_cast<audio::AudioPlayerId>(player_id)));
+        // v0.76.0: capture the handle so unregister_voice_source can
+        // round-trip it. RegisterVoiceSource is idempotent on the
+        // engine side — calling it twice for the same player_id
+        // succeeds and returns a stable handle (the engine de-dupes
+        // internally) — so re-registering after register-unregister
+        // cycles works without needing the map to track lifecycle
+        // explicitly.
+        auto result = runtime_->RegisterVoiceSource(
+            static_cast<audio::AudioPlayerId>(player_id));
+        if (!result.ok()) return false;
+        voice_handles_[player_id] = result.value();
+        return true;
+    }
+
+    // v0.76.0: explicit teardown for voice sources. Previously, voice
+    // sources persisted until engine shutdown — fine for production
+    // game code where peers leaving is rare, painful for stress tests
+    // and integration tests that register/unregister peers repeatedly.
+    //
+    // Returns true on successful unregister (handle was known and the
+    // engine accepted it), false if the player_id was never registered
+    // OR the engine rejected the unregister (which shouldn't happen
+    // in normal operation but might in edge cases like
+    // shutdown-in-progress).
+    //
+    // No-op if the player_id was never registered — silent, not an
+    // error. This matches the binding's general "tolerant" stance:
+    // game code shouldn't crash because it tried to clean up something
+    // that wasn't there.
+    bool unregister_voice_source(int64_t player_id) {
+        if (!runtime_) return false;
+        auto it = voice_handles_.find(player_id);
+        if (it == voice_handles_.end()) return false;
+        const auto rc = runtime_->UnregisterVoiceSource(it->second);
+        voice_handles_.erase(it);
+        return rc == audio::AudioResult::Success;
+    }
+
+    // v0.76.0: per-player replication stats — surfaces what the rate
+    // limiter has done for a specific peer. The aggregate counters
+    // already exposed via get_render_stats answer "is the limiter
+    // firing across the population," but not "is it firing on THIS
+    // peer specifically." For multiplayer flood-protection
+    // verification (Replication Storm stress test, anti-cheat
+    // dashboards), the per-peer view is essential — without it you
+    // can't tell whether the limiter is correctly punishing the
+    // bad actors and sparing the well-behaved ones.
+    //
+    // Returns a Dictionary with three int64 keys:
+    //   - events_accepted    : packets/events that passed the bucket
+    //   - events_rate_limited: packets/events rejected (any category)
+    //   - events_rejected    : packets/events rejected by other paths
+    //                          (validator, new-id-budget, etc.)
+    //
+    // Returns an empty Dictionary if the player_id has no slot in the
+    // rate limiter's table (never seen, or LRU-evicted). Callers can
+    // distinguish "never seen" from "seen with zero activity" by
+    // checking .is_empty() vs .has("events_accepted").
+    Dictionary get_per_player_replication_stats(int64_t player_id) {
+        Dictionary d;
+        if (!runtime_) return d;
+        audio::AudioRuntime::PerPlayerReplicationStats s{};
+        if (!runtime_->GetPerPlayerReplicationStats(
+                static_cast<audio::AudioPlayerId>(player_id), s)) {
+            return d;
+        }
+        d["events_accepted"] =
+            static_cast<int64_t>(s.eventsAccepted);
+        d["events_rate_limited"] =
+            static_cast<int64_t>(s.eventsRateLimited);
+        d["events_rejected"] =
+            static_cast<int64_t>(s.eventsRejected);
+        return d;
     }
 
     bool submit_voice_packet(int64_t player_id,
@@ -2916,6 +3001,18 @@ private:
     // RID in after a GoolListener3D becomes current.
     GodotGeometryQuery*                   geometry_query_ = nullptr;
     bool initialized_ = false;
+
+    // v0.76.0: player_id → VoiceSourceHandle map. The C++ runtime's
+    // UnregisterVoiceSource(handle) takes a handle, but the GDScript
+    // surface is player_id-keyed throughout — game code thinks in
+    // peer IDs, not opaque handles. Storing the handle returned by
+    // RegisterVoiceSource lets unregister_voice_source(player_id)
+    // round-trip it back to the engine. The map adds O(N) memory
+    // for N concurrent voice sources (small; bounded by maxTrackedPlayers)
+    // and amortized O(1) lookup. Keyed by int64 to match the
+    // binding's player_id parameter type. Wire-state, not engine
+    // state — survives across init/shutdown only by being clear()'d.
+    std::unordered_map<int64_t, audio::VoiceSourceHandle> voice_handles_;
 };
 
 // =====================================================================

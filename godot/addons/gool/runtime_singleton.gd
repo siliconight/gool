@@ -2680,6 +2680,46 @@ func register_voice_source(player_id: int) -> bool:
 		_known_voice_player_ids.append(player_id)
 	return ok
 
+## v0.76.0: explicit unregister for voice sources. Pairs with
+## register_voice_source; the binding internally rounds the
+## player_id → VoiceSourceHandle lookup so game code can stay
+## peer-id-keyed throughout. Returns true on successful unregister,
+## false if the player_id was never registered or the engine
+## rejected the call.
+##
+## Idempotent: calling unregister twice for the same player_id is
+## safe — the second call returns false (not an error). Production
+## use cases: clean peer disconnect handling, voice scenario
+## teardown in tests, per-room voice channel lifecycle.
+func unregister_voice_source(player_id: int) -> bool:
+	if not _check_init("unregister_voice_source"):
+		return false
+	var ok: bool = _runtime.unregister_voice_source(player_id)
+	# Mirror the tracking list so the editor's Live Stats panel
+	# stops showing peers that have been torn down.
+	if ok:
+		_known_voice_player_ids.erase(player_id)
+	return ok
+
+## v0.76.0: per-player replication stats for multiplayer flood-
+## protection verification. The aggregate counters in
+## get_render_stats answer "is the limiter firing across the
+## population," but not "is it firing on THIS peer specifically."
+## Returns a Dictionary with three int keys:
+##   - events_accepted    : packets/events that passed the bucket
+##   - events_rate_limited: rejected by the per-category limiter
+##   - events_rejected    : rejected by other paths (validator,
+##                          new-id-budget, etc.)
+##
+## Empty Dictionary if player_id has no slot in the rate limiter's
+## table (never seen, or LRU-evicted under load). Check
+## result.is_empty() to distinguish "no slot" from "slot exists
+## with zero activity."
+func get_per_player_replication_stats(player_id: int) -> Dictionary:
+	if not _check_init("get_per_player_replication_stats"):
+		return {}
+	return _runtime.get_per_player_replication_stats(player_id)
+
 ## v0.44.0: returns the player IDs the autoload knows about
 ## (i.e. that have been passed to register_voice_source since
 ## the singleton started). Used by the editor's Live Stats panel

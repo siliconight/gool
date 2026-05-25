@@ -22,6 +22,115 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.76.0] - 2026-05-24 — Version stamp correction + binding completeness pass
+
+Three small, pure-additive additions that close gaps surfaced by the
+v0.75.x stress test work. No engine behavior changes, no breaking
+binding changes.
+
+### Fixed
+
+- **`include/audio_engine/version.h` stamps.** kVersionMinor, kVersionString,
+  and kVersionFull were stuck at 0.74.0 across all of v0.75.0, v0.75.1,
+  and v0.75.2. The runtime's "ready" log line reported the wrong
+  version on every release in that range. Single-source-of-truth desync
+  — same recurring lesson that bit CMakeLists/README earlier in the
+  v0.75.x cycle.
+
+  v0.76.0 brings the stamps current and goes on the recurring-lessons
+  list as "check every version-bearing file on a bump, not just the
+  ones the tooling reminds you about."
+
+### Added
+
+- **`Gool.get_per_player_replication_stats(player_id) → Dictionary`.**
+  Surfaces the C++ accessor `GetPerPlayerReplicationStats` (existing
+  since the rate limiter went in, never bound). Returns a Dictionary
+  with `events_accepted`, `events_rate_limited`, `events_rejected`,
+  or empty if the player_id has no slot in the rate limiter's table.
+
+  Production use case: multiplayer anti-flood dashboards that want
+  to identify specific bad actors instead of just "the limiter is
+  firing on someone." Stress test use case: closes the v0.75.x
+  Replication Storm verification gap — we could verify "the limiter
+  is firing" but not "the limiter doesn't punish well-behaved peers
+  specifically." With this binding, the test can assert that the
+  4 flooding peers have non-zero `events_rate_limited` while the
+  16 normal peers have zero.
+
+- **`Gool.unregister_voice_source(player_id) → bool`.** Pairs with the
+  existing `register_voice_source`. The C++ `UnregisterVoiceSource`
+  takes a `VoiceSourceHandle`, but the GDScript surface is peer-id-
+  keyed throughout — so the binding now keeps an internal
+  `player_id → VoiceSourceHandle` map populated on register, looked
+  up on unregister.
+
+  Production use case: clean peer-disconnect handling (when a player
+  leaves the lobby, free their voice source). Test use case: clean
+  scenario teardown so re-running Voice Flood doesn't accumulate
+  state across runs. The map adds O(N) memory for N concurrent voice
+  sources (bounded by `maxTrackedPlayers`); lookup is amortized O(1).
+
+  Idempotent and tolerant: calling unregister twice for the same
+  player_id is safe; second call returns false (not an error).
+  Unregistering a never-registered player_id returns false silently.
+
+### No changes to
+
+- Kernel logic (all v0.75.x features remain as-is).
+- Existing binding signatures (`register_voice_source` still returns
+  bool, doesn't expose the handle — game code that wants the
+  handle-keyed API can still use the C++ directly via
+  `Gool.internal_runtime()` if exposed, but the typical path
+  through this autoload is peer-id-keyed).
+- `Gool.get_render_stats()` Dictionary keys — no additions or
+  removals.
+
+### Stress test rig changes (v0.76.0)
+
+Bundled `gool_stress_test` updates that exercise the new bindings:
+
+- Replication Storm scenario now reads
+  `get_per_player_replication_stats` for each bad peer and each
+  normal peer separately, verifying that the limiter punishes the
+  former without affecting the latter.
+- Voice Flood scenario now calls `unregister_voice_source` in its
+  cleanup phase, so re-running the scenario doesn't leave stale
+  voice sources in the engine. (Previously a v0.76.0-candidate known
+  gap; now closed.)
+
+## [0.75.3] - 2026-05-24 — Stress test rig only (no engine change)
+
+GDScript-only patch to the bundled stress test rig. No gool DLL
+rebuild required; v0.75.2 DLL continues to work.
+
+### Fixed
+
+- **Replication Storm and Voice Flood now call `Gool.on_tick_advanced`
+  once per frame.** Without a host calling this, the rate limiter's
+  per-tick new-player admission budget (default 8) never refreshes,
+  and scenarios with >8 distinct peers see their excess peers
+  silently rejected at `FindOrAllocate` (routed to
+  `replicationEventsRejectedNewIdBudget`, NOT
+  `replicationEventsRateLimited`). This was the cause of v0.75.2's
+  "Voice Flood shows 0 accepted, 0 rate-limited" output — every
+  packet was rejected by the anti-DoS gate that's supposed to fire
+  in real games too.
+
+- **Voice Flood verdict now reads
+  `replication_rejected_new_id_budget` and surfaces it in the pass/
+  fail logic.** Full accounting: every submitted packet lands in
+  one of `accepted + token-bucket-rejected + new-id-budget-rejected`,
+  with the unaccounted gap surfaced explicitly. Pre-v0.75.3 the
+  rejection counter was implicit and the verdict could mis-attribute.
+
+- **19 `_log()` precedence bugs fixed.** GDScript's `%` operator
+  binds tighter than `+`, so `"a" + "b %d" % [v]` parses as
+  `"a" + ("b %d" % [v])` and substitutes only the trailing string.
+  Affected every scenario's verdict messages — `%.1f%%`, `%d` and
+  similar were rendering literally. All 19 instances wrapped in
+  parens so the format operator applies to the full concatenation.
+
 ## [0.75.2] - 2026-05-24 — Inbound voice packet acceptance counter + first-enable restart dialog
 
 Small, production-relevant additions driven by the v0.75.x stress test
