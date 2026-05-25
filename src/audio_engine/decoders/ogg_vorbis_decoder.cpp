@@ -40,7 +40,7 @@
 #endif
 
 extern "C" {
-#include "stb_vorbis.c"     // canonical single-TU include
+#include "stb_vorbis.c"  // NOLINT(bugprone-suspicious-include) — canonical single-TU include
 }
 
 #if defined(__GNUC__)

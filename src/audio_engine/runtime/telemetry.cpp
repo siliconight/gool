@@ -30,7 +30,7 @@ void JsonLinesTelemetrySink::OnRuntimeStats(const RuntimeStatsSample& sample) {
     // (<4 KB), so multi-process logs don't interleave. Field order is
     // stable for downstream schema parsers. Counters use %llu, gauges
     // use %u — the cast is safe given the struct's uint{32,64}_t types.
-    std::fprintf(out_,
+    (void)std::fprintf(out_,
         "{"
         "\"ts\":%llu,"
         "\"active_emitters\":%u,"

@@ -159,9 +159,9 @@ public:
         skipWs();
         char c = peek();
         if (c == '"') { std::string ignored; return parseString(ignored, err, errLine); }
-        if (c == 't' || c == 'f') { bool b; return parseBool(b, err, errLine); }
+        if (c == 't' || c == 'f') { bool b = false; return parseBool(b, err, errLine); }
         if (c == '-' || std::isdigit(static_cast<unsigned char>(c))) {
-            double d; return parseNumber(d, err, errLine);
+            double d = 0.0; return parseNumber(d, err, errLine);
         }
         if (c == '[') {
             advance();
@@ -288,9 +288,16 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             else if (key == "diffusion")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDiffusion = static_cast<float>(n); }
             else if (key == "dry_gain_db")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDryGainDb = static_cast<float>(n); }
             else if (key == "wet_gain_db")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbWetGainDb = static_cast<float>(n); }
-            // v0.28.x soft-migration aliases.
+            // v0.28.x soft-migration aliases. The bodies intentionally
+            // mirror the canonical keys above — `room_size` was the
+            // pre-v0.28 spelling of `decay`, and `damping` the
+            // pre-v0.28 spelling of `hf_damping`. Identical bodies are
+            // load-bearing here: configs from older versions must load
+            // with the same effect they had then.
+            // NOLINTBEGIN(bugprone-branch-clone) — see above
             else if (key == "room_size")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }
             else if (key == "damping")            { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbHfDamping = static_cast<float>(n); }
+            // NOLINTEND(bugprone-branch-clone)
             // Saturation. v0.40.0 adds the `mode` key and changes
             // `drive` semantics from unnormalized 1..N to normalized
             // 0..1. Legacy unnormalized drive values are detected as

@@ -33,7 +33,7 @@ void AppendJsonEscaped(std::string& out, std::string_view s) {
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x",
+                    (void)std::snprintf(buf, sizeof(buf), "\\u%04x",
                                    static_cast<unsigned char>(c));
                     out += buf;
                 } else {
@@ -61,19 +61,19 @@ void AppendField(std::string& out, const LogField& f) {
     char numbuf[64];
     switch (f.type) {
         case LogField::Type::Int64:
-            std::snprintf(numbuf, sizeof(numbuf), "%lld",
+            (void)std::snprintf(numbuf, sizeof(numbuf), "%lld",
                            static_cast<long long>(f.value.i64));
             out += numbuf;
             break;
         case LogField::Type::UInt64:
-            std::snprintf(numbuf, sizeof(numbuf), "%llu",
+            (void)std::snprintf(numbuf, sizeof(numbuf), "%llu",
                            static_cast<unsigned long long>(f.value.u64));
             out += numbuf;
             break;
         case LogField::Type::Float:
             // %g for compact representation; sinks that need full
             // precision can use a custom sink.
-            std::snprintf(numbuf, sizeof(numbuf), "%.6g", f.value.f64);
+            (void)std::snprintf(numbuf, sizeof(numbuf), "%.6g", f.value.f64);
             out += numbuf;
             break;
         case LogField::Type::Bool:
@@ -102,7 +102,7 @@ void JsonLinesLogSink::OnLogEvent(const LogEvent& event) {
 
     char numbuf[32];
     line += "{\"ts\":";
-    std::snprintf(numbuf, sizeof(numbuf), "%llu",
+    (void)std::snprintf(numbuf, sizeof(numbuf), "%llu",
                    static_cast<unsigned long long>(event.timestampMs));
     line += numbuf;
 
@@ -123,7 +123,7 @@ void JsonLinesLogSink::OnLogEvent(const LogEvent& event) {
     // Single fwrite — atomic at the FD level for line sizes under
     // PIPE_BUF (4096) on POSIX. Larger lines may interleave but
     // typical structured logs stay well under this.
-    std::fwrite(line.data(), 1, line.size(), out_);
+    (void)std::fwrite(line.data(), 1, line.size(), out_);
 }
 
 // ---------------------------------------------------------------------------

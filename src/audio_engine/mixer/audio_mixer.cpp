@@ -460,7 +460,7 @@ void AudioMixer::MixVoiceSound_(MixVoice& v, uint32_t frames, uint32_t channels,
             const float s0b = src[idx1 * srcChans];
             float s0 = s0a + (s0b - s0a) * frac;
 
-            float s1;
+            float s1 = 0.0f;
             if (srcChans >= 2) {
                 const float s1a = src[idx0 * srcChans + 1];
                 const float s1b = src[idx1 * srcChans + 1];
@@ -484,7 +484,7 @@ void AudioMixer::MixVoiceSound_(MixVoice& v, uint32_t frames, uint32_t channels,
                 const float h0a = src[hidx0 * srcChans];
                 const float h0b = src[hidx1 * srcChans];
                 const float h0  = h0a + (h0b - h0a) * frac;
-                float h1;
+                float h1 = 0.0f;
                 if (srcChans >= 2) {
                     const float h1a = src[hidx0 * srcChans + 1];
                     const float h1b = src[hidx1 * srcChans + 1];

@@ -145,6 +145,9 @@ OpusVoiceCodec::OpusVoiceCodec(const Settings& settings)
 #endif
 }
 
+// NOLINTNEXTLINE(modernize-use-equals-default) — body is non-empty
+// when AUDIO_ENGINE_VOICE_OPUS is defined; clang-tidy only sees the
+// preprocessor-stripped form during static analysis builds.
 OpusVoiceCodec::~OpusVoiceCodec() {
 #if defined(AUDIO_ENGINE_VOICE_OPUS)
     if (state_->encoder) opus_encoder_destroy(state_->encoder);

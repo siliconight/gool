@@ -141,8 +141,8 @@ void CompressorEffect::Prepare(uint32_t sampleRate, uint32_t /*channels*/) {
 void CompressorEffect::RecomputeCoeffs() noexcept {
     attackCoeff_  = TimeConstantCoeff(attackMs_,  sampleRate_);
     releaseCoeff_ = TimeConstantCoeff(releaseMs_, sampleRate_);
-    holdSamples_  = static_cast<uint32_t>(
-        holdMs_ * 0.001f * static_cast<float>(sampleRate_) + 0.5f);
+    holdSamples_  = static_cast<uint32_t>(std::lround(
+        holdMs_ * 0.001f * static_cast<float>(sampleRate_)));
     if (sidechainHpfHz_ > 0.0f) {
         DesignHpf(sidechainHpfHz_, sampleRate_,
                    scB0_, scB1_, scB2_, scA1_, scA2_);

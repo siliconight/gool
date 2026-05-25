@@ -68,8 +68,9 @@ bool ReadIndex(const uint8_t* data, size_t size,
                   " runs past end of file";
             return false;
         }
-        uint32_t nameLen;
-        uint64_t off, sz;
+        uint32_t nameLen = 0;
+        uint64_t off = 0;
+        uint64_t sz = 0;
         std::memcpy(&nameLen, data + pos,            4); pos += 4;
         std::memcpy(&off,     data + pos,            8); pos += 8;
         std::memcpy(&sz,      data + pos,            8); pos += 8;
@@ -92,7 +93,7 @@ bool ReadIndex(const uint8_t* data, size_t size,
             return false;
         }
         GpakEntry entry;
-        entry.name.assign(reinterpret_cast<const char*>(data + pos), nameLen);
+        entry.name.assign(reinterpret_cast<const char*>(data + pos), nameLen);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
         entry.dataOffset = off;
         entry.dataSize   = sz;
         outEntries.push_back(std::move(entry));
@@ -140,7 +141,7 @@ bool PakReader::Open(std::string_view path) {
     in.seekg(0, std::ios::beg);
     impl_->owned.resize(static_cast<size_t>(sz));
     if (!impl_->owned.empty()) {
-        in.read(reinterpret_cast<char*>(impl_->owned.data()),
+        in.read(reinterpret_cast<char*>(impl_->owned.data()),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
                  static_cast<std::streamsize>(impl_->owned.size()));
     }
     if (!in) {
@@ -278,18 +279,18 @@ bool PakWriter::Write(std::string_view path) {
         err_ = "could not open " + std::string(path) + " for writing";
         return false;
     }
-    out.write(reinterpret_cast<const char*>(&header), kHeaderSize);
+    out.write(reinterpret_cast<const char*>(&header), kHeaderSize);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
     for (size_t i = 0; i < blobs_.size(); ++i) {
         if (!blobs_[i].empty()) {
-            out.write(reinterpret_cast<const char*>(blobs_[i].data()),
+            out.write(reinterpret_cast<const char*>(blobs_[i].data()),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
                        static_cast<std::streamsize>(blobs_[i].size()));
         }
     }
     for (const auto& e : index_) {
         const uint32_t nameLen = static_cast<uint32_t>(e.name.size());
-        out.write(reinterpret_cast<const char*>(&nameLen),       4);
-        out.write(reinterpret_cast<const char*>(&e.dataOffset),  8);
-        out.write(reinterpret_cast<const char*>(&e.dataSize),    8);
+        out.write(reinterpret_cast<const char*>(&nameLen),       4);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
+        out.write(reinterpret_cast<const char*>(&e.dataOffset),  8);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
+        out.write(reinterpret_cast<const char*>(&e.dataSize),    8);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
         out.write(e.name.data(), static_cast<std::streamsize>(nameLen));
     }
     if (!out) {

@@ -79,7 +79,8 @@ constexpr uint32_t kMinPredelaySamples = 1u;
 // to nearest.
 inline uint32_t ScaleDelay(uint32_t refLen, uint32_t sampleRate) noexcept {
     const float ratio = static_cast<float>(sampleRate) / kRefSampleRate;
-    return static_cast<uint32_t>(static_cast<float>(refLen) * ratio + 0.5f);
+    return static_cast<uint32_t>(
+        std::lround(static_cast<float>(refLen) * ratio));
 }
 
 inline float DbToLinear(float db) noexcept {
@@ -194,7 +195,7 @@ void ReverbEffect::RecomputeDiffusion() noexcept {
 void ReverbEffect::RecomputePredelay() noexcept {
     const float samples = predelayMs_ * 0.001f * static_cast<float>(sampleRate_);
     predelaySamples_ = std::max(kMinPredelaySamples,
-                                  static_cast<uint32_t>(samples + 0.5f));
+                                  static_cast<uint32_t>(std::lround(samples)));
     // The predelay buffer is sized for kMaxPredelayMs in Prepare; here we
     // just clamp the active tap. ReadTap will use predelaySamples_ as the
     // offset-back when reading.
@@ -214,7 +215,7 @@ void ReverbEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
 
     // Predelay buffer sized for the maximum we'll ever ask for.
     const uint32_t predelayMax = static_cast<uint32_t>(
-        kMaxPredelayMs * 0.001f * static_cast<float>(sampleRate_) + 0.5f);
+        std::lround(kMaxPredelayMs * 0.001f * static_cast<float>(sampleRate_)));
     predelay_.buf.assign(std::max(predelayMax, 1u), 0.0f);
     predelay_.Reset();
 
@@ -238,7 +239,7 @@ void ReverbEffect::Prepare(uint32_t sampleRate, uint32_t channels) {
         static_cast<float>(sampleRate_) / kRefSampleRate;
     const float modDepthScaled = kModDepthSamples * sampleRateRatio;
     const uint32_t modDepthScaledInt =
-        static_cast<uint32_t>(modDepthScaled + 0.5f);
+        static_cast<uint32_t>(std::lround(modDepthScaled));
 
     // Tank half A.
     {

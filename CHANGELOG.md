@@ -22,6 +22,111 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.77.0] - 2026-05-25 — CI hygiene release: clang-tidy cleanup + adaptive version test
+
+Pure hygiene release. No engine behavior changes, no binding changes, no
+new features. Brings CI back to green on two fronts that have been red
+since the v0.75.x cycle.
+
+### Fixed
+
+- **`tests/unit/version_test.cpp` no longer requires a triple-edit on
+  version bumps.** The previous version pinned `v.minor == 74` as a
+  literal, and the comment explicitly required updating the test
+  alongside `version.h` and `CMakeLists.txt` on every bump. The
+  triple-edit got missed on v0.75.0, v0.75.1, v0.75.2, v0.75.3,
+  v0.76.0, and v0.76.1 — the coverage job has been red the whole
+  time. v0.77.0 rewrites the assertions to check that the runtime
+  accessor matches the compile-time constants (the actual invariant),
+  not a pinned literal value. Bumping the version now requires only
+  the version.h + CMakeLists pair.
+
+- **80+ clang-tidy errors across 16 files.** The static-analysis job
+  has been red since clang-tidy with `--warnings-as-errors='*'` was
+  enabled. Categories cleaned up:
+
+  - `cppcoreguidelines-init-variables` (~35 sites): uninitialized
+    scratch variables in JSON parsing and binary file decoding.
+    Initialized to safe defaults (`0`, `0.0`, `NAN`, `false`).
+    Touched: `sound_bank.cpp`, `gpak.cpp`, `audio_mixer.cpp`,
+    `bus_config_loader.cpp`.
+
+  - `cert-err33-c` (~15 sites): `snprintf`, `fwrite`, `fprintf`
+    return values being ignored. Wrapped each in `(void)` cast where
+    the discarded return is intentional (best-effort logging where
+    truncation is acceptable). Touched: `logging.cpp`,
+    `memory_locking.cpp`, `thread_priority.cpp`, `telemetry.cpp`,
+    `miniaudio_backend.cpp`.
+
+  - `cppcoreguidelines-pro-type-reinterpret-cast` (~8 sites):
+    `reinterpret_cast<char*>` for binary file I/O. NOLINT'd with
+    rationale ("canonical pattern for binary I/O in C++"). Touched:
+    `gpak.cpp`, `sound_bank.cpp`.
+
+  - `bugprone-incorrect-roundings` (5 sites): `static_cast<uint32_t>(x + 0.5f)`
+    pattern doesn't actually round half-to-nearest correctly for
+    negative inputs and double-conversion edge cases. Replaced with
+    `std::lround(x)`. Touched: `compressor.cpp`, `reverb_effect.cpp`.
+
+  - `bugprone-narrowing-conversions` (2 sites): implicit `int → float`
+    and `size_t → ptrdiff_t` narrowings made explicit with
+    `static_cast`. Touched: `master_control.cpp`,
+    `audio_asset_registry.cpp`.
+
+  - `bugprone-branch-clone` (3 sites): intentional same-body cases
+    (migration aliases like `room_size` → `decay`, and
+    `PlaySoundAtLocation` / `PlaySoundAttachedToActor` both playing
+    at carried position). NOLINT'd with rationale. Touched:
+    `bus_config_loader.cpp`, `audio_runtime.cpp`.
+
+  - `modernize-deprecated-headers` (2 sites): `<errno.h>` →
+    `<cerrno>`. Touched: `memory_locking.cpp`, `thread_priority.cpp`.
+
+  - `bugprone-suspicious-include` (1 site): `#include "stb_vorbis.c"`
+    is the canonical single-TU pattern for the stb library; NOLINT'd
+    with rationale.
+
+  - `modernize-use-equals-default` (1 site): `OpusVoiceCodec` destructor
+    is conditionally non-empty (only does work when
+    `AUDIO_ENGINE_VOICE_OPUS` is defined). NOLINT'd; clang-tidy
+    only sees the preprocessor-stripped form during static analysis.
+
+  - `cppcoreguidelines-pro-type-member-init` (1 site): `ParsedSound`
+    struct had three enum fields without default initializers.
+    Added `AudioCategory::SFX`, `AudioPriority::Normal`,
+    `AudioReplicationPolicy::LocalOnly` defaults (the `has*` flags
+    determine whether the default gets used or overridden anyway).
+
+  Every touched translation unit recompiles clean with
+  `-Wall -Wextra -Wpedantic -Werror -O2`.
+
+### Added
+
+- **`docs/first_enable_verification.md`** — manual verification
+  checklist for the v0.75.2 first-enable restart dialog. The dialog
+  is editor-time UI (plugin.gd, fires on first plugin enable in a
+  fresh project) and can't be exercised by the runtime stress test
+  rig, so this is the canonical procedure to run after any change
+  to `_maybe_show_first_enable_restart_prompt`. Covers the five
+  cases that matter: dialog appears, Restart-Now path, no-reappear
+  after dismiss, dismiss-persists-flag, and read-only project
+  graceful degradation.
+
+### Recurring lessons
+
+- **Pin-based tests rot.** Every version bump silently regresses
+  them, and the failure ("test asserts 74, version is 76") looks
+  like a release bug instead of a test design bug. Adaptive tests
+  that verify invariants (runtime accessor matches constants) catch
+  the real issue with no maintenance cost.
+
+- **`--warnings-as-errors='*'` surfaces real bugs.** Most of the
+  init-variables findings were genuinely sketchy — uninitialized
+  scratch variables that worked by accident because the parse path
+  always wrote to them before reading. A future code change that
+  added a too-early read would have surfaced as a heisenbug. Fixed
+  is better than working-by-accident.
+
 ## [0.76.1] - 2026-05-24 — README "Verified under load" section
 
 Documentation-only release. No engine, binding, or behavior changes.

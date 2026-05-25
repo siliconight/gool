@@ -72,7 +72,8 @@ bool DecodeFully(IAudioDecoder& dec, std::vector<float>& out) {
         if (got == 0) break;
         out.insert(out.end(),
                     buf.begin(),
-                    buf.begin() + static_cast<size_t>(got) * channels);
+                    buf.begin() + static_cast<std::ptrdiff_t>(
+                        static_cast<size_t>(got) * channels));
         if (got < kChunk) break;
     }
     // v0.66.0: zero-frame decode is a failure. Previously returned

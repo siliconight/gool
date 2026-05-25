@@ -63,7 +63,7 @@ bool DefaultFileLoader(std::string_view             path,
     in.seekg(0, std::ios::beg);
     out.resize(static_cast<size_t>(sz));
     if (!out.empty()) {
-        in.read(reinterpret_cast<char*>(out.data()),
+        in.read(reinterpret_cast<char*>(out.data()),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — binary I/O
                 static_cast<std::streamsize>(out.size()));
     }
     return static_cast<bool>(in);
@@ -262,7 +262,7 @@ public:
             err.message = "expected true/false/null";
             return false;
         } else if (c == '-' || (c >= '0' && c <= '9')) {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             return ParseNumber(f, i, ii, err);
         }
         err.line = line_;
@@ -321,9 +321,9 @@ struct ParsedSound {
 
     // Per-sound overrides. Each `has*` flag means "this entry sets
     // this field"; otherwise the bank uses the defaults.
-    AudioCategory          category;
+    AudioCategory          category         = AudioCategory::SFX;
     bool                   hasCategory      = false;
-    AudioPriority          priority;
+    AudioPriority          priority         = AudioPriority::Normal;
     bool                   hasPriority      = false;
     std::string            busName;
     bool                   hasBus           = false;
@@ -333,7 +333,7 @@ struct ParsedSound {
     bool                   hasLooping       = false;
     bool                   occlusionEnabled = true;
     bool                   hasOcclusion     = false;
-    AudioReplicationPolicy replication;
+    AudioReplicationPolicy replication      = AudioReplicationPolicy::LocalOnly;
     bool                   hasReplication   = false;
     AttenuationSettings    attenuation;
     bool                   hasAttenuation   = false;
@@ -452,7 +452,7 @@ bool ParseAttenuation(JsonScanner& s, AttenuationSettings& out, ParseError& err)
         s.Expect(':', "after attenuation key", err);
         if (!err.message.empty()) return false;
         if (key == "min" || key == "max" || key == "floor") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             const float v = static_cast<float>(f);
             if      (key == "min")   out.minDistance  = v;
@@ -539,27 +539,27 @@ bool ParseRtpcBinding(JsonScanner& s, ParsedRtpcBinding& out, ParseError& err) {
                 return false;
             }
         } else if (key == "curve_exponent" || key == "exponent") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.curveExponent = static_cast<float>(f);
         } else if (key == "min_value") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.minValue = static_cast<float>(f);
         } else if (key == "max_value") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.maxValue = static_cast<float>(f);
         } else if (key == "min_output") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.minOutput = static_cast<float>(f);
         } else if (key == "max_output") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.maxOutput = static_cast<float>(f);
         } else if (key == "smoothing_ms" || key == "smoothing") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.smoothingMs = static_cast<float>(f);
         } else {
@@ -650,7 +650,7 @@ bool ParseDefaults(JsonScanner& s, ParsedDefaults& out, ParseError& err) {
             if (!ParseAttenuation(s, out.attenuation, err)) return false;
             out.hasAttenuation = true;
         } else if (key == "loopCrossfadeMs") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.loopCrossfadeMs = static_cast<float>(f);
             out.hasLoopCrossfade = true;
@@ -727,7 +727,7 @@ bool ParseSoundEntry(JsonScanner& s, ParsedSound& out, ParseError& err) {
             if (!ParseAttenuation(s, out.attenuation, err)) return false;
             out.hasAttenuation = true;
         } else if (key == "loopCrossfadeMs") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.loopCrossfadeMs = static_cast<float>(f);
             out.hasLoopCrossfade = true;
@@ -849,7 +849,7 @@ bool ParseBankRoot(JsonScanner& s, ParsedBank& out, ParseError& err) {
         if (!err.message.empty()) return false;
 
         if (key == "version") {
-            double f; long long i; bool ii;
+            double f = 0.0; long long i = 0; bool ii = false;
             if (!s.ParseNumber(f, i, ii, err)) return false;
             out.version = static_cast<int>(ii ? i : static_cast<long long>(f));
         } else if (key == "defaults") {

@@ -527,7 +527,7 @@ void MasterControlEffect::ProcessOversamplePeak(const float* in,
             const float s0 = in[i * channels + c];
             const float s1 = in[(i + 1) * channels + c];
             for (int k = 0; k <= 4; ++k) {
-                const float t = k * 0.25f;
+                const float t = static_cast<float>(k) * 0.25f;
                 const float s = s0 + (s1 - s0) * t;
                 const float a = std::fabs(s);
                 if (a > currentTruePeak_) currentTruePeak_ = a;

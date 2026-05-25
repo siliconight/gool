@@ -11,7 +11,7 @@
 
 #if defined(__linux__) || defined(__APPLE__)
   #include <sys/mman.h>
-  #include <errno.h>
+  #include <cerrno>
 #elif defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
   #ifndef NOMINMAX
@@ -50,20 +50,20 @@ MemoryLockResult DoLock() noexcept {
     }
     const int err = errno;
     if (err == EPERM) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "mlockall failed: EPERM (insufficient privilege). "
             "Raise RLIMIT_MEMLOCK via `ulimit -l unlimited` or "
             "grant CAP_IPC_LOCK to the binary.");
     } else if (err == EAGAIN) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "mlockall failed: EAGAIN (RLIMIT_MEMLOCK exceeded). "
             "Raise the limit or lock less memory.");
     } else if (err == ENOMEM) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "mlockall failed: ENOMEM (not enough RAM to lock). "
             "Reduce engine memory footprint or add RAM.");
     } else {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "mlockall failed: %s (errno=%d)",
             std::strerror(err), err);
     }
@@ -85,7 +85,7 @@ MemoryLockResult DoLock() noexcept {
         };
     }
     const int err = errno;
-    std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+    (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
         "mlockall failed: %s (errno=%d). Note: macOS RLIMIT_MEMLOCK "
         "is typically restrictive; consider also setting the audio "
         "thread to TIME_CONSTRAINT_POLICY for paging-resistant "
@@ -118,7 +118,7 @@ MemoryLockResult DoLock() noexcept {
         };
     }
     const DWORD err = ::GetLastError();
-    std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+    (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
         "SetProcessWorkingSetSizeEx failed (GetLastError=%lu). "
         "May require SE_INC_WORKING_SET_NAME privilege.",
         static_cast<unsigned long>(err));

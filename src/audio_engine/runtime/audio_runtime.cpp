@@ -2092,6 +2092,8 @@ void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
         case AudioEventType::PlaySoundAtLocation:
             StartOneShotForSound(e.soundId, e.position, e.priority, e.predictionId);
             break;
+        // NOLINTNEXTLINE(bugprone-branch-clone) — same body is intentional;
+        // see comment below
         case AudioEventType::PlaySoundAttachedToActor:
             // Actor-to-position resolution is the host's responsibility;
             // we play at the carried position. Host-attached emitters that

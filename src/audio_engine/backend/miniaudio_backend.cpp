@@ -254,7 +254,7 @@ AudioResult MiniaudioBackend::Start(const AudioBackendConfig& config,
     const char* deviceName  = impl_->device.playback.name[0] != '\0'
                                   ? impl_->device.playback.name
                                   : "default";
-    std::snprintf(impl_->description, sizeof(impl_->description),
+    (void)std::snprintf(impl_->description, sizeof(impl_->description),
                   "%.63s / %.95s",
                   backendName ? backendName : "miniaudio",
                   deviceName);

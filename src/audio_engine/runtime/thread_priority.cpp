@@ -11,7 +11,7 @@
 #if defined(__linux__) || defined(__APPLE__)
   #include <pthread.h>
   #include <sched.h>
-  #include <errno.h>
+  #include <cerrno>
 #endif
 
 #if defined(__APPLE__)
@@ -52,20 +52,20 @@ ThreadPriorityResult ApplyLinux(AudioThreadKind /*kind*/) noexcept {
     const int rc = ::pthread_setschedparam(
         ::pthread_self(), SCHED_FIFO, &param);
     if (rc == 0) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "SCHED_FIFO priority=%d applied", kFifoPriority);
         return ThreadPriorityResult{ true, kPlatform, g_detailBuf };
     }
     // pthread_setschedparam returns errno-style codes directly, not
     // -1 with errno set.
     if (rc == EPERM) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "pthread_setschedparam(SCHED_FIFO) failed: EPERM "
             "(insufficient privilege). Grant CAP_SYS_NICE to the "
             "binary or raise RLIMIT_RTPRIO via `ulimit -r 99` / "
             "pam_limits.so.");
     } else {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "pthread_setschedparam(SCHED_FIFO) failed: %s (rc=%d)",
             std::strerror(rc), rc);
     }
@@ -82,7 +82,7 @@ ThreadPriorityResult ApplyMacOS(AudioThreadKind /*kind*/) noexcept {
     // is in mach ticks, not nanoseconds.
     mach_timebase_info_data_t tb{};
     if (::mach_timebase_info(&tb) != KERN_SUCCESS || tb.denom == 0) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "mach_timebase_info failed; cannot compute "
             "TIME_CONSTRAINT_POLICY ticks");
         return ThreadPriorityResult{ false, kPlatform, g_detailBuf };
@@ -115,12 +115,12 @@ ThreadPriorityResult ApplyMacOS(AudioThreadKind /*kind*/) noexcept {
         THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 
     if (rc == KERN_SUCCESS) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "THREAD_TIME_CONSTRAINT_POLICY applied "
             "(period=5ms, computation=2ms, constraint=5ms)");
         return ThreadPriorityResult{ true, kPlatform, g_detailBuf };
     }
-    std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+    (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
         "thread_policy_set(TIME_CONSTRAINT_POLICY) failed "
         "(kern_return_t=%d)", static_cast<int>(rc));
     return ThreadPriorityResult{ false, kPlatform, g_detailBuf };
@@ -146,13 +146,13 @@ ThreadPriorityResult ApplyWindows(AudioThreadKind /*kind*/) noexcept {
     //   // h reverts automatically when the thread exits.
     HANDLE thread = ::GetCurrentThread();
     if (::SetThreadPriority(thread, THREAD_PRIORITY_TIME_CRITICAL)) {
-        std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+        (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
             "THREAD_PRIORITY_TIME_CRITICAL applied "
             "(consider also AvSetMmThreadCharacteristics(\"Audio\"))");
         return ThreadPriorityResult{ true, kPlatform, g_detailBuf };
     }
     const DWORD err = ::GetLastError();
-    std::snprintf(g_detailBuf, sizeof(g_detailBuf),
+    (void)std::snprintf(g_detailBuf, sizeof(g_detailBuf),
         "SetThreadPriority(THREAD_PRIORITY_TIME_CRITICAL) failed "
         "(GetLastError=%lu)",
         static_cast<unsigned long>(err));
