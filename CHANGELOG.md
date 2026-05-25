@@ -8,6 +8,100 @@ While the major version is `0`, minor bumps may include backward-incompatible
 changes; consult the per-release `Changed` and `Removed` sections before
 upgrading.
 
+## [Unreleased]
+
+Nothing shipping yet. Next-up candidates:
+
+- **v0.79.0 — distance-weighted persistent eviction.** Unifies
+  `TryEvictForPersistent` with the one-shot path's effective-
+  priority formula. The v0.78.0 `EvictionTieBreaker` enum and
+  v0.78.0 `createSequence` field carry forward as inputs.
+- **Phase 4 — Runtime player audio preferences**: see
+  `docs/audio_design/player_audio_preferences.md` for the
+  5-release plan (v0.29.0–v0.29.4).
+- **Phase 5 — Material & acoustic environment authoring.**
+- **Sidechain feature work** (parallel from
+  `docs/audio_design/sidechain_tuning.md`).
+- **v0.28.9 follow-ups for topology editing**: rename bus,
+  duplicate bus, reorder buses, in-block comment preservation
+  on topology edits.
+
+## [0.78.1] - 2026-05-25 — Custom Godot Performance monitors + per-tick CPU timing
+
+Tooling release. The 9-scenario stress rig and any host game can now
+correlate gool's internal load with Godot's frame-time budget in one
+view — Debugger → Monitors — instead of having to cross-reference two
+separate logs.
+
+### The headline number
+
+`Stats::updateTickUs` (uint64_t) reports the wall-clock duration of the
+most recent `Update()` tick in microseconds. With this graphed against
+a 16,667 us / 60 Hz budget, "is gool fast enough?" stops being a
+derived question. Measured 6 us/tick on a NullBackend test rig with
+100 spatialized persistent emitters — 0.04% of frame budget — so the
+number is naturally tiny under realistic loads and a graph spike is
+genuinely a signal worth investigating.
+
+### Added
+
+- **`AudioRuntime::Stats::updateTickUs`** — sampled with
+  `std::chrono::steady_clock` around the body of `Update()`,
+  including the exception-handling arms. Determinism caveat: this
+  reads wall-clock time and MUST be excluded from any replay-
+  comparison surface. The math inside `UpdateBody_` is not perturbed
+  by reading the clock; only the reported value varies between runs.
+- **Five additional Stats fields surfaced in the GDScript
+  `Gool.get_stats()` Dictionary** (all previously private to the
+  C++ API): `mixer_voices_active`, `render_underruns`,
+  `one_shots_dropped_full_pool`, `emitters_processed_last_tick`,
+  `emitters_skipped_by_interest_last_tick`. All additive; no
+  renames, no semantic changes.
+- **15 custom Godot Performance monitors** registered by
+  `runtime_singleton.gd` (`_setup_perf_monitors`):
+  - Snapshots: `gool/runtime/update_tick_us`,
+    `gool/load/{active_emitters,mixer_voices_active,active_voice_sources}`,
+    `gool/interest/{processed_last_tick,skipped_last_tick}`,
+    `gool/render/underruns`.
+  - Rates (cumulative-to-per-second conversion in the callback):
+    `gool/eviction/{one_shots,persistent,full_pool_drops}_per_sec`,
+    `gool/voice/{packets_accepted,budget_dropped,bytes_sent}_per_sec`,
+    `gool/replication/{transforms_dropped,rate_limited}_per_sec`.
+  - Always-on. Performance callbacks fire only while the Monitors
+    panel is open watching that monitor, so shipped games with no
+    debugger pay essentially nothing. `_exit_tree` deregisters
+    (Godot 4.3+) before shutting down the runtime, so a late
+    poll-tick never lands in a callback whose runtime is freed.
+
+### Why this is a feature, not just stress-rig plumbing
+
+The audience principle: a Godot dev with little audio background
+shouldn't have to know what `oneShotEvictions` is — they should see
+`gool/eviction/one_shots_per_sec` spike alongside an FPS dip in the
+panel they already use for debugging and know where to look. The
+monitor names are concrete signals ("voice budget dropped per second"),
+not internal jargon. The same surface that helps the stress rig also
+helps any dev whose game is stuttering.
+
+### Compatibility
+
+- `Performance.remove_custom_monitor` was added in Godot 4.3; the
+  teardown path guards with `has_method` so the singleton still
+  loads on Godot 4.0–4.2. Shutdown there leaves the monitor names
+  registered until process exit (the callables are inert; the
+  worst case is editor-side staleness if the project is restarted).
+- No API removals. The new Stats field is additive; binding callers
+  reading by Dictionary key are unaffected.
+
+### Stress rig integration
+
+Per-scenario, the existing rig output (gool stats summary) is
+unchanged. The new value is the Profiler/Monitors-panel readout
+during a run: open the panel, run a scenario, observe the gool
+graphs against frame time. Future rig iterations can call
+`Performance.get_custom_monitor("gool/runtime/update_tick_us")` to
+fold engine-CPU-cost assertions into the per-scenario pass criteria.
+
 ## [0.78.0] - 2026-05-25 — Eviction tie-breaking strategies
 
 Persistent-emitter eviction (`EvictionMode::Priority`) now exposes a
@@ -114,20 +208,6 @@ priority formula shared with the one-shot path, with `Furthest`
 becoming the natural fall-out of `(pri << 32) - distance_mm`. The
 `createSequence` field carries forward to power age-aware variants
 in the unified formula if hosts ask for them.
-
-## [Unreleased]
-
-Nothing shipping yet. Next-up candidates:
-
-- **Phase 4 — Runtime player audio preferences**: see
-  `docs/audio_design/player_audio_preferences.md` for the
-  5-release plan (v0.29.0–v0.29.4).
-- **Phase 5 — Material & acoustic environment authoring.**
-- **Sidechain feature work** (parallel from
-  `docs/audio_design/sidechain_tuning.md`).
-- **v0.28.9 follow-ups for topology editing**: rename bus,
-  duplicate bus, reorder buses, in-block comment preservation
-  on topology edits.
 
 ## [0.77.0] - 2026-05-25 — CI hygiene release: clang-tidy cleanup + adaptive version test
 

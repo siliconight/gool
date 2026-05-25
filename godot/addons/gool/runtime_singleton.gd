@@ -276,6 +276,13 @@ func _ready() -> void:
 	# dump_log_* settings registered below.
 	_register_session_log_hotkey_settings()
 	_setup_session_log_hotkey()
+	# v0.78.1: register custom Performance monitors so engine-level
+	# perf details (Update tick microseconds, eviction rates, voice
+	# throughput, etc.) show up as graphs in Godot's Debugger →
+	# Monitors panel alongside FPS and frame time. Always-on; the
+	# callbacks only fire while the Monitors panel is open, so
+	# shipped games pay essentially nothing.
+	_setup_perf_monitors()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -742,6 +749,11 @@ func _poll_mirrored_buses() -> void:
 		_runtime.set_bus_gain_db(gool_bus_name, db)
 
 func _exit_tree() -> void:
+	# v0.78.1: drop custom Performance monitors BEFORE shutting down
+	# the runtime. Performance holds the callable; if the runtime is
+	# torn down first, a late poll-tick could land in a callback that
+	# dereferences a freed runtime. Order matters here.
+	_teardown_perf_monitors()
 	if _runtime != null and _runtime.is_initialized():
 		_runtime.shutdown()
 
@@ -3331,3 +3343,160 @@ var _mirrored_buses: Dictionary = {}
 # set_bus_gain_db every frame for static volumes.
 var _mirrored_last_db: Dictionary = {}
 
+
+# ===========================================================================
+# v0.78.1: Custom Godot Performance monitors
+#
+# Surfaces gool's internal stats as graphs in Debugger → Monitors so the
+# host game (and the stress test rig) can correlate engine-level CPU cost
+# with Godot's frame budget in one view. Per the Godot 4.0+ Performance
+# API, registered callbacks fire only while the Monitors panel is open
+# watching that monitor — in a shipped game with no debugger, no cost.
+#
+# Audience-first design: each monitor's name is what a Godot dev with
+# little audio background would search for ("why is my game stuttering
+# when this sound plays") — concrete signals, not internal jargon.
+#
+# Two kinds of monitor:
+#
+#   Snapshots (gool/load/*, gool/interest/*, gool/runtime/*, gool/render/*)
+#     return the current value of a point-in-time stat. Examples:
+#     active emitters right now; microseconds the last Update tick took.
+#
+#   Rates (gool/eviction/*, gool/voice/*, gool/replication/*)
+#     convert cumulative counters into per-second rates inside the
+#     callback. Without this, a monotonically-growing counter just plots
+#     as a ramp — useless for spotting the spike that matters.
+#
+# Determinism note: gool/runtime/update_tick_us reads wall-clock time
+# inside the engine (see Stats::updateTickUs comment). It must not be
+# part of any replay-comparison surface. The other monitors derive
+# from deterministic counters and are replay-safe.
+
+# Names of every monitor we've registered, for _teardown_perf_monitors.
+# Filled by _setup_perf_monitors; cleared on shutdown.
+var _perf_monitor_names: Array[String] = []
+
+# Per-monitor state for rate computation. Keys are monitor names; values
+# are { last_ms: int, last_val: int }. Initialized lazily on first call.
+var _perf_rate_state: Dictionary = {}
+
+func _setup_perf_monitors() -> void:
+	# Performance is the engine-wide singleton in 4.0+. add_custom_monitor
+	# takes (StringName name, Callable callback, Array args = []).
+	# Callbacks must return a Variant convertible to a Number for graphing.
+	if _runtime == null:
+		return
+
+	# --- Snapshots ---------------------------------------------------------
+	_register_perf_monitor("gool/runtime/update_tick_us",
+		_perf_snap.bind("update_tick_us"))
+	_register_perf_monitor("gool/load/active_emitters",
+		_perf_snap.bind("active_emitters"))
+	_register_perf_monitor("gool/load/mixer_voices_active",
+		_perf_snap.bind("mixer_voices_active"))
+	_register_perf_monitor("gool/load/active_voice_sources",
+		_perf_snap.bind("active_voice_sources"))
+	_register_perf_monitor("gool/interest/processed_last_tick",
+		_perf_snap.bind("emitters_processed_last_tick"))
+	_register_perf_monitor("gool/interest/skipped_last_tick",
+		_perf_snap.bind("emitters_skipped_by_interest_last_tick"))
+	# Cumulative but kept as a snapshot: ANY nonzero value is the alarm,
+	# and the absolute number is more informative than a rate. If you see
+	# this graph leave zero, something is wrong with audio output.
+	_register_perf_monitor("gool/render/underruns",
+		_perf_snap.bind("render_underruns"))
+
+	# --- Rates -------------------------------------------------------------
+	_register_perf_monitor("gool/eviction/one_shots_per_sec",
+		_perf_rate.bind("one_shot_evictions"))
+	_register_perf_monitor("gool/eviction/persistent_per_sec",
+		_perf_rate.bind("emitters_evicted_by_priority"))
+	_register_perf_monitor("gool/eviction/full_pool_drops_per_sec",
+		_perf_rate.bind("one_shots_dropped_full_pool"))
+	_register_perf_monitor("gool/voice/packets_accepted_per_sec",
+		_perf_rate.bind("voice_packets_accepted"))
+	_register_perf_monitor("gool/voice/budget_dropped_per_sec",
+		_perf_rate.bind("voice_frames_budget_dropped"))
+	_register_perf_monitor("gool/voice/bytes_sent_per_sec",
+		_perf_rate.bind("voice_bytes_sent"))
+	_register_perf_monitor("gool/replication/transforms_dropped_per_sec",
+		_perf_rate.bind("transforms_dropped_by_priority"))
+	# Special case: rate_limited_by_category is an Array of 6, not a
+	# scalar. We graph the sum across categories. Per-category breakdown
+	# is available via Gool.get_stats() for a debug UI that wants it.
+	_register_perf_monitor("gool/replication/rate_limited_per_sec",
+		_perf_rate_array_sum.bind("replication_rate_limited_by_category"))
+
+func _teardown_perf_monitors() -> void:
+	# Performance.remove_custom_monitor was added in Godot 4.3; on
+	# earlier versions the registration leaks the callable. Guard with
+	# has_method so the singleton still loads on 4.0/4.1/4.2 even
+	# though shutdown won't be fully clean there.
+	if not Performance.has_method("remove_custom_monitor"):
+		_perf_monitor_names.clear()
+		return
+	for name in _perf_monitor_names:
+		Performance.remove_custom_monitor(name)
+	_perf_monitor_names.clear()
+	_perf_rate_state.clear()
+
+func _register_perf_monitor(name: String, callback: Callable) -> void:
+	Performance.add_custom_monitor(name, callback)
+	_perf_monitor_names.append(name)
+
+# Snapshot callback: returns the current integer value of a stats key.
+# Returns 0 if the runtime is gone or the key is missing — avoids
+# raising errors during teardown races.
+func _perf_snap(key: String) -> int:
+	if _runtime == null or not _runtime.is_initialized():
+		return 0
+	var stats : Dictionary = _runtime.get_stats()
+	return int(stats.get(key, 0))
+
+# Rate callback: returns per-second rate computed from the delta in a
+# cumulative counter since the last callback invocation. The first call
+# returns 0 (no delta to compute against). Per-key state lives in
+# _perf_rate_state so each monitor tracks its own last-sampled value.
+func _perf_rate(key: String) -> float:
+	if _runtime == null or not _runtime.is_initialized():
+		return 0.0
+	var stats : Dictionary = _runtime.get_stats()
+	var current : int = int(stats.get(key, 0))
+	return _compute_rate(key, current)
+
+# Same as _perf_rate but for fields that are Arrays of ints; sums the
+# array first, then computes the rate of the sum.
+func _perf_rate_array_sum(key: String) -> float:
+	if _runtime == null or not _runtime.is_initialized():
+		return 0.0
+	var stats : Dictionary = _runtime.get_stats()
+	var arr = stats.get(key, [])
+	if not (arr is Array):
+		return 0.0
+	var total : int = 0
+	for v in arr:
+		total += int(v)
+	return _compute_rate(key, total)
+
+# Shared delta-over-dt helper. Uses Time.get_ticks_msec() to measure the
+# real interval between callback invocations (the Performance polling
+# rate is engine-controlled and not exposed to user code, so we sample
+# our own clock). Returns 0.0 on first call, or when dt is zero or
+# negative (clock skew shouldn't happen with monotonic ticks_msec, but
+# guarded anyway).
+func _compute_rate(key: String, current: int) -> float:
+	var now_ms := Time.get_ticks_msec()
+	var state : Dictionary = _perf_rate_state.get(key, {})
+	if state.is_empty():
+		_perf_rate_state[key] = {"last_ms": now_ms, "last_val": current}
+		return 0.0
+	var last_ms : int = state["last_ms"]
+	var last_val : int = state["last_val"]
+	var dt_ms : int = now_ms - last_ms
+	# Refresh state for next call regardless of whether we return a rate.
+	state["last_ms"] = now_ms
+	state["last_val"] = current
+	if dt_ms <= 0:
+		return 0.0
+	return float(current - last_val) * 1000.0 / float(dt_ms)

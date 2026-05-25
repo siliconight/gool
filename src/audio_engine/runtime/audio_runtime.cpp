@@ -2221,6 +2221,19 @@ void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
 // std::exception). The catch(...) covers that long tail without
 // allowing termination.
 void AudioRuntimeImpl::Update(float deltaSeconds) noexcept {
+    // v0.78.1: record wall-clock duration of this Update tick into
+    // statsLatest_.updateTickUs. Sampled around the entire body
+    // (including exception handlers) so even fault paths surface a
+    // timing number. steady_clock is monotonic, so subtraction here
+    // is safe across system clock adjustments.
+    //
+    // This reads wall-clock time, which is one of the documented
+    // sources that break replay determinism (see docs/determinism.md
+    // §"Wall-clock-driven sources"). The math executed inside
+    // UpdateBody_ is not affected — only the reported timing value
+    // varies between runs. Hosts performing replay validation MUST
+    // exclude updateTickUs from any Stats comparison.
+    const auto t0 = std::chrono::steady_clock::now();
     try {
         UpdateBody_(deltaSeconds);
     } catch (const std::exception& e) {
@@ -2241,6 +2254,9 @@ void AudioRuntimeImpl::Update(float deltaSeconds) noexcept {
                                "object not derived from std::exception)"),
               std::span<const LogField>{});
     }
+    const auto t1 = std::chrono::steady_clock::now();
+    statsLatest_.updateTickUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
 }
 
 void AudioRuntimeImpl::UpdateBody_(float deltaSeconds) {

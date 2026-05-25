@@ -1027,6 +1027,25 @@ public:
         // transforms still update; they just didn't get spatial
         // params recomputed this tick.
         uint32_t emittersSkippedByInterestLastTick = 0;
+        // v0.78.1: wall-clock duration of the most recent Update()
+        // call, in microseconds. Measured with std::chrono::steady_clock
+        // around the body of Update; covers event drain, replicated-
+        // transform interpolation, spatializer pass, interest sort,
+        // proximity send computation, mixer-command posting, and stats
+        // publication. Does NOT cover render-thread work (the mixer
+        // runs on the backend's callback thread).
+        //
+        // Useful as a custom Godot Performance monitor: lets a host
+        // game see "gool took N us this frame" against a 16667 us
+        // budget (60 Hz) without correlating two logs by hand.
+        //
+        // DETERMINISM NOTE: This is a wall-clock-driven field and is
+        // therefore unsuitable for inclusion in any replay-comparison
+        // surface. The math the engine actually performs is unchanged
+        // by reading the clock; only this reported value varies between
+        // runs. Replay validation MUST exclude this field from any
+        // Stats comparison. See docs/determinism.md.
+        uint64_t updateTickUs                      = 0;
         // Replicated events rejected by the per-player, per-category
         // token-bucket rate limiter, aggregated across all players.
         // Indexed by AudioCategory (0=SFX, 1=Voice, 2=Music,

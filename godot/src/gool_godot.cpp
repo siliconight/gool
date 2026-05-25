@@ -1023,6 +1023,46 @@ public:
             static_cast<int64_t>(stats.oneShotEvictions);
         d["emitters_evicted_by_priority"] =
             static_cast<int64_t>(stats.emittersEvictedByPriority);
+        // v0.78.1: previously-private Stats fields surfaced for the
+        // custom-Performance-monitor binding in runtime_singleton.gd.
+        // All additive — no field renames, no semantic changes. Each
+        // is the same `statsLatest_` value the engine has tracked
+        // since the version noted in audio_runtime.h.
+        //
+        //   mixer_voices_active     — render-thread voice activity,
+        //                              the mixer's view of "how many
+        //                              of my voice slots are doing
+        //                              work right now". Pairs with
+        //                              active_emitters: divergence
+        //                              between them indicates voice-
+        //                              slot pressure separate from
+        //                              emitter-slot pressure.
+        //   render_underruns        — cumulative render-thread misses.
+        //                              ANY non-zero value is a bug;
+        //                              graph for the spike, not the
+        //                              rate.
+        //   one_shots_dropped_full_pool — incoming one-shots that
+        //                              didn't beat the priority bar.
+        //                              Rises in lockstep with
+        //                              one_shot_evictions during
+        //                              healthy contention; outpaces
+        //                              it when the pool is undersized
+        //                              for the workload.
+        //   emitters_processed_last_tick / _skipped_by_interest_last_tick
+        //                              — interest-management snapshot.
+        //                              Sum should equal the count of
+        //                              currently-mixerStarted emitters
+        //                              each tick.
+        d["mixer_voices_active"] =
+            static_cast<int64_t>(stats.mixerVoicesActive);
+        d["render_underruns"] =
+            static_cast<int64_t>(stats.renderUnderruns);
+        d["one_shots_dropped_full_pool"] =
+            static_cast<int64_t>(stats.oneShotsDroppedFullPool);
+        d["emitters_processed_last_tick"] =
+            static_cast<int64_t>(stats.emittersProcessedLastTick);
+        d["emitters_skipped_by_interest_last_tick"] =
+            static_cast<int64_t>(stats.emittersSkippedByInterestLastTick);
 
         // v0.75.0 expansion: multiplayer-side counters. These existed
         // in the C++ Stats struct from earlier releases (predictions
@@ -1091,6 +1131,16 @@ public:
         // to verify N peers actually registered.
         d["active_voice_sources"] =
             static_cast<int64_t>(stats.activeVoiceSources);
+        // v0.78.1: wall-clock duration of the most recent control-
+        // thread Update() in microseconds. Surfaced here so Godot
+        // hosts (and the custom Performance monitor registered by
+        // runtime_singleton.gd) can graph gool's per-frame CPU cost
+        // against the 16667 us / 60 Hz budget directly, rather than
+        // inferring it from secondary indicators. See the field
+        // comment on AudioRuntime::Stats::updateTickUs for the
+        // replay-determinism caveat.
+        d["update_tick_us"] =
+            static_cast<int64_t>(stats.updateTickUs);
         return d;
     }
 
