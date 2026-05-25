@@ -8,7 +8,7 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.76.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
+**Current version:** 0.76.1 — see [CHANGELOG.md](CHANGELOG.md) for what's
 in it, [RELEASING.md](RELEASING.md) for how releases are cut.
 
 ## What gool feels like to use
@@ -132,6 +132,47 @@ This replaces the need for FMOD Studio, Wwise, or a hand-rolled
 OpenAL/SDL_mixer wrapper. You don't pay middleware licensing,
 you don't run two audio systems in parallel, and your audio code
 lives in Godot scripts instead of a separate authoring tool.
+
+## Verified under load
+
+A standalone stress test rig (separate Godot project, ships with
+the engine release) puts the running engine through nine
+measurement scenarios: long-session memory, burst spawn, sustained
+eviction, priority ramp, multi-peer replication flood with
+per-peer attribution, prediction cancellation accounting, and
+voice ingress at codec rate from 16 concurrent peers. Each
+scenario emits a CSV and an Output-panel verdict.
+
+Recent run on an RTX 2060 + Godot 4.6.2 + gool v0.76.0:
+
+| Behavior | Result |
+|----------|--------|
+| 5-min sustained session, memory drift | **+0.31 MB** (≈3.5 MB/hour projected) |
+| Voice ingress, 16 peers × 50 Hz for 20s | **15,992 / 16,000** packets accepted (99.95%) |
+| Sustained persistent-emitter eviction at saturation | **3,119 evictions / 30s**, frame p95/median ratio **1.05×** |
+| Per-peer rate limiter (4 flooders + 16 well-behaved) | Flooders capped at the configured rate, well-behaved peers untouched — verified per-peer, not just aggregate |
+| Prediction cancellation accounting | **363 cancels issued, 363 accounted for**, zero gap |
+| Voice ramp to pool cap (1→200 voices) | Frame time flat through saturation; pool walls at configured cap |
+| 1500-emitter burst spawn (10/50/100/200/500) | µs-per-emitter constant across burst sizes |
+| Spawn churn (50/100/200 Hz for ~15s each) | Memory bounded, no allocation creep across cycles |
+| Priority ramp through cap (16→200 voices) | Engine pins at cap, evicts low-priority slots cleanly |
+
+The rig is reproducible: extract the `gool_stress_test` project,
+run `gool-install.cmd` to pull the latest engine release, and
+press the nine buttons in any order. CI builds the DLL on every
+tag push, so the binary the rig exercises is the same binary your
+game would ship. The rig's scenarios are version-aware — older
+DLLs skip capabilities they can't access rather than producing
+garbage data, so the same rig runs across the supported gool
+version range.
+
+**What this is not.** This is one set of numbers from one machine
+on one day. It says the engine's behavior is bounded and
+predictable under these specific stress patterns; it does not say
+"battle-tested in shipped multiplayer games." gool is pre-1.0
+software and the rig is a substitute for production exposure, not
+a replacement for it. If you run the rig on your own hardware and
+the numbers diverge meaningfully, that's worth a GitHub issue.
 
 ## How a typical workflow looks
 

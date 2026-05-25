@@ -22,6 +22,30 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.76.1] - 2026-05-24 — README "Verified under load" section
+
+Documentation-only release. No engine, binding, or behavior changes.
+
+### Added
+
+- **`README.md`: new "Verified under load" section** between "Where
+  it fits" and "How a typical workflow looks." Surfaces the
+  9-scenario stress test rig's results from a recent RTX 2060 +
+  Godot 4.6.2 + v0.76.0 run: memory bounds (+0.31 MB over 5 min),
+  voice ingress (15,992/16,000 packets at 16 peers × 50 Hz),
+  sustained persistent-emitter eviction (3,119/30s with 1.05×
+  frame-time ratio), per-peer rate limiter verification, prediction
+  bookkeeping balance, and burst-spawn/pool-cap behaviors.
+
+  Tone is "here's the data, here's how to reproduce it" — not
+  "battle-tested in shipped games" (gool is pre-1.0). The section
+  ends with an honest scope note: one machine, one day, run the
+  rig on your own hardware and file an issue if the numbers
+  diverge meaningfully.
+
+  Goal: give developers evaluating gool a concrete confidence
+  signal beyond "it compiles." The rig is the receipts.
+
 ## [0.76.0] - 2026-05-24 — Version stamp correction + binding completeness pass
 
 Three small, pure-additive additions that close gaps surfaced by the
