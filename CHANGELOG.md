@@ -26,6 +26,83 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.2] - 2026-05-25 — Stress rig perf assertions (no engine change)
+
+GDScript-only patch. Adds a drop-in helper that converts the v0.78.1
+human-eyeball workflow (open Debugger → Monitors, run scenario, look
+at graphs) into a CI-pinnable assertion. Same release model as
+v0.75.3: rig-side polish, the v0.78.1 DLL continues to work unchanged.
+
+### Added
+
+- **`godot/addons/gool/tools/gool_stress_perf_probe.gd`** — a
+  `RefCounted` helper that:
+  - Samples named Godot Performance monitors at
+    `SceneTree.process_frame` cadence (~60 Hz) into per-monitor
+    PackedFloat64Arrays.
+  - Exposes `assert_peak_below(monitor, limit, description)` and
+    `assert_mean_below(monitor, limit, description)` for two
+    flavors of threshold: spike detection vs sustained-pressure
+    detection.
+  - Returns a `Result` with `format()` (pass/fail human output) and
+    `summary()` (per-monitor peak/mean table — useful for
+    calibration runs before thresholds are set).
+  - Untyped inner Arrays + parens around every concat-then-format
+    expression, dodging the GDScript precedence and inner-class-
+    typed-array traps from the recurring-lessons list.
+
+### Recommended baseline assertions
+
+Every scenario should carry these two, then layer scenario-specific
+asserts on top:
+
+```gdscript
+probe.assert_peak_below("gool/render/underruns", 1.0,
+    "render thread missed a deadline")
+probe.assert_peak_below("gool/runtime/update_tick_us", 2000.0,
+    "Update tick exceeded 2ms (>12% of frame budget)")
+```
+
+`render/underruns` is strict-zero because any non-zero value means
+the audio backend missed its deadline — always a bug, never a perf
+"concern." `update_tick_us` at 2000 us is the "loaded but fine"
+ceiling from the v0.78.1 measurement work; pick a tighter limit per
+scenario if you have one.
+
+### Scenario-specific suggestions (calibrate against your rig)
+
+- **Eviction Churn** → `assert_mean_below("gool/eviction/full_pool_drops_per_sec", 10.0)`.
+  Single-frame spikes are fine (that's what eviction is for); sustained
+  drops mean the pool is undersized for the workload.
+- **Voice Flood** → `assert_peak_below("gool/voice/budget_dropped_per_sec", N)`.
+  The threshold N depends on your test's intended budget pressure; the
+  v0.75.3 verdict logic already surfaces this number, so use whatever
+  it reports under healthy load as the baseline and multiply by ~1.5.
+- **Replication Storm** → `assert_mean_below("gool/replication/rate_limited_per_sec", N)`.
+  Same calibration recipe as Voice Flood.
+
+### Self-calibration recipe (first time, or when scenarios change)
+
+1. Add `probe.watch("gool/...")` for each monitor you care about,
+   without any assertions.
+2. Run the scenario, `print(result.summary())`.
+3. Set thresholds at ~1.5x the observed peak (for peak_lt) or ~2x
+   the observed mean (for mean_lt).
+4. Switch `watch()` calls to `assert_*_below()`.
+
+### Not included
+
+No engine source change. No new Stats fields. No binding change. No
+tests added (the helper itself is exercised every time a stress
+scenario runs; per the v0.75.3 lesson, the rig IS the test, so
+unit-testing the test would be turtles-all-the-way-down).
+
+The 9-scenario stress rig lives outside this repo (it's a separate
+Godot project against the published addon binary), so integration
+of `gool_stress_perf_probe.gd` into each scenario's pass/fail logic
+is rig-side work — the helper is the reusable surface, the
+integration is per-scenario.
+
 ## [0.78.1] - 2026-05-25 — Custom Godot Performance monitors + per-tick CPU timing
 
 Tooling release. The 9-scenario stress rig and any host game can now
