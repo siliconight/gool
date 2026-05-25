@@ -3448,10 +3448,19 @@ func _register_perf_monitor(name: String, callback: Callable) -> void:
 # Snapshot callback: returns the current integer value of a stats key.
 # Returns 0 if the runtime is gone or the key is missing — avoids
 # raising errors during teardown races.
+#
+# v0.78.3: calls _runtime.get_render_stats() — NOT get_stats(). The
+# binding's GDScript-visible method name (set in gool_godot.cpp's
+# _bind_methods via D_METHOD("get_render_stats", ...)) is
+# get_render_stats. v0.78.1 shipped this and the two callbacks below
+# calling the wrong name; the bug was invisible to compile-time and
+# unit tests, surfaced only at runtime when the Performance monitor
+# polled the callback. Classic static-reading-isn't-verification
+# trap from the recurring lessons.
 func _perf_snap(key: String) -> int:
 	if _runtime == null or not _runtime.is_initialized():
 		return 0
-	var stats : Dictionary = _runtime.get_stats()
+	var stats : Dictionary = _runtime.get_render_stats()
 	return int(stats.get(key, 0))
 
 # Rate callback: returns per-second rate computed from the delta in a
@@ -3461,7 +3470,7 @@ func _perf_snap(key: String) -> int:
 func _perf_rate(key: String) -> float:
 	if _runtime == null or not _runtime.is_initialized():
 		return 0.0
-	var stats : Dictionary = _runtime.get_stats()
+	var stats : Dictionary = _runtime.get_render_stats()
 	var current : int = int(stats.get(key, 0))
 	return _compute_rate(key, current)
 
@@ -3470,7 +3479,7 @@ func _perf_rate(key: String) -> float:
 func _perf_rate_array_sum(key: String) -> float:
 	if _runtime == null or not _runtime.is_initialized():
 		return 0.0
-	var stats : Dictionary = _runtime.get_stats()
+	var stats : Dictionary = _runtime.get_render_stats()
 	var arr = stats.get(key, [])
 	if not (arr is Array):
 		return 0.0

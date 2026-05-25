@@ -26,6 +26,59 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.3] - 2026-05-25 — Hotfix: v0.78.1 monitor binding name (no engine change)
+
+GDScript-only patch. Fixes a v0.78.1 regression where all 15 custom
+Godot Performance monitors raised `Invalid call. Nonexistent function
+'get_stats' in base 'GoolAudioRuntime'` the moment the Monitors panel
+polled them, because the three new callbacks in `runtime_singleton.gd`
+called the binding method by the wrong name. v0.78.1 DLL continues
+to work unchanged.
+
+### What broke
+
+The Stats Dictionary is bound to GDScript as `get_render_stats`, not
+`get_stats`. v0.78.1 introduced three new callbacks (`_perf_snap`,
+`_perf_rate`, `_perf_rate_array_sum`) that called `_runtime.get_stats()`
+— a method name that does not exist on the binding. Every other
+stats-touching call site in the singleton (lines 578, 597, 1109) was
+already correct; the new code was the outlier.
+
+The bug was invisible to compile-time checks and to the engine unit
+tests (which exercise the C++ `GetStats()` method directly, not the
+GDScript-visible binding name). It surfaced only when the
+`Performance` framework polled the monitor callbacks at runtime,
+which is precisely the failure mode the project's recurring lessons
+warn about: "static reading isn't verification — exercise runtime
+behavior before claiming something works."
+
+### Fixed
+
+- Three call sites in `godot/addons/gool/runtime_singleton.gd`:
+  `_runtime.get_stats()` → `_runtime.get_render_stats()`. No other
+  changes; the v0.78.1 design and the Dictionary keys it depends on
+  are correct.
+
+### Process note
+
+This release exists because the v0.78.1 verification pass was
+type-and-shape only ("the GDScript parses cleanly, the C++ engine
+adds the Stats field correctly, the test suite is green"). It did
+not include the one check that would have caught the bug: loading
+the addon binary into Godot and opening the Monitors panel. The
+v0.78.1 verification surface is being updated in the engineering
+lessons doc to include a "load addon → open Monitors panel → see
+non-zero values for at least one snapshot monitor" smoke check on
+any release that touches `runtime_singleton.gd`.
+
+### Stress rig users
+
+If you deployed v0.78.1 or v0.78.2 into a stress rig and saw nine
+errors at startup (1 critical "Nonexistent function 'get_stats'" plus
+the eight pre-existing rig GDScript warnings about integer division
+and unused locals), upgrade `runtime_singleton.gd` from this release
+and restart. No DLL rebuild needed.
+
 ## [0.78.2] - 2026-05-25 — Stress rig perf assertions (no engine change)
 
 GDScript-only patch. Adds a drop-in helper that converts the v0.78.1
