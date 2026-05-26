@@ -26,6 +26,120 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.8] - 2026-05-26 — Auto-enable EditorPlugin during install (no engine change)
+
+Shell + GDScript-tools patch. Fixes the **actual root cause** of
+"errors when Godot is opened after running the gool install script,
+then it prompts a restart, then I enable the plugin in project
+settings, then it's all good" — the first-time-install flow Brannen
+documented step-by-step.
+
+### Root cause
+
+gool is **both** a GDExtension *and* an EditorPlugin:
+- GDExtension (`gool.gdextension`) auto-loads the DLL, provides C++
+  classes. Works without setup.
+- EditorPlugin (`plugin.gd` extends `EditorPlugin`) is what calls
+  `add_autoload_singleton("Gool", ...)` to register the Gool,
+  DialogueDirector, and MultiplayerBridge autoloads. Until enabled,
+  those autoloads do not exist.
+
+The install scripts deployed the addon files but did NOT enable the
+EditorPlugin. So on first open: autoloads not registered → script
+references to `Gool` fail to parse → cascade of errors → user
+manually enables plugin in Project Settings → Godot prompts restart
+→ user restarts → only now does the addon work.
+
+Worse, `gool-install.cmd` was actively lying about this in its
+"NEXT STEPS" output: *"The gool C++ classes are immediately
+available in scripts and the scene editor — no plugin enabling
+required (gool is a pure GDExtension, not an EditorPlugin)"*. This
+text contradicted `quickinstall.ps1` and `quickinstall.sh`, both of
+which correctly told users to enable the plugin. Three install
+scripts, three different statements; the .cmd's was wrong.
+
+This bug has been silently present for the entire v0.78.x track
+and probably much earlier. v0.78.7's parse-error hotfix addressed
+the symptom (scripts blowing up on parse when `Gool` is undeclared)
+but not the cause (plugin never registers the autoload). With
+v0.78.7 the parse errors disappear, but `_gool` is null in
+`multiplayer_bridge.gd` and a different set of push_errors fires —
+same brokenness, different shape. v0.78.8 actually fixes the
+underlying problem.
+
+### Added
+
+- **`addons/gool/tools/enable_plugin.ps1`** + **`enable_plugin.sh`**
+  — idempotent project.godot editors. Add
+  `res://addons/gool/plugin.cfg` to `[editor_plugins]/enabled`.
+  Handle five cases identically:
+  - No `[editor_plugins]` section in project.godot → create it
+  - Section exists, no `enabled=` line → add the line
+  - Section exists, `enabled=PackedStringArray()` empty → populate
+  - Section exists, `enabled=PackedStringArray("other")` → append
+  - gool already in the array → no-op (idempotent re-run safe)
+
+  Logic was prototyped in Python against fixture project.godot files
+  for all five cases before translation to PowerShell and bash; the
+  bash port was tested directly against the same fixtures. PowerShell
+  port matches the same regex shapes.
+
+### Changed
+
+- **All three install scripts** (`gool-install.cmd`,
+  `quickinstall.ps1`, `quickinstall.sh`) now invoke the appropriate
+  enable_plugin helper after extraction and before the verify_install
+  step. Ordering matters: enabling first means verify can actually
+  find the autoload and report PASS instead of failing.
+- **`gool-install.cmd` footer messaging corrected.** "No plugin
+  enabling required" claim removed; replaced with accurate text
+  reflecting that the .cmd auto-enables. Quickstart code snippet
+  also updated to use `Gool.play_3d()` form rather than the obsolete
+  `AudioRuntime.new()` pattern from before the autoload era.
+- **`quickinstall.ps1` and `quickinstall.sh` footers** dropped the
+  manual "Project Settings → Plugins → gool → Enable" step since
+  it's no longer needed.
+
+### Result, end-to-end
+
+Before v0.78.8 on a fresh install:
+1. Run installer → addon files deployed
+2. Open Godot → red errors (parse failures, autoload missing)
+3. Project Settings → Plugins → gool → Enable
+4. Godot prompts restart
+5. Restart Godot
+6. Open project again → works
+
+After v0.78.8:
+1. Run installer → addon files deployed, plugin pre-enabled,
+   verify_install confirms healthy
+2. Open Godot → works
+
+### Important caveat
+
+This release has been **logic-tested but not end-to-end tested
+against a real Brannen-style fresh install on Windows**. The
+fixture-based testing covers the project.godot edit cases; the
+shell-side wiring (powershell invocation from .cmd, bash sourcing
+behaviors) needs runtime verification on Windows before being
+considered fully proven. Same lesson as v0.78.1: static reading
+isn't verification. Brannen, if you can do a clean-install test on
+the `hello` project and confirm whether step 6 ("open project →
+works") actually holds, that closes the loop.
+
+### Outstanding parse-order risk (carry-forward from v0.78.7)
+
+v0.78.7 fixed `audio_settings.gd` and `multiplayer_bridge.gd` to
+not reference the `Gool` autoload identifier at parse time, but 22
+other addon scripts still do. v0.78.8 makes the autoload register
+on first open (so `Gool` resolves cleanly), which should make the
+parse-order race irrelevant in practice. However, if a user
+somehow ends up in a project.godot state where the plugin is
+enabled-but-not-yet-registered during script parse, the original
+parse-error pattern could resurface in scripts other than the two
+fixed in v0.78.7. The full sweeping refactor remains future work;
+v0.78.8's auto-enable should make it unnecessary in practice.
+
 ## [0.78.7] - 2026-05-26 — Hotfix: first-open parse-error cascade (no engine change)
 
 GDScript-only patch. Fixes the long-standing "Godot errors on first

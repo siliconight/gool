@@ -224,6 +224,35 @@ cat <<EOF
 EOF
 
 # ----------------------------------------------------------------------
+# v0.78.8: auto-enable the gool EditorPlugin in project.godot
+# ----------------------------------------------------------------------
+# Same flow as the Windows installers: edit project.godot to add
+# res://addons/gool/plugin.cfg to [editor_plugins]/enabled, so the
+# user's first open already has the plugin active and the autoloads
+# register cleanly. The helper ships with the addon (in
+# addons/gool/tools/) so its logic versions with the addon and is
+# idempotent — safe to run on a re-install.
+
+ENABLE_SCRIPT="${PROJECT_PATH}/addons/gool/tools/enable_plugin.sh"
+if [ -f "${ENABLE_SCRIPT}" ]; then
+    echo "Enabling gool plugin in project.godot..."
+    chmod +x "${ENABLE_SCRIPT}"
+    if bash "${ENABLE_SCRIPT}" "${PROJECT_PATH}"; then
+        :
+    else
+        echo "  [warn] enable_plugin.sh returned an error."
+        echo "         You may need to enable the plugin manually in Godot:"
+        echo "         Project Settings -> Plugins -> gool -> Enable"
+    fi
+    echo ""
+else
+    echo "  [warn] enable_plugin.sh not found at ${ENABLE_SCRIPT}"
+    echo "         The plugin will need to be enabled manually:"
+    echo "         Project Settings -> Plugins -> gool -> Enable"
+    echo ""
+fi
+
+# ----------------------------------------------------------------------
 # v0.78.6: optional post-install verification
 # ----------------------------------------------------------------------
 # Look for Godot on PATH. If present, run a headless pass that loads
@@ -275,10 +304,10 @@ fi
 cat <<EOF
 One step left:
   1. Open ${PROJECT_PATH} in Godot 4.2 or later
-  2. Project Settings -> Plugins -> gool -> Enable
 
-After enabling, the Gool autoload appears in Project Settings ->
-Autoload, and you can call Gool.play_3d() / Gool.set_rtpc() from
-any GDScript. The output panel should show '[gool] runtime initialized'.
+The gool EditorPlugin is already enabled (see step above), so the
+Gool autoload registers on first open. You can call Gool.play_3d()
+/ Gool.set_rtpc() from any GDScript. The output panel should show
+'[gool] runtime initialized'.
 
 EOF

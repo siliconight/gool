@@ -118,6 +118,35 @@ echo  ==============================================================
 echo.
 
 :: ---------------------------------------------------------------------------
+:: Step 3.5: auto-enable the gool EditorPlugin in project.godot (v0.78.8)
+:: ---------------------------------------------------------------------------
+:: This is the step the old "no plugin enabling required" messaging was
+:: lying about. gool IS an EditorPlugin (plugin.gd extends EditorPlugin) —
+:: when enabled, it adds Gool/DialogueDirector/MultiplayerBridge as project
+:: autoloads. Without this step, the user opens the project, sees parse
+:: errors because the autoloads don't exist, enables the plugin manually,
+:: gets prompted to restart, restarts, and only then does the addon work.
+::
+:: The .ps1 helper is part of the addon itself (in addons/gool/tools/).
+:: Idempotent — safe to re-run.
+
+if exist "addons\gool\tools\enable_plugin.ps1" (
+    echo    Enabling gool plugin in project.godot...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "addons\gool\tools\enable_plugin.ps1" -ProjectPath "%CD%"
+    if errorlevel 1 (
+        echo    [warn] enable_plugin.ps1 returned an error.
+        echo           You may need to enable the plugin manually in Godot:
+        echo           Project Settings -^> Plugins -^> gool -^> Enable
+    )
+    echo.
+) else (
+    echo    [warn] addons\gool\tools\enable_plugin.ps1 not found.
+    echo           The plugin will need to be enabled manually:
+    echo           Project Settings -^> Plugins -^> gool -^> Enable
+    echo.
+)
+
+:: ---------------------------------------------------------------------------
 :: Step 4: optional post-install verification (v0.78.6)
 :: ---------------------------------------------------------------------------
 :: Look for Godot on PATH. If present, run a headless verification pass
@@ -164,13 +193,13 @@ echo  NEXT STEPS:
 echo.
 echo    1. Close Godot if it's currently open with this project
 echo    2. Open your project in Godot 4.2 or later
-echo    3. The gool C++ classes are immediately available in scripts
-echo       and the scene editor — no plugin enabling required
-echo       ^(gool is a pure GDExtension, not an EditorPlugin^).
+echo    3. The gool addon is already enabled (see "Enabling gool plugin"
+echo       step above^) so the Gool autoload registers on first open.
+echo       The output panel should show '[gool] runtime initialized'.
 echo.
 echo    Quick start:
-echo      var runtime = AudioRuntime.new^(^)
-echo      runtime.init^(^)
+echo      Gool.play_3d^("sound_name", position^)
+echo      Gool.set_rtpc^("rtpc_name", value^)
 echo.
 echo    Full docs: https://github.com/siliconight/gool#readme
 echo.

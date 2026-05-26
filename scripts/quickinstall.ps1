@@ -329,6 +329,37 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 
 # ----------------------------------------------------------------------
+# v0.78.8: auto-enable the gool EditorPlugin in project.godot
+# ----------------------------------------------------------------------
+# Before v0.78.8, install only deployed files. The user then had to
+# open the project (got errors), enable the plugin manually in Project
+# Settings, restart, then re-open. With this step, project.godot is
+# pre-configured so the user's first open is already correct: the
+# plugin enables on load, registers the Gool/DialogueDirector/
+# MultiplayerBridge autoloads, and scripts compile cleanly.
+#
+# The enable_plugin.ps1 helper is part of the addon itself (ships in
+# addons/gool/tools/) so the logic versions with the addon. It's
+# idempotent — safe to run twice, safe to run after a re-install.
+
+$EnablePluginScript = Join-Path $ProjectPath "addons\gool\tools\enable_plugin.ps1"
+if (Test-Path $EnablePluginScript) {
+    Write-Host "Enabling gool plugin in project.godot..."
+    & $EnablePluginScript -ProjectPath $ProjectPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [warn] enable_plugin.ps1 returned $LASTEXITCODE — " -ForegroundColor Yellow `
+            -NoNewline
+        Write-Host "you may need to enable the plugin manually in Godot." -ForegroundColor Yellow
+    }
+    Write-Host ""
+} else {
+    Write-Host "  [warn] enable_plugin.ps1 not found at $EnablePluginScript" -ForegroundColor Yellow
+    Write-Host "         The plugin will need to be enabled manually:"
+    Write-Host "         Project Settings -> Plugins -> gool -> Enable"
+    Write-Host ""
+}
+
+# ----------------------------------------------------------------------
 # v0.78.6: optional post-install verification
 # ----------------------------------------------------------------------
 # Look for Godot on PATH. If present, run a headless pass that loads
@@ -369,9 +400,9 @@ if ($null -eq $GodotCmd) {
 
 Write-Host "One step left:"
 Write-Host "  1. Open $ProjectPath in Godot 4.2 or later"
-Write-Host "  2. Project Settings -> Plugins -> gool -> Enable"
 Write-Host ""
-Write-Host "After enabling, the Gool autoload appears in Project Settings ->"
-Write-Host "Autoload, and you can call Gool.play_3d() / Gool.set_rtpc() from"
-Write-Host "any GDScript. The output panel should show '[gool] runtime initialized'."
+Write-Host "The gool EditorPlugin is already enabled (see step above),"
+Write-Host "so the Gool autoload registers on first open. You can call"
+Write-Host "Gool.play_3d() / Gool.set_rtpc() from any GDScript. The"
+Write-Host "output panel should show '[gool] runtime initialized'."
 Write-Host ""
