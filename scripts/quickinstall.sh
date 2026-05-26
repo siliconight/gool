@@ -221,6 +221,58 @@ cat <<EOF
   Installed gool ${VERSION} into ${PROJECT_PATH}/addons/gool/
 ============================================================
 
+EOF
+
+# ----------------------------------------------------------------------
+# v0.78.6: optional post-install verification
+# ----------------------------------------------------------------------
+# Look for Godot on PATH. If present, run a headless pass that loads
+# the user's project, fires Gool.diagnose(), and exits 0/1. If Godot
+# isn't on PATH or the verify pass fails, we surface it — but never
+# block on it. The addon is already deployed.
+#
+# The binary is named 'godot' on most distros, 'godot4' on some, and
+# we try both before giving up. Heuristic only; if neither resolves
+# we skip with a friendly message rather than fail-noisily.
+
+GODOT_BIN=""
+if command -v godot >/dev/null 2>&1; then
+    GODOT_BIN="godot"
+elif command -v godot4 >/dev/null 2>&1; then
+    GODOT_BIN="godot4"
+fi
+
+if [ -z "${GODOT_BIN}" ]; then
+    echo "[skip] Godot is not on PATH (tried 'godot' and 'godot4') —"
+    echo "       skipping post-install verification. That's fine; just"
+    echo "       open the project in Godot manually."
+    echo ""
+else
+    echo "Running headless verification (this takes a few seconds)..."
+    echo ""
+    # --headless / --audio-driver Dummy: no display, no real audio device
+    # --quit-after 5: safety net; verify scene quits on its own well before
+    # --path: the user's project, where the addon was just deployed
+    "${GODOT_BIN}" --headless --audio-driver Dummy --quit-after 5 \
+        --path "${PROJECT_PATH}" \
+        res://addons/gool/tools/verify_install.tscn
+    VERIFY_EXIT=$?
+
+    echo ""
+    if [ ${VERIFY_EXIT} -eq 0 ]; then
+        echo "[verify] PASSED — install is healthy."
+    else
+        echo "[verify] FAILED with exit code ${VERIFY_EXIT}."
+        echo "         Review the diagnose output above — every fail line"
+        echo "         has a hint. The most common cause is the project"
+        echo "         not having an autoload entry for Gool yet — open"
+        echo "         Project Settings -> Autoload and add"
+        echo "         res://addons/gool/runtime_singleton.gd as 'Gool'."
+    fi
+    echo ""
+fi
+
+cat <<EOF
 One step left:
   1. Open ${PROJECT_PATH} in Godot 4.2 or later
   2. Project Settings -> Plugins -> gool -> Enable

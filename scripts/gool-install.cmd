@@ -116,6 +116,50 @@ echo  ==============================================================
 echo    Done. gool is installed in addons\gool\
 echo  ==============================================================
 echo.
+
+:: ---------------------------------------------------------------------------
+:: Step 4: optional post-install verification (v0.78.6)
+:: ---------------------------------------------------------------------------
+:: Look for Godot on PATH. If present, run a headless verification pass
+:: that loads the project, fires Gool.diagnose(), and exits with code 0
+:: (clean) or 1 (issues). If Godot isn't on PATH or the verify run
+:: doesn't return cleanly, we surface that — but we never block the
+:: install on it. The addon is already deployed regardless.
+
+where godot >nul 2>nul
+if errorlevel 1 (
+    echo    [skip] Godot is not on PATH — skipping post-install verification.
+    echo           That's fine; just open the project in Godot manually.
+    echo.
+    goto :next_steps
+)
+
+echo    Running headless verification (this takes a few seconds)...
+echo.
+
+:: --headless           : no window
+:: --audio-driver Dummy : no real audio device needed (init still succeeds)
+:: --quit-after 5       : safety net in case the verify script hangs
+:: --path .             : run against the current directory's project
+:: <scene>              : load the verify scene as the entry point
+godot --headless --audio-driver Dummy --quit-after 5 --path . res://addons/gool/tools/verify_install.tscn
+set VERIFY_EXIT=%errorlevel%
+
+echo.
+if %VERIFY_EXIT% equ 0 (
+    echo    [verify] PASSED — install is healthy.
+) else (
+    echo    [verify] FAILED with exit code %VERIFY_EXIT%.
+    echo             Review the diagnose output above — every fail line
+    echo             has a hint. The most common cause is the project
+    echo             not having an autoload entry for Gool yet — open
+    echo             Project Settings -^> Autoload and add
+    echo             res://addons/gool/runtime_singleton.gd as "Gool".
+)
+echo.
+
+:next_steps
+
 echo  NEXT STEPS:
 echo.
 echo    1. Close Godot if it's currently open with this project

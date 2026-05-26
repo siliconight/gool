@@ -26,6 +26,79 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.6] - 2026-05-26 — Install-script verification with diagnose() (no engine change)
+
+GDScript + shell-script patch. Wires `Gool.diagnose()` (from v0.78.5)
+into the post-install flow of `gool-install.cmd`, `quickinstall.ps1`,
+and `quickinstall.sh`, so a fresh install verifies itself end-to-end
+and reports pass/fail without anyone having to open Godot manually.
+"Silent failure looks like success" was the v0.78.5 framing problem;
+this release closes the loop.
+
+### Added
+
+- **`addons/gool/tools/verify_install.gd`** + matching
+  **`verify_install.tscn`** — a tiny `Node`-extending scene that runs
+  as the project's main scene under headless Godot. On `_ready`:
+  - Verifies the Gool autoload is present (defensive — if it isn't,
+    no point calling diagnose).
+  - Calls `Gool.diagnose()`, prints the report.
+  - Greps the report for the `FAILED:` keyword that diagnose uses in
+    its verdict line.
+  - Calls `get_tree().quit(0)` on pass, `quit(1)` on fail. The exit
+    code is the install-script's machine-readable signal.
+
+- **Verification block in all three install scripts**
+  (`gool-install.cmd`, `quickinstall.ps1`, `quickinstall.sh`).
+  Same flow each: look for `godot` on PATH (also `godot4` on bash,
+  since that's the common name on some Linux distros), and if found,
+  run:
+  ```
+  godot --headless --audio-driver Dummy --quit-after 5 \
+        --path <project> res://addons/gool/tools/verify_install.tscn
+  ```
+  Then branch on `$?` / `%errorlevel%` / `$LASTEXITCODE`. If Godot
+  isn't on PATH, skip with a friendly message — the install is still
+  successful, just unverified.
+
+### Design choices worth flagging
+
+- **`--audio-driver Dummy`** is essential. Without it, gool's init
+  returns false on a headless box with no real audio device, and
+  diagnose() reports FAIL even on a healthy install. Dummy lets
+  init complete cleanly; the resulting "audio device empty" comes
+  through as a warning, not a failure.
+- **`--quit-after 5`** is a hang safety net, not the normal exit
+  path. The verify scene calls `get_tree().quit()` itself once
+  diagnose returns; the CLI flag only fires if something hangs.
+- **Never block the install on verification.** A failed verify run
+  prints the failure detail but leaves the deployed addon in place.
+  This matters because a verify failure might just mean "Godot
+  isn't on PATH" or "the project hasn't been set up with autoload
+  yet" — neither of which is an install bug.
+- **Try `godot4` as well as `godot` on bash.** Several Linux distros
+  package Godot 4 under `godot4` to avoid colliding with their
+  Godot 3 package. The PowerShell and CMD versions just check
+  `godot` because Windows builds are uniformly named that way.
+
+### Limitations
+
+- **The user's project needs `Gool` as an autoload before verify can
+  pass.** Adding the autoload is still a manual step (Project
+  Settings → Autoload). If a fresh install runs verify and finds no
+  autoload, the verify_install.gd script emits a specific message
+  pointing at exactly that step. Future work: auto-add the autoload
+  to `project.godot` during install — this is a `project.godot`
+  text-edit operation, doable but not in this release.
+- **Headless Godot loads the project's autoloads, but does NOT load
+  the user's main scene** because we override it with verify_install.tscn.
+  This is intentional — we want a clean verification environment, not
+  whatever side effects the user's main scene might have. If the
+  user's main scene contains gool-relevant initialization (e.g.
+  registering custom sound definitions), verify won't see it.
+  Acceptable tradeoff: the goal is "is the addon healthy," not "is
+  the user's whole game working."
+
 ## [0.78.5] - 2026-05-25 — Gool.diagnose() onboarding self-test (no engine change)
 
 GDScript-only patch. Adds a one-shot self-test method to the Gool

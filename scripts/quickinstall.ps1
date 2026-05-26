@@ -327,6 +327,46 @@ Write-Host "============================================================" -Foreg
 Write-Host "  Installed gool $Version into $ProjectPath\addons\gool\" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
+
+# ----------------------------------------------------------------------
+# v0.78.6: optional post-install verification
+# ----------------------------------------------------------------------
+# Look for Godot on PATH. If present, run a headless pass that loads
+# the user's project, fires Gool.diagnose(), and exits 0/1. If Godot
+# isn't on PATH or the verify pass fails, we surface it — but never
+# block on it. The addon is already deployed.
+
+$GodotCmd = Get-Command godot -ErrorAction SilentlyContinue
+if ($null -eq $GodotCmd) {
+    Write-Host "[skip] Godot is not on PATH — skipping post-install verification." -ForegroundColor Yellow
+    Write-Host "       That's fine; just open the project in Godot manually."
+    Write-Host ""
+} else {
+    Write-Host "Running headless verification (this takes a few seconds)..."
+    Write-Host ""
+
+    # --headless / Dummy audio driver / --quit-after as a hang safety
+    # net. The verify scene quits with its own exit code well before
+    # the 5-second timer fires under normal conditions.
+    & godot --headless --audio-driver Dummy --quit-after 5 `
+        --path $ProjectPath `
+        res://addons/gool/tools/verify_install.tscn
+    $VerifyExit = $LASTEXITCODE
+
+    Write-Host ""
+    if ($VerifyExit -eq 0) {
+        Write-Host "[verify] PASSED - install is healthy." -ForegroundColor Green
+    } else {
+        Write-Host "[verify] FAILED with exit code $VerifyExit." -ForegroundColor Red
+        Write-Host "         Review the diagnose output above - every fail line"
+        Write-Host "         has a hint. The most common cause is the project"
+        Write-Host "         not having an autoload entry for Gool yet - open"
+        Write-Host "         Project Settings -> Autoload and add"
+        Write-Host "         res://addons/gool/runtime_singleton.gd as 'Gool'."
+    }
+    Write-Host ""
+}
+
 Write-Host "One step left:"
 Write-Host "  1. Open $ProjectPath in Godot 4.2 or later"
 Write-Host "  2. Project Settings -> Plugins -> gool -> Enable"
