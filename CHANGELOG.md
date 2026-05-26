@@ -26,6 +26,145 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.9] - 2026-05-26 — README audit and currency pass
+
+Documentation-only release. No engine changes, no GDScript
+changes, no API changes, no CI changes. The README had drifted
+significantly over the last twelve releases (v0.78.0 through
+v0.79.8) — fixing it before onboarding teammates means new clones
+land on docs that match the surface area they actually find.
+
+### Why
+
+The previous README's version stamp said "0.77.0" — twelve
+releases stale. Three counts of unit tests existed in three
+different places, two of them wrong. The opening code example
+used `play_one_shot` while the rest of the README and the
+in-editor help panel use `play_3d`. The multiplayer-integration
+section referenced an autoload named `GoolMultiplayerBridge` that
+doesn't exist (the actual autoload is `MultiplayerBridge`).
+Worse, four substantial features that shipped between v0.78.0
+and v0.79.8 — install diagnostics (`Gool.diagnose()`), the
+in-editor help panel, update notifications, and the player audio
+preferences API — were entirely absent from the README. A
+teammate cloning the repo would discover these by accident, or
+not at all.
+
+### Fixed
+
+  * **Version stamp.** Removed the `**Current version:**` line
+    entirely. It was bound to go stale on every release with
+    nothing enforcing currency. Replaced with version-free
+    pointers to CHANGELOG.md (what's new) and RELEASING.md (how
+    releases are cut). Future releases don't have to touch this
+    line at all.
+  * **Method-name inconsistency.** Opening code example now uses
+    `Gool.play_3d("blip", Vector3(5, 0, 0))` — matches the help
+    panel's "Play your first sound" section and the README's own
+    "First lines of GDScript" code block further down. The old
+    `play_one_shot` name still works at runtime; this is about
+    teaching teammates one consistent way.
+  * **Wrong autoload name.** "`GoolMultiplayerBridge` autoload"
+    → "`MultiplayerBridge` autoload" in the network-engineer
+    guide. The autoload registered by `plugin.gd` is
+    `MultiplayerBridge`; a teammate typing `GoolMultiplayerBridge.foo()`
+    would hit a parse error.
+  * **Stale test counts.** Three different stale numbers
+    referenced in three places ("36 unit tests" in the build
+    instructions, "25 tests covering every subsystem" in the
+    layout block, "36 unit tests" again in the test-suite
+    section header) — actual count is 44. Replaced all three
+    with count-free language; the test directory is its own
+    source of truth.
+  * **Benchmark snapshot framing.** The "Verified under load"
+    numbers are from a v0.76.0 run. Added a clarifying preamble
+    that frames them as a historical snapshot reproducible
+    against current builds via the documented rig instructions,
+    so a teammate reading the table doesn't wonder whether
+    behavior has drifted since.
+
+### Added
+
+  * **New section: "When something looks off"** — placed between
+    "Where to start" and "The problem", surfaces the four
+    built-in onboarding tools that previously had no README
+    presence:
+    - `Gool.diagnose()` — the script-callable health check
+      shipped in v0.78.5
+    - In-editor help panel — the `?` button on the mixer dock
+      (and Project → Tools → gool → Help), shipped in v0.79.3
+      and rewritten in v0.79.7
+    - Update banner — checks GitHub on editor startup, shipped
+      in v0.79.2
+    - Smoke tests — `prefab_smoke_test.gd` and
+      `fps_scene_smoke_test.gd`, runnable from Project → Tools
+      → gool
+
+    Tone-matched to the existing "Where to start" / "What you
+    get" sections: bold-led items, concrete details, occasional
+    bolded key combos in prose. The section closes by pointing
+    forward to the F3 debug overlay and Ctrl+Shift+G session
+    log dump in *What you get* below, so a teammate reading
+    top-to-bottom doesn't feel the diagnostic toolkit is
+    fractured across two sections.
+  * **Player-side audio settings** bullet under "What you get →
+    For your team". The v0.79.0 API (eleven methods including
+    `set_player_master_volume`, `set_player_category_volume`,
+    `mute_voice_player`, etc.) is now visible to anyone
+    skimming features. Explains the seven categories
+    (master/sfx/music/voice/ambience/dialogue/ui), the
+    `user://gool_player_preferences.cfg` autosave, and the
+    dB-addition combine semantics with server-side bus
+    controls. Points at the help panel as the canonical
+    most-used reference rather than duplicating the full
+    eleven-method list inline.
+  * **`Gool.diagnose()` reference** as a separate bullet in
+    "For gameplay engineers". Discoverable from this direction
+    even by readers who skip the new top-of-README section.
+    Repeating the diagnose mention twice was a deliberate call:
+    readers approaching from "I'm installing this" vs. "I'm
+    writing gameplay code" find it from whichever direction
+    they search.
+
+### Not in this release
+
+  * **The examples-directory duplication.** The repo has both
+    `examples/01_quickstart/` and `examples/quickstart/` (and
+    the same for `audition`, `voice_chat`,
+    `coop_shooter_template`, `multiplayer_audio_sandbox`). The
+    READMEs in those directory pairs are not byte-identical —
+    real cruft. The README in this release is internally
+    consistent (points at one set of paths where it points at
+    examples by path), but cleaning up the duplication itself
+    is a separate task scoped to: deciding which set is
+    canonical, deleting the other, updating any install
+    scripts or CI smoke tests that reference the deleted
+    paths, and adjusting any docs that point at the removed
+    paths. Flagged as future work.
+  * **Stripping the remaining inline version annotations**
+    (`(v0.22.4+)`, `(v0.47.0)`, `(v0.69.0)`) from feature
+    descriptions. These read as historical noise from a
+    new-teammate perspective but they're not actively
+    misleading — leaving them in this pass keeps the diff
+    focused on the issues that actually bite during
+    onboarding.
+
+### Verification
+
+  * Repo README and the user-uploaded README were verified
+    byte-identical before edits — same baseline.
+  * After edits: 1061 → 1110 lines (49-line growth, mostly the
+    new section plus two inline additions).
+  * All four wrongs verified gone via grep: no remaining
+    `Current version:` line, no `play_one_shot.*blip`, no
+    `GoolMultiplayerBridge`, no "36 unit tests" or
+    "25 tests covering" strings.
+  * All twelve `docs/*.md` references in the README resolve to
+    existing files.
+  * Section ordering preserved: new section sits at line 50,
+    between "Where to start" (line 35) and "The problem"
+    (line 80).
+
 ## [0.79.8] - 2026-05-26 — Addon autoload-safety scanner (regression guard against the v0.78.7 bug class)
 
 Team-onboarding hardening release. The prior session's notes

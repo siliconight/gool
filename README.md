@@ -8,8 +8,8 @@
 
 A multiplayer-first audio middleware layer for Godot.
 
-**Current version:** 0.77.0 — see [CHANGELOG.md](CHANGELOG.md) for what's
-in it, [RELEASING.md](RELEASING.md) for how releases are cut.
+For what's new in each release, see [CHANGELOG.md](CHANGELOG.md).
+For how releases are cut, see [RELEASING.md](RELEASING.md).
 
 ## What gool feels like to use
 
@@ -21,7 +21,7 @@ func _ready() -> void:
     Gool.register_sound_from_file("blip", "res://sfx/blip.ogg")
 
     # Play a 3D-positioned sound at world coordinates.
-    Gool.play_one_shot("blip", Vector3(5, 0, 0))
+    Gool.play_3d("blip", Vector3(5, 0, 0))
 
     # Adjust the music bus from script.
     Gool.set_bus_gain_db("Music", -6.0)
@@ -46,6 +46,36 @@ script-coordination dance.
 If you've never installed a Godot addon, start with
 `docs/godot_quickstart.md`. If you have, go straight to
 `examples/01_quickstart/`.
+
+## When something looks off
+
+gool ships four built-in surfaces for the moments when an install
+doesn't feel right, the editor is unfamiliar, or behavior is
+unexpected. Knowing they exist is half the battle.
+
+- **`Gool.diagnose()`** — call from any script. Prints a
+  structured health check: autoloads registered? bus graph
+  valid? sample rate? device working? Each line tagged
+  `[ok]`/`[warn]`/`[fail]`. Run this first when something's
+  silent or feels broken — faster than guessing.
+- **In-editor help panel** — the **?** button on the mixer dock
+  (or *Project → Tools → gool → Help*) opens a quick-reference
+  window covering how to play a first sound, where things live
+  in the editor, the common runtime calls, and what to do when
+  something looks wrong. Content rewritten in v0.79.7 for the
+  "I just installed this, what did I buy?" reader.
+- **Update banner** — the mixer dock checks GitHub on editor
+  startup and shows a banner if a newer release is available.
+  No surprise version drift across a team. Suppress per-version
+  via the dismiss button.
+- **Smoke tests** — *Project → Tools → gool → Run prefab smoke
+  test* / *Run FPS scene smoke test*. Catches missing autoload
+  wrappers and config dependencies before they bite at runtime.
+  Runs in seconds.
+
+For runtime debugging on top of these, the **F3** debug overlay
+and **Ctrl+Shift+G** session log dump (covered in *What you get*
+below) round out the toolkit.
 
 ## The problem
 
@@ -143,7 +173,10 @@ per-peer attribution, prediction cancellation accounting, and
 voice ingress at codec rate from 16 concurrent peers. Each
 scenario emits a CSV and an Output-panel verdict.
 
-Recent run on an RTX 2060 + Godot 4.6.2 + gool v0.76.0:
+Recent run on an RTX 2060 + Godot 4.6.2 + gool v0.76.0 (the
+numbers below are one run on one machine on one day —
+reproducible against any current build via the rig instructions
+below):
 
 | Behavior | Result |
 |----------|--------|
@@ -453,6 +486,16 @@ target.
   opens in your OS file manager. One click from "I have a bug" to
   "I have a file to attach to the report." Also callable as
   `Gool.dump_session_log()` for custom keybindings.
+- **Player-side audio settings** — a complete API for building
+  settings menus. `Gool.set_player_master_volume(0–100)`,
+  `set_player_category_volume(category, 0–100)`,
+  `mute_voice_player(peer_id)`, and friends. Seven categories
+  (master/sfx/music/voice/ambience/dialogue/ui), auto-saves to
+  `user://gool_player_preferences.cfg` on every change, combines
+  with server-authoritative bus controls via dB addition so your
+  team mix and snapshots stay audible — just scaled by the
+  listener's preference. Eleven methods total; the
+  in-editor help panel lists the most-reached ones.
 - JSON sound banks designers can edit without touching code
 - Hot reload — change `sounds.json` on disk, the runtime
   re-registers without restart
@@ -577,6 +620,12 @@ listener position from your camera each frame.
   that produced zero frames, etc.), so the first place to look
   when something's silent is the Godot Errors panel — the warning
   usually says exactly what's wrong.
+- **When something's silent or feels broken:** call
+  `Gool.diagnose()` from any script. Prints a structured install
+  health check (autoloads registered, bus graph valid, sample
+  rate, device working) with `[ok]`/`[warn]`/`[fail]` tags.
+  Faster than guessing, and the output is grep-friendly for bug
+  reports.
 - **Networking integration:** [`docs/networking_integration.md`](docs/networking_integration.md)
   — the four classes of game-network data and which gool entry
   point implements each
@@ -620,8 +669,8 @@ thread.
 
 - **Determinism:** [`docs/determinism.md`](docs/determinism.md)
   — what's deterministic, what isn't, how to set up bit-identical replay
-- **Godot MultiplayerAPI integration:** the `GoolMultiplayerBridge`
-  autoload (v0.46.0) wires Godot's `MultiplayerAPI` to gool's
+- **Godot MultiplayerAPI integration:** the `MultiplayerBridge`
+  autoload wires Godot's `MultiplayerAPI` to gool's
   replication / VOIP primitives. Transport-agnostic — defaults to
   routing through `MultiplayerAPI` (so `ENetMultiplayerPeer`,
   `SteamMultiplayerPeer`, `WebRTCMultiplayerPeer` all work out of
@@ -676,7 +725,7 @@ of Godot. The library namespace is `audio`, the CMake target is
 git clone https://github.com/siliconight/gool.git && cd gool
 ./scripts/fetch_miniaudio.sh && ./scripts/fetch_decoders.sh
 cmake -S . -B build && cmake --build build -j
-ctest --test-dir build                          # 36 unit tests
+ctest --test-dir build                          # full unit suite
 ```
 
 That builds a static library and the test suite using the silent
@@ -996,7 +1045,7 @@ audio_engine/
 ├── examples/                    # ducking, streaming, sound_bank,
 │                                # music_crossfade, hello_audio,
 │                                # multi_tier_ducking, quickstart (Godot)
-├── tests/unit/                  # 25 tests covering every subsystem
+├── tests/unit/                  # covers every subsystem
 ├── godot/                       # GDExtension binding + addons + prefabs
 ├── tools/gpak_create/           # CLI for packing assets
 └── docs/                        # asset_pipeline, multiplayer,
@@ -1007,7 +1056,7 @@ audio_engine/
 
 ### Test suite
 
-36 unit tests in `tests/unit/`, all wired into CTest and the CI
+Unit tests in `tests/unit/`, all wired into CTest and the CI
 matrix. Headline coverage:
 
 | Test                            | Validates                                                  |
