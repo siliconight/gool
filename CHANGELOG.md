@@ -26,6 +26,88 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.4] - 2026-05-26 — Hotfix: roll back CI jobs that appear to be blocking workflow dispatch
+
+CI-rollback hotfix. From v0.79.1 onward, pushes to main stopped
+producing CI runs in GitHub Actions. Earlier hypotheses (Actions
+budget caps, GitHub outage) didn't pan out — the Actions Usage
+Metrics page showed 20,828 minutes consumed this month with no
+billing concerns, which ruled out budget enforcement. Empirically,
+the only thing that changed in v0.79.1 that touches workflow
+dispatch was an appended CI job in `.github/workflows/ci.yml`.
+v0.79.2 appended a second job. v0.79.3 didn't touch ci.yml but
+also failed to dispatch — consistent with "ci.yml on main has a
+defect from v0.79.1 that subsequent pushes inherit."
+
+### Removed
+
+  * **`footprint` job** in ci.yml (added in v0.79.1). The binary-
+    size report we wanted to publish per-PR. Its removal here is
+    *not* a statement that it was wrong — only that it's the prime
+    suspect for breaking workflow dispatch, and we need to confirm
+    by reverting. If v0.79.4's push fires CI normally, this job is
+    confirmed as the cause and we can re-add it later in a more
+    defensive form.
+  * **`version-sync` job** in ci.yml (added in v0.79.2). Same
+    reasoning — appended after the suspect change, also rolled
+    back to maximize chance v0.79.4 dispatches cleanly.
+
+### Added
+
+  * **`scripts/check_version_sync.sh`** — local replacement for
+    the version-sync CI job. Run before any version-bump commit:
+    ```
+    bash scripts/check_version_sync.sh
+    ```
+    Verifies the 5 sources of version truth (version.h's
+    kVersionString, CMakeLists.txt's project VERSION, three
+    plugin.cfg files) all agree. Not as good as CI enforcement
+    but doesn't depend on CI working.
+
+### Kept
+
+  * **v0.79.1's C++ release-build debloat flags** (`-fno-rtti`,
+    `-ffunction-sections`, `-fdata-sections`, `--gc-sections`).
+    These are CMake-level, can't affect workflow dispatch.
+  * **v0.79.1's `GOOL_LOG_MIN_LEVEL` macro** in logging.h and the
+    compile-time gate in audio_runtime_impl.h. Same — pure C++,
+    won't affect workflow dispatch.
+  * **v0.79.2's update-checker, banner, plugin.cfg version fix,
+    and `audio/gool/check_for_updates` project setting.** All
+    GDScript / config-file work, not workflow-related.
+  * **v0.79.3's help panel.** Pure GDScript, not workflow-related.
+
+### Diagnostic plan
+
+After v0.79.4 push:
+
+  1. **If CI fires normally** → confirms the v0.79.1 footprint job
+     was the dispatch-blocker. Knowledge gained: GitHub's workflow
+     validator is stricter than `yaml.safe_load` and rejected
+     something in the appended block that Python's parser
+     accepted. Likely candidates (would investigate in v0.80.x):
+     - Multi-line `run:` value using folded plain scalar instead
+       of `|` literal block. GitHub Actions might handle this
+       differently from raw YAML semantics.
+     - `actions/upload-artifact@v4` mismatch — every other job in
+       ci.yml uses `@v5`. Not a known incompatibility but worth
+       making consistent.
+     - The complex bash heredoc in the footprint job's report-
+       generator step — unusual nesting depth.
+  2. **If CI still doesn't fire** → ci.yml isn't the cause. Will
+     need to investigate other paths (workflow file references,
+     repo-level Actions permissions changed mid-day, branch
+     protection rule, GitHub-side issue).
+
+### Caveat
+
+  * **Logic-tested, not GitHub-runtime-tested.** I can show the
+    YAML parses cleanly from my side, but I couldn't reproduce
+    the workflow-dispatch failure locally — GitHub's validator is
+    server-side. This release is a best-guess rollback to a
+    known-good ci.yml structure. The empirical test is the
+    v0.79.4 push itself: if Actions runs appear, we win.
+
 ## [0.79.3] - 2026-05-26 — In-editor help panel (no engine change)
 
 GDScript-only release. Adds an in-editor help surface that
