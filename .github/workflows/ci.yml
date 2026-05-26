@@ -913,3 +913,29 @@ jobs:
             exit 1
           fi
           echo "all versions agree: $VH"
+  # ----------------------------------------------------------------
+  # Job: addon autoload safety scan (v0.79.8).
+  #
+  # Scans every .gd file under godot/addons/gool/ and the example
+  # addons/gool/ copies for the v0.78.7-class bug: a class-body
+  # reference to Gool / DialogueDirector / MultiplayerBridge.
+  #
+  # Addon scripts are parsed during the same compile pass that
+  # registers these autoloads, so a bare reference at class-body
+  # scope fails to resolve on first project open, cascading into a
+  # parse-error storm. v0.78.7 fixed the 3 observed cases by hand;
+  # v0.79.8 adds this scanner so it can't quietly regress when
+  # someone adds a new prefab.
+  #
+  # Detector lives at scripts/check_addon_autoload_safety.py.
+  # Run locally before pushing — same script, same result.
+  # ----------------------------------------------------------------
+  addon-autoload-safety:
+    name: addon-safety / no class-body autoload refs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Scan addon scripts
+        run: |
+          python3 scripts/check_addon_autoload_safety.py

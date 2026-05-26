@@ -26,6 +26,117 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.8] - 2026-05-26 — Addon autoload-safety scanner (regression guard against the v0.78.7 bug class)
+
+Team-onboarding hardening release. The prior session's notes
+flagged "22 addon scripts that still reference Gool by identifier
+(v0.78.7 fixed only the 3 observed-broken)" as a sweeping refactor
+target before onboarding teammates. A full audit this release found
+that framing was misleading — the 22 figure counted scripts that
+*mentioned* the autoload identifiers anywhere (including in
+docstring comments and push_warning string literals), not scripts
+with the parse-time bug.
+
+### Audit findings
+
+  * **0 dangerous patterns currently exist.** Every addon script
+    that needs the autoload at runtime uses one of:
+    - `get_node_or_null("/root/Gool")` in `_ready()` (12 prefabs)
+    - `Engine.has_singleton("Gool")` guard before bare access
+      (2 scripts: `verify_install.gd`, `gool_mix_snapshot.gd`)
+    - `Engine.get_main_loop().root.get_node_or_null("Gool")`
+      from static funcs (1 script: `audio_settings.gd`)
+  * All remaining references — 36 scripts total across addon and
+    example mirrors — live in:
+    - Docstring comments explaining behavior
+    - `push_warning` string literals shown to users
+    - BBCode display text in `help_panel.gd` (inside triple-quoted
+      content constants)
+    - The autoload implementation files themselves
+      (`runtime_singleton.gd`, `dialogue_director.gd`,
+      `multiplayer_bridge.gd`, `plugin.gd`)
+  * No class-body identifier references. No type-hint references
+    (`var x: Gool.SomeType`). No default-parameter references that
+    would evaluate at parse time.
+  * No `class_name Gool` / `class_name DialogueDirector` /
+    `class_name MultiplayerBridge` shadowing the autoload globals.
+  * No `preload("res://addons/gool/runtime_singleton.gd")` patterns
+    that would trigger eager script evaluation outside the autoload
+    machinery.
+
+### Why ship anything if nothing is broken?
+
+Because **a team will hit this regression as the addon grows**.
+The v0.78.7 fix was a one-time manual sweep — there's nothing
+stopping a teammate (or future-me) from writing
+`const FOO := Gool.SOMETHING` at the top of a new prefab six
+months from now and re-triggering the parse-error cascade. The
+failure mode is silent on the author's machine (they have the
+plugin enabled) and only surfaces on a teammate's first clone.
+That's the worst kind of bug for onboarding.
+
+### Added
+
+  * **`scripts/check_addon_autoload_safety.py`** — class-body
+    autoload-reference scanner. Scans every `.gd` under
+    `godot/addons/gool/` plus the two example addon mirrors
+    (`examples/coop_shooter_template/addons/gool/`,
+    `examples/voice_chat/addons/gool/`). For each file, classifies
+    references by scope:
+    - Inside a `func` body → safe (autoload exists by then)
+    - Inside a comment → safe (display text)
+    - Inside a string literal, single or triple-quoted → safe
+    - Inside `get_node_or_null("/root/X")` or
+      `Engine.has_singleton("X")` lookup → safe
+    - Anywhere else → **flagged with line number, exact text, and
+      remediation advice**
+
+    Exits 0 if clean, 1 with details on first failure. Run locally
+    before any addon-directory commit:
+    ```
+    python3 scripts/check_addon_autoload_safety.py
+    ```
+  * **CI job `addon-autoload-safety`** in `.github/workflows/ci.yml`.
+    Same script, runs in seconds, fails the build if a class-body
+    reference slips in. Sits next to `version-sync` as the second
+    layer of regression defense (local script catches pre-push, CI
+    catches if someone bypasses it).
+
+### Verification
+
+  * Detector passes on the current codebase: 62 .gd files scanned
+    across 3 addon roots, 0 findings.
+  * Negative test: injected a fake bug
+    (`const BAD_REF := Gool.MATERIAL_DEFAULT` at the top of
+    `audio_emitter_3d.gd`), re-ran detector, confirmed it caught
+    the exact line with the correct identifier and remediation
+    message, then reverted. Detector returned to clean.
+  * Multi-line triple-quoted strings handled correctly — initial
+    pass had 13 false positives in `help_panel.gd`'s BBCode
+    content constants; fixed with a `strip_multiline_strings()`
+    pre-pass that removes triple-quoted block contents while
+    preserving newlines so line numbers stay aligned.
+
+### Not in this release
+
+  * No actual script changes to the addon. The audit confirmed
+    nothing needs fixing today. The detector is the deliverable.
+  * No refactor of the 12 prefabs that use
+    `get_node_or_null("/root/Gool")` into something more
+    ergonomic. Possible future work: a shared helper module
+    (`addons/gool/autoload_lookup.gd`) that prefabs can import and
+    call as `var gool = AutoloadLookup.gool()` — but that's a
+    style/sugar improvement, not a correctness fix, so it can
+    wait until someone trips over the boilerplate.
+
+### Onboarding impact
+
+A new teammate can now clone the repo, write a new prefab that
+references `Gool` at class-body scope (the natural way to write
+GDScript if you don't know the autoload-timing gotcha), and the
+build will fail on their first push with a clear pointer to the
+right pattern. That's the goal.
+
 ## [0.79.7] - 2026-05-26 — Help panel content rewrite for the "new user" reader
 
 GDScript-only release. No engine changes, no API changes, no CI
