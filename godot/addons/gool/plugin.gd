@@ -770,6 +770,7 @@ enum ToolsMenuItem {
 	ADD_DEBUG_OVERLAY  = 3,   # v0.23.1
 	RUN_PREFAB_SMOKE_TEST = 4,  # v0.45.0
 	RUN_FPS_SCENE_SMOKE_TEST = 5,  # v0.50.0
+	OPEN_HELP_PANEL = 6,  # v0.79.3
 }
 
 func _register_tools_menu() -> void:
@@ -796,6 +797,12 @@ func _register_tools_menu() -> void:
 	# with no Voice bus, etc.). See addons/gool/tools/fps_scene_smoke_test.gd.
 	_tools_menu.add_item("Run FPS scene smoke test (find missing config dependencies)",
 		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST)
+	# v0.79.3: Help panel — second entry point for the help content
+	# (alongside the "?" button in the Mixer Dock). Users who don't
+	# open the dock can still find help from the Project menu.
+	_tools_menu.add_separator()
+	_tools_menu.add_item("Help (keyboard shortcuts, API, tools)",
+		ToolsMenuItem.OPEN_HELP_PANEL)
 	_tools_menu.id_pressed.connect(_on_tools_menu_pressed)
 	add_tool_submenu_item(TOOLS_MENU_NAME, _tools_menu)
 
@@ -829,6 +836,32 @@ func _on_tools_menu_pressed(id: int) -> void:
 			_run_prefab_smoke_test()
 		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST:
 			_run_fps_scene_smoke_test()
+		ToolsMenuItem.OPEN_HELP_PANEL:
+			_open_help_panel()
+
+
+# v0.79.3: Open the help panel from the Tools menu. Second entry
+# point alongside the "?" button in the Mixer Dock toolbar — users
+# who don't open the dock can still find help. Mirrors the
+# idempotency check from mixer_dock.gd::_on_help_button_pressed
+# so clicking Help twice doesn't spawn duplicate panels.
+func _open_help_panel() -> void:
+	var base := EditorInterface.get_base_control()
+	if base == null:
+		return
+	for child in base.get_children():
+		if child is Window and child.title == "gool — Help":
+			child.grab_focus()
+			child.move_to_foreground()
+			return
+	var help_script := load("res://addons/gool/editor/help_panel.gd")
+	if help_script == null:
+		push_warning("[gool] help_panel.gd not found — was the "
+				+ "addon fully extracted?")
+		return
+	var panel: Window = help_script.new()
+	base.add_child(panel)
+	panel.popup_centered()
 
 # v0.45.0: run the static-analysis smoke test from the Tools menu.
 # Tool prints findings to the Output panel. Pure analysis — no F5

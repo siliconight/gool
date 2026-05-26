@@ -575,6 +575,19 @@ func _ready() -> void:
 	save_button.pressed.connect(_on_save_mix_to_config_pressed)
 	toolbar.add_child(save_button)
 
+	# v0.79.3: Help button. Small "?" icon-style button that opens
+	# the help panel (categorized list of keyboard shortcuts, editor
+	# tools, runtime API, diagnostics, links). Flat styling so it
+	# doesn't compete visually with Save.
+	var help_button := Button.new()
+	help_button.text = "?"
+	help_button.flat = true
+	help_button.tooltip_text = ("Open gool help — keyboard shortcuts, "
+			+ "editor tools, runtime API quick reference, diagnostics, "
+			+ "and links to the full docs on GitHub.")
+	help_button.pressed.connect(_on_help_button_pressed)
+	toolbar.add_child(help_button)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -3988,3 +4001,40 @@ func _get_current_gool_version() -> String:
 	if err != OK:
 		return "0.0.0"
 	return str(cfg.get_value("plugin", "version", "0.0.0"))
+
+
+# v0.79.3: Open the help panel. The panel is a Window subclass that
+# mounts itself onto the editor's base control, opens non-modally
+# (user can keep working while the panel is open), and self-frees
+# on close_requested. Idempotent: if a help panel is already showing
+# we bring it to the foreground rather than spawning a duplicate.
+func _on_help_button_pressed() -> void:
+	var existing := _find_existing_help_panel()
+	if existing != null:
+		existing.grab_focus()
+		existing.move_to_foreground()
+		return
+	var help_script := load("res://addons/gool/editor/help_panel.gd")
+	if help_script == null:
+		push_warning("[gool] help_panel.gd not found — was the addon "
+				+ "fully extracted? Try re-running the install script.")
+		return
+	var panel: Window = help_script.new()
+	# Parent on the editor's base control so the popup is positioned
+	# relative to the Godot main window, not the dock.
+	EditorInterface.get_base_control().add_child(panel)
+	panel.popup_centered()
+
+
+# Search the editor's base control children for an existing help
+# panel instance. Returns the Window if found, else null. Lets us
+# avoid spawning duplicate panels when the user clicks Help while
+# one is already open.
+func _find_existing_help_panel() -> Window:
+	var base := EditorInterface.get_base_control()
+	if base == null:
+		return null
+	for child in base.get_children():
+		if child is Window and child.title == "gool — Help":
+			return child
+	return null
