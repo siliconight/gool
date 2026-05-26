@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.79.0
+    VERSION 0.79.1
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -556,6 +556,95 @@ else()
     target_compile_options(audio_engine PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(audio_engine PRIVATE -Werror)
 endif()
+
+# -------------------------------------------------------------------------
+# v0.79.1: Release-only debloat flags.
+#
+# Goal: shrink the shipped library by removing code the runtime doesn't
+# actually need. Each flag is justified individually:
+#
+#   -fno-rtti / /GR-       audio_engine uses zero dynamic_cast and zero
+#                          typeid (audited in v0.79.1). RTTI's typeinfo
+#                          tables and vtable typeinfo slots cost binary
+#                          size for a feature nobody calls. Disabling
+#                          is provably safe per source audit.
+#
+#   -ffunction-sections    Place each function/data item in its own ELF
+#   -fdata-sections        section. Pairs with --gc-sections at link.
+#                          MSVC equivalent is /Gy (function sections);
+#                          /Gw (data sections) is on by default in
+#                          modern MSVC and has no separate switch in
+#                          the form expected here.
+#
+#   -Wl,--gc-sections      At link time, drop sections nothing
+#   /OPT:REF (MSVC)        references. Combined with -f*-sections,
+#                          this is what actually shrinks the binary;
+#                          the compile-side flags only make sections
+#                          granular enough for the linker to act on.
+#
+#   GOOL_LOG_MIN_LEVEL    Compile-time logging gate, available but
+#                         NOT forced in Release. Hosts who want a
+#                         tighter shipping binary can pass
+#                         -DGOOL_LOG_MIN_LEVEL=3 explicitly. Default
+#                         (1 = Debug) preserves the v0.78.5 runtime-
+#                         diagnostic capability for player bug
+#                         reports. See logging.h for the macro
+#                         definition and ShouldLog_ in
+#                         audio_runtime_impl.h for the gate.
+#
+# NOT included here (and why):
+#   -fno-exceptions   AudioRuntime::Update wraps the entire body in
+#                     try/catch (v0.15.0 hardening to shield the
+#                     runtime from misbehaving third-party callbacks).
+#                     Disabling exceptions would silently disable
+#                     that hardening. Keep enabled.
+#   -flto             Defer to a later release with explicit benchmarking.
+#                     LTO is a real win but interacts with the static-
+#                     analysis CI (clang-tidy's compilation database
+#                     needs per-TU output) and wants careful testing
+#                     before turning on.
+# -------------------------------------------------------------------------
+if(MSVC)
+    target_compile_options(audio_engine PRIVATE
+        $<$<CONFIG:Release>:/GR->                       # no RTTI
+        $<$<CONFIG:Release>:/Gy>                        # function sections
+    )
+    target_link_options(audio_engine PRIVATE
+        $<$<CONFIG:Release>:/OPT:REF>                   # gc unused
+        $<$<CONFIG:Release>:/OPT:ICF>                   # fold identical funcs
+    )
+else()
+    target_compile_options(audio_engine PRIVATE
+        $<$<CONFIG:Release>:-fno-rtti>
+        $<$<CONFIG:Release>:-ffunction-sections>
+        $<$<CONFIG:Release>:-fdata-sections>
+    )
+    # --gc-sections is a linker flag (not compiler), and Apple's linker
+    # uses -dead_strip instead of --gc-sections. Conditional on platform.
+    if(APPLE)
+        target_link_options(audio_engine PRIVATE
+            $<$<CONFIG:Release>:-Wl,-dead_strip>
+        )
+    else()
+        target_link_options(audio_engine PRIVATE
+            $<$<CONFIG:Release>:-Wl,--gc-sections>
+        )
+    endif()
+endif()
+
+# v0.79.1: NOT setting GOOL_LOG_MIN_LEVEL in Release by default.
+#
+# Rationale: compiling out Debug-level log call sites in shipped
+# builds saves ~5 KB of binary, but removes the ability to enable
+# verbose logging in a player's hands for bug reports. For audio
+# middleware specifically — where bugs are often stochastic and
+# session-specific — that runtime diagnostic capability is worth
+# more than the 5 KB savings.
+#
+# The GOOL_LOG_MIN_LEVEL macro is defined in logging.h and DOES
+# gate ShouldLog_ at compile time. Hosts who want the tighter
+# shipping binary can opt in by passing -DGOOL_LOG_MIN_LEVEL=3
+# (or higher) on their own compile line. We just don't force it.
 
 set_target_properties(audio_engine PROPERTIES
     POSITION_INDEPENDENT_CODE ON

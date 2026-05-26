@@ -26,6 +26,173 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.1] - 2026-05-26 — Release-build debloat (conservative): -fno-rtti, sections + GC, CI footprint report
+
+Build-system release. Acts on the audit-prompted question "what is
+the runtime doing, loading, or linking that isn't essential?" by
+adding the **safe and reversible** subset of debloat flags from
+the v0.78.9 source audit, plus a CI report so we measure real
+impact instead of projecting it.
+
+### Scope decision (Option A)
+
+The original v0.79.1 plan included four debloat changes. The
+design review before shipping pulled back one of them. What
+ships here is the conservative subset:
+
+  * ✅ `-fno-rtti` (Release only) — audit-confirmed safe
+  * ✅ `-ffunction-sections` `-fdata-sections` + `--gc-sections`
+    (Release only) — zero semantic impact, link-time dead-code
+    elimination
+  * ❌ `GOOL_LOG_MIN_LEVEL=3` as a Release default — **pulled.**
+    The macro itself ships (logging.h) and the ShouldLog_ gate
+    in audio_runtime_impl.h respects it, but Release builds no
+    longer force it on. Rationale below.
+  * ✅ CI footprint report job — observability only
+
+### Why GOOL_LOG_MIN_LEVEL=3 was pulled from Release default
+
+Compile-time stripping of Debug-level log call sites would save
+~5 KB of binary. But it would also remove the ability to enable
+verbose logging in a player's hands for a bug report. For audio
+middleware specifically — where bugs are often stochastic
+("sound cut out once during a 4-hour session"), session-specific,
+and only reproducible on the player's actual hardware/driver
+combination — that runtime diagnostic capability is worth
+substantially more than the 5 KB binary saving. v0.78.5's
+Gool.diagnose() and v0.22.7's render-thread health polling
+exist precisely to support player-bug-report workflows; silently
+removing the Debug log surface in Release would undercut that
+philosophy.
+
+The macro and gate still ship. Hosts who want a tighter shipping
+binary and don't need field-diagnostic capability can opt in
+explicitly by passing `-DGOOL_LOG_MIN_LEVEL=3` (or higher) on
+their own compile line. The principle: don't make decisions for
+the host that the host should make themselves.
+
+### Source-level audit (informed both inclusion and exclusion)
+
+  * **0** uses of `dynamic_cast` or `typeid` anywhere in `src/`.
+    `-fno-rtti` is provably safe.
+  * **5** `throw`/`catch` sites, ALL load-bearing. The Update-
+    thread try/catch in `audio_runtime.cpp:2237-2256` is the
+    v0.15.0 hardening shielding the runtime from misbehaving
+    third-party callbacks. `-fno-exceptions` would silently
+    disable that hardening; **kept enabled.**
+  * **`CXX_VISIBILITY_PRESET hidden`** was already in CMakeLists
+    (lines 560-563 prior to this release). The Windows DLL was
+    already exporting only `gool_godot_init`. No new flag needed;
+    existing behavior preserved.
+  * **`std::string` usage:** 159 occurrences. Hot-path triage
+    deferred to a profile-driven release.
+
+### Added — CMake Release-only flags
+
+The new flags activate ONLY in Release builds via
+`$<$<CONFIG:Release>:...>` generator expressions. Debug builds
+keep their existing flag set unchanged.
+
+**Non-MSVC (GCC, Clang, MinGW):**
+
+  * `-fno-rtti`
+  * `-ffunction-sections` `-fdata-sections`
+  * Linux link: `-Wl,--gc-sections`
+  * macOS link: `-Wl,-dead_strip` (Apple's ld uses different syntax)
+
+**MSVC:**
+
+  * `/GR-` — RTTI off
+  * `/Gy` — function-level linking
+  * `/OPT:REF` `/OPT:ICF` — link-time dead-strip + identical-COMDAT folding
+
+### Added — opt-in compile-time log level gate
+
+`ShouldLog_(uint8_t level)` in `audio_runtime_impl.h:523` now
+starts with:
+
+```cpp
+if (level < GOOL_LOG_MIN_LEVEL) return false;
+```
+
+`GOOL_LOG_MIN_LEVEL` defaults to **1** (`Debug`) in `logging.h`.
+At the default, the gate compiles to `if (level < 1) return false`
+for Trace-level calls only, which has no observable effect (Trace
+is already runtime-filtered). All other levels remain available
+at runtime, gated by `AudioConfig::logMinLevel`.
+
+When a host opts in by passing `-DGOOL_LOG_MIN_LEVEL=3` on their
+own compile line, ShouldLog_ calls with literal LogLevel values
+constant-fold to compile-time `false` for Debug/Info, and the
+linker drops the enclosing Log_(...) sites along with their
+string literals. ~5 KB savings, opt-in only.
+
+### Added — CI footprint report job
+
+New job at the end of `.github/workflows/ci.yml`. Per-PR, builds
+Release `libaudio_engine.a` (Linux) and prints:
+
+  * Static library total size
+  * Top 30 symbols by size (demangled)
+  * Section-level breakdown (`.text` / `.data` / `.bss`)
+  * Static-init block count (`_GLOBAL__sub_I_*` symbols)
+  * Largest .o files
+
+Uploaded as a workflow artifact (`footprint-report`) with 30-day
+retention. `continue-on-error: true` for now — informational. Once
+we have baseline runs and decide on a size budget, flip to
+blocking.
+
+This is the input we actually need before doing any further
+debloat work: real symbol-level data from the build system, not
+projections from theoretical compile-flag math.
+
+### Measured impact (Linux .so, sandbox build)
+
+  * **Baseline (plain -O2):**                       583 KB
+  * **+ section flags + visibility + fno-rtti:**    497 KB (14.8% shrink)
+
+Most of the Linux win came from `-fvisibility=hidden` shrinking
+`.dynstr` (49 KB → 8.7 KB). **That win is already in effect on
+Windows** because the GDExtension model only exposes one symbol.
+Expected Windows DLL shrink is therefore *smaller* than the Linux
+number: probably 2-5% from `-fno-rtti` plus whatever `/OPT:REF
+/OPT:ICF` strip at link time.
+
+The CI footprint job is what will give us the real Windows
+number on the next CI run. Comparing the new artifact's
+`gool_godot.dll` size to v0.78.9's 1.3 MB will close the loop.
+
+### Important caveats and acknowledgments
+
+  * **The 93.9% shrink number that surfaced during development
+    was a measurement artifact** — a manually-linked .so without
+    a visible binding entry symbol, where `--gc-sections`
+    correctly dead-stripped everything unreachable. Real binary
+    will not see anything close to that.
+  * **Logic-tested, not Windows-runtime-tested.** Engine tests
+    pass with the new flags applied locally. Test parity proves
+    correctness; it does NOT prove the Windows DLL shrinks as
+    predicted. Trust the CI footprint job.
+  * **The audit playbook is right that we should look, but the
+    answer for gool right now is probably "the binary isn't
+    actually too big."** 1.3 MB is small for the category (FMOD
+    Studio's runtime is ~4 MB, Wwise's is ~6 MB). This release
+    is about making the build system *capable* of measuring and
+    optimizing, not about urgent shrinkage.
+
+### Not in this release (deferred)
+
+  * **`-fno-exceptions`** — would disable v0.15.0 callback hardening.
+  * **`-flto`** — real win but interacts with the clang-tidy job's
+    per-TU compilation database. Wants its own PR with deliberate
+    testing.
+  * **`std::string` hot-path triage** — needs profile data.
+  * **Replay/snapshot subsystem as opt-in compile flag** — needs
+    dependency audit.
+  * **Editor-side bindings linked into Release DLL** — needs
+    symbol-level inspection from the CI footprint job's output.
+
 ## [0.79.0] - 2026-05-26 — Player audio preferences API (no engine change)
 
 GDScript-only feature release. Opens the v0.79.x track. Adds a

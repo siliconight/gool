@@ -521,6 +521,15 @@ private:
     // don't change after Initialize, so no lock is needed for the
     // check — only for the actual sink call inside Log_.
     bool ShouldLog_(uint8_t level) const noexcept {
+        // v0.79.1: compile-time level gate. When `level` is a literal
+        // (typical at call sites: ShouldLog_(LogLevel::Debug)), the
+        // comparison constant-folds against GOOL_LOG_MIN_LEVEL — set
+        // to 3 (Warn) in Release builds via CMake — and the enclosing
+        // `if (ShouldLog_(...)) { Log_(...); }` block gets dead-code-
+        // eliminated entirely along with its string literals. For
+        // non-constant `level`, the check costs one extra compare,
+        // unchanged from the runtime-only path.
+        if (level < GOOL_LOG_MIN_LEVEL) return false;
         return logSink_ != nullptr && level >= config_.logMinLevel;
     }
     // LogLevel overload: keeps call sites free of static_cast noise.

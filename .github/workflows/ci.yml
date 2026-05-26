@@ -784,3 +784,108 @@ jobs:
             exit 1
           fi
           echo "no known-real-error patterns detected."
+
+  # ----------------------------------------------------------------
+  # Job: binary footprint report (v0.79.1).
+  #
+  # Prints size / nm-by-size / objdump section breakdown for the
+  # Release-built libaudio_engine.a (Linux). Uploaded as a workflow
+  # artifact so PR reviewers can diff the report against main and
+  # catch unintentional binary-size regressions before they ship.
+  #
+  # This is the "make the outcome testable" step from the v0.79.1
+  # debloat playbook: don't just ship the flags — measure that
+  # they're doing what they claim to do, and surface regressions
+  # in CI.
+  # ----------------------------------------------------------------
+  footprint:
+    name: footprint / binary-size report
+    runs-on: ubuntu-latest
+    # v0.79.1: informational only — we don't fail PRs on size yet.
+    # Once we have a few runs of baseline data, set a budget and
+    # flip continue-on-error off so regressions block merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure (Release)
+        run: cmake -S . -B build-size
+              -DCMAKE_BUILD_TYPE=Release
+              -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON
+              -DAUDIO_ENGINE_DECODERS_WAV=ON
+              -DAUDIO_ENGINE_DECODERS_OGG=ON
+              -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      - name: Build
+        run: cmake --build build-size --config Release --parallel 2
+
+      - name: Generate footprint report
+        run: |
+          set -euo pipefail
+          mkdir -p footprint-report
+          LIB="build-size/libaudio_engine.a"
+          if [ ! -f "$LIB" ]; then
+            echo "::error::Build did not produce $LIB"
+            exit 1
+          fi
+
+          REPORT=footprint-report/report.txt
+          {
+            echo "=== gool footprint report ==="
+            echo "Build: Release, $(uname -m), $(uname -s)"
+            echo "Commit: $(git rev-parse --short HEAD)"
+            echo ""
+            echo "=== Static library size ==="
+            ls -lh "$LIB" | awk '{print $5, $9}'
+            echo ""
+            echo "=== Top 30 symbols by size (demangled) ==="
+            nm --size-sort -S --demangle "$LIB" \
+                | tail -30 \
+                | awk '{
+                    size = strtonum("0x" $2)
+                    name = $0
+                    sub(/^[^ ]+ [^ ]+ . /, "", name)
+                    if (length(name) > 90) name = substr(name, 1, 87) "..."
+                    printf "  %7d  %s\n", size, name
+                  }' \
+                || echo "  (nm output unavailable)"
+            echo ""
+            echo "=== Section sizes (sum across all .o in archive) ==="
+            # Aggregate per-section across every .o in the .a.
+            ar t "$LIB" | while read -r obj; do
+              ar x "$LIB" "$obj" 2>/dev/null || continue
+              size "$obj" 2>/dev/null | tail -n+2
+              rm -f "$obj"
+            done | awk '
+              NR == 1 { next }
+              {
+                text += $1; data += $2; bss += $3
+              }
+              END {
+                printf "  .text  %12d bytes  (%5.1f KB)\n", text, text/1024
+                printf "  .data  %12d bytes  (%5.1f KB)\n", data, data/1024
+                printf "  .bss   %12d bytes  (%5.1f KB)\n", bss,  bss/1024
+                printf "  total  %12d bytes  (%5.1f KB)\n", text+data+bss, (text+data+bss)/1024
+              }'
+            echo ""
+            echo "=== Static-init blocks (.cpp global ctors) ==="
+            nm --demangle "$LIB" 2>/dev/null \
+                | grep -cE "_GLOBAL__sub_I_|__cxx_global_var_init" \
+                | xargs -I{} echo "  count: {}"
+            echo ""
+            echo "=== Largest .o files ==="
+            cd build-size
+            ar x ../"$LIB" 2>/dev/null || true
+            ls -lS *.o 2>/dev/null | head -10 | awk '{printf "  %7s  %s\n", $5, $9}'
+            rm -f *.o
+          } > "$REPORT"
+
+          echo "--- report ---"
+          cat "$REPORT"
+
+      - name: Upload footprint report
+        uses: actions/upload-artifact@v4
+        with:
+          name: footprint-report
+          path: footprint-report/
+          retention-days: 30

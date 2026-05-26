@@ -59,6 +59,29 @@ enum class LogLevel : uint8_t {
     Error = 4,  // unrecoverable for this operation; runtime keeps ticking
 };
 
+// v0.79.1: compile-time minimum log level. Calls to ShouldLog_ with a
+// statically-known LogLevel below this value constant-fold to false at
+// compile time, and the linker drops the associated Log_(...) call sites
+// (including their string literals and field-array construction) via
+// dead-code elimination.
+//
+// Default is 1 (Debug) — all runtime log levels remain available so
+// hosts can raise verbosity at runtime in shipped builds for player
+// bug reports. This preserves v0.78.5's "diagnose your install" /
+// "capture session logs from a misbehaving player's machine" workflow.
+//
+// Opt-in for tighter shipping binaries: pass -DGOOL_LOG_MIN_LEVEL=3
+// (Warn) on the compile line. This is NOT set by CMake's Release
+// config — the ~5 KB binary savings doesn't justify silently
+// removing the ability to do field diagnostics. Hosts that don't
+// need the diagnostic capability can opt in explicitly.
+//
+// Going to 5 would strip everything, including the v0.15.0 Update-
+// thread exception reporting — not recommended.
+#ifndef GOOL_LOG_MIN_LEVEL
+#define GOOL_LOG_MIN_LEVEL 1
+#endif
+
 // Stable category names for the runtime's built-in hook points. Hosts
 // can introduce their own categories — the runtime's level filter is
 // purely level-based in this iteration, not per-category.
