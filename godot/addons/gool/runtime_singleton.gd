@@ -158,6 +158,13 @@ func _ready() -> void:
 		and cfg_dict["buses"] is Array \
 		and (cfg_dict["buses"] as Array).size() > 0
 
+	# v0.78.5: cache the chosen values so diagnose() can surface them.
+	# These are the actual values handed to init/init_with_config —
+	# the source of truth for "what is gool running at right now."
+	_diag_sample_rate = sr
+	_diag_buffer_size = bs
+	_diag_has_bus_graph = has_bus_graph
+
 	var ok: bool
 	if has_bus_graph:
 		# Pass the raw JSON text through — the C++ side parses it
@@ -321,6 +328,17 @@ const _RENDER_STATS_INTERVAL: float = 2.0   # seconds between logs
 var _render_stats_accum: float = 0.0
 var _render_stats_last_invocations: int = 0
 var _render_stats_last_frames: int = 0
+
+# v0.78.5: cached snapshot of the values passed to init() / init_with_config()
+# at startup, surfaced by diagnose(). _diag_sample_rate and _diag_buffer_size
+# are the actual ints the engine was initialized with (post-config-merge,
+# pre-device-negotiation). _diag_has_bus_graph indicates whether the JSON
+# config supplied a bus graph or we fell back to single-master legacy init.
+# A value of -1 / false means "not yet set", which diagnose() reports as
+# "init has not run" — useful while debugging an init failure.
+var _diag_sample_rate: int = -1
+var _diag_buffer_size: int = -1
+var _diag_has_bus_graph: bool = false
 
 # v0.25.0: cross-process metering for the editor mixer dock. When
 # the game is launched from F5 (debugger attached), the runtime
@@ -3509,3 +3527,214 @@ func _compute_rate(key: String, current: int) -> float:
 	if dt_ms <= 0:
 		return 0.0
 	return float(current - last_val) * 1000.0 / float(dt_ms)
+
+# ===========================================================================
+# v0.78.5: Gool.diagnose()
+#
+# Prints (well, returns) a self-test report covering every step between
+# "addon is on disk" and "audio is playing." The most common gool support
+# question is "I installed it and it's not working" — diagnose() turns
+# that into "step N failed, here's what to fix" without anyone having to
+# read source. Equivalent to `cargo --version && cargo check` for Rust:
+# not glamorous, but the most-asked-for tool for any toolchain.
+#
+# Returns the report as a String so callers can decide what to do with
+# it: `print(Gool.diagnose())` for the Output panel, or display in a UI,
+# or capture into a test assertion. The format is plain text (no BBCode)
+# because Godot's Output panel renders monospace and ignores rich markup.
+#
+# Status conventions per line:
+#     [ok]   - check passed
+#     [warn] - check passed but with a caveat (non-fatal)
+#     [fail] - check failed, gool will not work as expected; hint follows
+# Final line is a summary: "All checks passed" or "N failure(s) detected".
+#
+# diagnose() can be called any time after _ready. Calling it before
+# _ready (during script load) returns a partial report — the runtime
+# checks will say "init has not run" rather than crashing.
+func diagnose() -> String:
+	var lines: Array = []
+	var failures: int = 0
+	var warnings: int = 0
+	lines.append("gool diagnose")
+	lines.append("=============")
+
+	# ── Version ────────────────────────────────────────────────────────
+	# get_version() returns {string, full, commit} from the C++ binding's
+	# version stamp. If the binding didn't load at all, calling it would
+	# fail earlier than this — but we guard anyway in case _runtime is
+	# nil from a non-_ready call.
+	var v_str: String = "?"
+	if _runtime != null:
+		var v: Dictionary = _runtime.get_version()
+		v_str = "%s  (commit %s)" % [
+			v.get("full", "?"), v.get("commit", "unknown")]
+	lines.append("  [ok]   version           %s" % v_str)
+
+	# ── Platform + binary ──────────────────────────────────────────────
+	# Read addons/gool/gool.gdextension as a ConfigFile and check that
+	# the library entry for the current OS points at a file that exists
+	# on disk. This catches the most common "I deployed to Linux and
+	# nothing happens" failure (no Linux build bundled).
+	var os_name: String = OS.get_name()
+	var platform_key: String = ""
+	match os_name:
+		"Windows":
+			platform_key = "windows.x86_64"
+		"Linux", "FreeBSD", "OpenBSD", "NetBSD":
+			platform_key = "linux.x86_64"
+		"macOS":
+			platform_key = "macos"
+		_:
+			platform_key = ""
+	lines.append("  [ok]   platform          %s" % os_name)
+	if platform_key == "":
+		failures += 1
+		lines.append("  [fail] binary            no known binary key for "
+			+ "platform '%s'" % os_name)
+		lines.append("         → gool currently ships builds for Windows, "
+			+ "Linux, and macOS x86_64. Other platforms need a custom build.")
+	else:
+		var gd := ConfigFile.new()
+		var err := gd.load("res://addons/gool/gool.gdextension")
+		if err != OK:
+			failures += 1
+			lines.append("  [fail] binary            "
+				+ "res://addons/gool/gool.gdextension missing or unreadable "
+				+ "(error %d)" % err)
+			lines.append("         → re-extract the gool addon. The "
+				+ ".gdextension file is required for Godot to find the DLL.")
+		else:
+			var dll_path: String = gd.get_value(
+				"libraries", platform_key, "")
+			if dll_path == "":
+				failures += 1
+				lines.append("  [fail] binary            "
+					+ ".gdextension has no entry for '%s'" % platform_key)
+				lines.append("         → this gool build was packaged "
+					+ "without a binary for your platform.")
+			elif not FileAccess.file_exists(dll_path):
+				failures += 1
+				lines.append(("  [fail] binary            "
+					+ "configured path missing: %s") % dll_path)
+				lines.append("         → the .gdextension references a file "
+					+ "that isn't there. Re-extract the addon, or verify "
+					+ "the install script didn't fail mid-download.")
+			else:
+				lines.append("  [ok]   binary            %s" % dll_path)
+
+	# ── Autoload ───────────────────────────────────────────────────────
+	# If we got into this method, the Gool autoload is registered by
+	# definition (otherwise the call site couldn't have resolved
+	# `Gool.diagnose()`). Report it for completeness so the user sees
+	# the full chain confirmed end-to-end.
+	if ProjectSettings.has_setting("autoload/Gool"):
+		var auto_path: String = ProjectSettings.get_setting(
+			"autoload/Gool", "")
+		lines.append("  [ok]   autoload          %s" % auto_path)
+	else:
+		# Reachable if the user calls diagnose() on a non-autoloaded
+		# instance, e.g. preloaded the singleton script and instantiated
+		# it manually. Surface as a warning rather than failure — the
+		# call worked, but most gool code paths assume Gool is at /root.
+		warnings += 1
+		lines.append("  [warn] autoload          "
+			+ "Gool is not configured as a project autoload")
+		lines.append("         → in Project Settings → Autoload, add "
+			+ "res://addons/gool/runtime_singleton.gd as 'Gool'.")
+
+	# ── Runtime init ───────────────────────────────────────────────────
+	if _runtime == null:
+		failures += 1
+		lines.append("  [fail] runtime           "
+			+ "_runtime is null (binding failed to instantiate)")
+		lines.append("         → almost always a DLL load failure. Check "
+			+ "Output for 'Failed to load GDExtension' near startup.")
+	elif not _runtime.is_initialized():
+		failures += 1
+		lines.append("  [fail] runtime           init() returned failure")
+		lines.append("         → check Output for 'gool runtime init "
+			+ "failed' near startup; the message names the cause.")
+	else:
+		lines.append("  [ok]   runtime           initialized")
+		var rate_label: String = ("%d Hz" % _diag_sample_rate
+			if _diag_sample_rate > 0 else "(not recorded)")
+		lines.append("  [ok]   sample rate       %s" % rate_label)
+		var buf_label: String = ("%d frames" % _diag_buffer_size
+			if _diag_buffer_size > 0 else "(not recorded)")
+		lines.append("  [ok]   buffer size       %s" % buf_label)
+		var graph_label: String = ("bus graph from config.json"
+			if _diag_has_bus_graph else "legacy single-master fallback")
+		lines.append("  [ok]   bus topology      %s" % graph_label)
+
+		# Backend description — usually includes the OS-level device
+		# name miniaudio opened (e.g. "WASAPI / Speakers (Realtek...)").
+		# Empty string is treated as warn, not fail: gool is technically
+		# running, just talking to a no-op or muted device.
+		var backend: String = _runtime.get_backend_description()
+		if backend == "":
+			warnings += 1
+			lines.append("  [warn] audio device      "
+				+ "backend returned empty description")
+			lines.append("         → the engine started but didn't open "
+				+ "a real audio device. Likely running headless or with "
+				+ "no system audio configured. Audio output will be silent.")
+		else:
+			lines.append("  [ok]   audio device      %s" % backend)
+
+	# ── Bus configuration ──────────────────────────────────────────────
+	if _runtime != null and _runtime.is_initialized():
+		var bus_stats: Array = _runtime.get_bus_stats()
+		if bus_stats.is_empty():
+			failures += 1
+			lines.append("  [fail] buses             "
+				+ "no buses registered (get_bus_stats empty)")
+			lines.append("         → bus graph parsing may have failed "
+				+ "silently. Re-check config.json against the schema.")
+		else:
+			# Pull bus names if the dictionaries carry them. The exact
+			# key varies by binding version — try common spellings and
+			# fall back to count-only if none hit.
+			var names: Array = []
+			for b in bus_stats:
+				if b is Dictionary:
+					var n = b.get("name", b.get("bus_name", ""))
+					if n != "":
+						names.append(n)
+			if names.is_empty():
+				lines.append("  [ok]   buses             %d configured"
+					% bus_stats.size())
+			else:
+				lines.append(("  [ok]   buses             %d: %s")
+					% [bus_stats.size(), ", ".join(names)])
+
+	# ── Performance monitors (v0.78.1+) ───────────────────────────────
+	# Spot-check that at least one well-known monitor name resolves. If
+	# the monitor isn't registered, the perf probe in the stress rig
+	# (and any host using Debugger → Monitors → gool/*) will silently
+	# read zero. Single-monitor check is enough — if one is registered
+	# they all are (they share a setup function).
+	if Performance.has_custom_monitor("gool/runtime/update_tick_us"):
+		lines.append("  [ok]   perf monitors     "
+			+ "registered (gool/* visible in Debugger → Monitors)")
+	else:
+		warnings += 1
+		lines.append("  [warn] perf monitors     "
+			+ "not registered — _setup_perf_monitors did not run")
+		lines.append("         → expected only if Performance is "
+			+ "unavailable (rare). Debugger → Monitors won't show "
+			+ "gool/* graphs.")
+
+	# ── Verdict ────────────────────────────────────────────────────────
+	lines.append("")
+	if failures == 0 and warnings == 0:
+		lines.append("All checks passed. gool is ready.")
+	elif failures == 0:
+		lines.append("Passed with %d warning(s). gool will work but "
+			% warnings + "review the [warn] lines above.")
+	else:
+		lines.append(("FAILED: %d failure(s)%s. Address [fail] lines "
+			+ "above; gool is not in a healthy state.")
+			% [failures,
+				(", %d warning(s)" % warnings if warnings > 0 else "")])
+	return "\n".join(lines)

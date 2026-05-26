@@ -26,6 +26,90 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.5] - 2026-05-25 — Gool.diagnose() onboarding self-test (no engine change)
+
+GDScript-only patch. Adds a one-shot self-test method to the Gool
+autoload that prints (well, returns) a report covering every step
+between "addon files on disk" and "audio is playing." The most-
+asked gool support question is "I installed it and nothing works"
+— `Gool.diagnose()` converts that into "step N failed, here's
+what to fix" without anyone having to read source. Equivalent
+shape to `cargo --version && cargo check` for Rust: not glamorous,
+but the single most-requested tool for any toolchain.
+
+### Usage
+
+```gdscript
+print(Gool.diagnose())
+```
+
+Anywhere after `_ready`. Returns a String formatted for monospace
+display — readable in Godot's Output panel, copy-pasteable into a
+bug report, or capturable into a test assertion via
+`assert(Gool.diagnose().find("FAILED") == -1)`.
+
+### What it checks
+
+1. **Version** — gool's reported version + git commit.
+2. **Platform + binary** — current OS, and that `gool.gdextension`
+   declares a library for it and that file exists on disk. Catches
+   the "deployed to Linux without a Linux build" case explicitly.
+3. **Autoload** — that Gool is registered as a project autoload
+   (technically self-evident if the method call resolves, but
+   surfaced for completeness so the full chain reads end-to-end).
+4. **Runtime init** — that `_runtime.is_initialized()` returned
+   true. If false, names the most likely cause (DLL load failure;
+   directs the user to Output for the named init error).
+5. **Sample rate / buffer size / bus topology** — from the cached
+   init parameters (new `_diag_*` member variables stamped during
+   `_ready`).
+6. **Audio device** — the backend description, normally including
+   the OS-level device name (e.g. "WASAPI / Speakers (Realtek…)").
+   Empty string is treated as a warning, not failure: gool is
+   technically running, just talking to a no-op device — likely
+   headless or no system audio.
+7. **Buses** — that `get_bus_stats()` returns something, with
+   bus names listed inline when the binding surfaces them.
+8. **Performance monitors** — spot-checks `gool/runtime/update_tick_us`
+   to verify the v0.78.1 monitor registration ran. Pairs with the
+   probe used by the stress rig.
+
+### Output conventions
+
+Each check produces one line tagged `[ok]`, `[warn]`, or `[fail]`.
+Failures are followed by a `→` hint line naming the most likely
+fix. Final line is a summary: "All checks passed", "Passed with N
+warning(s)", or "FAILED: N failure(s) — gool is not in a healthy
+state."
+
+### Added
+
+- **`Gool.diagnose() -> String`** — the entry point above.
+- **`_diag_sample_rate`, `_diag_buffer_size`, `_diag_has_bus_graph`**
+  — private singleton state stamped during `_ready` so diagnose()
+  can surface what the engine was actually initialized with rather
+  than re-parsing the config file.
+
+### Not changed
+
+- No engine source change. No new Stats fields. No binding change.
+- No new install-script behavior yet. The install scripts will
+  invoke `Gool.diagnose()` after deployment as a follow-up release
+  (v0.78.6) — that needs more thought around headless Godot
+  invocation, project-path detection, and graceful failure if
+  Godot isn't on PATH. Shipping the underlying primitive first.
+
+### Process note
+
+The v0.78.x track has been adding self-instrumentation in
+layers: v0.78.1 brought the runtime performance monitors,
+v0.78.2 added the assertion probe, v0.78.5 adds the install/
+init self-test. All three share a design principle: gool tells
+the host *what it is doing* and *whether it is healthy*, so a
+host developer doesn't have to read source to debug their setup.
+The v0.79.x track returns to engine work proper (distance-
+weighted persistent eviction is the planned next step).
+
 ## [0.78.4] - 2026-05-25 — Stress rig probe: cumulative-counter assertion (no engine change)
 
 GDScript-only patch. Fixes a v0.78.2 design bug in
