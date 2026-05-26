@@ -785,3 +785,131 @@ jobs:
           fi
           echo "no known-real-error patterns detected."
 
+  # ----------------------------------------------------------------
+  # Job: binary footprint report (v0.79.5).
+  #
+  # Re-added in v0.79.5 after rollback in v0.79.4. Originally added
+  # in v0.79.1; rolled back when we (incorrectly) suspected it of
+  # breaking workflow dispatch. The real cause was a GitHub Actions
+  # outage on 2026-05-26. This re-add applies the defensive fixes
+  # we'd identified during the diagnostic:
+  #   - Use actions/checkout@v5 + upload-artifact@v5 (was @v4 — only
+  #     inconsistency vs the rest of ci.yml)
+  #   - Use `run: |` literal blocks for every multi-line command
+  #     (was using folded plain scalar for the Configure step,
+  #     which is technically valid YAML but unusual)
+  #   - Simpler shell script — no nested heredocs
+  #
+  # Prints size / nm-by-size / objdump section breakdown for the
+  # Release-built libaudio_engine.a (Linux). Uploaded as a workflow
+  # artifact so PR reviewers can diff the report against main and
+  # catch unintentional binary-size regressions before they ship.
+  # ----------------------------------------------------------------
+  footprint:
+    name: footprint / binary-size report
+    runs-on: ubuntu-latest
+    # Informational only — don't fail PRs on size yet. Once a few
+    # runs of baseline data exist, set a budget and flip
+    # continue-on-error off so regressions block merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure (Release)
+        run: |
+          cmake -S . -B build-size \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAUDIO_ENGINE_BACKEND_MINIAUDIO=ON \
+            -DAUDIO_ENGINE_DECODERS_WAV=ON \
+            -DAUDIO_ENGINE_DECODERS_OGG=ON \
+            -DAUDIO_ENGINE_DECODERS_FLAC=ON
+
+      - name: Build
+        run: cmake --build build-size --config Release --parallel 2
+
+      - name: Generate footprint report
+        run: |
+          set -euo pipefail
+          mkdir -p footprint-report
+          LIB=build-size/libaudio_engine.a
+          if [ ! -f "$LIB" ]; then
+            echo "::error::expected $LIB not found after Release build"
+            ls -la build-size/ || true
+            exit 1
+          fi
+          REPORT=footprint-report/report.txt
+          {
+            echo "=== gool footprint report ==="
+            echo "git: $(git rev-parse --short HEAD)"
+            echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            echo "--- file size (bytes) ---"
+            wc -c "$LIB"
+            echo ""
+            echo "--- size --format=sysv ---"
+            size --format=sysv "$LIB" 2>&1 | head -30 || true
+            echo ""
+            echo "--- top 30 symbols by size (nm --size-sort) ---"
+            nm --size-sort --reverse-sort --print-size --demangle "$LIB" 2>&1 | head -30 || true
+            echo ""
+            echo "--- section breakdown (objdump -h) ---"
+            objdump -h "$LIB" 2>&1 | head -40 || true
+          } > "$REPORT"
+          echo "--- report ---"
+          cat "$REPORT"
+
+      - name: Upload footprint report
+        uses: actions/upload-artifact@v5
+        with:
+          name: footprint-report
+          path: footprint-report/
+          retention-days: 30
+
+  # ----------------------------------------------------------------
+  # Job: version sync check (v0.79.5).
+  #
+  # Re-added in v0.79.5 after rollback in v0.79.4. Verifies that
+  # the 5 sources of version truth agree:
+  #   1. include/audio_engine/version.h (kVersionString)
+  #   2. CMakeLists.txt (project VERSION)
+  #   3. godot/addons/gool/plugin.cfg (version=)
+  #   4. examples/coop_shooter_template/addons/gool/plugin.cfg
+  #   5. examples/voice_chat/addons/gool/plugin.cfg
+  #
+  # Catches the "I bumped version.h and forgot plugin.cfg" mistake
+  # that happened across v0.78.0-v0.79.1 (every Godot install
+  # showed "0.1.0" in the plugin dialog).
+  # ----------------------------------------------------------------
+  version-sync:
+    name: version-sync / 5-source agreement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check version sync
+        run: |
+          set -euo pipefail
+          VH=$(grep -oP 'kVersionString = "\K[^"]+' include/audio_engine/version.h)
+          CMK=$(grep -oP '^\s*VERSION \K[0-9.]+' CMakeLists.txt | head -1)
+          PCFG_MAIN=$(grep -oP '^version="\K[^"]+' godot/addons/gool/plugin.cfg)
+          PCFG_COOP=$(grep -oP '^version="\K[^"]+' examples/coop_shooter_template/addons/gool/plugin.cfg)
+          PCFG_VOICE=$(grep -oP '^version="\K[^"]+' examples/voice_chat/addons/gool/plugin.cfg)
+          echo "version.h:                                              $VH"
+          echo "CMakeLists.txt:                                         $CMK"
+          echo "godot/addons/gool/plugin.cfg:                           $PCFG_MAIN"
+          echo "examples/coop_shooter_template/addons/gool/plugin.cfg:  $PCFG_COOP"
+          echo "examples/voice_chat/addons/gool/plugin.cfg:             $PCFG_VOICE"
+          if [ "$VH" != "$CMK" ] \
+              || [ "$VH" != "$PCFG_MAIN" ] \
+              || [ "$VH" != "$PCFG_COOP" ] \
+              || [ "$VH" != "$PCFG_VOICE" ]; then
+            echo "::error::version sync mismatch"
+            echo "::error::  Bump ALL 5 sources to match"
+            echo "::error::  version.h:                                              $VH"
+            echo "::error::  CMakeLists.txt:                                         $CMK"
+            echo "::error::  godot/addons/gool/plugin.cfg:                           $PCFG_MAIN"
+            echo "::error::  examples/coop_shooter_template/addons/gool/plugin.cfg:  $PCFG_COOP"
+            echo "::error::  examples/voice_chat/addons/gool/plugin.cfg:             $PCFG_VOICE"
+            exit 1
+          fi
+          echo "all versions agree: $VH"

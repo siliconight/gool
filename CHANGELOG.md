@@ -26,6 +26,81 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.5] - 2026-05-26 — Re-add footprint + version-sync CI jobs with defensive YAML
+
+Restoration release. v0.79.4 rolled back the `footprint` and
+`version-sync` ci.yml jobs added in v0.79.1 / v0.79.2, on the
+hypothesis that they were preventing workflow dispatch. After the
+rollback we discovered the actual cause was a multi-hour GitHub
+Actions outage on 2026-05-26 — the rolled-back jobs were innocent.
+This release puts them back, applying the defensive fixes we
+identified along the way.
+
+### Restored
+
+  * **`footprint` job** in `.github/workflows/ci.yml`. Same intent
+    as v0.79.1: Release-build the static library, run `size`,
+    `nm --size-sort`, and `objdump -h`, upload the report as a
+    workflow artifact for diff-against-main on PRs. Informational
+    only (`continue-on-error: true`) until a few runs of baseline
+    data accumulate.
+  * **`version-sync` job** in `.github/workflows/ci.yml`. Same
+    intent as v0.79.2: enforce that all 5 version sources agree
+    (version.h kVersionString, CMakeLists project VERSION, three
+    plugin.cfg files). `scripts/check_version_sync.sh` stays as
+    the local check — both layers are useful (script catches
+    pre-push, CI catches if someone bypasses the script).
+
+### Defensive fixes applied to the re-added jobs
+
+  * **`actions/upload-artifact@v4` → `@v5`** in the footprint job.
+    Every other action reference in ci.yml uses `@v5`; the original
+    footprint job was the lone `@v4`. Not a known incompatibility,
+    but eliminates one potential variable.
+  * **Folded plain scalar → `run: |` literal block** for the
+    Configure step. The original used YAML's "value continues
+    across more-indented lines" syntax for the cmake invocation:
+    ```yaml
+    run: cmake -S . -B build-size
+          -DCMAKE_BUILD_TYPE=Release
+          ...
+    ```
+    Technically valid YAML, but unusual and parser-dependent.
+    Replaced with the standard pipe-literal form used by every
+    other multi-line `run:` in the file:
+    ```yaml
+    run: |
+      cmake -S . -B build-size \
+        -DCMAKE_BUILD_TYPE=Release \
+        ...
+    ```
+  * **Simpler shell scripts** in the report-generation step. No
+    nested heredocs — just `{ ... } > "$REPORT"` and inline
+    `echo` / `wc` / `size` / `nm` / `objdump` commands. Easier to
+    debug if the job ever fails.
+
+### Unchanged
+
+  * Everything else from v0.79.4 stays: `scripts/check_version_sync.sh`,
+    the C++ debloat flags, `GOOL_LOG_MIN_LEVEL`, the help panel, the
+    update checker, all of it.
+
+### Expectation
+
+If CI dispatch now works (confirmed by the v0.79.4 push triggering
+runs after the Actions outage cleared), v0.79.5's push should
+trigger CI with all 12 jobs running. The footprint job's first
+run will produce a baseline-size report we can compare future
+runs against. The version-sync job will confirm the 5 sources
+agree at 0.79.5.
+
+If v0.79.5's push triggers CI but the footprint job fails, that
+narrows the suspect to something inside that specific job (the
+remaining unique elements are the `size`/`nm`/`objdump` shell
+commands and the artifact upload). At that point we'd have an
+isolated failure to debug, not a mystery about whether the
+workflow dispatches at all.
+
 ## [0.79.4] - 2026-05-26 — Hotfix: roll back CI jobs that appear to be blocking workflow dispatch
 
 CI-rollback hotfix. From v0.79.1 onward, pushes to main stopped
