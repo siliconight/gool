@@ -141,9 +141,30 @@ signal send_voice_packet(payload: Dictionary)
 var _current_simulation_tick: int = 0
 var _last_server_time_ms: int = 0
 
+# v0.78.7: handle to the Gool autoload, captured once in _ready and
+# used throughout instead of the bare `Gool` identifier. Referencing
+# `Gool` by name from a script inside addons/gool/ fails to resolve
+# at parse time on first project open (the autoload registers in the
+# same compile pass as this file). The node-path lookup bypasses
+# parse-time symbol resolution entirely.
+var _gool: Node = null
+
 # ─── Lifecycle ─────────────────────────────────────────────────
 
 func _ready() -> void:
+	# v0.78.7: capture the Gool autoload handle before any other work.
+	# By the time _ready fires on a bridge instance, the autoload is
+	# guaranteed to be at /root/Gool (autoloads init before any
+	# user-spawned scene). If it isn't, push_error and bail — every
+	# other method on this bridge depends on it.
+	var tree := get_tree()
+	_gool = tree.root.get_node_or_null("Gool") if tree != null else null
+	if _gool == null:
+		push_error("[gool/multiplayer_bridge] Gool autoload not present "
+			+ "at /root/Gool — bridge will not function until the addon "
+			+ "is registered. Check Project Settings → Autoload.")
+		return
+
 	# Wire to MultiplayerAPI's peer signals. We connect unconditionally
 	# at autoload time and let the transport_mode decide whether to
 	# act on them. This way, switching modes at runtime doesn't
@@ -158,7 +179,7 @@ func _on_peer_connected(peer_id: int) -> void:
 	if transport_mode == TransportMode.DISABLED:
 		return
 	if auto_register_voice_sources:
-		Gool.register_voice_source(peer_id)
+		_gool.register_voice_source(peer_id)
 	player_joined.emit(peer_id)
 
 func _on_peer_disconnected(peer_id: int) -> void:
@@ -186,7 +207,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 func advance_tick(simulation_tick: int, server_time_ms: int) -> void:
 	_current_simulation_tick = simulation_tick
 	_last_server_time_ms = server_time_ms
-	Gool.on_tick_advanced(simulation_tick, server_time_ms)
+	_gool.on_tick_advanced(simulation_tick, server_time_ms)
 
 ## Fire a client-predicted audio event. Local play happens IMMEDIATELY
 ## (0ms latency — honors the network lead's hard requirement). The
@@ -203,9 +224,9 @@ func advance_tick(simulation_tick: int, server_time_ms: int) -> void:
 func fire_predicted_event(sound_name: String, position: Vector3,
 		priority: int = 128) -> int:
 	# Local play FIRST — never block on network for own audio.
-	var prediction_id: int = Gool.make_prediction_id()
+	var prediction_id: int = _gool.make_prediction_id()
 	var ts_ms: int = Time.get_ticks_msec()
-	Gool.submit_event_local(sound_name, position, prediction_id,
+	_gool.submit_event_local(sound_name, position, prediction_id,
 			priority, ts_ms)
 
 	if transport_mode == TransportMode.DISABLED:
@@ -230,7 +251,7 @@ func fire_predicted_event(sound_name: String, position: Vector3,
 ## Bridge does not throttle internally; that's the caller's call.
 func update_replicated_transform_networked(handle: int,
 		position: Vector3, forward: Vector3, velocity: Vector3) -> void:
-	Gool.update_replicated_transform(handle, position, forward, velocity,
+	_gool.update_replicated_transform(handle, position, forward, velocity,
 			_current_simulation_tick)
 	if transport_mode == TransportMode.DISABLED:
 		return
@@ -276,13 +297,13 @@ func capture_network_snapshot(buses: PackedStringArray
 	var snap := GoolNetworkSnapshot.new()
 	snap.simulation_tick = _current_simulation_tick
 	snap.server_time_ms = _last_server_time_ms
-	var ids: Array = Gool.get_known_voice_player_ids()
+	var ids: Array = _gool.get_known_voice_player_ids()
 	var pid_array := PackedInt32Array()
 	for pid in ids:
 		pid_array.append(int(pid))
 	snap.voice_player_ids = pid_array
 	if buses.size() > 0:
-		snap.mix_snapshot = Gool.capture_mix_snapshot(buses)
+		snap.mix_snapshot = _gool.capture_mix_snapshot(buses)
 	# Music state name: bridge doesn't track MusicStateController
 	# directly (it's a separate prefab). Game code can populate
 	# snap.music_state_name before sending if it cares.
@@ -298,10 +319,10 @@ func apply_network_snapshot(snap: GoolNetworkSnapshot) -> void:
 	advance_tick(snap.simulation_tick, snap.server_time_ms)
 	# Re-register voice sources the old host knew about.
 	for pid in snap.voice_player_ids:
-		Gool.register_voice_source(int(pid))
+		_gool.register_voice_source(int(pid))
 	# Reapply mix snapshot if one was captured.
 	if snap.mix_snapshot != null:
-		Gool.apply_mix_snapshot(snap.mix_snapshot)
+		_gool.apply_mix_snapshot(snap.mix_snapshot)
 	# Music state is the caller's responsibility — bridge doesn't
 	# reach into MusicStateController.
 
@@ -316,7 +337,7 @@ func receive_replicated_event(sound_name: String, position: Vector3,
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms - ts_ms > staleness_threshold_ms:
 		return   # stale — drop per category convention
-	Gool.submit_replicated_event(sound_name, position, simulation_tick,
+	_gool.submit_replicated_event(sound_name, position, simulation_tick,
 			ts_ms, priority)
 
 ## Custom transport code calls this when a replicated transform
@@ -324,7 +345,7 @@ func receive_replicated_event(sound_name: String, position: Vector3,
 func receive_replicated_transform(handle: int, position: Vector3,
 		forward: Vector3, velocity: Vector3,
 		simulation_tick: int) -> void:
-	Gool.update_replicated_transform(handle, position, forward, velocity,
+	_gool.update_replicated_transform(handle, position, forward, velocity,
 			simulation_tick)
 
 ## Custom transport code calls this when a voice packet arrives.
@@ -333,7 +354,7 @@ func receive_replicated_transform(handle: int, position: Vector3,
 func receive_voice_packet(peer_id: int, bytes: PackedByteArray,
 		sequence_number: int, send_timestamp_ms: int,
 		arrival_timestamp_ms: int = -1) -> void:
-	Gool.submit_voice_packet(peer_id, bytes, sequence_number,
+	_gool.submit_voice_packet(peer_id, bytes, sequence_number,
 			send_timestamp_ms, arrival_timestamp_ms)
 
 # ─── Internal: dispatch to active transport ────────────────────

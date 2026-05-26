@@ -140,12 +140,28 @@ static func save_to_disk(settings: Dictionary) -> int:
 ## yet. Safe to call from a menu's _ready() — it will block on
 ## the first call until the engine is up.
 static func apply_to_runtime(settings: Dictionary) -> void:
-	if not Gool.is_initialized():
-		await Gool.ready_to_play
+	# v0.78.7: this script lives inside addons/gool/, so it is parsed
+	# during the same compile pass that registers the Gool autoload —
+	# referencing `Gool` by name fails to resolve at parse time on
+	# first project open. Look it up via the node path instead. The
+	# autoload is always present at /root/Gool at runtime once it has
+	# registered; this static func only runs after autoload init by
+	# virtue of needing the runtime to be initialized.
+	var tree := Engine.get_main_loop() as SceneTree
+	var gool: Node = (tree.root.get_node_or_null("Gool")
+		if tree != null else null)
+	if gool == null:
+		push_error("[gool/audio_settings] Gool autoload not present "
+			+ "at /root/Gool — is the addon installed and the "
+			+ "autoload registered in Project Settings?")
+		return
+
+	if not gool.is_initialized():
+		await gool.ready_to_play
 
 	var volumes: Dictionary = settings.get("volumes", {})
 	if volumes.has("master_db"):
-		Gool.set_master_volume_db(float(volumes.master_db))
+		gool.set_master_volume_db(float(volumes.master_db))
 	for key in _VOLUME_KEY_TO_BUS.keys():
 		if not volumes.has(key):
 			continue
@@ -154,19 +170,19 @@ static func apply_to_runtime(settings: Dictionary) -> void:
 		# is a silent no-op engine-side, but checking here lets us
 		# skip the call entirely for projects that don't use the
 		# full standard bus set.
-		if Gool.find_bus_id_by_name(bus_name) < 0:
+		if gool.find_bus_id_by_name(bus_name) < 0:
 			continue
-		Gool.set_bus_gain_db(bus_name, float(volumes[key]))
+		gool.set_bus_gain_db(bus_name, float(volumes[key]))
 
 	var occlusion: Dictionary = settings.get("occlusion", {})
 	if occlusion.has("enabled"):
-		Gool.set_occlusion_enabled(bool(occlusion.enabled))
+		gool.set_occlusion_enabled(bool(occlusion.enabled))
 	if occlusion.has("intensity"):
-		Gool.set_occlusion_intensity(float(occlusion.intensity))
+		gool.set_occlusion_intensity(float(occlusion.intensity))
 
 	var material_eq: Dictionary = settings.get("material_eq", {})
 	if material_eq.has("intensity"):
-		Gool.set_eq_intensity(float(material_eq.intensity))
+		gool.set_eq_intensity(float(material_eq.intensity))
 
 ## Convenience: load from disk, then immediately apply to runtime.
 ## The most common startup pattern — call this from your game's

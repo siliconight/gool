@@ -26,6 +26,103 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.7] - 2026-05-26 — Hotfix: first-open parse-error cascade (no engine change)
+
+GDScript-only patch. Fixes the long-standing "Godot errors on first
+project open after installing gool, works on the second open" bug.
+Surfaced by Brannen's `C:\Users\Brannen\Documents\hello` test
+project running the v0.78.x addon; the editor reported:
+
+```
+Parse Error: Identifier "Gool" not declared in the current scope.
+  in addons/gool/audio_settings.gd:143 (and 7 other lines)
+  in addons/gool/multiplayer_bridge.gd:161 (and 10 other lines)
+```
+
+### Root cause
+
+Scripts inside `addons/gool/` referenced the `Gool` autoload by
+identifier (`Gool.set_master_volume_db(...)` etc.). The GDScript
+parser type-checks function bodies at parse time, which means it
+needs `Gool` to be a known global symbol when those files compile.
+
+On first project open, Godot compiles .gd files roughly in
+alphabetical-by-path order:
+
+  audio_settings.gd     ← references Gool, needs symbol
+  multiplayer_bridge.gd ← references Gool, needs symbol
+  ...
+  runtime_singleton.gd  ← TARGET of the Gool autoload, registers
+                          the symbol once it compiles
+
+Files compiled *before* `runtime_singleton.gd` fail to resolve
+`Gool` and cascade into "Compilation failed" errors that prevent
+the autoload from registering at all. On second open, Godot's
+`.godot/` editor cache has the project metadata from the first
+run's partial state, including the autoload registration —
+parsing succeeds.
+
+The pattern only affects addon-internal scripts. External user
+scripts can reference `Gool` freely because by the time user
+code parses, the addon has fully bootstrapped.
+
+### Fixed
+
+- **`addons/gool/audio_settings.gd`** — `apply_to_runtime` (the
+  only Gool-referencing function in the file) now looks up the
+  autoload via `Engine.get_main_loop().root.get_node_or_null("Gool")`
+  inside the function body. 8 call sites refactored from
+  `Gool.x()` to `gool.x()` on a captured local.
+- **`addons/gool/multiplayer_bridge.gd`** — new `var _gool: Node`
+  member, captured once in `_ready` via the same node-path lookup,
+  used throughout the file. 12 call sites refactored from
+  `Gool.x()` to `_gool.x()`. `_ready` now `push_error`s and bails
+  if the autoload isn't present, rather than crashing on the
+  first method call.
+- **`addons/gool/prefabs/gool_audio_settings_panel.gd`** — wasn't
+  directly broken (0 `Gool.` references) but compile-depends on
+  `audio_settings.gd`, so its cascade error resolves automatically
+  once `audio_settings.gd` parses cleanly.
+
+### What this does NOT fix
+
+There are 25 addon scripts total that reference `Gool` (88 call
+sites). This release fixes only the three that Brannen's project
+demonstrated breaking. Other scripts in the addon — `gool_presets.gd`,
+`logging.gd`, `plugin.gd`, various `prefabs/` and `resources/` — also
+reference `Gool` by name and are theoretically susceptible to the
+same parse-order failure on different project layouts. They have
+not been observed breaking in practice, likely because their
+specific call-site patterns (signal callbacks, lazy preload paths)
+delay the parse-time symbol resolution.
+
+A sweeping refactor of all 25 files would be the architecturally
+correct fix; it lands in a future release. For now, individual
+file reports will be hotfixed mechanically — the pattern is
+identical to the two files fixed here. If you hit
+`Parse Error: Identifier "Gool" not declared` on first open in
+any other addon file, that's the same bug, please report the
+specific file and line and we'll add it to the next hotfix.
+
+### Workaround for affected projects
+
+If you already deployed v0.78.x to a project and hit this on first
+open: **close the editor, reopen the project**. Second open works
+because the `.godot/` cache has the autoload registration from the
+first run's partial state. This is the historical "first open
+crashes, second open works" pattern the v0.78.7 fix addresses.
+
+### Process note
+
+This bug has been silently present for many releases — the symptom
+is so easy to work around (just open the project twice) that nobody
+filed it as a real issue until v0.78.5's diagnose() work made
+onboarding a focus. The lesson: onboarding bugs hide as "minor
+inconveniences" because the affected users are by definition new
+users, who don't yet have the standing to report addon issues with
+confidence. Worth periodically blank-slate testing the install
+flow specifically to surface these.
+
 ## [0.78.6] - 2026-05-26 — Install-script verification with diagnose() (no engine change)
 
 GDScript + shell-script patch. Wires `Gool.diagnose()` (from v0.78.5)
