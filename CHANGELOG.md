@@ -26,6 +26,60 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.78.9] - 2026-05-26 — CI hotfix: NOLINTNEXTLINE placement in opus_voice_codec.cpp
+
+Single-line source fix. The `// NOLINTNEXTLINE(modernize-use-equals-default)`
+suppression on `OpusVoiceCodec::~OpusVoiceCodec()` was placed three
+lines above the destructor, separated by two explanatory comment
+lines. `NOLINTNEXTLINE` applies only to the **literally immediately
+following** line — in this case, line 149 (a comment), not line 151
+(the destructor). The suppression has been silently broken since
+whenever it was added; clang-tidy just happened not to fire on this
+specific check in prior CI runs.
+
+Surfaced by the v0.78.x CI runs showing `static-analysis / clang-tidy`
+failing with:
+
+```
+opus_voice_codec.cpp:151:17: error: use '= default' to define a
+    trivial destructor [modernize-use-equals-default,-warnings-as-errors]
+```
+
+Why now: the CI cmake configuration enables WAV/OGG/FLAC decoders
+but does NOT define `AUDIO_ENGINE_VOICE_OPUS`, so clang-tidy sees
+the preprocessor-stripped form of the destructor — a trivial empty
+body — and correctly flags it. With `--warnings-as-errors='*'` in
+the workflow, that one finding fails the job.
+
+### Fixed
+
+- `src/audio_engine/voice/opus_voice_codec.cpp`: the
+  `// NOLINTNEXTLINE(modernize-use-equals-default)` directive now
+  sits on the line immediately preceding the destructor declaration,
+  where clang-tidy will actually consult it. The explanatory comment
+  block above it remains for future maintainers, but is no longer
+  load-bearing for the suppression itself.
+
+### Not changed
+
+- No engine behavior change. No API change. No GDScript change.
+- The destructor body is unchanged; only the comment placement.
+- CI workflow files are unchanged. The 40-minute clang-tidy runtime
+  is a separate concern (insufficient parallelism, broad
+  `HeaderFilterRegex` causing per-TU work) that wants its own PR
+  with deliberate testing for OOM risk on GitHub runners.
+
+### Process note
+
+This release exists because of a misreading lesson: a
+`NOLINTNEXTLINE` directive followed by additional comment lines
+before the target code is a recurring trap. The directive does NOT
+"skip past the comment block to the next code line." If you want a
+multi-line explanation alongside a `NOLINTNEXTLINE` suppression,
+the explanation must sit ABOVE the directive, with the directive
+itself on the line directly above the suppressed code. Worth
+adding to the project's style guide if one exists.
+
 ## [0.78.8] - 2026-05-26 — Auto-enable EditorPlugin during install (no engine change)
 
 Shell + GDScript-tools patch. Fixes the **actual root cause** of

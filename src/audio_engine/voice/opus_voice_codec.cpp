@@ -145,9 +145,15 @@ OpusVoiceCodec::OpusVoiceCodec(const Settings& settings)
 #endif
 }
 
-// NOLINTNEXTLINE(modernize-use-equals-default) — body is non-empty
-// when AUDIO_ENGINE_VOICE_OPUS is defined; clang-tidy only sees the
-// preprocessor-stripped form during static analysis builds.
+// The body below is non-empty when AUDIO_ENGINE_VOICE_OPUS is defined;
+// clang-tidy only sees the preprocessor-stripped form during static
+// analysis builds (CI doesn't define AUDIO_ENGINE_VOICE_OPUS), so it
+// flags a "trivial destructor — use = default" warning that doesn't
+// apply to the real build configuration. The NOLINTNEXTLINE directive
+// MUST sit on the line immediately before the destructor — clang-tidy
+// only consults the directly-preceding line for NEXTLINE suppressions,
+// not the comment block above it.
+// NOLINTNEXTLINE(modernize-use-equals-default)
 OpusVoiceCodec::~OpusVoiceCodec() {
 #if defined(AUDIO_ENGINE_VOICE_OPUS)
     if (state_->encoder) opus_encoder_destroy(state_->encoder);
