@@ -26,6 +26,104 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.6] - 2026-05-26 — Hotfix: drop `-fno-rtti` to unblock macOS GDExtension link
+
+macOS-only hotfix. The v0.79.5 push triggered CI cleanly (confirming
+the GitHub Actions outage was the real cause of the dispatch failure,
+not anything in our ci.yml). All Ubuntu and Windows jobs went green.
+But `gdextension / macos-arm64` failed at link with:
+
+```
+Undefined symbols for architecture arm64:
+  "typeinfo for audio::MiniaudioBackend", referenced from:
+      gool::GoolAudioRuntime::get_backend_description() const
+      gool::GoolAudioRuntime::get_render_stats() const
+      gool::GoolAudioRuntime::reset_render_peak()
+ld: symbol(s) not found for architecture arm64
+```
+
+### Root cause
+
+v0.79.1's release-build debloat added `-fno-rtti` (and `/GR-` for
+MSVC) to `audio_engine`'s compile flags. The audit comment in
+CMakeLists.txt claimed "audio_engine uses zero dynamic_cast and
+zero typeid." That was correct for audio_engine in isolation, but
+**`gool_godot.cpp` (the GDExtension that consumes audio_engine) uses
+`dynamic_cast<const audio::MiniaudioBackend*>` at three call sites**
+(`get_backend_description`, `get_render_stats`, `reset_render_peak`)
+to expose miniaudio-specific stats to Godot.
+
+With `-fno-rtti` on audio_engine, the compiler suppresses typeinfo
+emission for `MiniaudioBackend`. When gool_godot (compiled without
+`-fno-rtti`) tries to link, it needs that typeinfo symbol. Apple's
+`ld64` refuses to link with an undefined symbol error. GNU `ld`
+silently weak-links, which is why Ubuntu builds passed v0.79.1
+through v0.79.5 without surfacing the bug — the dynamic_cast would
+have just always returned `nullptr` at runtime on Linux, which is
+arguably worse than a hard link error.
+
+### Fix
+
+  * Removed `$<$<CONFIG:Release>:-fno-rtti>` from the gcc/clang
+    branch of `target_compile_options(audio_engine ...)`
+  * Removed `$<$<CONFIG:Release>:/GR->` from the MSVC branch
+    (same intent, same bug exposure)
+  * Updated the audit comment in CMakeLists.txt to record the
+    retraction, the v0.79.6 reason, and the future-refactor note
+    (see below)
+
+### Kept
+
+Everything else from v0.79.1's debloat package stays:
+
+  * `-ffunction-sections` + `-fdata-sections` (gcc/clang)
+  * `/Gy` (MSVC) — function-level COMDAT
+  * `-Wl,--gc-sections` (GNU ld) / `-Wl,-dead_strip` (Apple ld) /
+    `/OPT:REF,ICF` (MSVC) — dead-code elimination at link time
+  * `CXX_VISIBILITY_PRESET hidden` + `VISIBILITY_INLINES_HIDDEN`
+
+These flags do the bulk of the binary-size work. Of v0.79.1's
+14.8% Linux .so shrink, the sections-+-gc-sections combination was
+the dominant contributor; `-fno-rtti` alone was a single-digit
+percentage. Acceptable trade for cross-platform correctness.
+
+### Future refactor (not in this release)
+
+The real architectural fix is to remove the `dynamic_cast` from
+`gool_godot.cpp` by promoting backend-specific behavior to virtual
+methods on the `AudioBackend` interface. Sketch:
+
+```cpp
+// in audio_engine
+class AudioBackend {
+  virtual std::string describe() const = 0;
+  virtual BackendStats get_stats() const = 0;
+  virtual void reset_peak() = 0;
+};
+
+class MiniaudioBackend : public AudioBackend {
+  std::string describe() const override { return "miniaudio v..."; }
+  BackendStats get_stats() const override { ... }
+  void reset_peak() override { ... }
+};
+
+// in gool_godot.cpp — no dynamic_cast needed
+void GoolAudioRuntime::get_backend_description() {
+  return backend->describe();
+}
+```
+
+Once that lands, `-fno-rtti` / `/GR-` can come back. Tracking as
+a roadmap item, not blocking any current feature work.
+
+### Verification
+
+Local Release build of audio_engine + tests at 0.79.6 compiles
+clean with the remaining debloat flags. All unit tests pass:
+version_test, priority_eviction_test, multiplayer_readiness_test.
+The cross-platform CI run on push will confirm gdextension/macos-arm64
+links successfully against the rebuilt audio_engine.a.
+
 ## [0.79.5] - 2026-05-26 — Re-add footprint + version-sync CI jobs with defensive YAML
 
 Restoration release. v0.79.4 rolled back the `footprint` and

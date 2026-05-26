@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.79.5
+    VERSION 0.79.6
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -563,10 +563,21 @@ endif()
 # Goal: shrink the shipped library by removing code the runtime doesn't
 # actually need. Each flag is justified individually:
 #
-#   -fno-rtti / /GR-       audio_engine uses zero dynamic_cast and zero
-#                          typeid (audited in v0.79.1). RTTI's typeinfo
-#                          tables and vtable typeinfo slots cost binary
-#                          size for a feature nobody calls. Disabling
+#   -fno-rtti / /GR-       REMOVED in v0.79.6. The v0.79.1 audit
+#                          confirmed audio_engine itself uses zero
+#                          dynamic_cast / typeid, which made -fno-rtti
+#                          look free. But gool_godot.cpp (the consumer)
+#                          uses dynamic_cast<MiniaudioBackend*> in 3
+#                          places to expose backend-specific stats.
+#                          With -fno-rtti on audio_engine, typeinfo for
+#                          MiniaudioBackend wasn't emitted, and Apple
+#                          ld64 refused to link gool_godot on macOS
+#                          (Linux GNU ld silently weak-linked the
+#                          missing symbol, masking the bug until macOS
+#                          CI caught it). Future refactor: replace the
+#                          dynamic_casts with a virtual method on
+#                          AudioBackend so -fno-rtti can come back.
+#                          For now we ship without it. Disabling
 #                          is provably safe per source audit.
 #
 #   -ffunction-sections    Place each function/data item in its own ELF
@@ -606,7 +617,6 @@ endif()
 # -------------------------------------------------------------------------
 if(MSVC)
     target_compile_options(audio_engine PRIVATE
-        $<$<CONFIG:Release>:/GR->                       # no RTTI
         $<$<CONFIG:Release>:/Gy>                        # function sections
     )
     target_link_options(audio_engine PRIVATE
@@ -615,7 +625,6 @@ if(MSVC)
     )
 else()
     target_compile_options(audio_engine PRIVATE
-        $<$<CONFIG:Release>:-fno-rtti>
         $<$<CONFIG:Release>:-ffunction-sections>
         $<$<CONFIG:Release>:-fdata-sections>
     )
