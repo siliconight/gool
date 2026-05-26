@@ -447,6 +447,43 @@ func _ready() -> void:
 	root_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_tab_container.add_child(root_vbox)
 
+	# v0.79.2: Update-available banner. Self-hides unless the
+	# checker emits an "update available" signal. The checker queries
+	# GitHub's releases API (cached 24h) and emits the signal on the
+	# main thread. Output: a one-line banner above the getting-
+	# started banner if a newer stable release exists, plus a log
+	# line in the editor console for users who never open this dock.
+	# Opt-out via Project Settings → audio/gool/check_for_updates.
+	var update_banner_script := load(
+			"res://addons/gool/editor/update_available_banner.gd")
+	var checker_script := load(
+			"res://addons/gool/editor/update_checker.gd")
+	if update_banner_script != null and checker_script != null:
+		var update_banner: PanelContainer = PanelContainer.new()
+		update_banner.set_script(update_banner_script)
+		update_banner.visible = false
+		root_vbox.add_child(update_banner)
+		var checker: RefCounted = checker_script.new()
+		var current_version := _get_current_gool_version()
+		checker.update_check_complete.connect(
+			func(latest: String, is_newer: bool) -> void:
+				if not is_newer or latest == "":
+					return
+				if is_instance_valid(update_banner):
+					update_banner.show_for(latest, current_version)
+				# Always log to console for users who don't open
+				# the mixer dock. ANSI-tolerant; Godot's output
+				# panel renders this as a normal print line.
+				print("[gool] update available: v%s (you have v%s). %s"
+					% [latest, current_version,
+					   "https://github.com/siliconight/gool/releases"])
+		)
+		# Use the editor's scene root as the HTTPRequest parent.
+		# get_tree() works in @tool scripts when added to the scene.
+		var tree := get_tree()
+		if tree != null and tree.root != null:
+			checker.check(current_version, tree.root)
+
 	# v0.72.0: Getting Started banner. Self-decides whether to show
 	# based on whether res://gool/config.json exists and whether the
 	# user has dismissed it. No-op visually for any project that
@@ -3935,3 +3972,19 @@ class _PeakSparkline extends Control:
 		if pts.size() >= 2:
 			# Use draw_polyline (anti-aliased) for the trace.
 			draw_polyline(pts, theme_color, 1.5, true)
+
+
+# v0.79.2: Read the current gool version from plugin.cfg. plugin.cfg
+# is the authoritative source for the addon-side version (verified
+# in sync with engine version.h via the CI version-sync job). Falls
+# back to "0.0.0" if the file is somehow missing or malformed, which
+# makes the update check effectively always-fire (every release will
+# look newer than 0.0.0). That's the right failure mode — if we
+# can't determine our version, prefer to over-notify rather than
+# silently skip.
+func _get_current_gool_version() -> String:
+	var cfg := ConfigFile.new()
+	var err := cfg.load("res://addons/gool/plugin.cfg")
+	if err != OK:
+		return "0.0.0"
+	return str(cfg.get_value("plugin", "version", "0.0.0"))

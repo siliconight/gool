@@ -26,6 +26,149 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.2] - 2026-05-26 — In-editor update notifications + plugin.cfg version fix
+
+GDScript-only release. Two themes:
+  * **Plugin.cfg version sync** — finally fixes the long-standing
+    issue where Godot's "Edit a Plugin" dialog showed gool as
+    version 0.1.0 regardless of which release was installed.
+    Originally intended for v0.79.1 but the fix slipped past the
+    push window; landing here.
+  * **In-editor update checker** — answers Brannen's question
+    "how do users of gool know in Godot that there is a new
+    version they could update to?" Editor-only HTTPS check
+    against the GitHub releases API on plugin enable, banner
+    notification in the mixer dock, plus a console log for users
+    who don't open the mixer dock.
+
+### Added — Update notification system
+
+A small editor-only subsystem that tells users when a newer
+stable gool release is available.
+
+**`addons/gool/editor/update_checker.gd`** — RefCounted helper
+that queries `https://api.github.com/repos/siliconight/gool/releases/latest`
+and emits an `update_check_complete(latest, is_newer)` signal on
+the main thread. Design:
+
+  * **24h cache** in `user://gool_update_check.json`. At most one
+    network request per developer per day. Well under GitHub's
+    60-requests-per-hour-per-IP unauthenticated rate limit even
+    on shared CI runners.
+  * **5-second HTTPRequest timeout**. Silently no-ops on any
+    network failure — the check is a nicety, not a requirement.
+  * **GitHub's `/releases/latest` already excludes pre-releases
+    and drafts** per their REST docs. Belt-and-suspenders: also
+    skip tags containing hyphens (`v0.80.0-rc1`-style).
+  * **Opt-out** via project setting `audio/gool/check_for_updates`
+    (default true). Registered in `plugin.gd::_register_update_check_setting`
+    so it appears in Godot's Project Settings UI even if untouched.
+
+**`addons/gool/editor/update_available_banner.gd`** — PanelContainer
+banner UI shown above the getting-started banner in the mixer
+dock. Self-hides unless the checker reports a newer version.
+Three controls:
+
+  * Inline label: `gool 0.79.3 is available (you're running 0.79.2).`
+  * "View release notes" button → opens
+    `https://github.com/siliconight/gool/releases` via `OS.shell_open`
+  * "Don't notify for v0.79.3" button → stores the dismissed
+    version in `addons/gool/editor/update_notice_dismissed_version`
+    (project setting). Future checks still run, but the banner
+    suppresses for that exact version. v0.79.4 dropping later
+    would re-trigger the banner because it's strictly newer than
+    the dismissed v0.79.3.
+
+**`mixer_dock.gd`** — mounts the update banner before the
+getting-started banner (so updates appear at the very top of the
+dock), wires the checker's signal to the banner's `show_for()`,
+and also `print()`s a one-line log entry to the editor output
+console. The console log is defense-in-depth: users who never
+open the mixer dock still see the update notice in the editor
+output panel.
+
+### Why a separate banner from getting-started
+
+The two have different lifecycles. The getting-started banner
+is one-shot — once a user picks a config template or clicks
+dismiss, it stays gone forever for that project. The user has
+"graduated" from needing it. The update banner is recurring —
+appears whenever a strictly-newer release exists, dismissible
+per-version. Sharing the dismissal mechanism would mean a user
+who graduated from onboarding before would never see update
+notices, which defeats the purpose.
+
+### Fixed — `plugin.cfg` version stuck at `0.1.0`
+
+Godot's Edit-a-Plugin dialog (Project Settings → Plugins →
+gool → wrench icon) reads its Version field from
+`addons/gool/plugin.cfg`. That file had never been bumped since
+plugin creation; every release from v0.78.0 through v0.79.1
+shipped showing `0.1.0` regardless of which version the user
+actually had. Spotted when Brannen took a screenshot of the
+plugin dialog showing 0.1.0 against a v0.79.1 install.
+
+All three `plugin.cfg` files (main + the two example projects'
+copies) now show `0.79.2` and match the engine version.
+
+### Added — CI version-sync guard
+
+New `meta / version sync` job in `.github/workflows/ci.yml`.
+Fails the build if any of these five sources disagree:
+
+  * `include/audio_engine/version.h` (`kVersionString`)
+  * `CMakeLists.txt` (`project VERSION`)
+  * `godot/addons/gool/plugin.cfg`
+  * `examples/coop_shooter_template/addons/gool/plugin.cfg`
+  * `examples/voice_chat/addons/gool/plugin.cfg`
+
+Prevents the recurring footgun where engine version gets bumped
+but plugin.cfg is forgotten. Small fast job — runs `grep` on
+each file and compares. Catches mismatches at PR time, not at
+release-tag time.
+
+### Important caveats
+
+  * **Logic-tested, not Godot-runtime-tested.** Engine tests
+    still pass (version_test reports 0.79.2). The GDScript
+    additions have not been exercised against a live Godot
+    editor — the HTTP request, the banner rendering, the
+    project setting registration, all need a real editor run
+    to confirm. Brannen, the first thing to look for after
+    installing v0.79.2: does the "Edit a Plugin" dialog now
+    show `0.79.2` instead of `0.1.0`? If yes, plugin.cfg fix
+    works. Then check whether the editor's output panel logs
+    `[gool] update available: ...` or `no update available`
+    style output. (Currently no output if no newer version
+    exists — by design — but you can confirm the request was
+    made by checking `user://gool_update_check.json` exists.)
+  * **No notification path on a CLOSED editor.** If a user
+    works in their game for two weeks without opening the
+    editor, they won't see the update until they next open
+    Godot. That's fine — the check is for active development
+    sessions.
+  * **GitHub API can rate-limit.** Unauthenticated calls are
+    capped at 60/hour per IP. The 24h cache means a single
+    developer hits this once per day. Should never bite in
+    practice but worth knowing.
+
+### Not in this release (deferred)
+
+  * **Authenticated GitHub API access** — would raise rate
+    limits to 5000/hour but requires shipping or asking for
+    a token. Overkill for current scale.
+  * **Auto-update mechanism** — would download and unpack the
+    new release on user click. Significant work and risk
+    (corrupting installs, partial downloads, signature
+    verification). Don't go there.
+  * **In-editor changelog display** — fetch CHANGELOG.md or
+    release notes from the API response and render in a popup.
+    Nice-to-have; current "View release notes" button opens
+    the browser, which is fine for now.
+  * **Update-aware Gool.diagnose()** — adding an "update
+    available" line to diagnose() output. Easy add for a
+    later release if useful.
+
 ## [0.79.1] - 2026-05-26 — Release-build debloat (conservative): -fno-rtti, sections + GC, CI footprint report
 
 Build-system release. Acts on the audit-prompted question "what is
@@ -192,6 +335,14 @@ number on the next CI run. Comparing the new artifact's
     dependency audit.
   * **Editor-side bindings linked into Release DLL** — needs
     symbol-level inspection from the CI footprint job's output.
+
+### Fixed (also in this release)
+
+  * **`plugin.cfg` version was stuck at `0.1.0`.** *(NOTE: this fix
+    did NOT make it into the v0.79.1 git push — it slipped to
+    v0.79.2 along with the version-sync CI guard. The v0.79.1
+    release tag on GitHub still shows the old 0.1.0 plugin.cfg
+    version; see v0.79.2 entry for the actual fix.)*
 
 ## [0.79.0] - 2026-05-26 — Player audio preferences API (no engine change)
 

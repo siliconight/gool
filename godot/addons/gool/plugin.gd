@@ -316,6 +316,7 @@ func _enter_tree() -> void:
 	_register_mixer_dock()               # v0.24.0
 	_connect_filesystem_watch()
 	_register_tools_menu()               # v0.23.0
+	_register_update_check_setting()     # v0.79.2
 	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, debugger bridge, mixer dock, tools menu installed.")
 	# v0.75.2: prompt for editor restart on first enable so the
 	# GDScript parser sees the autoloads on its next sweep with a
@@ -1068,3 +1069,24 @@ func _add_debug_overlay_to_current_scene() -> void:
 		+ "Inspector. For shipping builds, set "
 		+ "visible_at_startup=false."
 	)
+
+
+# v0.79.2: Register the update-check opt-out setting so it appears
+# in Project Settings → audio → gool → check_for_updates. Default is
+# `true` (check enabled); users in restricted environments or those
+# who simply don't want the editor to make outbound HTTPS calls can
+# untick this. The setting is read by addons/gool/editor/
+# update_checker.gd before any network activity.
+func _register_update_check_setting() -> void:
+	var setting_path := "audio/gool/check_for_updates"
+	if not ProjectSettings.has_setting(setting_path):
+		ProjectSettings.set_setting(setting_path, true)
+	ProjectSettings.set_initial_value(setting_path, true)
+	ProjectSettings.add_property_info({
+		"name": setting_path,
+		"type": TYPE_BOOL,
+		"hint": PROPERTY_HINT_NONE,
+		"hint_string": ("Check GitHub for new gool releases when the "
+				+ "editor opens (once per 24h, cached). Disable to "
+				+ "prevent outbound HTTPS calls from the editor."),
+	})
