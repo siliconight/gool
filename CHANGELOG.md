@@ -26,6 +26,106 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.7] - 2026-05-26 — Help panel content rewrite for the "new user" reader
+
+GDScript-only release. No engine changes, no API changes, no CI
+changes. Just a content rewrite of the in-editor help panel
+(`addons/gool/editor/help_panel.gd`) introduced in v0.79.3.
+
+### Why
+
+The v0.79.3 panel tried to be both a getting-started doc and a
+reference card. It hit neither audience well: too dense for a
+first-time reader (7 sections, ~500 words, multiple bullet lists
+running 5-7 items deep), too shallow for a working user (the API
+section showed ~20 method signatures across 6 subsections — just
+enough to be hard to scan but not enough to be complete). When
+asked which audience the panel should serve, the answer was
+clear: the Godot dev who just installed gool and is figuring out
+what they bought. Working users have the README, the script
+editor's autocomplete, and 5+ minutes of past experience to lean
+on.
+
+### What changed
+
+  * **7 sections → 4** (plus header and Learn-more footer).
+    - Removed: standalone Keyboard Shortcuts section (1 item,
+      didn't earn a section)
+    - Removed: standalone Project → Tools → gool section
+      (7 bullets of mostly-aesthetic info)
+    - Merged: Editor Tools + Tools menu → "Where to find things
+      in the editor" (prose, ~60 words)
+    - Merged: Player Audio Settings + Runtime API → "Common
+      runtime calls" (6 method signatures with one-line
+      annotations, plus a short prose note about player vs
+      server gain combining)
+    - Merged: Diagnostics + Ctrl+Shift+G shortcut → "When
+      something looks wrong" (deduplicates the shortcut
+      reference, frames the section around action not features)
+  * **Body word count: ~500 → ~360.** Same information density
+    where density helped (the code snippets, the URL list),
+    much less density where density hurt (the editor tour, the
+    "things you can find" listings).
+  * **Section header rewrites.** "Quick Start" → "Play your
+    first sound." "Editor Tools" → "Where to find things in
+    the editor." "Runtime API Essentials" → "Common runtime
+    calls." "Diagnostics" → "When something looks wrong."
+    "Resources" → "Learn more." Headers now describe what the
+    reader will do, not what features lurk inside.
+  * **API section trimmed.** v0.79.3 listed ~20 methods across
+    Playback, Sound Registration, RTPC, Bus Control, Voice
+    Chat, and Player Audio Settings. v0.79.7 lists the 6
+    most-reached-for calls with one-line annotations, plus a
+    prose note about player-vs-server gain combining, plus an
+    explicit hint that autocomplete in the script editor is the
+    right tool for "show me everything."
+  * **Removed version annotations** like `(v0.79.0+)` in
+    section headers. Help-panel readers have whatever version
+    they have; version-aware annotations belong in the CHANGELOG.
+  * **Quick Start is genuinely quick again.** v0.79.3 followed
+    the 3-line code example with a list of all 3 autoloads and
+    an explanation of each. v0.79.7's "Play your first sound"
+    is just the 3 lines plus "F5 and you'll hear it"; the
+    autoload list moved up into the header subtitle where it's
+    a one-line orienting fact instead of a section.
+
+### What didn't change
+
+  * The Window subclass setup, size (720×640), resizability,
+    non-modal behavior.
+  * The two entry points (mixer dock toolbar "?" button and
+    Project → Tools → gool → Help).
+  * The version footer that auto-reads from plugin.cfg.
+  * The "View on GitHub" button and meta-clicked URL routing.
+  * BBCode formatting choices (font sizes, [code] blocks, [url]
+    links).
+
+### Verification
+
+  * GDScript parses cleanly. No orphaned `_CONTENT_*` constant
+    references; `_build_content()` references the 6 declared
+    constants in order: HEADER, QUICK_START, EDITOR_MAP,
+    RUNTIME_API, TROUBLESHOOTING, RESOURCES.
+  * BBCode tags balance: [b]/[/b] 13/13, [i]/[/i] 3/3,
+    [code]/[/code] 11/11, [indent]/[/indent] 1/1,
+    [font_size]/[/font_size] 6/6, [url]/[/url] 6/6.
+  * Maintenance note in the file header now warns future
+    editors against re-bloating the API section. If someone
+    needs a method that's not in the top 6, they're past the
+    panel's audience.
+
+### Not in this release
+
+  * No actual screenshots, no animated GIFs, no embedded video.
+    BBCode in a RichTextLabel keeps the panel zero-asset and
+    fast-loading. If we ever want richer onboarding, that's a
+    different surface (a dedicated welcome window, or a docs
+    site).
+  * No tabs / no "show more" sections. v0.79.3 considered a
+    tabbed "Getting Started / Reference" split; rejected as
+    extra UI complexity for a benefit that's better served by
+    cutting reference content and linking out for depth.
+
 ## [0.79.6] - 2026-05-26 — Hotfix: drop `-fno-rtti` to unblock macOS GDExtension link
 
 macOS-only hotfix. The v0.79.5 push triggered CI cleanly (confirming

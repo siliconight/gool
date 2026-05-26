@@ -1,11 +1,17 @@
 # addons/gool/editor/help_panel.gd
 #
-# v0.79.3: In-editor help panel.
+# v0.79.3: Initial in-editor help panel.
+# v0.79.7: Content rewrite for "new user, what did I buy?" reader.
+#          Cut from 7 sections down to 4 + Learn-more footer. Prose
+#          instead of bullet lists where prose reads better. Quick
+#          Start is genuinely quick (3 lines, no preamble). API
+#          reference trimmed to the 6 most-reached-for calls; full
+#          API lives in the README and the script editor's autocomplete.
 #
 # Non-modal Window that surfaces gool's discoverable features:
-# keyboard shortcuts, editor tools, the most-used runtime API,
-# the v0.79.0 player preferences API, diagnostics, and links to
-# deeper docs on GitHub.
+# how to play a first sound, where things live in the editor, the
+# most-common runtime calls, and what to do when something looks
+# broken.
 #
 # DESIGN
 # ======
@@ -27,7 +33,10 @@
 # ================
 #   When adding a new feature, update the relevant _CONTENT_*
 #   constant below. The version footer auto-reads from plugin.cfg
-#   so it stays in sync without manual updates.
+#   so it stays in sync without manual updates. Resist the urge
+#   to add features to the API section — if someone needs to look
+#   up a method that's not in the top 6, they're past the help
+#   panel's audience and should be in the README.
 
 @tool
 extends Window
@@ -37,105 +46,76 @@ const _README_URL := "https://github.com/siliconight/gool/blob/main/README.md"
 const _CHANGELOG_URL := "https://github.com/siliconight/gool/blob/main/CHANGELOG.md"
 const _RELEASES_URL := "https://github.com/siliconight/gool/releases"
 
-const _CONTENT_HEADER := """[font_size=18][b]gool quick reference[/b][/font_size]
-[i]Multiplayer-first audio middleware for Godot. This panel \
-summarizes the most useful surfaces; for deep dives, see the \
-[url=%s]README on GitHub[/url].[/i]
+const _CONTENT_HEADER := """[font_size=18][b]gool[/b][/font_size]
+[i]Multiplayer-first audio middleware for Godot. Three autoloads — \
+[b]Gool[/b], [b]DialogueDirector[/b], [b]MultiplayerBridge[/b] — are your \
+entry points. For deep dives, see the [url=%s]README on GitHub[/url].[/i]
 """ % _README_URL
 
 const _CONTENT_QUICK_START := """
-[font_size=16][b]Quick Start[/b][/font_size]
-The [b]Gool[/b] autoload is your entry point. Three lines to play a 3D sound:
-[code]Gool.register_sound_from_file("footstep", "res://audio/footstep.wav")
-Gool.play_3d("footstep", Vector3(10, 0, 0))
-Gool.set_rtpc("combat_intensity", 0.7)[/code]
-Three autoloads are registered when the plugin is enabled:
-[indent]• [b]Gool[/b] — main runtime: playback, registration, RTPCs, voice
-• [b]DialogueDirector[/b] — speaker priority and dialogue events
-• [b]MultiplayerBridge[/b] — bridges Godot's MultiplayerAPI to gool's event replication[/indent]
+[font_size=16][b]Play your first sound[/b][/font_size]
+Drop an audio file in [code]res://[/code] and run:
+[code]Gool.register_sound_from_file("ping", "res://audio/ping.wav")
+Gool.play_3d("ping", Vector3(10, 0, 0))[/code]
+F5 and you'll hear it. If you'd rather start from a working scene, the \
+[i]Project → Tools → gool[/i] menu has a scaffolding command that drops \
+a complete 3D audio setup into the current scene.
 """
 
-const _CONTENT_SHORTCUTS := """
-[font_size=16][b]Keyboard Shortcuts[/b][/font_size]
-[indent]• [b]Ctrl+Shift+G[/b] — Dump session log to a file. Opens the dump \
-directory in your OS file browser. Rebindable in \
-[i]Project Settings → Input Map → gool_dump_session_log[/i]. \
-Disable entirely with project setting \
-[code]audio/gool/dump_session_log_enabled[/code].[/indent]
-"""
+const _CONTENT_EDITOR_MAP := """
+[font_size=16][b]Where to find things in the editor[/b][/font_size]
+You're in the [b]Mixer Dock[/b] — bus levels, mix snapshots, bus chain editing. \
+Opening any [code]GoolSoundBank[/code] or [code]GoolMaterialEQ[/code] resource \
+brings up an inspector for it automatically.
 
-const _CONTENT_EDITOR_TOOLS := """
-[font_size=16][b]Editor Tools[/b][/font_size]
-[indent]• [b]Mixer Dock[/b] (you're here) — Visualize bus levels, save and load mix snapshots, edit bus chains
-• [b]Sound Bank Panel[/b] — Browse and edit GoolSoundBank resources
-• [b]Material EQ Inspector[/b] — Edit acoustic material EQ presets; appears when you open any GoolMaterialEQ .tres
-• [b]Debugger → Monitors[/b] — 15 custom gool perf graphs (update tick μs, eviction rate, voice throughput, etc.) during F5 play
-• [b]Debugger → gool tab[/b] — Live runtime state (active emitters, voice peer stats, current RTPCs) during F5 play[/indent]
-"""
+The [b]Project → Tools → gool[/b] submenu has shortcuts for scaffolding \
+3D audio, opening a quickstart scene, running install smoke tests when \
+something feels off, and reopening this help panel.
 
-const _CONTENT_TOOLS_MENU := """
-[font_size=16][b]Project → Tools → gool[/b][/font_size]
-[indent]• [b]Add gool 3D audio scaffolding[/b] — Drops a working 3D audio setup into the current scene
-• [b]Add debug overlay[/b] — Runtime visualization of emitters and listener
-• [b]Create new GoolFolderSoundBank...[/b] — Folder-based bank resource
-• [b]Open quickstart_3d.tscn[/b] — Minimal scene to verify install works
-• [b]Run prefab smoke test[/b] — Catches missing autoload wrappers
-• [b]Run FPS scene smoke test[/b] — Catches missing config dependencies
-• [b]Help[/b] — Opens this panel[/indent]
+During F5 play, the [b]Debugger[/b] dock has a [code]gool[/code] tab \
+with live emitter, voice, and RTPC state, plus 15 gool-specific \
+performance monitors under the Monitors panel.
 """
 
 const _CONTENT_RUNTIME_API := """
-[font_size=16][b]Runtime API Essentials[/b][/font_size]
-[i]Most-used methods on the Gool autoload. There are 104 public methods \
-total; this is the subset most game code touches.[/i]
+[font_size=16][b]Common runtime calls[/b][/font_size]
+The Gool autoload exposes around 100 public methods. The handful you'll reach for most:
+[code]Gool.play_3d(name, position)         # 3D positional sound
+Gool.play_2d(name)                    # UI / non-spatial sound
+Gool.set_rtpc(name, value)            # parameter-driven mixing
+Gool.set_bus_gain_db("Music", -6.0)   # server-authoritative mix
+Gool.set_player_master_volume(75)     # player settings (0-100 slider)
+Gool.diagnose()                       # install health check[/code]
 
-[b]Playback[/b]
-[code]Gool.play_3d(name, position)            # → emitter_id
-Gool.play_2d(name)                      # → emitter_id
-Gool.play_event(event_name, position)   # sound-definition events[/code]
+Player-side volume (the [code]set_player_*[/code] family, plus voice \
+muting) combines with server-side bus gains via dB addition — your \
+game's mixes and snapshots stay audible, scaled by the listener's \
+preference. Auto-saves to [code]user://[/code].
 
-[b]Sound Registration[/b]
-[code]Gool.register_sound_from_file(name, path)
-Gool.register_pcm_sound(name, samples, sample_rate, channels)
-Gool.register_sound_from_stream(name, audio_stream)
-Gool.register_sound_definition(name, opts)[/code]
+For voice chat, dialogue, sound banks, and the full method list, \
+see the [url=%s]README[/url] or just type [code]Gool.[/code] in the \
+script editor and let autocomplete walk you through it.
+""" % _README_URL
 
-[b]Real-time Parameter Control[/b]
-[code]Gool.set_rtpc(name, value)
-Gool.get_rtpc(name)                     # → float[/code]
+const _CONTENT_TROUBLESHOOTING := """
+[font_size=16][b]When something looks wrong[/b][/font_size]
+First stop: run [code]Gool.diagnose()[/code] from any script. It \
+prints a structured health check — autoloads registered, bus graph \
+valid, sample rate, device working — and tells you which assumption \
+broke.
 
-[b]Bus Control (server-authoritative)[/b]
-[code]Gool.set_master_volume_db(db)
-Gool.set_bus_gain_db("Music", -6.0)[/code]
+If you're filing a bug report, press [b]Ctrl+Shift+G[/b] to dump the \
+session log. A file browser opens to the dump directory; attach the \
+file to your report. (Rebindable in [i]Project Settings → Input Map → \
+gool_dump_session_log[/i]; disable with project setting \
+[code]audio/gool/dump_session_log_enabled[/code].)
 
-[b]Voice Chat[/b]
-[code]Gool.submit_voice_packet(peer_id, bytes, seq, ts)
-Gool.register_voice_source(peer_id, peer_position)[/code]
+During F5 play, the Debugger's Monitors panel has gool-specific \
+graphs (update tick μs, eviction rate, voice throughput, and more) \
+if you need live performance data.
 """
 
-const _CONTENT_PLAYER_SETTINGS := """
-[font_size=16][b]Player Audio Settings (v0.79.0+)[/b][/font_size]
-[i]Client-side controls for player settings menus. Combine with \
-server-authoritative bus controls via dB addition — game mixes and \
-mix snapshots stay audible, scaled by player preference.[/i]
-[code]Gool.set_player_master_volume(75)               # 0-100 slider
-Gool.set_player_category_volume("music", 50)
-Gool.mute_voice_player(peer_id)
-Gool.get_muted_voice_players()                  # → Array[int]
-Gool.clear_muted_voice_players()
-Gool.reset_player_preferences()[/code]
-Categories: [code]master, sfx, music, voice, ambience, dialogue, ui[/code]
-Auto-saves to [code]user://gool_player_preferences.cfg[/code] on every set_* call.
-"""
-
-const _CONTENT_DIAGNOSTICS := """
-[font_size=16][b]Diagnostics[/b][/font_size]
-[indent]• [b]Gool.diagnose()[/b] — Prints install health check to output (autoload registered? bus graph valid? sample rate? device working?). Run this when install feels broken.
-• [b]Debugger → Monitors panel[/b] — 15 custom gool monitors (gool/*) for engine perf during F5 play.
-• [b]Ctrl+Shift+G[/b] — Session log dump. Writes a structured log file with the last N events. Attach to bug reports.[/indent]
-"""
-
-const _CONTENT_RESOURCES := """[font_size=16][b]Resources[/b][/font_size]
+const _CONTENT_RESOURCES := """[font_size=16][b]Learn more[/b][/font_size]
 [indent]• [url=https://github.com/siliconight/gool]GitHub repository[/url]
 • [url=https://github.com/siliconight/gool/blob/main/README.md]README[/url]
 • [url=https://github.com/siliconight/gool/blob/main/CHANGELOG.md]CHANGELOG[/url]
@@ -219,14 +199,12 @@ func _build_ui() -> void:
 func _build_content() -> String:
 	# Concatenate all sections. The header lives first; everything
 	# else flows underneath separated by newlines for visual breathing.
+	# v0.79.7: collapsed from 7 sections to 4 + header + footer.
 	return (_CONTENT_HEADER
 			+ _CONTENT_QUICK_START
-			+ _CONTENT_SHORTCUTS
-			+ _CONTENT_EDITOR_TOOLS
-			+ _CONTENT_TOOLS_MENU
+			+ _CONTENT_EDITOR_MAP
 			+ _CONTENT_RUNTIME_API
-			+ _CONTENT_PLAYER_SETTINGS
-			+ _CONTENT_DIAGNOSTICS
+			+ _CONTENT_TROUBLESHOOTING
 			+ _CONTENT_RESOURCES)
 
 
