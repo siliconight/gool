@@ -26,6 +26,170 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.79.0] - 2026-05-26 — Player audio preferences API (no engine change)
+
+GDScript-only feature release. Opens the v0.79.x track. Adds a
+client-side API for player audio settings — master volume,
+per-category sliders, per-player voice mutes — that combine with
+the existing server-authoritative bus controls without fighting
+them. The shape was designed in response to Brannen's question
+"how does a player change the volume to their specifications in
+their client-side settings (that only controls their sound?)" —
+the answer prior to this release was "implement it yourself by
+calling set_bus_gain_db and hope your game doesn't have dynamic
+mix snapshots."
+
+### Architecture: server-authoritative vs client-preference
+
+Every audio parameter that a game might want to adjust now has
+two storage slots in the Gool autoload:
+
+  * **Authoritative** — what game/server code has requested via
+    `set_master_volume_db()` or `set_bus_gain_db()`. Reflects mix
+    snapshots, ducking states, scripted events.
+  * **Preference** — what the local player has set via the new
+    `set_player_master_volume()` / `set_player_category_volume()`
+    APIs. Reflects the player's settings menu.
+
+When applying to the engine, the two values are **added in dB**
+(equivalent to multiplication in linear). Example: game ducks
+Music to −6 dB for combat, player has Music slider at 75
+(= −2.5 dB preference) → engine applies −8.5 dB on the Music bus.
+The combat duck is still audible, scaled by the player's
+preferred music level. This is the right semantics for shipping
+games; the alternatives (max-of, min-of, or preference-overrides-
+game) all break in audible ways under dynamic mixes.
+
+The two storage slots are bookkept independently — calling
+`set_bus_gain_db("Music", -3.0)` after the player has set a
+preference doesn't overwrite the preference; the next applied
+value is `-3.0 + player_pref_music_db`.
+
+### Added — public methods on the Gool autoload
+
+* **`set_player_master_volume(slider: float)`** — master output volume
+  on a 0-100 scale.
+* **`get_player_master_volume() -> float`** — read current slider value.
+* **`set_player_category_volume(category: String, slider: float)`** —
+  per-category slider. Categories: "sfx", "music", "voice", "ambience",
+  "dialogue", "ui" — match the standard bus taxonomy. Unknown
+  categories emit a push_warning and otherwise no-op.
+* **`get_player_category_volume(category: String) -> float`** — read.
+* **`mute_voice_player(peer_id: int, muted: bool = true)`** — drop
+  voice packets from a specific remote player at submit time. Useful
+  for client-side mute of teammates without contacting the server.
+* **`is_voice_player_muted(peer_id: int) -> bool`** — query.
+* **`get_muted_voice_players() -> Array`** — list current mutes,
+  for UI population.
+* **`clear_muted_voice_players()`** — reset all mutes. Games using
+  ephemeral peer_ids (re-assigned per session) should call this at
+  session start.
+* **`save_player_preferences() -> int`** — persist to
+  `user://gool_player_preferences.cfg`. Returns a Godot Error code.
+  Called automatically by every `set_*` method, so explicit calls
+  are rarely needed.
+* **`load_player_preferences()`** — read from disk and apply.
+  Called automatically from `_ready` just before `ready_to_play`
+  fires, so games listening for that signal see Gool already in
+  the player's preferred state.
+* **`reset_player_preferences()`** — restore defaults (all sliders
+  at 100, no muted peers), persist.
+
+### Slider-to-dB mapping (logarithmic)
+
+Sliders are 0-100, mapped to dB:
+
+```
+slider=100 →   0 dB (unity)
+slider= 50 → −6.02 dB (perceptually "half")
+slider= 10 → −20 dB
+slider=  1 → −40 dB
+slider=  0 → −80 dB (effective mute, floored to avoid log(0))
+```
+
+Formula: `dB = 20 * log10(slider / 100)`. This is the standard
+"feels right" curve for game audio sliders — linear sliders feel
+"stuck at loud" because human hearing is logarithmic.
+
+### Persistence
+
+`user://gool_player_preferences.cfg` (a ConfigFile in the per-OS-
+user app data directory). Doesn't sync to other players, survives
+reinstalls if the user keeps their save data. Schema:
+
+```
+[player_volumes]
+master = 75.0
+sfx = 100.0
+music = 50.0
+voice = 80.0
+ambience = 100.0
+dialogue = 100.0
+ui = 100.0
+
+[player_muted_peers]
+ids = PackedInt64Array(123, 456)
+```
+
+Slider values stored (not dB) so the file is human-readable and
+a UI can populate from it without dB conversion.
+
+### Voice mute semantics
+
+`mute_voice_player` drops the muted peer's packets at
+`submit_voice_packet` time before they reach the C++ engine. The
+peer isn't notified — this is a purely local "I don't want to
+listen to that player" toggle. The muted peer's voice level
+meter (if a game shows one) won't update because no data reaches
+the engine; games that want "muted-but-talking" indicators need
+to track the talk state separately.
+
+Persistence consideration: peer_ids are session-specific in many
+multiplayer setups (Godot's `MultiplayerAPI` assigns them on
+connect). If your game uses ephemeral peer_ids, call
+`clear_muted_voice_players()` at session start so yesterday's
+mute of peer 2 doesn't accidentally silence today's different
+peer 2. If your game uses stable IDs (Steam IDs, account IDs as
+peer_ids), persistence is the right default and the file Just
+Works across sessions.
+
+### Modified — existing wrappers now preference-aware
+
+* **`set_master_volume_db(db: float)`** — remembers the
+  authoritative value, applies `db + player_pref_master_db` to the
+  engine. Game code that previously called this expecting it to be
+  the only source of truth still works; the preference is 0 dB
+  until the player adjusts it.
+* **`set_bus_gain_db(bus_name: String, gain_db: float)`** — same
+  pattern.
+* **`submit_voice_packet(...)`** — drops packets from peers in the
+  mute set, returning true ("accepted") to suppress caller-side
+  retry logic.
+
+### Not in scope (deferred to follow-up releases)
+
+* **Settings menu UI scene.** Decided per the design conversation:
+  games expose their own settings UIs; gool provides the API. The
+  panel scene would constrain UI shape decisions that should be
+  per-game.
+* **Per-player voice volume sliders** (vs the current binary mute).
+  Useful in 4-8 player games where one teammate is too loud, less
+  useful in 32+ player games where mute is the only realistic
+  primitive. Out of scope for v0.79.0; revisit if requested.
+* **Subtitles / captions.** Separate accessibility track.
+* **Output device selection.** OS-level concern; Godot exposes it
+  via AudioServer.set_output_device, which game code can call
+  alongside gool without coordination.
+
+### Important caveat
+
+Logic-tested locally (the existing engine tests are green and the
+GDScript was statically reviewed for the precedence traps and
+scoping rules that have bitten this project before). Not exercised
+end-to-end in a real Godot project. Runtime verification — set
+some sliders, run the game, confirm volumes change audibly,
+restart and confirm persistence holds — is the next step.
+
 ## [0.78.9] - 2026-05-26 — CI hotfix: NOLINTNEXTLINE placement in opus_voice_codec.cpp
 
 Single-line source fix. The `// NOLINTNEXTLINE(modernize-use-equals-default)`

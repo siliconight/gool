@@ -290,6 +290,13 @@ func _ready() -> void:
 	# callbacks only fire while the Monitors panel is open, so
 	# shipped games pay essentially nothing.
 	_setup_perf_monitors()
+	# v0.79.0: load and apply player audio preferences (master volume,
+	# per-category sliders, voice mutes) so the engine is in the
+	# player-preferred state BEFORE ready_to_play fires. Games listening
+	# for ready_to_play can assume Gool already reflects the player's
+	# saved preferences; if a game wants to override, it can call the
+	# authoritative set_master_volume_db / set_bus_gain_db after.
+	load_player_preferences()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -339,6 +346,42 @@ var _render_stats_last_frames: int = 0
 var _diag_sample_rate: int = -1
 var _diag_buffer_size: int = -1
 var _diag_has_bus_graph: bool = false
+
+# v0.79.0: Player-side audio preferences.
+#
+# Architectural split (server-authoritative vs client-preference):
+#   - Game/server code calls set_master_volume_db / set_bus_gain_db
+#     to control mix snapshots, ducking, etc. Those values land in
+#     _authoritative_*_db.
+#   - Player code (settings menu) calls set_player_master_volume /
+#     set_player_category_volume with 0-100 slider values. Those
+#     map to dB and land in _player_pref_*_db.
+#   - When applied to the engine, the two are SUMMED in dB
+#     (multiplied in linear). Player preference is a scalar on top
+#     of whatever the game's current authoritative mix says. This
+#     keeps dynamic game mixes audible while still honoring the
+#     player's overall preference.
+#
+# _muted_voice_peers stores peer_ids whose voice packets should be
+# dropped at submit time. Persisted across sessions; games using
+# ephemeral peer_ids (re-assigned each session) should call
+# clear_muted_voice_players() at session start.
+const _PLAYER_CATEGORY_BUSES: Dictionary = {
+	"sfx":      "SFX",
+	"music":    "Music",
+	"voice":    "Voice",
+	"ambience": "Ambience",
+	"dialogue": "Dialogue",
+	"ui":       "UI",
+}
+const _PLAYER_PREFS_PATH: String = "user://gool_player_preferences.cfg"
+const _PLAYER_DB_FLOOR: float = -80.0  # slider=0 maps here; effective mute
+
+var _authoritative_master_db: float = 0.0
+var _authoritative_bus_db: Dictionary = {}   # bus_name -> dB
+var _player_pref_master_db: float = 0.0
+var _player_pref_bus_db: Dictionary = {}     # bus_name -> dB
+var _muted_voice_peers: Dictionary = {}      # peer_id (int) -> true
 
 # v0.25.0: cross-process metering for the editor mixer dock. When
 # the game is launched from F5 (debugger attached), the runtime
@@ -1758,7 +1801,12 @@ func apply_mix_snapshot(snap: GoolMixSnapshot) -> bool:
 func set_master_volume_db(db: float) -> void:
 	if not _check_init("set_master_volume_db"):
 		return
-	_runtime.set_master_volume_db(db)
+	# v0.79.0: remember what the game asked for, then apply the
+	# combined (authoritative + player-preference) value to the
+	# engine. dB addition is linear-domain multiplication, which is
+	# the correct combine semantics for output gain.
+	_authoritative_master_db = db
+	_runtime.set_master_volume_db(db + _player_pref_master_db)
 
 ## v0.37.0: forwarder for the engine's set_bus_gain_db. Sets the
 ## gain of a named bus in decibels.
@@ -1773,7 +1821,13 @@ func set_master_volume_db(db: float) -> void:
 func set_bus_gain_db(bus_name: String, gain_db: float) -> void:
 	if not _check_init("set_bus_gain_db"):
 		return
-	_runtime.set_bus_gain_db(bus_name, gain_db)
+	# v0.79.0: same combine pattern as set_master_volume_db. The
+	# game's authoritative value is remembered so future player-pref
+	# changes can recompute the effective value without forgetting
+	# what the game intended.
+	_authoritative_bus_db[bus_name] = gain_db
+	var pref_db: float = float(_player_pref_bus_db.get(bus_name, 0.0))
+	_runtime.set_bus_gain_db(bus_name, gain_db + pref_db)
 
 ## Toggle occlusion globally at runtime.
 ##
@@ -2770,6 +2824,12 @@ func submit_voice_packet(player_id: int, bytes: PackedByteArray,
 							arrival_timestamp_ms: int = -1) -> bool:
 	if not _check_init("submit_voice_packet"):
 		return false
+	# v0.79.0: drop packets from peers the local player has muted.
+	# Returning true ("accepted") suppresses any caller-side retry
+	# logic — from the network's perspective the packet was handled;
+	# the local user just chose not to listen.
+	if _muted_voice_peers.has(player_id):
+		return true
 	return _runtime.submit_voice_packet(
 		player_id, bytes, sequence_number,
 		send_timestamp_ms, arrival_timestamp_ms)
@@ -3738,3 +3798,199 @@ func diagnose() -> String:
 			% [failures,
 				(", %d warning(s)" % warnings if warnings > 0 else "")])
 	return "\n".join(lines)
+
+# ===========================================================================
+# v0.79.0: Player audio preferences (client-side settings)
+#
+# Public API for a game's settings menu to expose audio controls that
+# only affect the local player's experience. Server-authoritative
+# settings (bus topology, mix snapshots, voice routing policy) remain
+# the responsibility of set_master_volume_db / set_bus_gain_db / the
+# mix snapshot system; player preferences sit ON TOP of those values
+# and combine via dB addition (linear multiplication).
+#
+# All sliders are 0-100, mapped logarithmically to dB:
+#   slider=100 → 0 dB (unity, no attenuation)
+#   slider= 50 → ~-6 dB (perceptually "half")
+#   slider= 10 → -20 dB
+#   slider=  1 → -40 dB
+#   slider=  0 → effectively muted (mapped to -80 dB floor)
+# The formula matches what shipping games conventionally feel like;
+# linear sliders feel "stuck at loud" because human hearing is log.
+#
+# Persistence: user://gool_player_preferences.cfg (per-OS-user app
+# data, doesn't sync to other players, survives reinstalls). Auto-
+# saved on every set_* call, auto-loaded in _ready before
+# ready_to_play fires.
+# ===========================================================================
+
+# Convert a 0-100 slider value to dB.
+static func _player_slider_to_db(slider: float) -> float:
+	if slider <= 0.0:
+		return _PLAYER_DB_FLOOR
+	if slider >= 100.0:
+		return 0.0
+	# 20 * log10(s/100). Godot's log() is natural; divide by log(10).
+	return 20.0 * log(slider / 100.0) / log(10.0)
+
+# Inverse of _player_slider_to_db. For initializing a slider UI from
+# stored state without round-tripping through the dB representation.
+static func _player_db_to_slider(db: float) -> float:
+	if db <= _PLAYER_DB_FLOOR:
+		return 0.0
+	if db >= 0.0:
+		return 100.0
+	return pow(10.0, db / 20.0) * 100.0
+
+## Set the player's master output volume from a 0-100 slider value.
+## Combines (in dB / linearly) with any game-driven master volume
+## the server has set. Auto-saves to user://gool_player_preferences.cfg.
+func set_player_master_volume(slider: float) -> void:
+	if not _check_init("set_player_master_volume"):
+		return
+	_player_pref_master_db = _player_slider_to_db(slider)
+	# Re-apply the combined value. We can't just call our own
+	# set_master_volume_db wrapper because that would overwrite
+	# _authoritative_master_db; bypass to the binding directly.
+	_runtime.set_master_volume_db(
+		_authoritative_master_db + _player_pref_master_db)
+	save_player_preferences()
+
+## Read the current master slider value (0-100). Useful for
+## initializing a settings UI from the saved/current state.
+func get_player_master_volume() -> float:
+	return _player_db_to_slider(_player_pref_master_db)
+
+## Set per-category slider. Categories: "sfx", "music", "voice",
+## "ambience", "dialogue", "ui". slider is 0-100. Unknown categories
+## are pushed as a warning and otherwise ignored — typical cause is
+## a typo or a project missing the standard bus set.
+func set_player_category_volume(category: String, slider: float) -> void:
+	if not _check_init("set_player_category_volume"):
+		return
+	var bus: String = _PLAYER_CATEGORY_BUSES.get(category, "")
+	if bus == "":
+		push_warning("[gool] unknown player category '%s' — known: %s"
+			% [category, str(_PLAYER_CATEGORY_BUSES.keys())])
+		return
+	_player_pref_bus_db[bus] = _player_slider_to_db(slider)
+	# Re-apply combined value. Bypass our own set_bus_gain_db wrapper
+	# for the same reason as the master setter.
+	var auth_db: float = float(_authoritative_bus_db.get(bus, 0.0))
+	_runtime.set_bus_gain_db(
+		bus, auth_db + _player_pref_bus_db[bus])
+	save_player_preferences()
+
+## Read the current category slider (0-100). Returns 100 (unity)
+## for unknown categories so a UI that queries before applying
+## defaults gracefully rather than crashing.
+func get_player_category_volume(category: String) -> float:
+	var bus: String = _PLAYER_CATEGORY_BUSES.get(category, "")
+	if bus == "":
+		return 100.0
+	return _player_db_to_slider(
+		float(_player_pref_bus_db.get(bus, 0.0)))
+
+## Mute (or unmute) voice packets from a specific peer. peer_id
+## semantics are whatever the host game uses for register_voice_source
+## and submit_voice_packet — typically MultiplayerAPI peer IDs.
+## Muted packets are silently dropped at submit_voice_packet time;
+## the peer isn't notified.
+func mute_voice_player(peer_id: int, muted: bool = true) -> void:
+	if muted:
+		_muted_voice_peers[peer_id] = true
+	else:
+		_muted_voice_peers.erase(peer_id)
+	save_player_preferences()
+
+## Query whether a specific peer is currently muted on the local player's side.
+func is_voice_player_muted(peer_id: int) -> bool:
+	return _muted_voice_peers.has(peer_id)
+
+## Return all currently-muted peer IDs as an Array of ints. Order is
+## unspecified. Useful for populating a "muted players" UI list.
+func get_muted_voice_players() -> Array:
+	return _muted_voice_peers.keys()
+
+## Clear ALL voice-player mutes. Games using ephemeral peer IDs
+## (re-assigned per session) should call this at session start so
+## yesterday's mute of peer_id=2 doesn't accidentally silence today's
+## different peer_id=2.
+func clear_muted_voice_players() -> void:
+	_muted_voice_peers.clear()
+	save_player_preferences()
+
+## Write the current player preferences to disk. Called automatically
+## by every set_* method, so games typically don't need to call this
+## explicitly. Returns a Godot Error code (OK on success).
+func save_player_preferences() -> int:
+	var cfg := ConfigFile.new()
+	cfg.set_value("player_volumes", "master", get_player_master_volume())
+	for category in _PLAYER_CATEGORY_BUSES:
+		cfg.set_value("player_volumes", category,
+			get_player_category_volume(category))
+	var ids := PackedInt64Array()
+	for peer in _muted_voice_peers:
+		ids.append(int(peer))
+	cfg.set_value("player_muted_peers", "ids", ids)
+	return cfg.save(_PLAYER_PREFS_PATH)
+
+## Read player preferences from disk and apply them to the runtime.
+## Called automatically from _ready just before ready_to_play fires.
+## Safe to call again later — for instance, after the player changes
+## settings in another tool. Silently no-ops if the prefs file
+## doesn't exist (a fresh install starts at all-100 sliders).
+func load_player_preferences() -> void:
+	var cfg := ConfigFile.new()
+	var err := cfg.load(_PLAYER_PREFS_PATH)
+	if err != OK:
+		# No prefs file yet (first run on this machine) — that's
+		# expected, not an error. Leave defaults in place.
+		return
+
+	# Master
+	var master_slider: float = float(
+		cfg.get_value("player_volumes", "master", 100.0))
+	_player_pref_master_db = _player_slider_to_db(master_slider)
+
+	# Per-category
+	_player_pref_bus_db.clear()
+	for category in _PLAYER_CATEGORY_BUSES:
+		var bus: String = _PLAYER_CATEGORY_BUSES[category]
+		var slider: float = float(
+			cfg.get_value("player_volumes", category, 100.0))
+		_player_pref_bus_db[bus] = _player_slider_to_db(slider)
+
+	# Muted peers
+	_muted_voice_peers.clear()
+	var muted_ids = cfg.get_value(
+		"player_muted_peers", "ids", PackedInt64Array())
+	if muted_ids is PackedInt64Array or muted_ids is Array:
+		for id in muted_ids:
+			_muted_voice_peers[int(id)] = true
+
+	# Apply the loaded preferences to the runtime. The authoritative
+	# values default to 0 dB (no game adjustment yet) so the effective
+	# state right after _ready is "player preferences only."
+	if _runtime != null and _runtime.is_initialized():
+		_runtime.set_master_volume_db(
+			_authoritative_master_db + _player_pref_master_db)
+		for bus_name in _player_pref_bus_db:
+			var auth_db: float = float(
+				_authoritative_bus_db.get(bus_name, 0.0))
+			_runtime.set_bus_gain_db(
+				bus_name, auth_db + _player_pref_bus_db[bus_name])
+
+## Reset all player preferences to defaults (all sliders at 100,
+## no muted peers) and persist. Useful for a "Reset to defaults"
+## button in a settings menu.
+func reset_player_preferences() -> void:
+	_player_pref_master_db = 0.0
+	_player_pref_bus_db.clear()
+	_muted_voice_peers.clear()
+	# Push reset state to the engine (effective = authoritative + 0).
+	if _runtime != null and _runtime.is_initialized():
+		_runtime.set_master_volume_db(_authoritative_master_db)
+		for bus in _authoritative_bus_db:
+			_runtime.set_bus_gain_db(bus, _authoritative_bus_db[bus])
+	save_player_preferences()
