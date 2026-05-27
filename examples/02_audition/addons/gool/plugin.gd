@@ -32,11 +32,11 @@ const AUTOLOAD_PATH := "res://addons/gool/runtime_singleton.gd"
 const DIALOGUE_DIRECTOR_AUTOLOAD_NAME := "DialogueDirector"
 const DIALOGUE_DIRECTOR_AUTOLOAD_PATH := "res://addons/gool/dialogue_director.gd"
 
-# v0.46.0: GoolMultiplayerBridge is a third autoload that wires
+# v0.46.0: MultiplayerBridge is a third autoload that wires
 # Godot's MultiplayerAPI (or any custom transport via signal hooks)
 # to gool's replication / VOIP primitives. Transport-agnostic by
 # design — see docs/networking_bridge.md.
-const MULTIPLAYER_BRIDGE_AUTOLOAD_NAME := "GoolMultiplayerBridge"
+const MULTIPLAYER_BRIDGE_AUTOLOAD_NAME := "MultiplayerBridge"
 const MULTIPLAYER_BRIDGE_AUTOLOAD_PATH := "res://addons/gool/multiplayer_bridge.gd"
 
 const PREFAB_DIR := "res://addons/gool/prefabs/"
@@ -427,7 +427,7 @@ func _add_autoload() -> void:
 	# the director's _ready() can safely reach the gool autoload.
 	add_autoload_singleton(DIALOGUE_DIRECTOR_AUTOLOAD_NAME,
 			DIALOGUE_DIRECTOR_AUTOLOAD_PATH)
-	# v0.46.0: GoolMultiplayerBridge autoload. Registered AFTER Gool
+	# v0.46.0: MultiplayerBridge autoload. Registered AFTER Gool
 	# (depends on the autoload) and AFTER DialogueDirector (peer
 	# events from the bridge can route to dialogue bark cleanup).
 	add_autoload_singleton(MULTIPLAYER_BRIDGE_AUTOLOAD_NAME,

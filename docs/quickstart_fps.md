@@ -24,7 +24,7 @@
 The plugin scaffolds `res://sounds/{sfx,music,voice,ambience,ui}/`
 folders and writes a default `res://gool/config.json` on first
 enable. Three autoloads register themselves: `Gool`,
-`DialogueDirector`, `GoolMultiplayerBridge`.
+`DialogueDirector`, `MultiplayerBridge`.
 
 ## Step 0 — Start with the FPS-ready config
 
@@ -144,14 +144,14 @@ don't hear it:
 ## Step 4 — Multiplayer: replicated gunshots
 
 For other players to hear your gunshot, use
-`GoolMultiplayerBridge.fire_predicted_event`:
+`MultiplayerBridge.fire_predicted_event`:
 
 ```gdscript
 # weapon.gd — multiplayer-aware
 func _on_fire() -> void:
     if not is_multiplayer_authority():
         return  # only the firing client predicts
-    var pid: int = GoolMultiplayerBridge.fire_predicted_event(
+    var pid: int = MultiplayerBridge.fire_predicted_event(
             "gunshot",
             muzzle.global_position,
             200)
@@ -173,7 +173,7 @@ What the bridge does:
 The bridge is transport-agnostic. With Godot's `MultiplayerAPI` it
 "just works." If you switch to Steam P2P via `SteamMultiplayerPeer`,
 it still works without code changes. For a custom protocol, set
-`GoolMultiplayerBridge.transport_mode = CUSTOM` and connect the
+`MultiplayerBridge.transport_mode = CUSTOM` and connect the
 `event_should_be_sent` signal to your own network layer.
 
 See `docs/networking_bridge.md` for the full API.
@@ -195,7 +195,7 @@ func _ready() -> void:
             200.0)   # max_distance
 
 func _physics_process(_delta: float) -> void:
-    GoolMultiplayerBridge.update_replicated_transform_networked(
+    MultiplayerBridge.update_replicated_transform_networked(
             _engine_handle,
             global_position,
             -global_transform.basis.z,

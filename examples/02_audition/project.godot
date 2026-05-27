@@ -24,7 +24,7 @@ config/icon="res://icon.svg"
 
 Gool="*res://addons/gool/runtime_singleton.gd"
 DialogueDirector="*res://addons/gool/dialogue_director.gd"
-GoolMultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
+MultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
 
 [editor_plugins]
 

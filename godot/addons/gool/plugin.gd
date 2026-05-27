@@ -32,17 +32,17 @@ const AUTOLOAD_PATH := "res://addons/gool/runtime_singleton.gd"
 const DIALOGUE_DIRECTOR_AUTOLOAD_NAME := "DialogueDirector"
 const DIALOGUE_DIRECTOR_AUTOLOAD_PATH := "res://addons/gool/dialogue_director.gd"
 
-# v0.46.0: GoolMultiplayerBridge is a third autoload that wires
+# v0.46.0: MultiplayerBridge is a third autoload that wires
 # Godot's MultiplayerAPI (or any custom transport via signal hooks)
 # to gool's replication / VOIP primitives. Transport-agnostic by
 # design — see docs/networking_bridge.md.
-const MULTIPLAYER_BRIDGE_AUTOLOAD_NAME := "GoolMultiplayerBridge"
+const MULTIPLAYER_BRIDGE_AUTOLOAD_NAME := "MultiplayerBridge"
 const MULTIPLAYER_BRIDGE_AUTOLOAD_PATH := "res://addons/gool/multiplayer_bridge.gd"
 
 # v0.75.2: first-enable restart dialog. The first time gool is enabled
 # in a project, Godot's GDScript parser may have already cached symbol
 # tables for project scripts WITHOUT the three autoloads (Gool,
-# DialogueDirector, GoolMultiplayerBridge) registered. The autoload
+# DialogueDirector, MultiplayerBridge) registered. The autoload
 # registrations land in project.godot during _enter_tree, but the
 # parser's stale cache still emits a cascade of "Identifier 'Gool' not
 # declared" errors — and in some cases hard-crashes the editor before
@@ -536,7 +536,7 @@ func _add_autoload() -> void:
 	# the director's _ready() can safely reach the gool autoload.
 	add_autoload_singleton(DIALOGUE_DIRECTOR_AUTOLOAD_NAME,
 			DIALOGUE_DIRECTOR_AUTOLOAD_PATH)
-	# v0.46.0: GoolMultiplayerBridge autoload. Registered AFTER Gool
+	# v0.46.0: MultiplayerBridge autoload. Registered AFTER Gool
 	# (depends on the autoload) and AFTER DialogueDirector (peer
 	# events from the bridge can route to dialogue bark cleanup).
 	add_autoload_singleton(MULTIPLAYER_BRIDGE_AUTOLOAD_NAME,
@@ -588,20 +588,31 @@ func _maybe_show_first_enable_restart_prompt() -> void:
 
 	var dialog := ConfirmationDialog.new()
 	dialog.title = "gool: first-time setup"
-	# Text is intentionally explicit about WHY the restart matters,
-	# not just THAT it does. Users who skip it should at least know
-	# what they're choosing to live with.
+	# v0.80.5: Explicitly non-exclusive. Default ConfirmationDialog
+	# behavior in Godot 4 is exclusive=true, which fails with the
+	# "another exclusive child" error when this dialog appears while
+	# Project Settings → Plugins is also open (the most common path
+	# users take to enable the plugin). Non-exclusive lets both
+	# windows coexist; the dialog is informational with a primary
+	# action, not a hard block.
+	dialog.exclusive = false
+	# v0.80.5: Body rewritten. Pre-v0.80.4 this dialog warned about
+	# a parse-error cascade that could "crash the editor on the next
+	# project open" — that cascade originated in verify_install.gd's
+	# bare-identifier reference (v0.80.4 fix). With the cascade
+	# closed, the old copy was misleading: it described a problem
+	# that no longer existed. Replaced with honest copy that frames
+	# the restart as recommended-for-cleanliness, not required-to-
+	# avoid-disaster.
 	dialog.dialog_text = (
 		"gool installed.\n\n"
-		+ "Godot needs to restart so its GDScript parser sees the "
-		+ "three new autoloads (Gool, DialogueDirector, "
-		+ "GoolMultiplayerBridge) on a clean cache. Without a "
-		+ "restart, the parser's stale state from before the "
-		+ "autoloads were registered can emit a cascade of "
-		+ "\"Identifier 'Gool' not declared\" errors and may "
-		+ "crash the editor on the next project open.\n\n"
-		+ "Reopening the project clears the cache and everything "
-		+ "parses cleanly.\n\n"
+		+ "The three autoloads — Gool, DialogueDirector, "
+		+ "MultiplayerBridge — are registered, and the mixer + "
+		+ "sound-bank docks are ready to use.\n\n"
+		+ "A quick editor restart is recommended so any scripts "
+		+ "you have open in the script editor pick up the new "
+		+ "autoload definitions for autocomplete. It's not "
+		+ "required and skipping it won't cause errors.\n\n"
 		+ "Restart Godot now?")
 	# Button labels mirror "I get it, do it" vs "I'll handle it myself."
 	dialog.ok_button_text       = "Restart Editor Now"
@@ -634,10 +645,12 @@ func _on_first_enable_restart_confirmed(dialog: ConfirmationDialog) -> void:
 	EditorInterface.restart_editor(true)
 
 func _on_first_enable_restart_dismissed(dialog: ConfirmationDialog) -> void:
-	# User chose to handle it themselves. The flag is already
-	# persisted so the dialog won't reappear. They may see the
-	# parse-error cascade until they reopen the project on their
-	# own schedule.
+	# User chose to handle it themselves. The first-enable flag is
+	# already persisted so the dialog won't reappear. v0.80.4 closed
+	# the parse-error cascade that used to make skipping the restart
+	# painful (verify_install.gd:64); skipping it now is a clean
+	# no-op — autocomplete in open scripts may be stale until the
+	# user restarts on their own schedule, but nothing breaks.
 	dialog.queue_free()
 
 func _register_prefabs() -> void:

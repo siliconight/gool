@@ -26,6 +26,108 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.5] - 2026-05-27 — autoload rename + first-time-setup dialog cleanup
+
+**BREAKING:** The `GoolMultiplayerBridge` autoload has been renamed
+to `MultiplayerBridge`. Any project code referencing
+`GoolMultiplayerBridge.foo(...)` MUST be updated to
+`MultiplayerBridge.foo(...)`. The class file path
+(`res://addons/gool/multiplayer_bridge.gd`) is unchanged; only
+the autoload identifier registered with Godot has changed.
+
+This is the second patch in the v0.81.0 release sequence (after
+v0.80.4's verify_install.gd fix), addressing findings from the
+v0.80.3 verification pass.
+
+### Changed (BREAKING)
+
+  * **Autoload renamed: `GoolMultiplayerBridge` → `MultiplayerBridge`.**
+    The third autoload now follows the same no-prefix convention
+    as `Gool` and `DialogueDirector` (consistent: zero of three
+    autoloads carry a "Gool" prefix). Before v0.80.5, the
+    inconsistency was that two autoloads had no prefix and one
+    did. Pre-v0.79.9 some user-facing surfaces also used
+    "MultiplayerBridge" while the actual registered identifier
+    was still "GoolMultiplayerBridge"; v0.79.9's audit caught
+    only one half of the inconsistency. v0.80.5 resolves it by
+    completing the rename across the entire codebase.
+
+    Affected: 60 references across 21 files in main addon code,
+    docs, and example projects. CHANGELOG historical references
+    are intentionally preserved.
+
+    User migration: search-and-replace `GoolMultiplayerBridge`
+    → `MultiplayerBridge` in any project code, project.godot
+    autoload registrations, or scripts you have that interact
+    with the gool networking bridge.
+
+### Fixed
+
+  * **First-time-setup dialog: window exclusivity error.**
+    `ConfirmationDialog.new()` defaults to `exclusive = true`,
+    which conflicts when the dialog appears while
+    Project Settings → Plugins is also open (the most common
+    user path to enable the plugin). Explicit `exclusive = false`
+    lets both windows coexist. The dialog is informational with
+    a primary action, not a hard block — non-exclusive is the
+    correct semantic.
+
+  * **First-time-setup dialog: misleading body text.** The
+    pre-v0.80.5 body warned about a parse-error cascade that
+    could "crash the editor on the next project open." That
+    cascade originated in verify_install.gd's bare-identifier
+    reference, which v0.80.4 fixed. With the cascade closed,
+    the dialog was warning users about a problem that no longer
+    existed. Rewrote the body to frame the restart honestly:
+    recommended-for-cleanliness (autocomplete in open scripts),
+    not required-to-avoid-disaster. Shorter and less alarming.
+
+  * **Dismissed-callback comment.** Updated to reflect post-
+    v0.80.4 reality: skipping the restart is a clean no-op
+    now, not a "you'll see parse errors" scenario.
+
+### Note on example projects
+
+The example projects under `examples/voice_chat/`,
+`examples/02_audition/`, `examples/03_voice_chat/`, and
+`examples/audition/` ship with a stale older snapshot of
+`plugin.gd` (~835 lines vs canonical's ~1138). They're missing
+many features added since v0.75.2, including the first-time-
+setup dialog itself.
+
+This release renames `GoolMultiplayerBridge` → `MultiplayerBridge`
+in the example mirrors for naming consistency, but does NOT
+sync the example plugin.gd code with the canonical addon. That
+sync is part of the Tier 1.2 (examples directory cleanup)
+work and will land in a future release. For now, the examples
+work for their narrow demonstration purposes but don't
+exercise current addon features.
+
+### Verification
+
+  * `python3 scripts/check_addon_autoload_safety.py` — passes
+    (62 files clean).
+  * `bash scripts/check_version_sync.sh` — passes (all 5
+    version sources agree at 0.80.5).
+  * `grep -r 'GoolMultiplayerBridge' . --exclude='CHANGELOG.md'`
+    — returns 0 results. Historical CHANGELOG references
+    intentionally preserved.
+
+### Findings closed by this release
+
+From the v0.80.3 editor-surface verification triage:
+
+  * #3 (first-time-setup dialog autoload name): the dialog was
+    actually CORRECT pre-v0.80.5 (it said the true identifier
+    "GoolMultiplayerBridge"). v0.80.5 changes the identifier
+    itself rather than the dialog's text; the dialog now
+    correctly says "MultiplayerBridge" because that IS the
+    autoload's name now.
+  * #4 (window exclusivity error): closed by exclusive=false.
+  * #17 (help panel and dialog disagreement on autoload name):
+    closed — both now consistently say "MultiplayerBridge",
+    which matches the actual registered identifier.
+
 ## [0.80.4] - 2026-05-27 — verify_install.gd parse-error + scanner false negative
 
 First release from the v0.80.3 editor-surface verification pass.

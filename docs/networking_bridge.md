@@ -1,10 +1,10 @@
-# `GoolMultiplayerBridge` — networking integration
+# `MultiplayerBridge` — networking integration
 
 Added in v0.46.0. Autoload that wires Godot's `MultiplayerAPI` (or
 any custom transport you plug in) to gool's existing replication
 and VOIP primitives. Lives at
 `res://addons/gool/multiplayer_bridge.gd`, registered as the
-`GoolMultiplayerBridge` autoload by the gool plugin.
+`MultiplayerBridge` autoload by the gool plugin.
 
 ## TL;DR for the backend lead
 
@@ -15,7 +15,7 @@ You're picking the transport. The bridge doesn't lock anything in.
   `SteamMultiplayerPeer`, `WebRTCMultiplayerPeer`, or any other
   `MultiplayerPeer` subclass.
 - **Custom transport**: set
-  `GoolMultiplayerBridge.transport_mode = CUSTOM` and the bridge
+  `MultiplayerBridge.transport_mode = CUSTOM` and the bridge
   emits `send_*` signals instead of RPCs. Your transport code
   listens, routes via whatever protocol you've built (raw UDP,
   Steam P2P channels, a relay you control), and calls the
@@ -48,10 +48,10 @@ You're picking the transport. The bridge doesn't lock anything in.
 
 ```gdscript
 # Once per network tick — usually from the listen-server's tick loop
-GoolMultiplayerBridge.advance_tick(simulation_tick, server_time_ms)
+MultiplayerBridge.advance_tick(simulation_tick, server_time_ms)
 
 # Firing a predicted gunshot — local plays immediately, peers get it via the active transport
-var prediction_id := GoolMultiplayerBridge.fire_predicted_event(
+var prediction_id := MultiplayerBridge.fire_predicted_event(
         "gunshot_pistol", muzzle_position, 200)
 # Cache prediction_id if you might need to cancel later
 
@@ -59,42 +59,42 @@ var prediction_id := GoolMultiplayerBridge.fire_predicted_event(
 Gool.cancel_predicted_event(prediction_id)
 
 # Networked moving emitter (e.g. a teammate's footsteps emitter)
-GoolMultiplayerBridge.update_replicated_transform_networked(
+MultiplayerBridge.update_replicated_transform_networked(
         emitter_handle, position, forward, velocity)
 
 # Voice chat send (no-op on Steam if route_voice_packets = false)
-GoolMultiplayerBridge.send_voice_packet_to_peer(
+MultiplayerBridge.send_voice_packet_to_peer(
         peer_id, packet_bytes, seq_num, send_ts_ms)
 
 # Host migration capture (called by host once per sync interval)
-var snap := GoolMultiplayerBridge.capture_network_snapshot(
+var snap := MultiplayerBridge.capture_network_snapshot(
         PackedStringArray(["Music", "Sfx"]))
 # ... ship snap over the wire ...
 
 # Host migration apply (called by new host after migration)
-GoolMultiplayerBridge.apply_network_snapshot(received_snap)
+MultiplayerBridge.apply_network_snapshot(received_snap)
 ```
 
 ### 2. Low-level hooks (for custom transports)
 
 ```gdscript
 # Switch to CUSTOM mode
-GoolMultiplayerBridge.transport_mode = \
-        GoolMultiplayerBridge.TransportMode.CUSTOM
+MultiplayerBridge.transport_mode = \
+        MultiplayerBridge.TransportMode.CUSTOM
 
 # Listen for outbound packets and route through your own transport
-GoolMultiplayerBridge.send_replicated_event.connect(
+MultiplayerBridge.send_replicated_event.connect(
         func(payload):
             my_transport.send_event_to_all_peers(payload))
 
-GoolMultiplayerBridge.send_voice_packet.connect(
+MultiplayerBridge.send_voice_packet.connect(
         func(payload):
             steam_voice_api.send(payload.peer_id, payload.bytes))
 
 # When YOUR transport receives an inbound packet, call the bridge's
 # receive_* method — this dispatches to Gool with proper staleness check
 func _on_my_transport_event_packet(data):
-    GoolMultiplayerBridge.receive_replicated_event(
+    MultiplayerBridge.receive_replicated_event(
             data.sound_name, data.position, data.simulation_tick,
             data.priority, data.ts_ms)
 ```
@@ -103,10 +103,10 @@ func _on_my_transport_event_packet(data):
 
 ```gdscript
 # In _ready of your main scene, or via the Autoloads inspector
-GoolMultiplayerBridge.transport_mode = ...                # AUTO | MULTIPLAYER_API | CUSTOM | DISABLED
-GoolMultiplayerBridge.auto_register_voice_sources = false  # take manual control
-GoolMultiplayerBridge.route_voice_packets = false          # disable bridge voice routing (Steam)
-GoolMultiplayerBridge.staleness_threshold_ms = 150         # tighter for competitive
+MultiplayerBridge.transport_mode = ...                # AUTO | MULTIPLAYER_API | CUSTOM | DISABLED
+MultiplayerBridge.auto_register_voice_sources = false  # take manual control
+MultiplayerBridge.route_voice_packets = false          # disable bridge voice routing (Steam)
+MultiplayerBridge.staleness_threshold_ms = 150         # tighter for competitive
 ```
 
 ## Practical recipes per transport
@@ -134,7 +134,7 @@ Steam handles voice natively.
 
 ```gdscript
 func _ready():
-    GoolMultiplayerBridge.route_voice_packets = false  # Steam handles voice
+    MultiplayerBridge.route_voice_packets = false  # Steam handles voice
 
 # When Steam delivers a voice packet via Steamworks callback:
 func _on_steam_voice_received(steam_id, bytes):
@@ -146,10 +146,10 @@ func _on_steam_voice_received(steam_id, bytes):
 
 ```gdscript
 func _ready():
-    GoolMultiplayerBridge.transport_mode = \
-            GoolMultiplayerBridge.TransportMode.CUSTOM
-    GoolMultiplayerBridge.send_replicated_event.connect(_send_event_via_my_protocol)
-    GoolMultiplayerBridge.send_voice_packet.connect(_send_voice_via_my_protocol)
+    MultiplayerBridge.transport_mode = \
+            MultiplayerBridge.TransportMode.CUSTOM
+    MultiplayerBridge.send_replicated_event.connect(_send_event_via_my_protocol)
+    MultiplayerBridge.send_voice_packet.connect(_send_voice_via_my_protocol)
 
 func _send_event_via_my_protocol(payload: Dictionary):
     var bytes := PackedByteArray()
@@ -157,7 +157,7 @@ func _send_event_via_my_protocol(payload: Dictionary):
     my_relay.broadcast(bytes)
 
 func _on_my_protocol_event_packet(payload: Dictionary):
-    GoolMultiplayerBridge.receive_replicated_event(
+    MultiplayerBridge.receive_replicated_event(
             payload.sound_name, payload.position,
             payload.simulation_tick, payload.priority, payload.ts_ms)
 ```

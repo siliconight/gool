@@ -218,7 +218,7 @@ func advance_tick(simulation_tick: int, server_time_ms: int) -> void:
 ## (e.g. server says the shot missed).
 ##
 ## Typical use — firing client's gun-fire handler:
-##   var pid := GoolMultiplayerBridge.fire_predicted_event(
+##   var pid := MultiplayerBridge.fire_predicted_event(
 ##           "gunshot_pistol", muzzle_pos, 200)
 ##   _pending_predictions[pid] = ...   # track for later cancel
 func fire_predicted_event(sound_name: String, position: Vector3,

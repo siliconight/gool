@@ -85,7 +85,7 @@ chat, replace it with one of:
   Steam's voice channel. Same shape as MultiplayerAPI from gool's
   perspective.
 - **Custom UDP** — emit packets via your custom protocol's voice
-  channel. Set `GoolMultiplayerBridge.transport_mode = CUSTOM`
+  channel. Set `MultiplayerBridge.transport_mode = CUSTOM`
   and connect to its signals.
 
 ### 3. Replace the loopback receiver with VoiceChatPlayer

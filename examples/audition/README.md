@@ -104,7 +104,7 @@ targets you can shoot.
 
 ## Notes
 
-- This example does NOT exercise multiplayer (no GoolMultiplayerBridge
+- This example does NOT exercise multiplayer (no MultiplayerBridge
   usage). For that, see `examples/coop_shooter_template/`.
 - The audition's `register_sound_definition` calls demonstrate the
   current 9-positional-arg signature. A Dictionary form is on the

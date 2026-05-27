@@ -4,7 +4,7 @@ The v0.75.2 release added a one-time dialog that fires when a developer
 enables the gool plugin for the first time in a project. It exists to
 prevent a real, common, hard-to-diagnose failure: Godot's GDScript
 parser caches identifier resolution before the plugin's autoloads
-(Gool, DialogueDirector, GoolMultiplayerBridge) are registered, then
+(Gool, DialogueDirector, MultiplayerBridge) are registered, then
 emits a cascade of `Identifier 'Gool' not declared` errors that can
 crash the editor on the next open. A single editor restart clears
 the cache and everything parses cleanly.

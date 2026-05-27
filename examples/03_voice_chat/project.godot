@@ -23,7 +23,7 @@ driver/enable_input=true
 [autoload]
 
 Gool="*res://addons/gool/runtime_singleton.gd"
-GoolMultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
+MultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
 
 [editor_plugins]
 
