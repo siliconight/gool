@@ -21,6 +21,21 @@
 #include "audio_engine/emitter.h"
 #include "audio_engine/result.h"
 
+// v0.80.0: nlohmann/json drives JSON string decoding. The hand-rolled
+// ParseString prior to v0.80.0 handled eight of JSON's nine spec-
+// mandated escapes (\" \\ \/ \n \r \t \b \f) but rejected \u, leaving
+// every valid Unicode-escaped sound-bank name unreadable. The
+// bus-config loader had the same bug class (worse: it was also missing
+// \b and \f); see bus_config_loader.cpp for the full incident note.
+// v0.80.0's narrow fix is symmetric here: ParseString below captures
+// the raw quoted literal from the stream and delegates escape decoding
+// to nlohmann/json. The rest of the parser is unchanged. A future
+// release will replace the whole walker with a DOM-based version for
+// architectural symmetry; that work is deferred for a release cycle
+// that can support proper compile-and-validate cadence across all
+// schema call sites.
+#include <nlohmann/json.hpp>
+
 #include <atomic>
 #include <array>
 #include <cstdio>
@@ -141,9 +156,12 @@ public:
         Advance();
     }
 
-    // Parse a JSON string into `out`. Caller has already consumed
-    // (or will check) the leading quote? No — this function expects
-    // to find a leading quote.
+    // Parse a JSON string into `out`. v0.80.0: delegates escape
+    // decoding to nlohmann/json for spec compliance (the pre-v0.80.0
+    // handwritten switch was missing the `\u` escape and would reject
+    // any sound-bank name containing one). The Scanner still owns
+    // *finding* the string's bounds in the source stream; nlohmann
+    // owns the unescape pass on the captured literal.
     bool ParseString(std::string& out, ParseError& err) {
         SkipWhitespace();
         if (Peek() != '"') {
@@ -151,39 +169,54 @@ public:
             err.message = "expected string";
             return false;
         }
-        Advance(); // consume "
-        out.clear();
+        const int startLine = line_;
+        const char* startByte = cur_;
+        Advance(); // consume opening quote
+
         while (!AtEnd()) {
             const char c = Peek();
-            if (c == '"') { Advance(); return true; }
-            if (c == '\\') {
-                Advance();
-                const char esc = Peek();
-                switch (esc) {
-                    case '"':  out.push_back('"');  break;
-                    case '\\': out.push_back('\\'); break;
-                    case '/':  out.push_back('/');  break;
-                    case 'n':  out.push_back('\n'); break;
-                    case 'r':  out.push_back('\r'); break;
-                    case 't':  out.push_back('\t'); break;
-                    case 'b':  out.push_back('\b'); break;
-                    case 'f':  out.push_back('\f'); break;
-                    default:
-                        err.line = line_;
-                        err.message = "unsupported string escape";
+            if (c == '"') {
+                Advance(); // consume closing quote
+                const size_t literalLen = static_cast<size_t>(cur_ - startByte);
+                try {
+                    nlohmann::json j = nlohmann::json::parse(
+                        std::string_view(startByte, literalLen));
+                    if (!j.is_string()) {
+                        err.line = startLine;
+                        err.message = "internal: captured non-string at string position";
                         return false;
+                    }
+                    out = j.get<std::string>();
+                    return true;
+                } catch (const nlohmann::json::parse_error& e) {
+                    err.line = startLine;
+                    err.message = e.what();
+                    return false;
+                } catch (const std::exception& e) {
+                    err.line = startLine;
+                    err.message = std::string("string decode failed: ") + e.what();
+                    return false;
                 }
+            }
+            if (c == '\\') {
+                // Consume the backslash and the next char without
+                // interpreting them. nlohmann does the actual decoding.
                 Advance();
-            } else if (c == '\n') {
+                if (!AtEnd()) Advance();
+                continue;
+            }
+            if (c == '\n') {
+                // Preserve pre-v0.80.0 behavior: literal newlines inside
+                // strings were rejected. nlohmann would also reject (per
+                // spec), but reporting it here lets us keep the friendlier
+                // pre-existing error message and the original line number.
                 err.line = line_;
                 err.message = "unterminated string (newline inside string)";
                 return false;
-            } else {
-                out.push_back(c);
-                Advance();
             }
+            Advance();
         }
-        err.line = line_;
+        err.line = startLine;
         err.message = "unterminated string at end of file";
         return false;
     }

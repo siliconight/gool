@@ -178,28 +178,28 @@ func _ready() -> void:
 
 	if not ok:
 		if has_bus_graph:
-			# v0.54.2: expanded message — added the JSON-escape
-			# failure mode (bad \u or stray backslash, surfaced in
-			# the screenshot from v0.54.1 era as "bad escape \u")
-			# and pointed users at the dock's empty-state recovery
-			# buttons (shipped in v0.51.0) which are usually the
-			# fastest fix path.
+			# v0.80.0: rewrote this message after the prior version
+			# (v0.54.2 through v0.79.9) blamed users for spec-compliant
+			# JSON that gool's hand-rolled parser couldn't handle. The
+			# parser now uses nlohmann/json for string-escape decoding,
+			# so any parse error reaching here is a real schema-level
+			# problem (duplicate ids, dangling parent references,
+			# unknown effect kind) — not a JSON syntax issue. The
+			# parser line above names the file location.
 			push_error(
 				"[gool] runtime init failed: bus config rejected. "
-				+ "Check the prior error from the JSON parser above for "
-				+ "the specific line. Common causes:\n"
-				+ "  (1) Bad JSON escape sequence — `\\u` not followed "
-				+ "by 4 hex digits, stray backslash from a Windows path, "
-				+ "or unescaped quote inside a string. The parser error "
-				+ "above names the line.\n"
-				+ "  (2) Duplicate bus ids.\n"
-				+ "  (3) A bus references a parent which doesn't exist.\n"
-				+ "  (4) An effect kind that isn't recognized.\n"
-				+ "Recovery: open res://gool/config.json in a text "
-				+ "editor and fix the line named in the parser error. "
-				+ "Or delete the file entirely — the mixer dock's empty "
-				+ "state has Create default config / Use FPS template "
-				+ "buttons that rebuild a known-good config."
+				+ "Read the prior error from the parser — it names "
+				+ "the specific line and reason. Common schema "
+				+ "failures: a bus has a duplicate id, references "
+				+ "a parent that doesn't exist, lists an unknown "
+				+ "effect kind, or category_routing points at a "
+				+ "bus that wasn't declared.\n"
+				+ "Recovery: open res://gool/config.json and fix "
+				+ "the line named in the parser error. Or — if the "
+				+ "config has drifted from what you want — delete "
+				+ "the file and use the mixer dock's empty-state "
+				+ "buttons (Create default config / Use FPS template) "
+				+ "to rebuild from a shipping baseline."
 			)
 		else:
 			push_error(

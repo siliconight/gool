@@ -49,6 +49,19 @@ add_executable(audio_engine_telemetry_test                unit/telemetry_test.cp
 add_executable(audio_engine_logging_test                  unit/logging_test.cpp)
 add_executable(audio_engine_integration_kitchen_sink_test unit/integration_kitchen_sink_test.cpp)
 
+# v0.80.0: JSON loader correctness pass — regression guards for the
+# bug class fixed in this release.
+#   json_escape_test         — every spec-mandated escape sequence
+#                              parses correctly through the loader.
+#   shipped_artifacts_test   — every shipped JSON artifact in the
+#                              repo parses through the loader.
+# Either failing means we've regressed escape handling or shipped
+# something the loader can't read; both indicate the bug class is
+# back. See bus_config_loader.cpp's v0.80.0 comment block for the
+# full incident note.
+add_executable(audio_engine_json_escape_test              unit/json_escape_test.cpp)
+add_executable(audio_engine_shipped_artifacts_test        unit/shipped_artifacts_test.cpp)
+
 # Tests need access to internal headers (src/) for util classes that aren't
 # part of the public API.
 foreach(_t spsc_ring slot_map bus_graph compressor compressor_profile saturation saturation_profile decoder priority_eviction occlusion_lpf doppler_smoothing air_absorption reverb_send voice_codec binaural_spatializer production_readiness multiplayer_readiness jitter_buffer voice_telemetry voice_mute_budget biquad_eq integration_kitchen_sink aligned_float_buffer material_occlusion material_eq_curve material_eq_audition master_control)
@@ -102,6 +115,8 @@ target_link_libraries(audio_engine_sound_rtpc_test                PRIVATE audio_
 target_link_libraries(audio_engine_telemetry_test                 PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_logging_test                   PRIVATE audio_engine::audio_engine)
 target_link_libraries(audio_engine_integration_kitchen_sink_test  PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_json_escape_test               PRIVATE audio_engine::audio_engine)
+target_link_libraries(audio_engine_shipped_artifacts_test         PRIVATE audio_engine::audio_engine)
 
 add_test(NAME spsc_ring_test                COMMAND audio_engine_spsc_ring_test)
 add_test(NAME slot_map_test                 COMMAND audio_engine_slot_map_test)
@@ -147,6 +162,14 @@ add_test(NAME sound_rtpc_test               COMMAND audio_engine_sound_rtpc_test
 add_test(NAME telemetry_test                 COMMAND audio_engine_telemetry_test)
 add_test(NAME logging_test                   COMMAND audio_engine_logging_test)
 add_test(NAME integration_kitchen_sink_test COMMAND audio_engine_integration_kitchen_sink_test)
+
+# v0.80.0 regression guards. json_escape_test is hermetic (no I/O).
+# shipped_artifacts_test walks the repo's known artifact directories,
+# so its WORKING_DIRECTORY is pinned at the repo root for reliable
+# path discovery regardless of where CTest is invoked from.
+add_test(NAME json_escape_test              COMMAND audio_engine_json_escape_test)
+add_test(NAME shipped_artifacts_test        COMMAND audio_engine_shipped_artifacts_test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # -----------------------------------------------------------------------------
 # Benchmarks (deliberately NOT registered with add_test).

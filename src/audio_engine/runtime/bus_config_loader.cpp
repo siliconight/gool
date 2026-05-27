@@ -16,6 +16,33 @@
 #include <unordered_map>
 #include <vector>
 
+// v0.80.0: nlohmann/json drives JSON string decoding. The hand-rolled
+// parseString() prior to v0.80.0 handled only \" \\ \/ \n \t \r — six
+// of JSON's nine spec-mandated escapes — and would reject any string
+// containing \u, \b, or \f as "bad escape". The shipping FPS template
+// (templates/config_fps.json) contained \u2014 and \u2192 in its
+// _comment field, which made first-run installs fail for users who
+// picked the FPS preset. This was diagnosed as a user-side error for
+// twelve releases before being identified as a parser bug.
+//
+// v0.80.0's narrow fix:
+//   - parseString below captures the raw quoted literal from the
+//     source stream and delegates escape decoding to nlohmann/json.
+//     Everything nlohmann accepts, gool accepts (which is everything
+//     spec-compliant).
+//   - The other Scanner primitives (parseNumber, parseObject, parseArray,
+//     parseBool) are unchanged. They don't decode escapes; the bug
+//     class doesn't apply. A future release will replace the whole
+//     parser with a DOM-based walker for architectural symmetry; that
+//     work is deferred for a release cycle that has time for proper
+//     compile-and-validate cadence across all 500+ schema call sites.
+//   - A CI guard (tests/unit/shipped_artifacts_test.cpp, also v0.80.0)
+//     loads every shipped .json artifact through the actual loader on
+//     every push. The combination of (nlohmann owns escape decoding) +
+//     (CI rejects any shipped artifact the loader can't parse) is the
+//     persistent fix against this bug class.
+#include <nlohmann/json.hpp>
+
 namespace audio::BusConfigLoader {
 
 namespace {
@@ -80,39 +107,72 @@ public:
         advance();
     }
 
-    // Parse a JSON string literal. Returns false on malformed input.
+    // Parse a JSON string literal. v0.80.0: delegates escape decoding
+    // to nlohmann/json for spec compliance. The Scanner still owns
+    // *finding* the string's bounds in the source stream (so line
+    // tracking and the calling code's cursor advance are unchanged);
+    // nlohmann handles the unescape pass.
+    //
+    // Why this shape: nlohmann::json::parse() requires a complete
+    // JSON value, and a bare quoted string ("foo") is a valid JSON
+    // value per RFC 8259. So we capture exactly that — the open quote,
+    // the body (with escapes intact, NOT decoded), and the close quote
+    // — and let nlohmann turn it into a std::string.
     bool parseString(std::string& out, std::string& err, int& errLine) {
         skipWs();
         if (peek() != '"') {
             err = "expected string"; errLine = line_; return false;
         }
+        const int startLine = line_;
+        const char* startByte = cur_;
         advance(); // consume opening quote
-        out.clear();
+
+        // Scan to the matching closing quote, tracking backslash escapes
+        // so we don't misidentify \" as the terminator. We don't decode
+        // here — nlohmann does. We just need to find where the literal
+        // ends so we can hand the right substring to nlohmann.
         while (!done()) {
             char c = peek();
-            if (c == '"') { advance(); return true; }
-            if (c == '\\') {
-                advance();
-                char esc = peek();
-                switch (esc) {
-                    case '"':  out.push_back('"');  break;
-                    case '\\': out.push_back('\\'); break;
-                    case '/':  out.push_back('/');  break;
-                    case 'n':  out.push_back('\n'); break;
-                    case 't':  out.push_back('\t'); break;
-                    case 'r':  out.push_back('\r'); break;
-                    default:
-                        err = std::string("bad escape \\") + esc;
-                        errLine = line_;
+            if (c == '"') {
+                advance(); // consume closing quote
+                const size_t literalLen = static_cast<size_t>(cur_ - startByte);
+                try {
+                    nlohmann::json j = nlohmann::json::parse(
+                        std::string_view(startByte, literalLen));
+                    if (!j.is_string()) {
+                        // Shouldn't happen — we captured a quoted literal.
+                        // Belt-and-suspenders for the impossible case.
+                        err = "internal: captured non-string at string position";
+                        errLine = startLine;
                         return false;
+                    }
+                    out = j.get<std::string>();
+                    return true;
+                } catch (const nlohmann::json::parse_error& e) {
+                    // nlohmann's `what()` already includes a useful
+                    // description ("invalid string: '\\x' is not a valid
+                    // escape" or similar). Pass it through.
+                    err = e.what();
+                    errLine = startLine;
+                    return false;
+                } catch (const std::exception& e) {
+                    err = std::string("string decode failed: ") + e.what();
+                    errLine = startLine;
+                    return false;
                 }
-                advance();
-            } else {
-                out.push_back(c);
-                advance();
             }
+            if (c == '\\') {
+                // Consume the backslash and the next character without
+                // interpreting them. The very last character before the
+                // closing quote could be `\\` which legitimately escapes
+                // itself; nlohmann will handle that.
+                advance();
+                if (!done()) advance();
+                continue;
+            }
+            advance();
         }
-        err = "unterminated string"; errLine = line_;
+        err = "unterminated string"; errLine = startLine;
         return false;
     }
 

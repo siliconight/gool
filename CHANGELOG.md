@@ -26,6 +26,158 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.0] - 2026-05-26 — JSON loader correctness pass
+
+This release is an incident-driven correctness fix. A user clicked
+"Use FPS template" in the gool mixer dock's empty-state UI and hit
+a first-run install failure that nobody had hit before — except
+that twelve previous releases shipped the same broken artifact, and
+the diagnostic message blamed users for valid JSON. This is the
+honest writeup.
+
+### What broke
+
+The shipping FPS bus-config template
+(`godot/addons/gool/templates/config_fps.json`) contained `\u2014`
+(em-dash) and `\u2192` (right-arrow) inside its `_comment` field —
+both spec-compliant Unicode escapes per RFC 8259. Gool's hand-rolled
+JSON parser at `src/audio_engine/runtime/bus_config_loader.cpp`
+implemented only six of JSON's nine spec-mandated string escape
+sequences: `\"`, `\\`, `\/`, `\n`, `\r`, `\t`. The parser rejected
+`\u`, `\b`, and `\f` as "bad escape". Any user who selected the FPS
+template at install time got an immediate parse failure on first F5.
+
+The user-facing error message added insult: it listed "Bad JSON
+escape sequence — `\u` not followed by 4 hex digits, stray
+backslash from a Windows path, or unescaped quote inside a string"
+as a common cause, blaming the user for syntax that was always
+correct. The bug survived because nothing in CI exercised our
+shipped JSON artifacts against our own parser.
+
+A second hand-rolled JSON parser in `src/audio_engine/assets/sound_bank.cpp`
+had the same bug class — it implemented `\b` and `\f` but was also
+missing `\u`. Same gap, different file, same underlying cause: two
+parsers, neither audited against the JSON spec, neither tested
+against the artifacts gool itself ships.
+
+### Why this took twelve releases to find
+
+Every prior release of gool was shipped without anyone clicking
+"Use FPS template" in the mixer dock's empty state in a clean
+project. Internal testing used `Create default config` (the safe
+path — that one builds the config in code via `JSON.stringify`
+and produces no `\u` escapes) or hand-authored configs. The FPS
+template was added once, tested by its author in an environment
+where it had already been parsed successfully, and never re-run
+through the loader on a fresh install. The CI matrix exercises
+44+ unit tests and 13 jobs, none of which loaded the template.
+
+That's the persistent fix this release ships against — not just
+"add \u support," but "make it impossible to ship a JSON artifact
+the loader can't read."
+
+### Fixed
+
+  * **Both JSON parsers now delegate string-escape decoding to
+    [`nlohmann/json`](https://github.com/nlohmann/json)** (v3.11.3
+    pinned). The hand-rolled `parseString()` in
+    `bus_config_loader.cpp` and `ParseString` in `sound_bank.cpp`
+    now capture the raw quoted literal from the source stream and
+    hand it to `nlohmann::json::parse()` for spec-compliant
+    decoding. Anything nlohmann accepts, gool now accepts — every
+    JSON spec escape, surrogate pairs, the full BMP and beyond.
+  * **Shipping FPS template cleaned up.** Dropped the `_comment`
+    field from `templates/config_fps.json` entirely. JSON-with-
+    embedded-prose is a smell; if explanatory text matters it
+    belongs in a sibling Markdown file, not in a config the
+    runtime parses. The template now contains only the
+    functional `mc_*` parameter set.
+  * **Gaslighting error message rewritten.** The pre-v0.80.0 error
+    listed "stray backslash from a Windows path" and "unescaped
+    quote inside a string" as causes — both of which would now
+    be valid JSON that nlohmann handles correctly. Post-v0.80.0
+    the message points at the prior parser error (which now names
+    the real reason — schema-level issues like duplicate ids,
+    dangling parent references, unknown effect kinds) and offers
+    recovery via the mixer dock's empty-state buttons.
+
+### Added (regression guards)
+
+The persistent-fix story isn't just "fix the parser" — it's "make
+the same bug class structurally impossible to recur." Two new
+tests in `tests/unit/`:
+
+  * **`json_escape_test`** — exercises every JSON spec-mandated
+    string escape (`\"`, `\\`, `\/`, `\n`, `\t`, `\r`, `\b`,
+    `\f`, plus `\u` with various codepoints including BMP and
+    non-BMP surrogate pairs) through the bus-config loader's
+    public API. If a future change regresses escape handling in
+    either parser, this test fails.
+  * **`shipped_artifacts_test`** — walks the repo's shipped JSON
+    artifact directories (`godot/addons/gool/templates/` and
+    `examples/*/gool/config.json`) and parses every file through
+    the actual loader. If anyone adds a template containing JSON
+    syntax the loader can't read, the build fails before release.
+    **This is the test that would have caught the v0.78.0
+    regression that brought us here.**
+
+Both tests are wired into the existing CTest matrix and run on
+every CI push.
+
+### Build-system additions
+
+  * `third_party/nlohmann/json.hpp` (fetched, not vendored) is now
+    a required dependency of the core library. Single-header drop;
+    no link-time additions. ~25KB compiled into `audio_engine`.
+  * `scripts/fetch_nlohmann_json.{sh,bat}` follow the same
+    convention as `scripts/fetch_miniaudio.{sh,bat}` — pinned to
+    v3.11.3 by default, can be re-pointed at any tag.
+  * `CMakeLists.txt` adds the `AUDIO_ENGINE_FETCH_NLOHMANN_JSON`
+    option (default ON) and a vendored-first / FetchContent-
+    fallback resolution block alongside the existing miniaudio /
+    dr_libs / opus blocks.
+
+### Not in this release (deferred to a future cycle)
+
+This release is **scoped surgically** — `parseString`/`ParseString`
+are the only parser primitives that changed. The other Scanner
+primitives (`parseNumber`, `parseObject`, `parseArray`, `parseBool`,
+the line-tracking cursor, the schema-walking call sites) remain
+hand-rolled.
+
+  * **Number parsing is still not strictly spec-compliant.**
+    `parseNumber` accepts a leading `+` sign and runs values
+    through `strtod`, which is laxer than the JSON spec
+    (which disallows `+`, leading zeros, hex). This isn't
+    exercised by any shipped artifact (the new
+    `shipped_artifacts_test` guarantees that), and no user
+    has hit it. Deferred.
+  * **The schema walker is still tightly coupled to the Scanner
+    text-cursor API.** A future release will replace the whole
+    parser with a DOM-based walker built on `nlohmann::json`
+    directly — cleaner code, no adapter layer, ~500 schema
+    call-sites simplified. Not done here because the scope
+    risked introducing subtle behavior regressions across the
+    full bus-config schema, and a release branded as the
+    correctness fix shouldn't itself ship correctness
+    regressions. Tracked.
+
+The persistent-fix claim rests on two pieces, not one: nlohmann
+owns the spec-compliant decoding for the surface that matters
+(string escapes), AND the shipped-artifacts CI guard makes it
+impossible to ship a JSON file the loader can't read. Either
+layer alone wouldn't be enough; together they close the bug
+class.
+
+### For users on v0.79.x with the broken config
+
+The existing broken `res://gool/config.json` (if it contains
+`\u2014` etc. from the FPS template) will **just work** after
+upgrading — the new parser handles those escapes. No manual fix
+needed. If you already manually patched the file by removing
+the `_comment` field or replacing the escapes with literal
+characters, that still works too.
+
 ## [0.79.9] - 2026-05-26 — README audit and currency pass
 
 Documentation-only release. No engine changes, no GDScript

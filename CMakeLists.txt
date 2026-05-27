@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.79.9
+    VERSION 0.80.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -92,6 +92,14 @@ endif()
 
 option(AUDIO_ENGINE_BACKEND_MINIAUDIO "Build the miniaudio backend (cross-platform device I/O). Required for the audible examples (playback, hello_audio); the core library and tests build without it." ON)
 option(AUDIO_ENGINE_FETCH_MINIAUDIO   "Fetch miniaudio via FetchContent if not vendored locally" ON)
+
+# nlohmann/json: required by the JSON-config loaders (bus_config_loader,
+# sound_bank). v0.80.0 replaced two hand-rolled parsers — both missing
+# `\u`/`\b`/`\f` escape handling and other non-spec corners — with this
+# single-header library. No option to disable it: the core JSON config
+# path uses it. Fetched on demand if not vendored, same pattern as
+# miniaudio / dr_libs / stb_vorbis.
+option(AUDIO_ENGINE_FETCH_NLOHMANN_JSON "Fetch nlohmann/json via FetchContent if not vendored locally" ON)
 
 # File-format decoders. Each is independent and off by default to keep the
 # core library dependency-free. When ON, the corresponding decoder TU pulls
@@ -248,6 +256,57 @@ if(AUDIO_ENGINE_BACKEND_MINIAUDIO)
         target_link_libraries(audio_engine PRIVATE ${CMAKE_DL_LIBS} m)
     endif()
 endif()
+
+# -------------------------------------------------------------------------
+# nlohmann/json (required, not optional)
+# -------------------------------------------------------------------------
+# Single-header JSON library used by bus_config_loader.cpp and
+# sound_bank.cpp. v0.80.0 replaced two hand-rolled parsers — both
+# rejecting valid JSON containing `\u`/`\b`/`\f` escapes, and shipping
+# with various other non-spec corners — with this library. No option to
+# disable: the JSON-config code paths use it unconditionally.
+#
+# Resolution order:
+#   1. Vendored copy at third_party/nlohmann/json.hpp
+#      (drop in via scripts/fetch_nlohmann_json.sh or .bat)
+#   2. FetchContent against upstream (AUDIO_ENGINE_FETCH_NLOHMANN_JSON=ON,
+#      the default — pinned to v3.11.3)
+#
+# The header is included as <nlohmann/json.hpp>, so we add the parent
+# directory of the nlohmann/ folder to the include path.
+set(_AE_NLOHMANN_VENDORED "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/json.hpp")
+
+if(EXISTS "${_AE_NLOHMANN_VENDORED}")
+    set(_AE_NLOHMANN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+    message(STATUS "audio_engine: using vendored nlohmann/json at ${_AE_NLOHMANN_VENDORED}")
+elseif(AUDIO_ENGINE_FETCH_NLOHMANN_JSON)
+    include(FetchContent)
+    if(NOT DEFINED AE_NLOHMANN_TAG)
+        set(AE_NLOHMANN_TAG v3.11.3)
+    endif()
+    # Suppress nlohmann's own tests/examples/install targets — we want
+    # headers only. These cache vars are read by nlohmann's CMakeLists
+    # if FetchContent ends up invoking add_subdirectory on it.
+    set(JSON_BuildTests      OFF CACHE INTERNAL "")
+    set(JSON_Install         OFF CACHE INTERNAL "")
+    FetchContent_Declare(
+        audio_engine_nlohmann
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        ${AE_NLOHMANN_TAG}
+        GIT_SHALLOW    TRUE)
+    FetchContent_MakeAvailable(audio_engine_nlohmann)
+    set(_AE_NLOHMANN_INCLUDE_DIR "${audio_engine_nlohmann_SOURCE_DIR}/single_include")
+    message(STATUS "audio_engine: fetched nlohmann/json (${AE_NLOHMANN_TAG}) into ${_AE_NLOHMANN_INCLUDE_DIR}")
+else()
+    message(FATAL_ERROR
+        "nlohmann/json.hpp was not found at\n"
+        "  ${_AE_NLOHMANN_VENDORED}\n"
+        "and AUDIO_ENGINE_FETCH_NLOHMANN_JSON=OFF. Either vendor it via\n"
+        "scripts/fetch_nlohmann_json.sh (or .bat) or set\n"
+        "AUDIO_ENGINE_FETCH_NLOHMANN_JSON=ON (the default).")
+endif()
+
+target_include_directories(audio_engine PRIVATE "${_AE_NLOHMANN_INCLUDE_DIR}")
 
 # -------------------------------------------------------------------------
 # Optional: file-format decoders (dr_wav / stb_vorbis / dr_flac)

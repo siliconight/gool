@@ -182,6 +182,7 @@ jobs:
         run: |
           bash scripts/fetch_miniaudio.sh
           bash scripts/fetch_decoders.sh
+          bash scripts/fetch_nlohmann_json.sh
 
       - name: Fetch single-header dependencies (Windows)
         if: runner.os == 'Windows'
@@ -189,6 +190,7 @@ jobs:
         run: |
           call scripts\fetch_miniaudio.bat
           call scripts\fetch_decoders.bat
+          call scripts\fetch_nlohmann_json.bat
 
       - name: Cache godot-cpp build
         id: godot-cpp-cache

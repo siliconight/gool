@@ -793,6 +793,7 @@ deps). Standalone-library users opt in by hand.
 | miniaudio (cross-platform audio device I/O) — `scripts/fetch_miniaudio.{sh,bat}`     |
 | dr_wav, dr_flac (lossless decoders) — `scripts/fetch_decoders.{sh,bat}`              |
 | stb_vorbis (Ogg decoder) — `scripts/fetch_decoders.{sh,bat}`                         |
+| nlohmann/json (JSON parser, v3.11.3 pinned, MIT) — `scripts/fetch_nlohmann_json.{sh,bat}` |
 
 The fetch scripts download from upstream GitHub and set the files
 read-only after download. `AUDIO_ENGINE_FETCH_DECODERS=ON` (the
