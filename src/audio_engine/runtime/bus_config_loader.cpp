@@ -341,6 +341,14 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             // semantically — both old parameters were 0..1 in the same
             // direction as their new analogues — so configs from prior
             // versions load with perceptually similar behavior.
+            //
+            // NOLINTBEGIN(bugprone-branch-clone) — `decay`/`room_size`
+            // and `hf_damping`/`damping` are deliberately-identical
+            // branches (canonical key + soft-migration alias); clang-tidy
+            // reports branch-clone at the FIRST of each cloned pair, so
+            // the suppression must start here. v0.80.0 moved this from
+            // around only the alias block, where it had no effect on
+            // the diagnostic; see CHANGELOG.
             else if (key == "predelay_ms")        { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbPredelayMs = static_cast<float>(n); }
             else if (key == "decay")              { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }
             else if (key == "lf_damping")         { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbLfDamping = static_cast<float>(n); }
@@ -354,7 +362,6 @@ bool parseEffect(Scanner& s, EffectConfig& fx,
             // pre-v0.28 spelling of `hf_damping`. Identical bodies are
             // load-bearing here: configs from older versions must load
             // with the same effect they had then.
-            // NOLINTBEGIN(bugprone-branch-clone) — see above
             else if (key == "room_size")          { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbDecay     = static_cast<float>(n); }
             else if (key == "damping")            { if (!s.parseNumber(n, err, errLine)) return false; fx.reverbHfDamping = static_cast<float>(n); }
             // NOLINTEND(bugprone-branch-clone)

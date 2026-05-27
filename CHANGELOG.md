@@ -26,6 +26,76 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.1] - 2026-05-26 — v0.80.0 follow-up: test harness + latent NOLINTs
+
+v0.80.0's parser refactor itself landed clean — CI confirmed it via
+the existing `bus_config_loader_test` and `sound_bank_test` (both
+pass against the real nlohmann/json) and via the new
+`shipped_artifacts_test` (every shipped JSON artifact in the repo
+now parses through the loader). What didn't land clean was the new
+test harness that was meant to *demonstrate* the fix, plus two
+pre-existing latent clang-tidy NOLINT placements that v0.80.0's
+file-line shifts happened to expose.
+
+### Fixed
+
+  * **`tests/unit/json_escape_test.cpp` — Master-bus requirement.**
+    The bus-config loader rejects any graph that doesn't contain a
+    bus literally named `"Master"` (or `"master"`), regardless of
+    how well-formed the rest of the JSON is. The v0.80.0 escape-
+    coverage test built minimal configs with a single bus carrying
+    the escape sequence under test in its name — no Master, so the
+    loader rejected every config with `"no bus named 'Master'"`
+    before ever reaching the parseString correctness it was trying
+    to demonstrate. Reworked the test to build two-bus graphs (a
+    required Master + a child whose name carries the escape) and
+    read the escape-bearing name back off the child slot.
+
+  * **`src/audio_engine/runtime/bus_config_loader.cpp` — NOLINT
+    placement (latent bug).** The reverb effect's parameter parsing
+    has a soft-migration block where the v0.28.x aliases (`room_size`,
+    `damping`) intentionally mirror the canonical keys (`decay`,
+    `hf_damping`). A pre-existing `NOLINTBEGIN/END(bugprone-branch-
+    clone)` pair wrapped the *aliases*, but clang-tidy reports the
+    branch-clone diagnostic at the position of the *first* clone in
+    each cloned pair — the canonical key. v0.79.x runs happened to
+    survive this because clang-tidy reported at the alias position
+    in those builds; v0.80.0's added-comment block shifted line
+    numbers and triggered slightly different analysis, exposing the
+    bug. Moved the suppression region to start before `decay` and
+    end after `damping`, covering the whole identical-bodies cluster
+    regardless of which end clang-tidy chooses to flag.
+
+  * **`src/audio_engine/runtime/audio_runtime.cpp` — same NOLINT
+    placement issue.** `HandleEvent` has two consecutive `case`
+    branches (`PlaySoundAtLocation` and `PlaySoundAttachedToActor`)
+    that intentionally share a body — host-attachment is the host's
+    responsibility, so both events resolve to a one-shot at the
+    carried position. The pre-existing `NOLINTNEXTLINE` was placed
+    on the second branch; moved it to the first.
+
+### Validation
+
+  * CI on v0.80.0 (commit 584dc73) confirmed:
+    - `bus_config_loader_test` PASSED — the parseString refactor
+      preserves existing parser behavior end-to-end.
+    - `sound_bank_test` PASSED — the ParseString refactor likewise.
+    - `shipped_artifacts_test` PASSED — every shipped JSON artifact
+      in the repo parses through the new loader, including the
+      fixed FPS template. This is the regression guard that would
+      have caught the v0.78.0 bug; it now confirms there's nothing
+      else of the same bug class hiding in shipped artifacts.
+    - All other 42 existing tests continued to pass.
+  * The only test that failed was `json_escape_test` — and it
+    failed not on a parser issue but on a missing Master bus in the
+    test fixtures, which is fixed here.
+
+### Not in this release
+
+The `lizard` cyclomatic-complexity gate continues to report 11+
+violations (pre-existing tech debt, documented at v0.21.4 and gated
+with `continue-on-error: true`). v0.22 still owns the cleanup.
+
 ## [0.80.0] - 2026-05-26 — JSON loader correctness pass
 
 This release is an incident-driven correctness fix. A user clicked

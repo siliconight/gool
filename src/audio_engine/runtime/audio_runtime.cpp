@@ -2164,11 +2164,17 @@ void AudioRuntimeImpl::StartOneShotForSound(AudioSoundId soundId,
 
 void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
     switch (e.type) {
+        // NOLINTNEXTLINE(bugprone-branch-clone) — same body as
+        // PlaySoundAttachedToActor below is intentional; both events
+        // resolve to a one-shot at e.position (actor-attachment is the
+        // host's job, see CreateEmitter + SetEmitterTransform). The
+        // suppression sits at the FIRST cloned branch because that's
+        // where clang-tidy reports the diagnostic. v0.80.0 moved this
+        // from PlaySoundAttachedToActor (below), where it had no
+        // effect; see CHANGELOG.
         case AudioEventType::PlaySoundAtLocation:
             StartOneShotForSound(e.soundId, e.position, e.priority, e.predictionId);
             break;
-        // NOLINTNEXTLINE(bugprone-branch-clone) — same body is intentional;
-        // see comment below
         case AudioEventType::PlaySoundAttachedToActor:
             // Actor-to-position resolution is the host's responsibility;
             // we play at the carried position. Host-attached emitters that

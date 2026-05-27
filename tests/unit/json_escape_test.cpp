@@ -27,17 +27,22 @@
 
 namespace {
 
-// Build a minimal bus-config JSON whose bus name uses the named
-// escape sequence. The BusConfig::debugName field is a fixed-size
-// char[16] (silent strncpy truncation), so prefixes/suffixes are
-// kept short — "X" before and "Y" after — leaving room for even
-// the multi-byte UTF-8 surrogate-pair decoded forms.
+// Build a minimal bus-config JSON that exercises an escape sequence
+// inside a bus name. The loader requires a bus literally named
+// "Master" (line 779: `r.error = "no bus named 'Master'"`), so the
+// graph has two buses: Master (the required root) and a child bus
+// whose name carries the escape sequence under test. The child's
+// debugName field is a fixed-size char[16] (silent strncpy
+// truncation), so prefixes/suffixes are kept short — "X" before
+// and "Y" after — leaving room for even the multi-byte UTF-8
+// surrogate-pair decoded forms.
 std::string buildConfigWithEscape(const std::string& nameWithEscape) {
     return std::string("{\n")
          + "  \"sample_rate\": 48000,\n"
          + "  \"buffer_size\": 512,\n"
          + "  \"buses\": [\n"
-         + "    { \"name\": \"" + nameWithEscape + "\", \"gain_db\": 0.0 }\n"
+         + "    { \"name\": \"Master\", \"gain_db\": 0.0 },\n"
+         + "    { \"name\": \"" + nameWithEscape + "\", \"parent\": \"Master\", \"gain_db\": 0.0 }\n"
          + "  ]\n"
          + "}\n";
 }
@@ -50,18 +55,22 @@ bool testEscape(const char* what,
                 const std::string& expectedDecoded) {
     const std::string cfg = buildConfigWithEscape("X" + escapeInJson + "Y");
     auto result = audio::BusConfigLoader::ParseFromJson(cfg);
-    if (!result.error.empty() || !result.ok) {
+    if (!result.ok || !result.error.empty()) {
         std::printf("  FAIL: escape %s — loader rejected with: %s "
                     "(line %d)\n",
                     what, result.error.c_str(), result.errorLine);
         return false;
     }
-    if (result.busGraph.busCount != 1) {
-        std::printf("  FAIL: escape %s — expected 1 bus, got %u\n",
+    if (result.busGraph.busCount != 2) {
+        std::printf("  FAIL: escape %s — expected 2 buses (Master + child), got %u\n",
                     what, result.busGraph.busCount);
         return false;
     }
-    const std::string actualName(result.busGraph.buses[0].debugName);
+    // Master is at index 0 (id kBusMaster). The escape-bearing bus
+    // is the one whose debugName is NOT "Master".
+    const std::string nameA(result.busGraph.buses[0].debugName);
+    const std::string nameB(result.busGraph.buses[1].debugName);
+    const std::string& actualName = (nameA == "Master") ? nameB : nameA;
     const std::string expectedName = "X" + expectedDecoded + "Y";
     if (actualName != expectedName) {
         std::printf("  FAIL: escape %s — name mismatch.\n"
