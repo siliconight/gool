@@ -1483,7 +1483,7 @@ func apply_reverb_preset(bus_name: String, effect_index: int,
 	for key in preset:
 		var param_id: int = PARAM_ID.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_reverb_preset: unknown key "
+			push_warning(("[gool] apply_reverb_preset: unknown key "
 					+ "'%s' on bus='%s' — expected one of: "
 					+ "predelay_ms, decay, lf_damping, hf_damping, "
 					+ "diffusion, wet_gain_db, dry_gain_db")
@@ -1494,7 +1494,7 @@ func apply_reverb_preset(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_reverb_preset: "
+			push_warning(("[gool] apply_reverb_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1565,7 +1565,7 @@ func apply_compressor_preset(bus_name: String, effect_index: int,
 	for key in preset:
 		var param_id: int = PARAM_ID.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_compressor_preset: unknown key "
+			push_warning(("[gool] apply_compressor_preset: unknown key "
 					+ "'%s' on bus='%s' — expected one of: %s")
 					% [key, bus_name, ", ".join(PARAM_ID.keys())])
 			all_ok = false
@@ -1574,7 +1574,7 @@ func apply_compressor_preset(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_compressor_preset: "
+			push_warning(("[gool] apply_compressor_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1659,7 +1659,7 @@ func apply_eq_preset(bus_name: String, preset: Dictionary,
 			"high_gain_db", "high_freq_hz"]
 	for key in preset:
 		if not VALID_KEYS.has(key):
-			push_warning(("[Gool] apply_eq_preset: unknown key '%s' "
+			push_warning(("[gool] apply_eq_preset: unknown key '%s' "
 					+ "on bus='%s' — expected one of: %s")
 					% [key, bus_name, ", ".join(VALID_KEYS)])
 			all_ok = false
@@ -1675,7 +1675,7 @@ func _apply_biquad_band(bus_name: String, effect_index: int,
 	for key in band:
 		var param_id: int = param_id_map.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_eq_preset (internal): unknown "
+			push_warning(("[gool] apply_eq_preset (internal): unknown "
 					+ "biquad key '%s' — bug in apply_eq_preset; "
 					+ "report this") % key)
 			all_ok = false
@@ -1684,7 +1684,7 @@ func _apply_biquad_band(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_eq_preset: "
+			push_warning(("[gool] apply_eq_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1724,7 +1724,7 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 	for key in preset:
 		var param_id: int = PARAM_ID.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_saturation_preset: unknown key "
+			push_warning(("[gool] apply_saturation_preset: unknown key "
 					+ "'%s' on bus='%s' — expected one of: %s")
 					% [key, bus_name, ", ".join(PARAM_ID.keys())])
 			all_ok = false
@@ -1733,7 +1733,7 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_saturation_preset: "
+			push_warning(("[gool] apply_saturation_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "

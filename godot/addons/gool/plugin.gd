@@ -275,11 +275,17 @@ const EMITTER_3D_SCRIPT := "res://addons/gool/prefabs/audio_emitter_3d.gd"
 const BANK_LOADER_SCRIPT := "res://addons/gool/prefabs/gool_sound_bank_loader.gd"
 
 # Submenu label under Project → Tools.
-const TOOLS_MENU_NAME := "Gool"
+# v0.80.6: Lowercase per the established brand convention.
+# "gool" is the brand/product name in all display strings; "Gool"
+# is reserved for code identifiers (the autoload name, etc.). The
+# help panel, console logs, and plugin.cfg already use "gool"
+# lowercase; these two display constants are the last surfaces
+# where the brand was incorrectly Title-Cased.
+const TOOLS_MENU_NAME := "gool"
 
 # v0.24.0: read-only mixer dock script path + bottom-panel label.
 const MIXER_DOCK_SCRIPT := "res://addons/gool/editor/mixer_dock.gd"
-const MIXER_DOCK_LABEL := "Gool Mixer"
+const MIXER_DOCK_LABEL := "gool Mixer"
 
 # v0.25.0: cross-process bridge from running game → editor mixer
 # dock. EditorDebuggerPlugin instance is created in _enter_tree,
@@ -757,7 +763,7 @@ func _scaffold_sounds_tree_if_missing() -> void:
 			+ "and they appear in the AudioEmitter3D sound_name dropdown."
 		)
 
-# v0.23.0: Project → Tools → Gool menu -----------------------------------------
+# v0.23.0: Project → Tools → gool menu -----------------------------------------
 #
 # Adds editor commands for the common scene-setup tasks that used to
 # require manually adding three nodes and configuring four inspector
@@ -943,7 +949,7 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 		_show_info_dialog(
 			"No scene open",
 			"Open a scene first (Scene → New Scene, or open an "
-			+ "existing one), then try Project → Tools → Gool again."
+			+ "existing one), then try Project → Tools → gool again."
 		)
 		return
 	if not (root is Node3D):
@@ -1078,7 +1084,7 @@ func _add_debug_overlay_to_current_scene() -> void:
 		_show_info_dialog(
 			"No scene open",
 			"Open a scene first (Scene → New Scene), then try "
-			+ "Project → Tools → Gool → Add debug overlay again."
+			+ "Project → Tools → gool → Add debug overlay again."
 		)
 		return
 	# Check for existing overlay; one per scene is the right model.

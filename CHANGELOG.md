@@ -26,6 +26,105 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.6] - 2026-05-27 — Cluster G: string sweep
+
+Third patch in the v0.81.0 release sequence. Closes the four
+"string and copy" findings from the v0.80.3 verification pass.
+No behavior changes — pure copy/label/casing work.
+
+### Fixed
+
+  * **Help panel "Play your first sound" example (finding #16).**
+    The pre-v0.80.6 example told users to drop a file in
+    `res://audio/` and call `Gool.register_sound_from_file(...)`
+    — neither matches the scaffolded reality. The scaffolding
+    creates `res://sounds/{sfx,music,voice,ambience,ui}/`, and
+    the folder-based bank auto-discovers files dropped there
+    without any explicit registration call. Rewrote the example
+    to show the auto-discovery path:
+    ```
+    Drop an audio file into res://sounds/sfx/ — the bank
+    scanner picks it up automatically. Then play it from
+    any script:
+    Gool.play_3d("ping", Vector3(10, 0, 0))
+    The sound id is the filename without extension
+    (ping.wav → "ping").
+    ```
+    Shorter, matches reality, demonstrates the killer feature.
+
+  * **Sound bank per-row label (finding #14).** Was "%d entries
+    · folder" — read ambiguously as "this bank is a folder
+    (not a file)" or "0 entries in the folder." Now displays
+    "folder-based · %d sound(s)" with singular handling.
+    Examples:
+    - "folder-based · 0 sounds"
+    - "folder-based · 1 sound"
+    - "folder-based · 12 sounds"
+
+    The "folder-based" / "base" type indicator now stands on
+    its own as an unambiguous category; the count gets correct
+    singular/plural agreement.
+
+  * **Sound bank toolbar pluralization (finding #18).** Was
+    "%d bank%s · %d sounds total" — "%s" handled bank
+    singular/plural but "sounds" was always plural. Now
+    "%d bank%s · %d sound%s total" with both counts handled.
+    Examples:
+    - "1 bank · 1 sound total" (no more "1 sounds")
+    - "3 banks · 47 sounds total"
+
+  * **Brand casing inconsistency (finding #21).** Pre-v0.80.6
+    the project had no consistent convention. The fix
+    establishes:
+    - **Lowercase "gool"** for the brand/product name in all
+      display strings and prose.
+    - **Capitalized "Gool"** only as a code identifier (the
+      autoload's registered name).
+    - Other identifiers and class names follow standard PascalCase
+      (`GoolSoundBank`, `GoolMaterialEQ`) — these are code,
+      not brand.
+
+    Surfaces updated:
+    - `TOOLS_MENU_NAME := "Gool"` → `"gool"` — the
+      Project → Tools submenu now reads "Project → Tools → gool"
+    - `MIXER_DOCK_LABEL := "Gool Mixer"` → `"gool Mixer"`
+      — the bottom-panel tab now reads "gool Mixer"
+    - 9 `[Gool]` console warning prefixes in
+      `runtime_singleton.gd` → `[gool]` (matches the 95 already-
+      lowercase prefixes elsewhere)
+    - 3 prose references to the menu in `plugin.gd` and
+      `docs/godot_quickstart.md` updated to match the new menu
+      name
+
+### Not fixed (out of scope or out of reach)
+
+  * **Project Settings "Gool" section header.** The Project
+    Settings dialog auto-capitalizes the first letter of each
+    setting-path segment for display. Our settings live under
+    `audio/gool/...`, so Godot renders the section as "Audio →
+    Gool". This is Godot's title-casing, not ours. Changing it
+    would require renaming the entire setting path (breaking
+    change for anyone with project settings already
+    configured). Declined: not worth the breakage for a
+    cosmetic improvement, and not strictly inconsistent — code
+    identifiers and capitalized paths are both legitimate code-
+    side uses of "Gool".
+
+### Verification
+
+  * `python3 scripts/check_addon_autoload_safety.py` — passes.
+  * `bash scripts/check_version_sync.sh` — passes.
+  * `grep -r '\[Gool\]' godot/addons/gool/` — 0 results.
+  * `grep -r 'Tools → Gool\b' godot/addons/gool/` — 0 results
+    (excluding lowercased "Tools → gool").
+
+### Findings closed by this release
+
+  * #14 — Sound bank "0 entries · folder" ambiguous label
+  * #16 — Help panel example uses wrong directory
+  * #18 — Pluralization bugs in sound bank labels
+  * #21 — Brand casing inconsistency
+
 ## [0.80.5] - 2026-05-27 — autoload rename + first-time-setup dialog cleanup
 
 **BREAKING:** The `GoolMultiplayerBridge` autoload has been renamed

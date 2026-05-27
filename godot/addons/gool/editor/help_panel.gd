@@ -54,9 +54,9 @@ entry points. For deep dives, see the [url=%s]README on GitHub[/url].[/i]
 
 const _CONTENT_QUICK_START := """
 [font_size=16][b]Play your first sound[/b][/font_size]
-Drop an audio file in [code]res://[/code] and run:
-[code]Gool.register_sound_from_file("ping", "res://audio/ping.wav")
-Gool.play_3d("ping", Vector3(10, 0, 0))[/code]
+Drop an audio file into [code]res://sounds/sfx/[/code] — the bank scanner picks it up automatically. Then play it from any script:
+[code]Gool.play_3d("ping", Vector3(10, 0, 0))[/code]
+The sound id is the filename without extension ([code]ping.wav[/code] → [code]"ping"[/code]). \
 F5 and you'll hear it. If you'd rather start from a working scene, the \
 [i]Project → Tools → gool[/i] menu has a scaffolding command that drops \
 a complete 3D audio setup into the current scene.

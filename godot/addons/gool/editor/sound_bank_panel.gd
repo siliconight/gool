@@ -524,11 +524,17 @@ func _build_bank_header(bank_path: String, bank) -> Control:
 	path_label.add_theme_font_size_override("font_size", 10)
 	name_block.add_child(path_label)
 
-	# Entry count + bank type indicator (folder vs base).
+	# Entry count + bank type indicator (folder-based vs base).
+	# v0.80.6: Rephrased to disambiguate "folder" (which previously
+	# read as "this bank is a folder, not a file" — wrong, bank.tres
+	# IS a file). "folder-based" makes the type indicator
+	# unambiguous; "%d sound(s)" with singular handling fixes the
+	# "1 sounds" pluralization bug.
 	var stats_label := Label.new()
 	var entry_count: int = bank.sounds.size() if bank.sounds else 0
-	var type_str: String = "folder" if bank.has_method("rescan") else "base"
-	stats_label.text = "%d entries · %s" % [entry_count, type_str]
+	var type_str: String = "folder-based" if bank.has_method("rescan") else "base"
+	var noun: String = "sound" if entry_count == 1 else "sounds"
+	stats_label.text = "%s · %d %s" % [type_str, entry_count, noun]
 	stats_label.add_theme_color_override("font_color",
 			_get_text_secondary())
 	stats_label.add_theme_font_size_override("font_size", 11)
@@ -752,11 +758,16 @@ func _update_toolbar_stats() -> void:
 	if _banks.is_empty():
 		_toolbar_stats_label.text = "No banks found"
 	else:
+		# v0.80.6: Pluralize both "bank" and "sound". Previously
+		# only "bank" was pluralized; "sound" was always plural,
+		# producing "1 bank · 1 sounds total" when both counts
+		# were 1.
 		_toolbar_stats_label.text = (
-				"%d bank%s · %d sounds total"
+				"%d bank%s · %d sound%s total"
 				% [_banks.size(),
 				   "" if _banks.size() == 1 else "s",
-				   total_sounds])
+				   total_sounds,
+				   "" if total_sounds == 1 else "s"])
 
 
 # ─── Theme helpers ─────────────────────────────────────────────

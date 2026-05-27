@@ -104,7 +104,7 @@ The fastest path to verifying gool works in your project:
 The addon ships a pre-configured test scene that proves gool can
 produce sound end-to-end.
 
-1. **Project → Tools → Gool → Open quickstart_3d.tscn (verify gool works)**
+1. **Project → Tools → gool → Open quickstart_3d.tscn (verify gool works)**
 2. Press **F5**.
 3. You should hear a short 440Hz beep within ~1 second.
 
@@ -140,7 +140,7 @@ in the Output panel.
 
 **2. Open or create a 3D scene** (Scene → New Scene → 3D Scene).
 
-**3. Project → Tools → Gool → Add gool 3D audio scaffolding to current scene.**
+**3. Project → Tools → gool → Add gool 3D audio scaffolding to current scene.**
 
 This inserts three nodes under your scene root:
 - `GoolListener3D` — the "ears" for spatialized audio
