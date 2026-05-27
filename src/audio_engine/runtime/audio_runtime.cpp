@@ -2164,14 +2164,18 @@ void AudioRuntimeImpl::StartOneShotForSound(AudioSoundId soundId,
 
 void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
     switch (e.type) {
-        // NOLINTNEXTLINE(bugprone-branch-clone) — same body as
-        // PlaySoundAttachedToActor below is intentional; both events
-        // resolve to a one-shot at e.position (actor-attachment is the
-        // host's job, see CreateEmitter + SetEmitterTransform). The
-        // suppression sits at the FIRST cloned branch because that's
-        // where clang-tidy reports the diagnostic. v0.80.0 moved this
-        // from PlaySoundAttachedToActor (below), where it had no
-        // effect; see CHANGELOG.
+        // Both branches below intentionally share a body — host-
+        // attachment is the host's job (see CreateEmitter +
+        // SetEmitterTransform), so PlaySoundAttachedToActor resolves
+        // to the same one-shot as PlaySoundAtLocation. clang-tidy's
+        // bugprone-branch-clone reports at the FIRST of each cloned
+        // pair, but NOLINTNEXTLINE only suppresses the literal next
+        // line — a multi-line explanatory comment between the
+        // directive and the case statement breaks the suppression
+        // (which is the bug v0.80.1 shipped with). v0.80.3 uses
+        // NOLINTBEGIN/NOLINTEND wrapping the whole cloned region;
+        // see CHANGELOG.
+        // NOLINTBEGIN(bugprone-branch-clone)
         case AudioEventType::PlaySoundAtLocation:
             StartOneShotForSound(e.soundId, e.position, e.priority, e.predictionId);
             break;
@@ -2182,6 +2186,7 @@ void AudioRuntimeImpl::HandleEvent(const AudioEvent& e, bool /*replicated*/) {
             // SetEmitterTransform (state model).
             StartOneShotForSound(e.soundId, e.position, e.priority, e.predictionId);
             break;
+        // NOLINTEND(bugprone-branch-clone)
         case AudioEventType::StopEmitter:
             if (const auto* rec = emitters_->Get(e.emitter)) {
                 if (rec->mixerStarted) StopMixerAndResetStreamingFor(*rec);

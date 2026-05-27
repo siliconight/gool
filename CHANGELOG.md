@@ -26,6 +26,55 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.3] - 2026-05-27 — Fix v0.80.1's broken NOLINTNEXTLINE in audio_runtime.cpp
+
+v0.80.1 tried to fix a latent `bugprone-branch-clone` diagnostic in
+`audio_runtime.cpp::HandleEvent` by adding a `NOLINTNEXTLINE`
+directive before `case AudioEventType::PlaySoundAtLocation:`. That
+fix did not actually work: clang-tidy's `NOLINTNEXTLINE` only
+suppresses warnings on the line *literally* following the comment,
+but the patch placed the directive at the top of a multi-line
+explanatory comment block, with seven more comment lines between
+the directive and the case statement. clang-tidy treated those
+intervening comments as the "next line" and the suppression never
+reached the actual code. The bug was masked locally because
+syntax-only verification can't exercise clang-tidy.
+
+### Fixed
+
+  * **`audio_runtime.cpp` — replaced NOLINTNEXTLINE with
+    NOLINTBEGIN/NOLINTEND wrapping the cloned region.** Same
+    pattern that already works in `bus_config_loader.cpp` for the
+    reverb soft-migration keys. NOLINTBEGIN/NOLINTEND wraps a
+    range of lines and doesn't depend on the suppression being on
+    the immediately-preceding line, so explanatory comments
+    between the directive and the suppressed code are fine.
+
+### v0.80.2 SYSTEM-include fix is confirmed working
+
+v0.80.2's `target_include_directories(... SYSTEM PRIVATE ...)`
+treatment of third-party headers cut clang-tidy's warning count
+on `bus_config_loader.cpp` from 108,207 to 57,009 — a 47%
+reduction, confirming that nlohmann/json template instantiations
+are no longer being analyzed. The job runtime should be back in
+the ~4-min baseline on v0.80.3 once the (now-correctly-suppressed)
+diagnostic stops gating the matrix.
+
+### Lesson for future NOLINT placements
+
+When a NOLINT directive needs explanatory text, write the
+explanation *first* and put the NOLINT directive on the line
+immediately preceding the suppressed code:
+
+    // Long explanation goes here.
+    // More explanation. Even more.
+    // NOLINTNEXTLINE(check-name)
+    suppressed_code();
+
+OR use NOLINTBEGIN/NOLINTEND, which doesn't care where the
+explanation lives relative to the directive. This release uses
+the second pattern.
+
 ## [0.80.2] - 2026-05-27 — CI hygiene: SYSTEM-mark third-party includes
 
 Pure CI-hygiene patch. No functional code changes, no behavior
