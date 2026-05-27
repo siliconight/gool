@@ -26,6 +26,52 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.2] - 2026-05-27 — CI hygiene: SYSTEM-mark third-party includes
+
+Pure CI-hygiene patch. No functional code changes, no behavior
+changes, no API changes. Bumped because version-sync gates require
+a release tag to validate the CMake change end-to-end.
+
+### Fixed
+
+  * **clang-tidy on v0.80.1 ran for 36+ minutes before being
+    cancelled.** Pre-v0.80.0 the job finished in ~4 min. The
+    slowdown was concentrated in the two TUs that include
+    `<nlohmann/json.hpp>` (bus_config_loader.cpp, sound_bank.cpp):
+    nlohmann's single-header library is ~25k lines of heavily
+    templated C++, and v0.80.0 added it to the audio_engine target
+    via `target_include_directories(... PRIVATE ...)` — which
+    leaves it on the user-headers analysis path. clang-tidy then
+    expanded and analyzed every template instantiation through
+    bugprone-*, cert-*, clang-analyzer-*, and related checks for
+    each of those two TUs. Eight orders of magnitude more analysis
+    work than the rest of the matrix combined.
+
+  * **Fix: mark every third-party include as `SYSTEM`.** Eight
+    lines in CMakeLists.txt now use
+    `target_include_directories(audio_engine SYSTEM PRIVATE ...)`
+    instead of `PRIVATE` alone, covering nlohmann/json, miniaudio,
+    dr_libs, stb, opus (the vcpkg path, the pkg-config path, the
+    fallback opus/ path, and the macOS brew prefix). The
+    project's own `include/` and `src/` paths are unchanged —
+    those should be subject to full clang-tidy analysis.
+
+    Compilers treat SYSTEM-marked paths as system headers
+    (warnings suppressed), and clang-tidy's checks bail early on
+    system headers unless `-system-headers` is explicitly passed
+    (it isn't). Expected restoration: clang-tidy job back to its
+    pre-v0.80.0 runtime, ~4 min.
+
+### Why mark them all, not just nlohmann
+
+The pre-v0.80.0 third-party libraries (miniaudio, dr_libs, stb,
+opus) were also PRIVATE-but-not-SYSTEM. They didn't cause the
+slowdown because they're C headers with negligible template
+complexity. Marking them SYSTEM now is correctness, not urgency:
+warnings from third-party code aren't actionable for us, and
+their analysis time isn't load-bearing. Better to be consistent
+than to add SYSTEM only on the one library that bit us.
+
 ## [0.80.1] - 2026-05-26 — v0.80.0 follow-up: test harness + latent NOLINTs
 
 v0.80.0's parser refactor itself landed clean — CI confirmed it via

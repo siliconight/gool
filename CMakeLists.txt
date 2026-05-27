@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.80.1
+    VERSION 0.80.2
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -237,7 +237,7 @@ if(AUDIO_ENGINE_BACKEND_MINIAUDIO)
 
     target_sources(audio_engine PRIVATE
         src/audio_engine/backend/miniaudio_backend.cpp)
-    target_include_directories(audio_engine PRIVATE "${_AE_MINIAUDIO_INCLUDE_DIR}")
+    target_include_directories(audio_engine SYSTEM PRIVATE "${_AE_MINIAUDIO_INCLUDE_DIR}")
     target_compile_definitions(audio_engine PUBLIC AUDIO_ENGINE_HAS_MINIAUDIO=1)
 
     # Per-platform link libs that miniaudio's chosen native backend needs.
@@ -306,7 +306,7 @@ else()
         "AUDIO_ENGINE_FETCH_NLOHMANN_JSON=ON (the default).")
 endif()
 
-target_include_directories(audio_engine PRIVATE "${_AE_NLOHMANN_INCLUDE_DIR}")
+target_include_directories(audio_engine SYSTEM PRIVATE "${_AE_NLOHMANN_INCLUDE_DIR}")
 
 # -------------------------------------------------------------------------
 # Optional: file-format decoders (dr_wav / stb_vorbis / dr_flac)
@@ -347,7 +347,7 @@ if(AUDIO_ENGINE_DECODERS_WAV OR AUDIO_ENGINE_DECODERS_FLAC)
             "Either vendor dr_wav.h / dr_flac.h or set AUDIO_ENGINE_FETCH_DECODERS=ON.")
     endif()
 
-    target_include_directories(audio_engine PRIVATE "${_AE_DRLIBS_INCLUDE_DIR}")
+    target_include_directories(audio_engine SYSTEM PRIVATE "${_AE_DRLIBS_INCLUDE_DIR}")
 endif()
 
 if(AUDIO_ENGINE_DECODERS_OGG)
@@ -377,7 +377,7 @@ if(AUDIO_ENGINE_DECODERS_OGG)
             "AUDIO_ENGINE_FETCH_DECODERS=ON.")
     endif()
 
-    target_include_directories(audio_engine PRIVATE "${_AE_STB_INCLUDE_DIR}")
+    target_include_directories(audio_engine SYSTEM PRIVATE "${_AE_STB_INCLUDE_DIR}")
 endif()
 
 if(AUDIO_ENGINE_DECODERS_WAV)
@@ -463,7 +463,7 @@ if(AUDIO_ENGINE_DECODERS_OPUS)
     if(APPLE)
         foreach(_prefix /opt/homebrew /usr/local)
             if(EXISTS "${_prefix}/include/opus/opusfile.h")
-                target_include_directories(audio_engine PRIVATE "${_prefix}/include")
+                target_include_directories(audio_engine SYSTEM PRIVATE "${_prefix}/include")
                 target_link_directories(audio_engine PUBLIC "${_prefix}/lib")
             endif()
         endforeach()
@@ -518,7 +518,7 @@ if(AUDIO_ENGINE_VOICE_OPUS)
             pkg_check_modules(OPUS_PKG QUIET opus)
             if(OPUS_PKG_FOUND)
                 message(STATUS "audio_engine: using system libopus via pkg-config (opus)")
-                target_include_directories(audio_engine PRIVATE ${OPUS_PKG_INCLUDE_DIRS})
+                target_include_directories(audio_engine SYSTEM PRIVATE ${OPUS_PKG_INCLUDE_DIRS})
                 target_link_libraries(audio_engine PRIVATE ${OPUS_PKG_LIBRARIES})
                 target_link_directories(audio_engine PRIVATE ${OPUS_PKG_LIBRARY_DIRS})
                 set(_AE_OPUS_RESOLVED TRUE)
@@ -567,7 +567,7 @@ if(AUDIO_ENGINE_VOICE_OPUS)
     if(APPLE)
         foreach(_prefix /opt/homebrew /usr/local)
             if(EXISTS "${_prefix}/include/opus/opus.h")
-                target_include_directories(audio_engine PRIVATE "${_prefix}/include/opus")
+                target_include_directories(audio_engine SYSTEM PRIVATE "${_prefix}/include/opus")
             endif()
         endforeach()
     endif()
@@ -597,7 +597,7 @@ if(APPLE AND (AUDIO_ENGINE_DECODERS_OPUS OR AUDIO_ENGINE_VOICE_OPUS))
     foreach(_brew_prefix /opt/homebrew /usr/local)
         foreach(_header opus/opusfile.h opus/opus.h)
             if(EXISTS "${_brew_prefix}/include/${_header}")
-                target_include_directories(audio_engine PRIVATE "${_brew_prefix}/include")
+                target_include_directories(audio_engine SYSTEM PRIVATE "${_brew_prefix}/include")
             endif()
         endforeach()
     endforeach()
