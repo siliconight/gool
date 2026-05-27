@@ -26,6 +26,90 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.4] - 2026-05-27 — verify_install.gd parse-error + scanner false negative
+
+First release from the v0.80.3 editor-surface verification pass.
+Fixes the parse error every user saw in the Output panel on first
+install, and the v0.79.8 scanner false negative that let the bug
+ship.
+
+### Fixed
+
+  * **`godot/addons/gool/tools/verify_install.gd:64` —
+    bare-identifier reference to `Gool` at parse time.** The
+    script's defensive guard (lines ~50–60) checks for the
+    autoload via `Engine.has_singleton("Gool")` and
+    `get_node_or_null("/root/Gool")` — both string-based,
+    parser-safe. Immediately after, however, line 64 used the
+    bare `Gool` identifier:
+    ```gdscript
+    var report: String = Gool.diagnose()
+    ```
+    GDScript resolves bare autoload identifiers at PARSE time,
+    even inside function bodies. When Godot parses every `.gd`
+    file in the project on editor open — including this addon
+    file, before the plugin has activated — the `Gool`
+    identifier isn't registered yet and the parse fails with
+    "Identifier 'Gool' not declared in the current scope."
+    Replaced with path-based lookup:
+    ```gdscript
+    var gool := get_node("/root/Gool")
+    var report: String = gool.diagnose()
+    ```
+    The string `"/root/Gool"` doesn't get resolved at parse
+    time; the node lookup happens at runtime, where the
+    defensive guard has already proved the autoload is
+    present.
+
+  * **`scripts/check_addon_autoload_safety.py` — false negative
+    that let `verify_install.gd:64` ship.** The v0.79.8 scanner
+    explicitly excluded references inside function bodies as
+    "safe" under the assumption that "autoload exists by then"
+    — true at *runtime*, false at *parse* time. Removed the
+    exclusion. The scanner now correctly flags bare-identifier
+    references at any scope.
+
+    The scanner's docstring and summary copy also said
+    "class-body" throughout, perpetuating the wrong mental
+    model. Rewrote to make it explicit that the bug class is
+    "bare autoload identifier" regardless of scope.
+
+### Why this took five releases to find
+
+The v0.79.8 scanner was unit-tested against patterns we expected
+to see (the v0.78.7 fix's pre-fix state, which used class-body
+references). It was never exercised against the actual
+function-body parse failure that turned out to exist. "Static
+reading isn't verification" applies to scanners too — should
+have validated the scanner would catch the v0.78.7 bug by
+running it against a known-broken file in CI, not just by
+hand-confirming the cases it flagged were real.
+
+The user-discovery path was a fresh-install verification pass on
+v0.80.3 (per the v0.81.0 editor-surface verification plan). The
+parse error was visible on first project open after dropping the
+addon zip into a fresh Godot 4.6.2 project.
+
+### Verification
+
+  * `python3 scripts/check_addon_autoload_safety.py` — exits 0,
+    62 addon files clean.
+  * Regression test for the scanner itself: temporarily restored
+    the pre-fix `verify_install.gd:64` state and re-ran the
+    scanner — exits 1 with a useful diagnostic pointing at the
+    offending line.
+  * Fresh project install (manual): no parse errors in Godot's
+    Output panel before plugin activation.
+
+### Not in this release
+
+This is the first patch in a planned v0.81.0 release sequence
+addressing 23 findings from the v0.80.3 verification pass.
+Cluster B (mixer dock honesty — dirty-state UI, save
+discoverability, empty-state regeneration bug, bus-rename
+effect-loss bug) is the largest remaining cluster and will land
+as v0.81.0. Smaller clusters ship as patch releases in between.
+
 ## [0.80.3] - 2026-05-27 — Fix v0.80.1's broken NOLINTNEXTLINE in audio_runtime.cpp
 
 v0.80.1 tried to fix a latent `bugprone-branch-clone` diagnostic in

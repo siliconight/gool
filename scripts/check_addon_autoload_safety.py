@@ -6,19 +6,25 @@ Scans every .gd file under godot/addons/gool/ (and the example
 addons/gool/ copies under examples/) for the v0.78.7-class bug:
 
   Referencing the `Gool`, `DialogueDirector`, or `MultiplayerBridge`
-  identifier at class-body scope inside an addon script. Addon
-  scripts are parsed during the same compile pass that registers
-  these autoloads, so a class-body reference fails to resolve on
-  first project open (the cascade that v0.78.7 fixed by hand for
-  the 3 observed cases).
+  identifier directly in an addon script. Addon scripts are parsed
+  during the same compile pass that registers these autoloads, so
+  bare-identifier references fail to resolve on first project open.
+
+  v0.80.4 update: the original v0.79.8 scanner treated references
+  inside function bodies as safe ("autoload exists by then"). That
+  was wrong — GDScript's parser resolves bare autoload identifiers
+  at PARSE time, regardless of whether the reference is in a class
+  body or function body. The function-body exclusion let
+  verify_install.gd:64 slip through and emit a parse error on every
+  fresh install. The exclusion was removed in v0.80.4.
 
 Safe patterns this scanner does NOT flag:
-  - References inside function bodies (autoload exists by then)
   - References inside comments or string literals (display text)
   - The autoload implementation files themselves (runtime_singleton.gd,
     dialogue_director.gd, multiplayer_bridge.gd, plugin.gd)
   - `Engine.has_singleton("Gool")` and `get_node_or_null("/root/Gool")`
-    — these are the recommended safe lookups
+    — these are the recommended safe lookups, using the autoload
+    name as a STRING (which the parser doesn't try to resolve)
 
 Run from repo root:
     python3 scripts/check_addon_autoload_safety.py
@@ -31,8 +37,9 @@ import re
 import sys
 from pathlib import Path
 
-# Identifiers that name autoloads. A bare reference to these at class-body
-# scope is the bug. (Re-add identifiers here if more autoloads ship.)
+# Identifiers that name autoloads. A bare reference to these is the
+# bug — at any scope, including inside function bodies. (Re-add
+# identifiers here if more autoloads ship.)
 AUTOLOAD_IDENTIFIERS = ("Gool", "DialogueDirector", "MultiplayerBridge")
 
 # Addon script implementations of the autoloads themselves — these
@@ -177,17 +184,26 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
                 if re.search(r"(?:get_node_or_null|Engine\.(?:has|get)_singleton)\s*\(", window):
                     continue
 
-                # If we're inside a func body, this is safe.
-                if in_func_body_indent is not None:
-                    continue
+                # v0.80.4: Removed the previous function-body
+                # exclusion. The old code skipped references inside
+                # function bodies on the assumption that "autoload
+                # exists by then" — true at runtime, false at parse
+                # time. GDScript's parser resolves bare autoload
+                # identifiers when it parses the file, not when the
+                # code executes. A bare `Gool.foo()` inside a func
+                # body fails to parse on first editor open just as
+                # surely as one at class-body scope (see v0.80.4
+                # CHANGELOG, and v0.80.3 verify_install.gd:64).
 
-                # Otherwise: class-body reference. Flag it.
+                # Otherwise: bare-identifier reference. Flag it.
                 suspects.append((
                     i,
                     raw_line.rstrip("\n"),
-                    f"class-body reference to '{ident}' (autoload identifier; "
+                    f"bare reference to '{ident}' (autoload identifier; "
                     f"use get_node_or_null('/root/{ident}') or "
-                    f"Engine.has_singleton('{ident}') guard instead)",
+                    f"Engine.has_singleton('{ident}') guard instead — "
+                    f"GDScript resolves bare autoload identifiers at "
+                    f"parse time, even inside function bodies)",
                 ))
                 break  # one finding per line is enough
 
@@ -218,17 +234,20 @@ def main() -> int:
     print()
     print(f"  Scanned {files_scanned} .gd files across {len(SCAN_ROOTS)} addon roots.")
     if total_suspects == 0:
-        print("  OK: no class-body autoload references found in addon scripts.")
+        print("  OK: no bare autoload identifier references in addon scripts.")
         return 0
     else:
         print(f"  FAIL: {total_suspects} suspect references — fix before committing.")
         print()
         print("  Why this matters: addon scripts are parsed during the same")
         print("  compile pass that registers the autoload. A bare reference")
-        print("  to Gool/DialogueDirector/MultiplayerBridge at class-body")
-        print("  scope fails to resolve on first project open, cascading")
-        print("  into a parse-error storm that hides the real install state")
-        print("  from new users.")
+        print("  to Gool/DialogueDirector/MultiplayerBridge — at ANY scope,")
+        print("  including inside function bodies — fails to resolve on first")
+        print("  project open, cascading into a parse-error storm that hides")
+        print("  the real install state from new users. Use path-based")
+        print("  lookups (`get_node_or_null('/root/Gool')`) instead, which")
+        print("  pass the autoload name as a string the parser doesn't")
+        print("  resolve at parse time.")
         return 1
 
 

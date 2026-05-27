@@ -61,7 +61,20 @@ func _ready() -> void:
 
 	# Hand off to diagnose. The string it returns is already formatted
 	# with [ok]/[warn]/[fail] tags and a verdict line.
-	var report: String = Gool.diagnose()
+	#
+	# v0.80.4: Use path-based lookup, not the bare `Gool` identifier.
+	# GDScript resolves bare autoload identifiers at PARSE time, even
+	# inside function bodies. When Godot parses every .gd file in the
+	# project on editor open — including this addon file — and the
+	# plugin hasn't activated yet, the `Gool` identifier isn't
+	# registered. The script fails to parse with "Identifier 'Gool'
+	# not declared in the current scope" even though we'd never
+	# execute this code path. Using get_node("/root/Gool") passes the
+	# string through unresolved at parse time; the lookup happens at
+	# runtime, where the defensive guard above has already proved the
+	# autoload is registered.
+	var gool := get_node("/root/Gool")
+	var report: String = gool.diagnose()
 	print(report)
 
 	# Pass/fail is decided by the diagnose verdict, not by hand-rolling
