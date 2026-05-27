@@ -50,21 +50,34 @@ jobs:
         # arm64 binary. The artifact name reflects this honestly.
         # An Intel Mac entry (macos-13 + arch=x86_64) is a follow-up.
         include:
+          # v0.80.7: `generate_notes: true` ONLY on the linux runner.
+          # Pre-v0.80.7, all three matrix runners called
+          # softprops/action-gh-release with generate_release_notes:
+          # true, causing the auto-generated "Full Changelog" line
+          # to be appended three times to every release body (one
+          # per runner). Now only linux generates notes; macos and
+          # windows just upload their artifacts to the existing
+          # release. Linux is the canonical runner; if it fails the
+          # release notes are missing but artifacts still upload —
+          # acceptable tradeoff vs. shipping triple-banner releases.
           - os: ubuntu-latest
             platform: linux-x86_64
             archive_ext: tar.gz
             scons_platform: linux
             binary_path: build-godot/libgool_godot.so
+            generate_notes: true
           - os: windows-latest
             platform: windows-x86_64
             archive_ext: zip
             scons_platform: windows
             binary_path: build-godot/Release/gool_godot.dll
+            generate_notes: false
           - os: macos-latest
             platform: macos-arm64
             archive_ext: tar.gz
             scons_platform: macos
             binary_path: build-godot/libgool_godot.dylib
+            generate_notes: false
 
     steps:
       - uses: actions/checkout@v5
@@ -460,6 +473,11 @@ jobs:
             ${{ steps.version.outputs.archive_name }}.${{ matrix.archive_ext }}
             ${{ steps.version.outputs.addon_archive_name }}.${{ matrix.archive_ext }}
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          # v0.80.7: per-runner via matrix.generate_notes. Only the
+          # linux runner generates the "Full Changelog" body; macos
+          # and windows upload artifacts to the existing release
+          # without touching its body. Prevents triple-Full-Changelog
+          # release notes (one append per runner).
+          generate_release_notes: ${{ matrix.generate_notes }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

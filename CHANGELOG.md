@@ -26,6 +26,63 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.7] - 2026-05-27 — Cluster F: release-notes triple-Full-Changelog
+
+Fourth patch in the v0.81.0 release sequence. Single-finding
+release fixing the cosmetic-but-embarrassing release-page issue.
+
+### Fixed
+
+  * **GitHub release body no longer contains three identical
+    "Full Changelog" lines (finding #20).** Pre-v0.80.7, every
+    release page (and every API response from
+    `/repos/.../releases/latest`) showed:
+    ```
+    **Full Changelog**: https://.../compare/v0.80.5...v0.80.6
+    **Full Changelog**: https://.../compare/v0.80.5...v0.80.6
+    **Full Changelog**: https://.../compare/v0.80.5...v0.80.6
+    ```
+    The cause: `.github/workflows/release.yml` defines a matrix
+    job that builds on linux/macos/windows. Each runner's
+    "Upload to release" step called `softprops/action-gh-
+    release@v2` with `generate_release_notes: true`. Each call
+    appended an auto-generated "Full Changelog" line to the
+    release body. Three runners → three identical lines.
+
+    Fix: added a per-runner `generate_notes` matrix variable.
+    Linux gets `true` (canonical runner); macos and windows
+    get `false`. Now only the linux runner generates the
+    release body; macos and windows upload their artifacts to
+    the existing release without touching the body.
+
+    Tradeoff: if the linux runner fails but macos/windows
+    succeed, the release will have artifacts but no auto-
+    generated body. That's better than three duplicated lines
+    and easy to fix by re-running the linux leg.
+
+### Verification (must be empirical)
+
+This fix can only be confirmed by shipping v0.80.7 and
+inspecting the resulting release page:
+- https://github.com/siliconight/gool/releases/tag/v0.80.7
+- https://api.github.com/repos/siliconight/gool/releases/latest
+
+Expected: exactly ONE "Full Changelog" line in the body.
+
+If three lines still appear after v0.80.7 ships, the bug
+isn't from matrix-runner duplication — it's inside
+softprops/action-gh-release itself (appending instead of
+replacing when called with `generate_release_notes: true` on
+an existing release). Mitigation in that case: remove
+`generate_release_notes: true` entirely and write the body
+ourselves via a shell step that constructs the compare-URL
+link from `github.ref_name` and the previous tag.
+
+### Findings closed by this release (pending v0.80.7 verification)
+
+  * #20 — Release notes "Full Changelog" line emitted three
+    times
+
 ## [0.80.6] - 2026-05-27 — Cluster G: string sweep
 
 Third patch in the v0.81.0 release sequence. Closes the four
