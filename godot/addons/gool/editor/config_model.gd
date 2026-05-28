@@ -248,6 +248,18 @@ signal save_failed(reason: String)
 # pending_dirty_buses is the list of buses with unsaved local edits.
 signal external_change_detected(pending_dirty_buses: Array)
 
+# v0.80.12: emitted when _do_save discovers config.json has been
+# removed externally (renamed, deleted) since the dock last loaded
+# it — i.e. `not FileAccess.file_exists(CONFIG_PATH)` while
+# `_raw_text` still holds previously-loaded content. Pre-v0.80.12
+# this condition was silent: _do_save's existence-guards skipped
+# external-change detection AND backup, then proceeded to write
+# the in-memory state, recreating config.json from under the
+# user. The mixer dock listens for this signal and surfaces the
+# choice between accepting the removal (discard in-memory edits,
+# go empty-state) and recreating the file from dock state.
+signal external_removal_detected(pending_dirty_buses: Array)
+
 
 # ---- State ---------------------------------------------------------
 
@@ -511,6 +523,24 @@ func _on_save_timer_fired(timer_ref: SceneTreeTimer) -> void:
 # external_change_detected if disk contents differ from what we
 # last saw.
 func _do_save() -> int:
+	# v0.80.12: external-removal detection. If config.json existed
+	# when we loaded (so _raw_text is non-empty) but no longer
+	# exists, the user removed/renamed it outside the editor. Pre-
+	# v0.80.12 the two safety blocks below (external-change check
+	# and backup) were both gated on `file_exists(CONFIG_PATH)`,
+	# so when the file was gone both checks were skipped and the
+	# save proceeded — silently recreating config.json from the
+	# stale in-memory state, including any unsaved edits the user
+	# thought they'd thrown away by removing the file. Surface
+	# the situation instead: emit external_removal_detected and
+	# return without writing. The dock's handler offers the user
+	# the choice (accept the removal → empty-state, or recreate
+	# from dock state via overwrite_disk).
+	if not FileAccess.file_exists(CONFIG_PATH) and not _raw_text.is_empty():
+		var dirty_list: Array = _dirty_buses.keys()
+		external_removal_detected.emit(dirty_list)
+		return ERR_FILE_NOT_FOUND
+
 	# v0.28.6: external-change detection switched from mtime-based
 	# to CONTENT-based. The mtime approach (v0.28.4) was producing
 	# a false positive on every save: Godot's filesystem watcher /

@@ -26,6 +26,94 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.12] - 2026-05-28 — Cluster B prep: stop silently recreating config.json
+
+First fix from the v0.80.11 Cluster B persistence audit. Closes
+finding #25 (the "silently regenerated config.json with renames
+nobody saved") that surfaced in the v0.80.3 editor-surface
+verification pass. Self-contained — ships ahead of the larger
+Cluster B architectural pass in v0.81.0.
+
+### Fixed
+
+  * **`config_model.gd:_do_save` no longer silently recreates
+    `config.json` when the user removes it externally (#25).**
+
+    Pre-v0.80.12 the save path's two safety blocks
+    (external-change detection and pre-write backup) were both
+    gated on `FileAccess.file_exists(CONFIG_PATH)`. If the user
+    renamed or deleted `config.json` outside the editor while
+    the dock was running, both safety blocks were skipped, and
+    the save proceeded — applying the in-memory dirty edits to
+    the still-loaded `_raw_text` and writing a "fresh"
+    `config.json` containing whatever unsaved edits had been
+    sitting in the dock. To the user this looked like a
+    spontaneous recreation of the file they'd just deleted,
+    often with renames or other in-progress edits they'd
+    thought they were discarding by removing the file.
+
+    v0.80.12 adds an explicit detection block at the top of
+    `_do_save`: when `config.json` doesn't exist but `_raw_text`
+    holds previously-loaded content, that's external removal —
+    emit a new `external_removal_detected` signal with the
+    list of dirty buses, and return `ERR_FILE_NOT_FOUND` without
+    writing.
+
+  * **Mixer dock surfaces the choice instead of silently
+    recreating.** The dock listens for the new signal and pops
+    the existing conflict dialog with adapted text:
+
+    > "gool/config.json was removed outside the editor… Reload
+    > from disk: accept the removal. Overwrite with dock state:
+    > recreate config.json from the current dock state."
+
+    Both actions reuse the existing dialog's button wiring:
+    - **Reload from disk** calls
+      `reload_from_disk_discarding_edits` which gets
+      `ERR_FILE_NOT_FOUND` and the dock switches to the
+      empty-state ("No config.json yet — pick a template"),
+      which is what the user wanted when they removed the file.
+    - **Overwrite with dock state** calls `overwrite_disk` and
+      recreates `config.json` from the in-memory model,
+      including any unsaved edits.
+
+### What this resolves from the audit
+
+The v0.80.11 audit (`gool-cluster-b-persistence-audit.md`)
+showed that #25 was NOT a hidden persistence layer — it was the
+save path proceeding silently when the file it was supposed to
+patch had been removed under it. With v0.80.12 the silent path
+is closed; the only persistence layers in the dock are the
+ones enumerated in the audit document.
+
+### Verification
+
+  * Wiring confirmed (4 sites, each exactly once):
+    `signal external_removal_detected` declared,
+    `external_removal_detected.emit` in `_do_save`,
+    `external_removal_detected.connect` in mixer_dock `_ready`,
+    handler `_on_model_external_removal_detected` defined.
+  * Scanner clean.
+  * Version sync clean (all 5 sources at 0.80.12).
+  * Empirical: in a project with a saved `config.json`, rename
+    it externally to `config.json.test`, then trigger any edit
+    in the dock (which schedules a save). Pre-v0.80.12: a fresh
+    `config.json` reappears silently. v0.80.12: a dialog opens
+    asking "accept removal" or "recreate from dock state."
+
+### Findings closed by this release
+
+  * #25 — mystery rename-remembering persistence layer
+    (resolved as a save-path bug, no fourth layer)
+
+### Cluster B status
+
+Findings closed so far in the v0.81.0 sequence: #2, #3, #4,
+#5, #6, #14, #16, #17, #18, #20, #21, #25 (this release).
+Remaining for the v0.81.0 architectural pass: #1, #7, #9, #10,
+#11, #12, #19, #22, #23, #24, #26, #27, #28, #29. The bigger
+pass starts next.
+
 ## [0.80.11] - 2026-05-28 — CI: gate clang-tidy on C++ changes + use all cores
 
 CI-only patch. No engine, GDScript, or template changes. Cuts

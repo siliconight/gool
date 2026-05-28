@@ -621,6 +621,9 @@ func _ready() -> void:
 	_config_model.save_failed.connect(_on_model_save_failed)
 	_config_model.external_change_detected.connect(
 			_on_model_external_change_detected)
+	# v0.80.12: parallel handler for the externally-removed-file case.
+	_config_model.external_removal_detected.connect(
+			_on_model_external_removal_detected)
 	# v0.28.8 topology signals.
 	_config_model.topology_changed.connect(_on_model_topology_changed)
 	_config_model.bus_added.connect(_on_model_bus_added)
@@ -1585,6 +1588,36 @@ func _on_model_external_change_detected(pending_dirty_buses: Array) -> void:
 		+ "reread config.json from disk.\n"
 		+ "  Overwrite with dock state: clobber the external changes "
 		+ "with the dock's current state."
+	)
+	_mtime_conflict_dialog.popup_centered()
+
+
+# v0.80.12: parallel to _on_model_external_change_detected, but for
+# the case where config.json was REMOVED externally (renamed,
+# deleted) since the dock last loaded it. Same dialog, same two
+# actions — semantics map cleanly: "Reload" honors the removal
+# (reload_from_disk_discarding_edits gets ERR_FILE_NOT_FOUND and
+# the dock switches to empty-state); "Overwrite with dock state"
+# recreates config.json from the current in-memory model. Text is
+# adapted so the user understands they removed the file (the
+# external-change phrasing would be misleading).
+func _on_model_external_removal_detected(pending_dirty_buses: Array) -> void:
+	if _mtime_conflict_dialog == null:
+		return
+	var bus_list: String = ", ".join(pending_dirty_buses)
+	if bus_list.is_empty():
+		bus_list = "(none)"
+	_mtime_conflict_dialog.dialog_text = (
+		"gool/config.json was removed outside the editor (renamed, "
+		+ "deleted, or moved). The dock still has in-memory state "
+		+ "with unsaved edits to: " + bus_list + ".\n\n"
+		+ "Pre-v0.80.12 the dock would silently recreate the file "
+		+ "from this in-memory state. It no longer does that — choose:\n\n"
+		+ "  Reload from disk: accept the removal. The dock discards "
+		+ "its in-memory edits and switches to the empty-state "
+		+ "(\"No config.json yet — pick a template\").\n"
+		+ "  Overwrite with dock state: recreate config.json from "
+		+ "the current dock state (including unsaved edits)."
 	)
 	_mtime_conflict_dialog.popup_centered()
 
