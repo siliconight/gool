@@ -15,6 +15,39 @@ env:
 
 jobs:
   # ----------------------------------------------------------------
+  # Job 0: detect which kinds of files changed. Analysis jobs that
+  # only have signal on C++ (clang-tidy is ~20 min on its own) gate
+  # on `cpp` so they skip GDScript/docs-only pushes — e.g. every
+  # Cluster B mixer-dock patch, which touches no engine code.
+  #
+  # v0.80.11: introduced to stop clang-tidy from running a full
+  # 43-TU pass on pushes where no C++ changed. dorny/paths-filter
+  # handles the push-vs-PR base-commit resolution. The `cpp` glob
+  # includes .github/workflows/ci.yml itself so edits to this
+  # workflow still trigger the analysis (validates the change).
+  # ----------------------------------------------------------------
+  changes:
+    name: detect / changed-paths
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.filter.outputs.cpp }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            cpp:
+              - 'src/**'
+              - 'include/**'
+              - 'godot/src/**'
+              - 'tests/**'
+              - '**/CMakeLists.txt'
+              - 'cmake/**'
+              - '.clang-tidy'
+              - '.github/workflows/ci.yml'
+
+  # ----------------------------------------------------------------
   # Job 1: build the engine library + run the unit-test suite.
   # ----------------------------------------------------------------
   build-and-test:
@@ -314,6 +347,11 @@ jobs:
   # ----------------------------------------------------------------
   clang-tidy:
     name: static-analysis / clang-tidy
+    # v0.80.11: skip on pushes that touched no C++/build files.
+    # clang-tidy has no signal on GDScript/docs/template changes,
+    # and a full pass is ~20 min. The `changes` job decides.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     # Pinned to ubuntu-22.04 (GCC 13 + libstdc++13) because the
     # ubuntu-latest (24.04) image's libstdc++14 ships C++23 <format>
     # and <ranges> implementations that the available clang-tidy
@@ -357,7 +395,7 @@ jobs:
       # nlohmann_json single-header, etc.) exist before clang-tidy
       # tries to parse the TUs that include them.
       - name: Build (populates generated headers)
-        run: cmake --build build-tidy --config Release --parallel 2
+        run: cmake --build build-tidy --config Release --parallel "$(nproc)"
 
       - name: Run clang-tidy on library sources
         shell: bash
@@ -376,7 +414,10 @@ jobs:
           # check a CI failure (matches the "broken windows" guidance
           # in the PVS-Studio terrible-tips article — a warning the
           # team learns to ignore is worse than none).
-          xargs -a /tmp/tidy_files.txt -P 2 -I{} \
+          # v0.80.11: fan out across all cores ($(nproc)) instead of a
+          # hardcoded 2. Public-repo Linux runners have 4 vCPUs; per-
+          # file analysis is independent, so this is a safe ~2x.
+          xargs -a /tmp/tidy_files.txt -P "$(nproc)" -I{} \
               clang-tidy -p build-tidy --warnings-as-errors='*' {}
 
   # ----------------------------------------------------------------

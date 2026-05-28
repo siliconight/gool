@@ -26,6 +26,69 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.11] - 2026-05-28 — CI: gate clang-tidy on C++ changes + use all cores
+
+CI-only patch. No engine, GDScript, or template changes. Cuts
+the clang-tidy cost that lands on every release.
+
+### Changed (.github/workflows/ci.yml)
+
+  * **clang-tidy now skips pushes that touch no C++/build files.**
+    Added a `changes` detection job (dorny/paths-filter) that
+    outputs whether any of `src/**`, `include/**`,
+    `godot/src/**`, `tests/**`, `**/CMakeLists.txt`, `cmake/**`,
+    `.clang-tidy`, or `.github/workflows/ci.yml` changed. The
+    clang-tidy job gates on that output (`needs: changes` +
+    `if: needs.changes.outputs.cpp == 'true'`).
+
+    Motivation: clang-tidy is a ~20-minute full pass over 43
+    translation units, and it has no signal on GDScript, docs, or
+    template-JSON changes. v0.80.4–v0.80.8 were all non-C++ yet
+    would have run it; the entire upcoming Cluster B (mixer dock,
+    pure GDScript) would too. Now it runs only when engine code
+    actually changes. (It remains `continue-on-error: true` —
+    informational, never a release gate.)
+
+  * **clang-tidy parallelism bumped from 2 to `$(nproc)`.** Both
+    the header-populating build (`cmake --build ... --parallel`)
+    and the per-file analysis fan-out (`xargs -P`) were pinned at
+    2 — a stale value from when GitHub-hosted runners were
+    2-core. Public-repo Linux runners now have 4 vCPUs, so the
+    hardcoded 2 left half the machine idle. Per-file clang-tidy
+    analysis is independent, so fanning out to all cores is a
+    safe ~2x when the job does run.
+
+### Net effect
+
+  * GDScript/docs/template patches (most of the recent series and
+    all of Cluster B): clang-tidy does not run at all.
+  * C++ patches: clang-tidy runs ~2x faster than before.
+
+### Not done (offered as follow-up)
+
+The same `changes.outputs.cpp` gate trivially applies to the
+other C++-only jobs that also rebuild on every push and have no
+GDScript signal: `cppcheck`, `lizard`, `coverage`,
+`sanitize-asan-ubsan`, `sanitize-tsan`, `build-gdextension`.
+Gating those too would skip the entire C++ analysis suite on
+GDScript-only pushes (a much larger total saving across Cluster
+B). Left out of this patch to keep the change scoped to the
+clang-tidy concern that prompted it; `build-and-test` and
+`gdscript-lint` intentionally keep running on every push so the
+green-checkmark signal is preserved.
+
+### Verification
+
+  * `ci.yml` parses as valid YAML; `changes` job exposes `cpp`
+    output; clang-tidy job wired with `needs` + `if`.
+  * `scripts/check_version_sync.sh` — passes (0.80.11).
+  * Empirical: confirm on push that the `changes` job runs, and
+    that clang-tidy is skipped on this CI-yaml-only push... note
+    this patch DOES touch `.github/workflows/ci.yml`, which is in
+    the `cpp` filter, so clang-tidy WILL run for v0.80.11 itself
+    (by design — validates the workflow change). Subsequent
+    GDScript-only pushes are where you'll see it skip.
+
 ## [0.80.10] - 2026-05-28 — Reverb-send HPF raised to tame boomy lows
 
 Follow-up to v0.80.9's dedicated reverb bus. The reverb-send
