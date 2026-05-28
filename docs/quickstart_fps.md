@@ -38,19 +38,37 @@ cp res://addons/gool/templates/config_fps.json res://gool/config.json
 
 What's different vs default:
 
-- **Sfx parent bus** with the v0.47.0 reverb chain pre-wired:
-  `[HPF 20Hz bypass] → [Reverb] → [LPF 22kHz bypass]`. ReverbZone
-  prefabs default to `bus_name = "Sfx"` so they automatically
-  target this chain. The HPF/LPF biquads start in bypass and are
-  shaped per-zone by the EQ-shaping feature when a ReverbZone is
-  active.
-- **LocalSfx + RemoteSfx** both route through Sfx so local and
-  remote audio share the same world reverb.
+- **Dedicated `Reverb` bus** (id=kBusReverb) with the full
+  reverb chain: `[HPF 20Hz] → [Reverb] → [LPF 16kHz]`. As of
+  v0.80.9 the reverb is a send/return bus, not inline on Sfx:
+  the reverb effect runs wet-only (`dry_gain_db = -60`), and a
+  fraction of every spatialized voice is routed to it via the
+  top-level `global_reverb_send` knob (default `0.15`). This
+  means spatial sfx get subtle world ambience out of the box,
+  and you tune the amount in one place instead of baking a fixed
+  wet level into the Sfx bus. ReverbZone prefabs now default to
+  `bus_name = "Reverb"` and target this bus; the flanking HPF/LPF
+  biquads are the per-zone send-HPF and return-LPF shaping slots.
+- **Sfx parent bus** is now a clean routing/gain bus (no inline
+  effects). **LocalSfx + RemoteSfx** route through it; their
+  reverb comes from the per-voice send to the Reverb bus, so
+  local and remote audio still share the same world reverb.
+- **Dedicated `UI` bus** under Master. The `ui` category routes
+  here instead of straight to Master, so UI sound levels are
+  independently controllable (and, if you choose, can sit
+  outside the master-bus glue/limiter behavior you apply to
+  gameplay audio).
 - **Sidechain compressors** wired so:
   - Dialogue ducks Music + LocalSfx + RemoteSfx (~6-10 dB)
   - LocalSfx ducks Music + RemoteSfx (your gun wins over teammate audio)
 - **Voice** bus is separate and never ducked (intelligibility
   priority).
+
+> Migrating an older project? Pre-v0.80.9 configs put the reverb
+> inline on the Sfx bus and ReverbZone defaulted to
+> `bus_name = "Sfx"`. If you keep an old config.json, set your
+> ReverbZone `bus_name` back to `"Sfx"`, or (recommended) adopt
+> the dedicated-reverb layout by copying the current template.
 
 You can audit and tweak the values via the editor mixer dock.
 

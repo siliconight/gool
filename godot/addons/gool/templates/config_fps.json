@@ -1,6 +1,7 @@
 {
   "sample_rate": 48000,
   "buffer_size": 512,
+  "global_reverb_send": 0.15,
   "buses": [
     {
       "name": "Master",
@@ -25,6 +26,37 @@
           "mc_limiter_ceiling_dbtp": -1.0,
           "mc_limiter_release_ms": 50.0,
           "mc_limiter_lookahead_ms": 5.0
+        }
+      ]
+    },
+    {
+      "name": "Reverb",
+      "parent": "Master",
+      "gain_db": 0.0,
+      "effects": [
+        {
+          "kind": "biquad",
+          "biquad_type": "highpass",
+          "cutoff_hz": 20.0,
+          "q": 0.707,
+          "biquad_gain_db": 0.0
+        },
+        {
+          "kind": "reverb",
+          "predelay_ms": 30.0,
+          "decay": 0.6,
+          "lf_damping": 0.1,
+          "hf_damping": 0.3,
+          "diffusion": 0.625,
+          "dry_gain_db": -60.0,
+          "wet_gain_db": 0.0
+        },
+        {
+          "kind": "biquad",
+          "biquad_type": "lowpass",
+          "cutoff_hz": 16000.0,
+          "q": 0.707,
+          "biquad_gain_db": 0.0
         }
       ]
     },
@@ -58,32 +90,7 @@
     {
       "name": "Sfx",
       "parent": "Master",
-      "gain_db": 0.0,
-      "effects": [
-        {
-          "kind": "biquad",
-          "biquad_type": "highpass",
-          "cutoff_hz": 20.0,
-          "q": 0.707,
-          "biquad_gain_db": 0.0
-        },
-        {
-          "kind": "reverb",
-          "predelay_ms": 30.0,
-          "decay": 0.6,
-          "lf_damping": 0.1,
-          "hf_damping": 0.3,
-          "diffusion": 0.625,
-          "wet_gain_db": -12.0
-        },
-        {
-          "kind": "biquad",
-          "biquad_type": "lowpass",
-          "cutoff_hz": 22000.0,
-          "q": 0.707,
-          "biquad_gain_db": 0.0
-        }
-      ]
+      "gain_db": 0.0
     },
     {
       "name": "LocalSfx",
@@ -141,6 +148,11 @@
       "name": "Ambient",
       "parent": "Master",
       "gain_db": -6.0
+    },
+    {
+      "name": "UI",
+      "parent": "Master",
+      "gain_db": 0.0
     }
   ],
   "category_routing": {
@@ -148,7 +160,7 @@
     "sfx": "LocalSfx",
     "voice": "Voice",
     "ambience": "Ambient",
-    "ui": "Master",
+    "ui": "UI",
     "dialogue": "Dialogue"
   },
   "budget": {

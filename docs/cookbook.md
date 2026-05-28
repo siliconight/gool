@@ -698,12 +698,14 @@ independent from acoustic character.
 
 ### Targeting a different reverb bus
 
-The `ReverbZone` defaults to the "Sfx" bus because that's where
-gool's standard config puts the reverb effect. If your project
-has carved out a dedicated "Reverb" bus, set the zone's **Bus
-Name** export to that. The zone scans the bus's effect chain for
-the first `Reverb` effect and pushes parameters to it. If no
-reverb effect is on the named bus, the zone warns at scene load
+The `ReverbZone` defaults to the "Reverb" bus because that's
+where gool's standard config (v0.80.9+) puts the reverb effect —
+a dedicated send/return bus rather than inline on Sfx. If your
+project uses an older config with the reverb inline on "Sfx",
+set the zone's **Bus Name** export back to "Sfx". The zone scans
+the bus's effect chain for the first `Reverb` effect and pushes
+parameters to it. If no reverb effect is on the named bus, the
+zone warns at scene load
 and goes inert (no silent failure).
 
 ### Programmatic usage

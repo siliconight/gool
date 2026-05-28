@@ -84,6 +84,16 @@ struct ParseResult {
     // configs without a budget block produce nullopt here and the
     // hardcoded defaults (128 active emitters, etc.) stay in effect.
     std::optional<AudioRuntimeBudget> budget;
+    // v0.80.9: optional top-level "global_reverb_send" scalar [0,1].
+    // When std::nullopt (absent from JSON), AudioConfig::globalReverbSend
+    // keeps whatever the C++ caller set (default 0.0 = reverb send path
+    // dormant). When present, hosts copy this into
+    // AudioConfig::globalReverbSend before Initialize. This is how a
+    // config.json declares "route this fraction of every spatialized
+    // voice to the kBusReverb bus" — previously only settable via the
+    // C++ API, so JSON-only configs (the FPS template) could not enable
+    // the dedicated-reverb-send path at all.
+    std::optional<float> globalReverbSend;
     std::string      error;        // human-readable; populated when ok = false
     int              errorLine    = 0;
 };

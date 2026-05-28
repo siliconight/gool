@@ -26,6 +26,132 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.9] - 2026-05-28 — Cluster H: FPS template editorial + dedicated reverb send
+
+Sixth patch in the v0.81.0 release sequence. Closes finding #6
+(FPS template editorial). Larger than a template tweak: making
+the "dedicated reverb send" work correctly required a new engine
+config capability and a change to the ReverbZone prefab.
+
+**BREAKING (ReverbZone default):** `ReverbZone.bus_name` now
+defaults to `"Reverb"` (was `"Sfx"`). Scenes relying on the old
+default with a pre-v0.80.9 config (reverb inline on Sfx) must
+either set `bus_name = "Sfx"` explicitly or migrate their
+config.json to the dedicated-reverb layout.
+
+### Added
+
+  * **`global_reverb_send` top-level config key (C++).** The
+    engine has always had `AudioConfig::globalReverbSend` — the
+    fraction of every spatialized voice routed to the kBusReverb
+    bus — but it was only settable via the C++ API. JSON-only
+    configs (like the FPS template) could not enable the
+    dedicated-reverb-send path at all. Added parsing for a
+    top-level `global_reverb_send` scalar in `bus_config_loader`:
+    - `include/audio_engine/bus_config_loader.h`: new
+      `std::optional<float> globalReverbSend` on `ParseResult`
+      (mirrors the existing optional `budget` pattern).
+    - `bus_config_loader.cpp`: parse block with `[0,1]` range
+      validation (out-of-range → descriptive error).
+    - `godot/src/gool_godot.cpp`: apply `pr.globalReverbSend`
+      to `cfg.globalReverbSend` when present (absent → C++
+      default 0.0 preserved).
+    - `tests/unit/bus_config_loader_test.cpp`: new
+      `TestGlobalReverbSend` covering present/absent/out-of-range.
+
+### Changed (FPS template — finding #6)
+
+  * **Sfx lowpass dropped 22 kHz → 16 kHz.** The lowpass (which
+    lives on the reverb-return path) now darkens the wet tail
+    with a gentle top-octave roll-off instead of sitting at an
+    effectively-bypass 22 kHz.
+
+  * **Reverb moved from inline-on-Sfx to a dedicated send/return
+    bus.** Pre-v0.80.9 the FPS template baked a reverb at fixed
+    -12 dB wet directly into the Sfx bus, so every sfx got the
+    same reverb whether it suited the sound or not. v0.80.9
+    restructures to gool's native reverb-send architecture:
+    - A dedicated `Reverb` bus placed as the first non-Master
+      bus, so it lands at `id = kBusReverb` (1) — the slot the
+      mixer routes per-voice sends to. (Bus IDs are assigned in
+      declaration order after Master; the reverb bus must come
+      first to claim id 1.)
+    - The reverb runs wet-only (`dry_gain_db = -60`,
+      `wet_gain_db = 0`) since the dry signal stays on the
+      voice's normal bus path.
+    - The full ReverbZone-compatible chain is on the Reverb
+      bus: `[HPF 20 Hz] → [Reverb] → [LPF 16 kHz]`. The flanking
+      biquads are ReverbZone's send-HPF / return-LPF shaping
+      slots.
+    - `global_reverb_send = 0.15` means spatialized sfx get
+      subtle world ambience out of the box, tunable in one place.
+    - The `Sfx` bus is now a clean routing/gain bus (no inline
+      effects). LocalSfx + RemoteSfx still share world reverb via
+      the per-voice send, not via inline Sfx reverb.
+
+  * **UI category routed to a dedicated `UI` bus.** Pre-v0.80.9
+    the `ui` category routed straight to Master, bypassing any
+    independent UI level control. Added a `UI` bus under Master
+    and pointed `category_routing.ui` at it.
+
+### Changed (ReverbZone prefab — required by the reverb move)
+
+  * **`ReverbZone.bus_name` default `"Sfx"` → `"Reverb"`.**
+    ReverbZone auto-discovers the Reverb effect on its target
+    bus and probes the adjacent slots (index ±1) for the
+    send-HPF / return-LPF biquads. With the reverb moved off
+    Sfx, a ReverbZone still defaulting to "Sfx" would find no
+    reverb there and go inert. The default now points at the
+    dedicated Reverb bus, where the full `HPF → Reverb → LPF`
+    chain lives. This is why the change is BREAKING: it's a
+    behavior change for any scene using the old default against
+    an old config.
+
+    Example-project mirrors of `reverb_zone.gd` are intentionally
+    left at the old `"Sfx"` default — they ship stale configs
+    with inline-Sfx reverb, so they stay internally consistent
+    until the Tier 1.2 examples cleanup syncs them.
+
+### Documentation
+
+  * `docs/quickstart_fps.md`: rewrote the "what's different"
+    section for the dedicated reverb bus, `global_reverb_send`,
+    the UI bus, and ReverbZone's new default; added a migration
+    note.
+  * `docs/audio_design/reverb_eq.md`: updated the chain diagram
+    and config example to the Reverb bus; corrected the LPF
+    framing (16 kHz gentle roll-off, not bypass); added a
+    migration note. Left the ReverbZone `return_lpf_hz = 22000`
+    *sentinel* (means "don't shape") unchanged — that's distinct
+    from the template's actual 16 kHz biquad cutoff.
+  * `docs/cookbook.md`: corrected the ReverbZone default-bus
+    statement.
+
+### Verification
+
+  * Loader + test compile clean with full CI flags
+    (`-std=c++20 -Wall -Wextra -Wpedantic -Werror -O2`).
+  * `TestGlobalReverbSend` written and registered; **runtime
+    execution happens in CI** — the sandbox has only a
+    compile-only nlohmann/json stub (real header is fetched at
+    build time; network unavailable in the dev sandbox), so the
+    loader can't actually parse JSON here. Compile-clean is the
+    local signal; CI runs the assertions.
+  * FPS template validates as JSON; bus order confirmed
+    (Reverb at index 1 = kBusReverb); Reverb chain confirmed
+    `highpass → reverb → lowpass`.
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (0.80.9).
+  * **Empirical verification deferred to runtime:** load the FPS
+    template in a project, confirm spatial sfx exhibit subtle
+    reverb (send working), and confirm a ReverbZone targeting
+    the default "Reverb" bus shapes the tail as the listener
+    moves between zones.
+
+### Findings closed by this release
+
+  * #6 — FPS template editorial (lowpass, reverb send, UI bus)
+
 ## [0.80.8] - 2026-05-27 — Cluster I: FPS template byte-for-byte copy
 
 Fifth patch in the v0.81.0 release sequence. Closes finding #5

@@ -68,41 +68,45 @@ This means:
   if you want Abbey Road pre-EQ but no post-LPF, or vice
   versa.
 - **The default values are bypass.** `send_hpf_hz = 0.0` and
-  `return_lpf_hz = 22000.0` (above audible) mean "leave the
+  `return_lpf_hz = 16000.0` (above audible) mean "leave the
   biquad cutoff at whatever it was set to in config." Material-
   aware ReverbZones (`material != Default`) pick up the
   per-preset values from `GoolPresets.REVERB_*` automatically.
 
 ## Recommended bus chain shape
 
-For the Sfx bus (or whichever bus carries your world reverb):
+For the Reverb bus (v0.80.9+; pre-v0.80.9 this lived inline on
+the Sfx bus — see migration note below):
 
 ```
 [ListenerEq biquads, optional]
       ↓
-[Biquad — HPF slot, default cutoff 20 Hz (bypass)]   ← NEW for v0.47.0
+[Biquad — HPF slot, default cutoff 20 Hz (effectively bypass)]
       ↓
 [Reverb]
       ↓
-[Biquad — LPF slot, default cutoff 22000 Hz (bypass)] ← NEW for v0.47.0
+[Biquad — LPF slot, default cutoff 16000 Hz (gentle roll-off)]
       ↓
 [Saturation, Compressors, etc — everything else]
 ```
 
-The bypass defaults are crucial: when no ReverbZone is active,
-the chain behaves exactly as if those biquads weren't there.
-Only when a ReverbZone is in scope and its `send_hpf_hz` /
-`return_lpf_hz` are non-bypass do you hear them work.
+The HPF ships at 20 Hz (removes only sub-sonic content, so
+effectively inaudible/bypass). As of v0.80.9 the LPF ships at
+16 kHz — a gentle top-octave roll-off that darkens the reverb
+tail slightly out of the box (pre-v0.80.9 it shipped at 22 kHz,
+effectively bypass). A ReverbZone in scope can lower the LPF
+further per-zone via `return_lpf_hz`, or raise the HPF via
+`send_hpf_hz`.
 
-## config.json — adding the slots
+## config.json — the reverb bus chain
 
-If your config already has a Reverb on the Sfx bus and you want
-to enable v0.47.0 shaping, add the two biquad entries flanking
-the existing reverb entry:
+As of v0.80.9 the FPS template puts the reverb on a dedicated
+`Reverb` bus (id=kBusReverb) as a send/return, with the two
+flanking biquad slots already in place:
 
 ```json
 {
-  "name": "Sfx",
+  "name": "Reverb",
   "parent": "Master",
   "effects": [
     {
@@ -119,24 +123,33 @@ the existing reverb entry:
       "diffusion": 0.625,
       "lf_damping": 0.1,
       "hf_damping": 0.3,
-      "wet_gain_db": -12.0
+      "dry_gain_db": -60.0,
+      "wet_gain_db": 0.0
     },
     {
       "kind": "biquad",
       "biquad_type": "lowpass",
-      "cutoff_hz": 22000.0,
+      "cutoff_hz": 16000.0,
       "q": 0.707,
       "biquad_gain_db": 0.0
-    },
-    /* ... your existing other effects continue here ... */
+    }
   ]
 }
 ```
 
-The 20 Hz HPF and 22000 Hz LPF defaults are bypass — they don't
-affect the signal until a ReverbZone sets them to something
-audible. Q=0.707 (Butterworth response) is the standard
-non-resonant cutoff curve.
+The reverb runs wet-only (`dry_gain_db = -60`) because it's a
+send/return — the dry signal stays on the voice's normal bus
+path. The 20 Hz HPF is effectively bypass (subsonic only); the
+16 kHz LPF is a gentle resting roll-off on the wet tail. A
+ReverbZone lowers/raises these per-zone. Q=0.707 (Butterworth)
+is the standard non-resonant cutoff curve.
+
+> **Migration (pre-v0.80.9):** older configs put the reverb
+> inline on the `Sfx` bus and shipped the LPF at 22 kHz
+> (bypass). If you keep that layout, point your ReverbZone
+> `bus_name` at `"Sfx"`. To adopt the dedicated send/return
+> layout, copy the `Reverb` bus block above into your config and
+> remove the inline reverb from Sfx.
 
 ## GoolPresets values shipped in v0.47.0
 

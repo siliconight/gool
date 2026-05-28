@@ -123,10 +123,13 @@ var material: int = 0
 ## ~2000 ms for cinematic camera moves into a new room.
 @export_range(0.0, 5000.0, 1.0, "suffix:ms") var transition_ms: float = 800.0
 
-## Target bus carrying the reverb effect. Default "Sfx" matches
-## the standard gool config; change if your project routes reverb
-## to a dedicated bus (e.g. "Reverb" or "ReverbBus").
-@export var bus_name: String = "Sfx"
+## Target bus carrying the reverb effect. Default "Reverb" matches
+## the v0.80.9+ gool config, which routes reverb to a dedicated
+## send/return bus (id=kBusReverb) instead of inline on Sfx. Change
+## if your project names the reverb bus differently. Pre-v0.80.9
+## configs put the reverb inline on "Sfx"; set this to "Sfx" if you
+## haven't migrated your config.json to the dedicated-reverb layout.
+@export var bus_name: String = "Reverb"
 
 ## Group that the listener (player) is expected to be in. Match
 ## this to the group your character body is in — the standard

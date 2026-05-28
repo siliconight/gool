@@ -739,6 +739,20 @@ ParseResult ParseFromJson(std::string_view json) {
             AudioRuntimeBudget b{};
             if (!parseBudget(s, b, r.error, r.errorLine)) return r;
             r.budget = b;
+        } else if (key == "global_reverb_send") {
+            // v0.80.9: top-level reverb-send scalar [0,1]. The fraction
+            // of every spatialized voice routed to the kBusReverb bus
+            // (id=1) by the default spatializer. 0 = dormant. Enables
+            // the dedicated-reverb-send path from a JSON-only config.
+            double n;
+            if (!s.parseNumber(n, r.error, r.errorLine)) return r;
+            if (n < 0.0 || n > 1.0) {
+                r.error = "global_reverb_send must be in [0, 1], got "
+                        + std::to_string(n);
+                r.errorLine = 1;
+                return r;
+            }
+            r.globalReverbSend = static_cast<float>(n);
         } else {
             // Tolerate unknown root-level keys for forward compat.
             if (!s.skipValue(r.error, r.errorLine)) return r;

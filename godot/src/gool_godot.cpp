@@ -868,6 +868,16 @@ public:
             if (pr.budget.has_value()) {
                 cfg.budget = pr.budget.value();
             }
+            // v0.80.9: apply parsed global reverb send if present.
+            // Absent → cfg.globalReverbSend keeps its default (0.0,
+            // dormant). Present → the config.json declares how much
+            // of every spatialized voice routes to the kBusReverb bus.
+            // This is the JSON-config path to the dedicated-reverb-send
+            // feature; before v0.80.9 it was only settable via the C++
+            // AudioConfig API, so the FPS template could not enable it.
+            if (pr.globalReverbSend.has_value()) {
+                cfg.globalReverbSend = pr.globalReverbSend.value();
+            }
         }
 
         runtime_ = std::make_unique<audio::AudioRuntime>();

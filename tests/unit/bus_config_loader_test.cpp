@@ -470,6 +470,65 @@ void TestForwardCompatUnknownKeys() {
 }
 
 // =============================================================================
+// 9b. v0.80.9: top-level global_reverb_send scalar.
+//     Present → optional populated. Absent → nullopt (caller's
+//     AudioConfig default 0.0 preserved). Out-of-range → error.
+// =============================================================================
+void TestGlobalReverbSend() {
+    std::printf("  [global_reverb_send: parse, absent, range]\n");
+
+    // (a) Present: parses into the optional.
+    {
+        constexpr std::string_view json = R"({
+            "global_reverb_send": 0.15,
+            "buses": [
+                { "name": "Master" },
+                { "name": "Reverb", "parent": "Master",
+                  "effects": [{ "kind": "reverb", "dry_gain_db": -60.0,
+                                "wet_gain_db": 0.0 }] }
+            ]
+        })";
+        auto r = BusConfigLoader::ParseFromJson(json);
+        EXPECT_OK(r);
+        EXPECT(r.globalReverbSend.has_value());
+        EXPECT(r.globalReverbSend.value() > 0.149f
+                && r.globalReverbSend.value() < 0.151f);
+        // The Reverb bus is the first non-Master bus → it lands at
+        // id == kBusReverb (1). Buses are indexed by id, so the bus at
+        // kBusReverb should carry the single reverb effect.
+        EXPECT(r.busGraph.busCount == 2);
+        const auto& reverbBus = r.busGraph.buses[kBusReverb];
+        EXPECT(reverbBus.effectCount == 1);
+        EXPECT(reverbBus.effects[0].kind == EffectKind::Reverb);
+        std::printf("    OK (present: 0.15, Reverb bus at id=kBusReverb)\n");
+    }
+
+    // (b) Absent: optional stays empty so the C++ default holds.
+    {
+        constexpr std::string_view json = R"({
+            "buses": [ { "name": "Master" } ]
+        })";
+        auto r = BusConfigLoader::ParseFromJson(json);
+        EXPECT_OK(r);
+        EXPECT(!r.globalReverbSend.has_value());
+        std::printf("    OK (absent: nullopt, default preserved)\n");
+    }
+
+    // (c) Out of range: descriptive error, ok=false.
+    {
+        constexpr std::string_view json = R"({
+            "global_reverb_send": 1.5,
+            "buses": [ { "name": "Master" } ]
+        })";
+        auto r = BusConfigLoader::ParseFromJson(json);
+        EXPECT(!r.ok);
+        EXPECT(r.error.find("global_reverb_send") != std::string::npos);
+        std::printf("    OK (out-of-range 1.5 rejected: %s)\n",
+                r.error.c_str());
+    }
+}
+
+// =============================================================================
 // 10. Backward-compat: old config without "buses" key still parses,
 //     producing an empty bus graph the engine auto-fills with
 //     master-only at Initialize.
@@ -550,6 +609,7 @@ int main() {
     TestUnresolvedSidechainBus();
     TestUnresolvedParent();
     TestForwardCompatUnknownKeys();
+    TestGlobalReverbSend();
     TestBackwardCompatNoBusesKey();
     TestFindBusIdByName();
     std::printf("[bus_config_loader_test] PASSED\n");
