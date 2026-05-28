@@ -26,6 +26,95 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.14] - 2026-05-28 — Fix false-positive "config.json changed on disk" dialog
+
+A user testing v0.80.13 in a fresh project hit the
+"config.json was modified outside the editor" dialog after a
+sequence of normal dock edits — no external file touches, just
+slider drags. Surface bug latent since v0.28.6's external-change
+detection landed; only testable end-to-end after v0.80.12 +
+v0.80.13 cleared the silent-write paths.
+
+### Fixed
+
+  * **`_do_save`'s post-write `_raw_text` sync now reads disk back
+    instead of trusting `new_text`.** Cause:
+    `FileAccess.store_string` on Windows applies platform
+    line-ending conversion (LF→CRLF for any bare `\n` in the
+    written string). This is the same asymmetry I documented at
+    `mixer_dock.gd:307-313` when v0.80.8 switched FPS-template
+    install from `store_string` to `DirAccess.copy()` —
+    `store_string` writes bytes that don't byte-equal what the
+    caller passed in.
+
+    Pre-v0.80.14 the save path did `_raw_text = new_text` after
+    `f.store_string(new_text)`. When `store_string` converted LF
+    to CRLF on disk, `_raw_text` retained the bare-LF version
+    while disk had CRLF. The NEXT save's external-change
+    pre-flight (lines 553-561) reads disk via `get_as_text`
+    (preserves `\r`), compares to `_raw_text`, sees them differ,
+    and emits `external_change_detected` → the dialog.
+
+    From the user's perspective: edit Ambient gain → save fires
+    silently → edit Music gain → "config.json changed on disk"
+    dialog appears claiming Music has unsaved edits, even though
+    nothing outside the editor touched the file. The dock
+    detected its own previous write as an external change.
+
+    Fix: after `f.close()`, re-read disk via `get_as_text` and
+    set `_raw_text` from that. `_raw_text` now byte-matches
+    actual disk content regardless of any encoding, EOL, or BOM
+    conversion `store_string` may apply. Robust against the
+    underlying platform behavior changing in future Godot
+    versions.
+
+    Fallback path: if the read-back fails (unlikely — we just
+    wrote the file successfully), use `new_text` as a last
+    resort so `_raw_text` is at least self-consistent in memory.
+
+### Why this took 50+ patch releases to surface
+
+The external-change detection was added in v0.28.6 (the
+mtime→content shift). For the false positive to manifest, you
+need TWO consecutive saves where the on-disk bytes after
+write 1 differ from what the dock thinks it wrote. That's only
+testable when:
+
+  * The dock can edit a config without something else
+    silently writing it (v0.80.13 removed the last silent
+    writer)
+  * The dock doesn't silently regenerate config.json after
+    external removal (v0.80.12 fixed `_do_save`'s external-
+    removal handling)
+  * The user actually makes two consecutive edits to a working
+    config without restarting Godot in between
+
+Until v0.80.12 + v0.80.13, the silent-write paths were
+masking this. With those out of the way, the dock is finally
+clean enough for sustained editing — and the latent
+false-positive surfaced on the first real test session.
+
+### Verification
+
+  * Empirical: in a fresh project, install gool, click "Use FPS
+    template", drag Ambient slider to a non-default value (wait
+    for the debounce to save), drag Music slider, wait. Pre-
+    v0.80.14: the "config.json changed on disk" dialog appears.
+    v0.80.14: edits save quietly with no dialog.
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (all 5 sources at 0.80.14).
+
+### Cluster B status
+
+Findings closed across the v0.80.x patch sequence so far: #2,
+#3, #4, #5, #6, #14, #16, #17, #18, #20, #21, #25, the
+upgrade-path crash (no triage number), the silent default-config
+writer (no triage number), and this false-positive (no triage
+number — surfaced post-v0.80.13).
+
+Remaining for the v0.81.0 architectural pass: #1, #7, #9, #10,
+#11, #12, #19, #22, #23, #24, #26, #27, #28, #29.
+
 ## [0.80.13] - 2026-05-28 — Retrofit v0.80.5 autoload migration + remove silent default-config writer
 
 Two fixes prompted by a real upgrade-path failure:

@@ -640,8 +640,33 @@ func _do_save() -> int:
 	f.store_string(new_text)
 	f.close()
 
-	# All good. Commit the new state.
-	_raw_text = new_text
+	# v0.80.14: re-read disk content for _raw_text sync, instead of
+	# using new_text directly. FileAccess.store_string on Windows
+	# applies platform line-ending conversion (LF→CRLF) — same issue
+	# documented at mixer_dock.gd:307-313 for the v0.80.8 FPS-template
+	# fix. If we set _raw_text = new_text (the in-memory pre-write
+	# version) when store_string actually wrote a CRLF-converted
+	# version, the next save's external-change pre-flight reads disk
+	# (CRLF), compares to _raw_text (still has the original LF), sees
+	# them differ, and fires external_change_detected — a false
+	# positive on the dock's OWN previous write. The user sees a
+	# "config.json changed on disk" dialog they didn't cause.
+	#
+	# Re-reading via get_as_text returns the canonical disk bytes,
+	# whatever conversion store_string applied, so _raw_text now
+	# byte-matches disk and the next pre-flight passes cleanly.
+	# Robust against any encoding/EOL/BOM divergence regardless of
+	# specific platform behavior.
+	var f_readback := FileAccess.open(CONFIG_PATH, FileAccess.READ)
+	if f_readback != null:
+		_raw_text = f_readback.get_as_text()
+		f_readback.close()
+	else:
+		# Read-back failed (unlikely — we JUST wrote it). Fall back
+		# to new_text so we at least have a self-consistent in-memory
+		# state, even if it might disagree with disk by some bytes.
+		# Better than leaving _raw_text empty.
+		_raw_text = new_text
 	_last_seen_mtime = FileAccess.get_modified_time(CONFIG_PATH)
 	var saved_buses: Array = _dirty_buses.keys()
 	_dirty_buses.clear()
