@@ -37,7 +37,7 @@
         {
           "kind": "biquad",
           "biquad_type": "highpass",
-          "cutoff_hz": 20.0,
+          "cutoff_hz": 120.0,
           "q": 0.707,
           "biquad_gain_db": 0.0
         },

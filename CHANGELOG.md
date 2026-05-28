@@ -26,6 +26,47 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.10] - 2026-05-28 — Reverb-send HPF raised to tame boomy lows
+
+Follow-up to v0.80.9's dedicated reverb bus. The reverb-send
+high-pass shipped at 20 Hz, which only removes sub-sonic content
+— it did nothing about the boomy low-mid energy (roughly
+100–250 Hz) that explosions and footstep thumps dump into the
+reverb tail. This raises it to a value that actually does the
+job.
+
+### Changed (FPS template)
+
+  * **Reverb-send HPF cutoff 20 Hz → 120 Hz.** The high-pass
+    biquad in front of the reverb (on the dedicated `Reverb`
+    bus) now cuts at 120 Hz. Because it filters only the reverb
+    *send* — what feeds the reverb — and not the dry signal,
+    low-frequency sounds keep their full body in the direct
+    path while the reverb tail stays clean instead of muddy.
+    This is the standard "high-pass the reverb send" technique.
+
+    The dry sounds are completely unaffected. A ReverbZone in
+    scope can still override this per-zone via `send_hpf_hz`.
+
+### Documentation
+
+  * `docs/quickstart_fps.md`, `docs/audio_design/reverb_eq.md`:
+    updated the reverb chain references from `HPF 20 Hz` to
+    `HPF 120 Hz` and reframed the HPF's purpose (was described
+    as effectively-bypass subsonic filtering; now an active
+    send-HPF that tames boom).
+
+### Verification
+
+  * FPS template validates as JSON; Reverb chain confirmed
+    `highpass(120) → reverb → lowpass(16000)`.
+  * `scripts/check_version_sync.sh` — passes (0.80.10).
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * Pure template + docs change; no C++, no GDScript logic.
+  * Empirical: load the FPS template, trigger a low-frequency
+    spatial sound (explosion/thump), confirm the reverb tail is
+    no longer boomy while the direct sound keeps its weight.
+
 ## [0.80.9] - 2026-05-28 — Cluster H: FPS template editorial + dedicated reverb send
 
 Sixth patch in the v0.81.0 release sequence. Closes finding #6
@@ -82,7 +123,8 @@ config.json to the dedicated-reverb layout.
     - The full ReverbZone-compatible chain is on the Reverb
       bus: `[HPF 20 Hz] → [Reverb] → [LPF 16 kHz]`. The flanking
       biquads are ReverbZone's send-HPF / return-LPF shaping
-      slots.
+      slots. (The send HPF is raised to 120 Hz in v0.80.10 to
+      tame boomy lows — see that entry.)
     - `global_reverb_send = 0.15` means spatialized sfx get
       subtle world ambience out of the box, tunable in one place.
     - The `Sfx` bus is now a clean routing/gain bus (no inline

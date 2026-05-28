@@ -81,7 +81,7 @@ the Sfx bus — see migration note below):
 ```
 [ListenerEq biquads, optional]
       ↓
-[Biquad — HPF slot, default cutoff 20 Hz (effectively bypass)]
+[Biquad — HPF slot, default cutoff 120 Hz (tames boomy lows)]
       ↓
 [Reverb]
       ↓
@@ -90,8 +90,10 @@ the Sfx bus — see migration note below):
 [Saturation, Compressors, etc — everything else]
 ```
 
-The HPF ships at 20 Hz (removes only sub-sonic content, so
-effectively inaudible/bypass). As of v0.80.9 the LPF ships at
+The HPF ships at 120 Hz — it high-passes the reverb *send* so
+low-frequency sounds (explosions, footstep thumps) don't dump
+boomy low-mid energy into the reverb tail. The dry signal is
+unaffected; only what feeds the reverb is filtered. As of v0.80.9 the LPF ships at
 16 kHz — a gentle top-octave roll-off that darkens the reverb
 tail slightly out of the box (pre-v0.80.9 it shipped at 22 kHz,
 effectively bypass). A ReverbZone in scope can lower the LPF
@@ -112,7 +114,7 @@ flanking biquad slots already in place:
     {
       "kind": "biquad",
       "biquad_type": "highpass",
-      "cutoff_hz": 20.0,
+      "cutoff_hz": 120.0,
       "q": 0.707,
       "biquad_gain_db": 0.0
     },
@@ -139,7 +141,7 @@ flanking biquad slots already in place:
 
 The reverb runs wet-only (`dry_gain_db = -60`) because it's a
 send/return — the dry signal stays on the voice's normal bus
-path. The 20 Hz HPF is effectively bypass (subsonic only); the
+path. The 120 Hz HPF keeps boomy lows out of the reverb tail; the
 16 kHz LPF is a gentle resting roll-off on the wet tail. A
 ReverbZone lowers/raises these per-zone. Q=0.707 (Butterworth)
 is the standard non-resonant cutoff curve.

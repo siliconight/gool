@@ -39,7 +39,7 @@ cp res://addons/gool/templates/config_fps.json res://gool/config.json
 What's different vs default:
 
 - **Dedicated `Reverb` bus** (id=kBusReverb) with the full
-  reverb chain: `[HPF 20Hz] → [Reverb] → [LPF 16kHz]`. As of
+  reverb chain: `[HPF 120Hz] → [Reverb] → [LPF 16kHz]`. As of
   v0.80.9 the reverb is a send/return bus, not inline on Sfx:
   the reverb effect runs wet-only (`dry_gain_db = -60`), and a
   fraction of every spatialized voice is routed to it via the
