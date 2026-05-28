@@ -26,6 +26,91 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.8] - 2026-05-27 — Cluster I: FPS template byte-for-byte copy
+
+Fifth patch in the v0.81.0 release sequence. Closes finding #5
+(FPS template line-ending conversion on Windows). Pure I/O fix
+— no functional behavior change, no user-visible UI change.
+
+### Fixed
+
+  * **FPS template now copied byte-for-byte preserving LF line
+    endings (finding #5).** The canonical
+    `addons/gool/templates/config_fps.json` ships with LF line
+    endings (Unix-style). Pre-v0.80.8, the two code paths that
+    install this template into `res://gool/config.json` both
+    used a text-I/O round-trip:
+    ```gdscript
+    var text := FileAccess.get_file_as_string(src)
+    var f := FileAccess.open(dst, FileAccess.WRITE)
+    f.store_string(text)
+    ```
+    `FileAccess.store_string()` writes platform-default line
+    endings — CRLF on Windows, LF elsewhere. So Windows users
+    ended up with a config.json that:
+    - Functioned identically to the LF version (the parser
+      accepts both)
+    - Diffed dirty against the canonical upstream template on
+      every line
+    - Hit version-control churn if the project's `.gitattributes`
+      didn't normalize line endings
+
+    Both code paths now use `DirAccess.copy()` for byte-for-byte
+    preservation. The destination file matches the canonical
+    template byte-for-byte regardless of platform.
+
+    Code paths fixed:
+    1. **`mixer_dock.gd:296` — `_on_use_fps_template_pressed`.**
+       Already had a `DirAccess` open for the gool/ directory
+       check; just swapped the text-read+write for `dir.copy()`.
+       One-line semantic change in the body.
+    2. **`getting_started_banner.gd:202` — `_on_use_fps_template`.**
+       Larger refactor because the function previously called
+       `_write_config_and_finish(content, label)` — a shared
+       writer used by BOTH the FPS template AND the minimal
+       template (a GDScript string constant). The string-constant
+       path is fine via store_string (GDScript string literals
+       are LF-only, no conversion possible). Split into:
+       - `_on_use_fps_template` → `dir.copy()` + `_finish_template_install`
+       - `_on_use_minimal_template` → `_write_minimal_template_and_finish`
+         → `store_string` + `_finish_template_install`
+       - Shared helper `_ensure_project_gool_dir()` for the mkdir
+       - Shared helper `_finish_template_install(label)` for the
+         dismiss-flag + log + hide-banner sequence
+
+### Why this isn't a v0.81.0 blocker
+
+The bug is real but cosmetic in effect. Users on Windows can run
+the FPS template install today and the engine works perfectly —
+the only consequence is that their on-disk config.json shows as
+dirty when compared against the canonical template, and may
+churn in version control. Worth fixing for diff cleanliness;
+not worth blocking a release for.
+
+### Verification
+
+  * `python3 scripts/check_addon_autoload_safety.py` — passes.
+  * `bash scripts/check_version_sync.sh` — passes.
+  * Refactor sanity:
+    - `_write_config_and_finish` no longer called anywhere (3
+      remaining occurrences are intentional historical comments
+      documenting the v0.80.8 split).
+    - `_on_use_fps_template` calls `dir.copy()`, not
+      `get_as_text()` + `store_string()`.
+    - `_on_use_minimal_template` still uses `store_string()`
+      (correct — its input is a string constant, no source file
+      to copy).
+  * Empirical verification will happen on next platform-test:
+    install FPS template on Windows, diff resulting
+    `res://gool/config.json` against the canonical
+    `res://addons/gool/templates/config_fps.json`. Expected: no
+    differences. Pre-v0.80.8 expected: every line shows as
+    changed due to CRLF vs LF.
+
+### Findings closed by this release
+
+  * #5 — FPS template "Use" converts line endings on Windows
+
 ## [0.80.7] - 2026-05-27 — Cluster F: release-notes triple-Full-Changelog
 
 Fourth patch in the v0.81.0 release sequence. Single-finding

@@ -124,10 +124,13 @@ func _should_show() -> bool:
 	return true
 
 
-# v0.74.1: extracted from _on_dismiss so _write_config_and_finish can
-# reuse it. Persists the "user has interacted with the banner" flag in
-# ProjectSettings so the banner stays hidden across editor restarts.
-# Returns true if the flag persisted successfully, false if the
+# v0.74.1: extracted from _on_dismiss so the template-install writers
+# can reuse it (v0.80.8: now _write_minimal_template_and_finish and
+# the FPS template copy in _on_use_fps_template, both via the
+# _finish_template_install helper). Persists the "user has interacted
+# with the banner" flag in ProjectSettings so the banner stays hidden
+# across editor restarts. Returns true if the flag persisted successfully,
+# false if the
 # ProjectSettings.save() call failed (caller may surface a warning).
 func _persist_dismiss_flag() -> bool:
 	ProjectSettings.set_setting(_DISMISS_META_KEY, true)
@@ -206,51 +209,72 @@ func _on_use_fps_template() -> void:
 				+ "file by default. Reinstall the addon or check the "
 				+ "templates folder.")
 		return
-	var src := FileAccess.open(_ADDON_FPS_TEMPLATE, FileAccess.READ)
-	if src == null:
-		_log_error("Could not read FPS template (err=%d)."
-				% FileAccess.get_open_error())
+	# v0.80.8: byte-for-byte copy via DirAccess.copy(). Pre-v0.80.8
+	# this read the template as text and wrote via store_string,
+	# which converts to platform-default line endings on write —
+	# CRLF on Windows, LF elsewhere. The parser handles both, but
+	# byte-for-byte consistency means anyone diffing their on-disk
+	# config against the canonical upstream template sees a clean
+	# diff instead of every line marked changed.
+	if not _ensure_project_gool_dir():
 		return
-	var content: String = src.get_as_text()
-	src.close()
-	_write_config_and_finish(content, "FPS template")
+	# DirAccess.copy is bound on an instance — open at res:// since
+	# both paths are res://-relative; the instance handles them as
+	# Godot virtual paths.
+	var dir := DirAccess.open("res://")
+	if dir == null:
+		_log_error("Could not open res:// for FPS template copy (err=%d)."
+				% DirAccess.get_open_error())
+		return
+	var copy_err: int = dir.copy(_ADDON_FPS_TEMPLATE, _PROJECT_CONFIG_PATH)
+	if copy_err != OK:
+		_log_error("Could not copy %s → %s (err=%d)."
+				% [_ADDON_FPS_TEMPLATE, _PROJECT_CONFIG_PATH, copy_err])
+		return
+	_finish_template_install("FPS template")
 
 
 func _on_use_minimal_template() -> void:
-	_write_config_and_finish(_MINIMAL_CONFIG_JSON, "minimal template")
+	_write_minimal_template_and_finish()
 
 
-func _on_dismiss() -> void:
-	# v0.74.1: shared helper with _write_config_and_finish.
-	if not _persist_dismiss_flag():
-		push_warning("[gool] Could not persist dismiss flag. "
-				+ "Banner hidden for this session but may reappear next "
-				+ "editor launch.")
-	visible = false
-	print("[gool] Getting Started banner dismissed. To re-enable, "
-			+ "remove the 'addons/gool/editor/getting_started_dismissed' "
-			+ "setting from project.godot.")
-
-
-# ─── Helpers ───────────────────────────────────────────────────────
-
-func _write_config_and_finish(content: String, label: String) -> void:
-	# Ensure res://gool/ directory exists. DirAccess.make_dir_recursive
-	# is idempotent (no-op if already present).
-	var dir_err: int = DirAccess.make_dir_recursive_absolute(
-			ProjectSettings.globalize_path("res://gool"))
-	if dir_err != OK and dir_err != ERR_ALREADY_EXISTS:
-		_log_error("Could not create res://gool/ directory (err=%d)."
-				% dir_err)
+# v0.80.8: split out from the old _write_config_and_finish to make
+# the FPS-template-vs-minimal-template distinction explicit. The
+# minimal template writes a GDScript string constant to disk via
+# store_string. String constants are LF in GDScript, so no line-
+# ending conversion happens. (The Windows CRLF bug only bit the
+# FPS template path, which was reading from a file via get_as_text.)
+func _write_minimal_template_and_finish() -> void:
+	if not _ensure_project_gool_dir():
 		return
-	# Write the config.
 	var f := FileAccess.open(_PROJECT_CONFIG_PATH, FileAccess.WRITE)
 	if f == null:
 		_log_error("Could not open %s for write (err=%d)."
 				% [_PROJECT_CONFIG_PATH, FileAccess.get_open_error()])
 		return
-	f.store_string(content)
+	f.store_string(_MINIMAL_CONFIG_JSON)
 	f.close()
+	_finish_template_install("minimal template")
+
+
+# v0.80.8: helper — ensure res://gool/ exists. Idempotent; returns
+# true on success (including "already existed"), false on fatal
+# error (logged via _log_error before return).
+func _ensure_project_gool_dir() -> bool:
+	var dir_err: int = DirAccess.make_dir_recursive_absolute(
+			ProjectSettings.globalize_path("res://gool"))
+	if dir_err != OK and dir_err != ERR_ALREADY_EXISTS:
+		_log_error("Could not create res://gool/ directory (err=%d)."
+				% dir_err)
+		return false
+	return true
+
+
+# v0.80.8: helper — shared post-install actions. Persist the dismiss
+# flag, log success, hide the banner. Called by BOTH the FPS template
+# (byte-for-byte copy) and minimal template (string write) paths
+# after the config has been successfully written.
+func _finish_template_install(label: String) -> void:
 	# v0.74.1: persist the dismiss flag so the banner doesn't reappear on
 	# next editor restart. Picking a template is an act of completed
 	# onboarding — the user is engaged and set up. Without this, the
@@ -268,6 +292,21 @@ func _write_config_and_finish(content: String, label: String) -> void:
 			+ "to apply.")
 	visible = false
 
+
+func _on_dismiss() -> void:
+	# v0.74.1: shared helper with the template-install writers (v0.80.8:
+	# now used by _finish_template_install).
+	if not _persist_dismiss_flag():
+		push_warning("[gool] Could not persist dismiss flag. "
+				+ "Banner hidden for this session but may reappear next "
+				+ "editor launch.")
+	visible = false
+	print("[gool] Getting Started banner dismissed. To re-enable, "
+			+ "remove the 'addons/gool/editor/getting_started_dismissed' "
+			+ "setting from project.godot.")
+
+
+# ─── Helpers ───────────────────────────────────────────────────────
 
 func _log_error(msg: String) -> void:
 	push_error("[gool] Getting Started: " + msg)

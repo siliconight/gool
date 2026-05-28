@@ -304,13 +304,18 @@ func _on_use_fps_template_pressed() -> void:
 		return
 	if not dir.dir_exists("gool"):
 		dir.make_dir("gool")
-	var text: String = FileAccess.get_file_as_string(src)
-	var f := FileAccess.open(dst, FileAccess.WRITE)
-	if f == null:
-		push_error("[gool] mixer dock: cannot open %s for writing" % dst)
+	# v0.80.8: byte-for-byte copy via DirAccess.copy(). Pre-v0.80.8
+	# this read the template via FileAccess.get_file_as_string and
+	# wrote via store_string, which converts to platform-default
+	# line endings (CRLF on Windows). The parser handles both fine,
+	# but byte-for-byte consistency means anyone diffing their on-
+	# disk config against the canonical upstream template sees a
+	# clean diff instead of every line flagged changed.
+	var copy_err: int = dir.copy(src, dst)
+	if copy_err != OK:
+		push_error("[gool] mixer dock: cannot copy %s → %s (err=%d)"
+				% [src, dst, copy_err])
 		return
-	f.store_string(text)
-	f.close()
 	print("[gool] mixer dock: copied FPS template → %s" % dst)
 	if _config_model != null:
 		_config_model.load_from_disk()
