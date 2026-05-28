@@ -107,142 +107,6 @@ const PREFABS := [
 
 const CONFIG_PATH := "res://gool/config.json"
 
-# Default audio config written on plugin enable. Uses the v0.10
-# richer schema:
-#   - "buses" is an array of { name, parent, gain_db, silent, effects }
-#   - effects are dicts with kind + per-kind fields
-#   - sidechain_bus references resolve by bus name at engine init
-#
-# This default builds a ready-to-use multi-tier ducking topology
-# (LocalSfx > RemoteSfx > Music) that gives the L4D2-style mix
-# behavior out of the box. Projects that want a simpler graph can
-# overwrite res://gool/config.json after the plugin enables.
-const DEFAULT_CONFIG := {
-	"sample_rate": 48000,
-	"buffer_size": 512,
-	"buses": [
-		# v0.63.0: Master bus ships with the Phase 7 Master FX Lite
-		# chain pre-installed — glue compressor + LUFS gain rider +
-		# true-peak limiter. Defaults are the "Standard FPS" preset
-		# (target -16 LUFS, ceiling -1 dBTP). Fresh projects sound
-		# loudness-safe and glued without any setup. Drop a
-		# GoolMasterFxProfile node to switch presets at runtime.
-		#
-		# To opt out: remove the master_control effect from this
-		# bus, or bypass each stage by setting mc_*_enabled = false.
-		{ "name": "Master", "gain_db": 0.0,
-		  "effects": [
-			{ "kind": "master_control",
-			  "mc_glue_enabled":         true,
-			  "mc_rider_enabled":        true,
-			  "mc_limiter_enabled":      true,
-			  "mc_glue_threshold_db":    -12.0,
-			  "mc_glue_ratio":           2.0,
-			  "mc_glue_attack_ms":       10.0,
-			  "mc_glue_release_ms":      250.0,
-			  "mc_glue_knee_db":         6.0,
-			  "mc_glue_makeup_db":       0.0,
-			  "mc_rider_target_lufs":    -16.0,
-			  "mc_rider_time_constant_ms": 3000.0,
-			  "mc_rider_max_gain_db":    6.0,
-			  "mc_rider_min_gain_db":    -6.0,
-			  "mc_rider_freeze_below_lufs": -6.0,
-			  "mc_limiter_ceiling_dbtp": -1.0,
-			  "mc_limiter_release_ms":   50.0,
-			  "mc_limiter_lookahead_ms": 5.0 }
-		  ] },
-
-		# Music bus: ducks under the local-player SFX so the player's
-		# own gun wins the mix, AND ducks under Dialogue so NPC
-		# callouts ("TANK!") cut through the soundtrack. Two
-		# compressors in series — each sidechained to a different
-		# trigger bus.
-		{ "name": "Music",  "parent": "Master", "gain_db": -3.0,
-		  "effects": [
-			{ "kind": "compressor",
-			  "threshold_db": -30.0, "ratio": 8.0,
-			  "attack_ms": 5.0,  "release_ms": 250.0,
-			  "makeup_db": 0.0,
-			  "knee_width_db": 4.0,
-			  "sidechain_bus": "LocalSfx" },
-			{ "kind": "compressor",
-			  "threshold_db": -25.0, "ratio": 8.0,
-			  "attack_ms": 3.0,  "release_ms": 250.0,
-			  "makeup_db": 0.0,
-			  "knee_width_db": 4.0,
-			  "max_reduction_db": 12.0,
-			  "sidechain_bus": "Dialogue" }
-		  ] },
-
-		# Submix that holds both local + remote SFX. Per-tier
-		# processing happens on its children, not here.
-		{ "name": "SfxAll", "parent": "Master" },
-
-		# Local-player SFX — your gun, your footsteps, your reload.
-		# Ducks under Dialogue so callouts cut through your own
-		# gunfire (the core L4D2 mix feel). Drives the sidechain
-		# triggers on Music + RemoteSfx — leave its trigger path
-		# clean (this compressor only ducks LocalSfx, doesn't
-		# alter what LocalSfx sends to the sidechains).
-		{ "name": "LocalSfx", "parent": "SfxAll",
-		  "effects": [
-			{ "kind": "compressor",
-			  "threshold_db": -22.0, "ratio": 6.0,
-			  "attack_ms": 3.0,  "release_ms": 200.0,
-			  "knee_width_db": 4.0,
-			  "max_reduction_db": 10.0,
-			  "sidechain_bus": "Dialogue" }
-		  ] },
-
-		# Remote-player SFX — teammate guns, NPC barks, ambient
-		# impacts. Ducks under LocalSfx so the local action wins
-		# over teammate action, AND ducks under Dialogue so
-		# callouts cut through teammate gunfire.
-		{ "name": "RemoteSfx", "parent": "SfxAll",
-		  "effects": [
-			{ "kind": "compressor",
-			  "threshold_db": -30.0, "ratio": 8.0,
-			  "attack_ms": 5.0,  "release_ms": 250.0,
-			  "sidechain_bus": "LocalSfx" },
-			{ "kind": "compressor",
-			  "threshold_db": -22.0, "ratio": 6.0,
-			  "attack_ms": 3.0,  "release_ms": 200.0,
-			  "knee_width_db": 4.0,
-			  "max_reduction_db": 10.0,
-			  "sidechain_bus": "Dialogue" }
-		  ] },
-
-		# Voice chat — separate bus, not ducked (intelligibility
-		# priority). If you want voice to also win over music,
-		# add it as a sidechain bus on Music's compressor.
-		{ "name": "Voice",   "parent": "Master", "gain_db": 0.0 },
-
-		# v0.43.0: Dialogue — NPC barks, callouts, narration.
-		# Drives ducking on Music + LocalSfx + RemoteSfx via the
-		# sidechain compressors above. Itself has no effects, so
-		# dialogue plays at full level uncolored. Route bark
-		# sounds in your sound bank with "bus": "Dialogue" — the
-		# DialogueDirector autoload calls Gool.play_3d which uses
-		# the sound's bank-defined bus.
-		{ "name": "Dialogue", "parent": "Master", "gain_db": 0.0 },
-
-		# Ambient world bed — quiet, doesn't trigger any ducker.
-		{ "name": "Ambient", "parent": "Master", "gain_db": -6.0 }
-	],
-
-	# Default category routing. Hosts can override per-emitter when
-	# registering sounds; this is the fallback for emitters that
-	# don't specify a target bus explicitly.
-	"category_routing": {
-		"music":    "Music",
-		"sfx":      "LocalSfx",   # safe default: assume "your" sfx
-		"voice":    "Voice",
-		"ambience": "Ambient",
-		"ui":       "Master",
-		"dialogue": "Dialogue"   # v0.43.0: now routes to the dedicated bus
-	}
-}
-
 const INSPECTOR_PLUGIN_PATH := "res://addons/gool/editor/sound_name_inspector.gd"
 
 # v0.59.2: Phase 6.E.1 — per-material EQ curve preview in the
@@ -314,7 +178,14 @@ var _debugger_plugin: EditorDebuggerPlugin = null
 func _enter_tree() -> void:
 	_add_autoload()
 	_register_prefabs()
-	_write_default_config_if_missing()
+	# v0.80.13: removed _write_default_config_if_missing() — it
+	# silently wrote a stale DEFAULT_CONFIG dict (SfxAll, no Reverb
+	# bus, no UI bus, pre-v0.80.9 layout) on every plugin enable
+	# where res://gool/config.json didn't exist. The empty-state UI
+	# in the mixer dock and the getting-started banner both offer
+	# explicit template choices ("Use FPS template", "Use minimal");
+	# the silent writer pre-empted those with an opinionated default
+	# the user never asked for. See Cluster B persistence audit.
 	_scaffold_sounds_tree_if_missing()   # v0.23.0
 	_register_inspector_plugin()
 	_register_material_eq_inspector()    # v0.59.2 — Phase 6.E.1
@@ -537,6 +408,32 @@ func _on_filesystem_changed() -> void:
 		inspector_script.clear_cache()
 
 func _add_autoload() -> void:
+	# v0.80.13: migrate pre-v0.80.5 autoload registration. The
+	# v0.80.5 BREAKING rename changed the bridge's autoload name
+	# from "GoolMultiplayerBridge" to "MultiplayerBridge", but the
+	# v0.80.5 release didn't include migration logic — anyone whose
+	# project.godot had `autoload/GoolMultiplayerBridge=...` from a
+	# pre-v0.80.5 install kept that entry forever, and the plugin's
+	# call to add_autoload_singleton("MultiplayerBridge", ...) below
+	# would add a SECOND registration pointing at the same script.
+	# Result: multiplayer_bridge.gd loads as two distinct autoloads,
+	# double _enter_tree, conflicting signal connections, editor
+	# crash on first open. Five releases (v0.80.5 - v0.80.12) shipped
+	# with this bug latent.
+	#
+	# The migration: if `autoload/GoolMultiplayerBridge` exists in
+	# project settings, remove it before adding the new registration.
+	# Idempotent — safe to run on every plugin enable.
+	const _OLD_BRIDGE_NAME := "GoolMultiplayerBridge"
+	if ProjectSettings.has_setting("autoload/" + _OLD_BRIDGE_NAME):
+		remove_autoload_singleton(_OLD_BRIDGE_NAME)
+		print("[gool] v0.80.13 migration: removed stale "
+				+ "'GoolMultiplayerBridge' autoload registration from "
+				+ "project.godot (renamed to 'MultiplayerBridge' in "
+				+ "v0.80.5). If you have project code that still calls "
+				+ "`GoolMultiplayerBridge.foo()`, rename those references "
+				+ "to `MultiplayerBridge.foo()`.")
+
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 	# v0.43.0: DialogueDirector autoload. Registered AFTER Gool so
 	# the director's _ready() can safely reach the gool autoload.
@@ -683,17 +580,6 @@ func _register_prefabs() -> void:
 func _unregister_prefabs() -> void:
 	for entry in PREFABS:
 		remove_custom_type(entry[0])
-
-func _write_default_config_if_missing() -> void:
-	if FileAccess.file_exists(CONFIG_PATH):
-		return
-	DirAccess.make_dir_recursive_absolute("res://gool")
-	var f := FileAccess.open(CONFIG_PATH, FileAccess.WRITE)
-	if f == null:
-		push_warning("[gool] could not write default config at %s" % CONFIG_PATH)
-		return
-	f.store_string(JSON.stringify(DEFAULT_CONFIG, "  "))
-	f.close()
 
 # v0.23.0: auto-scaffolding ----------------------------------------------------
 #

@@ -26,6 +26,156 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.13] - 2026-05-28 — Retrofit v0.80.5 autoload migration + remove silent default-config writer
+
+Two fixes prompted by a real upgrade-path failure:
+
+  * v0.80.12 didn't crash on its own machines; it crashed on a
+    project that had been installed pre-v0.80.5 and upgraded
+    across the BREAKING autoload rename.
+  * v0.80.12's "stop silent regeneration" fix targeted the
+    debounced save path (`_do_save`), but missed a SEVENTH
+    config.json writer in `plugin.gd` that fired on every
+    plugin enable.
+
+### Fixed (BLOCKER)
+
+  * **Editor crash on upgrade from pre-v0.80.5 (retroactive
+    v0.80.5 migration).** v0.80.5's BREAKING rename of
+    `GoolMultiplayerBridge` → `MultiplayerBridge` shipped without
+    migration logic. Any project whose `project.godot` had been
+    populated by a pre-v0.80.5 install kept the old
+    `autoload/GoolMultiplayerBridge` entry. When v0.80.5+ enabled
+    and called `add_autoload_singleton("MultiplayerBridge", ...)`,
+    the OLD entry stayed in place — the same script
+    (`multiplayer_bridge.gd`) was registered as TWO autoloads:
+
+    ```
+    GoolMultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
+    MultiplayerBridge="*uid://qb227u36lnnc"
+    ```
+
+    Both pointed at the same file. On project open, Godot loaded
+    the script as two instances, called `_enter_tree` twice, and
+    the editor crashed on the duplicate-singleton state (signal
+    double-connects, conflicting timers, autoload-name mismatch).
+
+    **This bug shipped latent in v0.80.5, v0.80.6, v0.80.7,
+    v0.80.8, v0.80.9, v0.80.10, v0.80.11, and v0.80.12.** Anyone
+    who installed gool before v0.80.5 and upgraded through any of
+    those releases would have hit it. The crash was just out of
+    sight because fresh installs (no prior `GoolMultiplayerBridge`
+    in project.godot) sidestepped it entirely, and the v0.80.5
+    CHANGELOG only documented the user-code rename — not the
+    project.godot autoload migration.
+
+    v0.80.13 adds the retroactive migration in `_add_autoload`:
+    on every plugin enable, if `autoload/GoolMultiplayerBridge`
+    exists in project settings, remove it via
+    `remove_autoload_singleton("GoolMultiplayerBridge")` BEFORE
+    the new `MultiplayerBridge` registration. Logs a clear
+    `[gool]` message so the user knows the cleanup happened.
+    Idempotent — safe to run on every plugin enable.
+
+    **Manual workaround for users who haven't installed v0.80.13
+    yet:** delete the
+    `GoolMultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"`
+    line from your `project.godot`'s `[autoload]` section.
+
+### Removed (audit miss)
+
+  * **`plugin.gd::_write_default_config_if_missing` and its
+    `DEFAULT_CONFIG` constant.** This was the seventh writer to
+    `res://gool/config.json` — missed in the v0.80.11 Cluster B
+    persistence audit and only surfaced when a user reported a
+    project where `config.json` appeared "silently regenerated"
+    after a test of v0.80.12's removal-detection fix.
+
+    The function fired automatically on every plugin enable when
+    `config.json` was missing, writing a hardcoded `DEFAULT_CONFIG`
+    dict. The dict was a stale pre-v0.80.9 layout: 8 buses with
+    `SfxAll` (not `Sfx`), no dedicated `Reverb` bus, no `UI` bus,
+    no `global_reverb_send`, `ui` category routed to `Master`.
+    That was the bus structure shipped in v0.62 and never updated
+    when the FPS template moved to the v0.80.9 send/return reverb
+    architecture.
+
+    This had two consequences:
+    1. A silent regen path bypassed the dock's empty-state UI
+       AND the getting-started banner — both of which already
+       offer the user explicit template choices ("Use FPS
+       template" / "Use minimal"). The auto-writer pre-empted
+       those choices with an opinionated config the user never
+       asked for.
+    2. The auto-written config was an OLDER architecture than
+       the rest of the addon. Anyone whose first plugin enable
+       was on v0.80.4+ got a v0.62-era config silently.
+
+    Cleanest fix: delete the function, delete `DEFAULT_CONFIG`,
+    let the empty-state UI handle "no config" the way it was
+    designed to. ~140 lines removed from plugin.gd.
+
+    **This also retroactively resolves finding #25.** The
+    "mystery rename-remembering persistence layer" the
+    Cluster B audit went hunting for wasn't real — the
+    "SfxAll" in the v0.80.3 verification's regenerated
+    config.json was just the `DEFAULT_CONFIG` constant
+    (hardcoded with `SfxAll` since v0.62) writing itself on
+    plugin enable when the user's config.json was missing.
+    No fourth persistence layer. No undiscovered cache. Just
+    a writer the audit missed.
+
+### Cluster B persistence audit — corrected count
+
+The v0.80.11 audit listed SIX writers to `config.json`. The
+correct count is/was SEVEN — including this removed one. After
+v0.80.13's removal:
+
+  * `mixer_dock.gd:283` (Save Mix to Config button)
+  * `config_model.gd:606` (debounced auto-save) — fixed for
+    external-removal in v0.80.12
+  * `mixer_dock.gd:296` (FPS template button)
+  * `getting_started_banner.gd:202` (FPS template button)
+  * `getting_started_banner.gd:250` (minimal template button)
+  * ~~`plugin.gd:691` (silent default-config writer)~~ — REMOVED in v0.80.13
+
+So v0.80.13 leaves five writers. All five are now either
+user-triggered (template buttons, explicit save) or correctly
+removal-aware (debounced auto-save). Cluster B's "single
+serializer entry point" goal becomes simpler with the silent
+writer gone.
+
+### Verification
+
+  * Migration: on a project with `autoload/GoolMultiplayerBridge`
+    still in `project.godot`, plugin enable should log
+    `[gool] v0.80.13 migration: removed stale 'GoolMultiplayerBridge'
+    autoload registration...` and the duplicate entry should
+    disappear. On a fresh project (no stale entry), the migration
+    is a no-op.
+  * `_write_default_config_if_missing` and `DEFAULT_CONFIG`
+    references are zero in `plugin.gd` outside the two explanatory
+    comments documenting what was removed.
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (all 5 sources at 0.80.13).
+  * `plugin.gd` line count: 1138 → 1030 (−108 net, after adding
+    the migration block and explanatory comments).
+  * Empirical: install on a project with the stale
+    `GoolMultiplayerBridge` autoload entry, confirm Godot no
+    longer crashes on open and the migration message appears.
+    Separately, delete `res://gool/config.json` from a working
+    project, reopen Godot, confirm no silent regeneration occurs
+    (the dock's empty-state UI should appear instead).
+
+### Findings closed by this release
+
+  * Upgrade-path crash (no triage number — surfaced by the
+    testing-8 project investigation)
+  * The silent default-config writer (no triage number — was
+    the missing seventh writer)
+  * #25 (rename-memory mystery) — resolved as "no hidden layer,
+    just the `DEFAULT_CONFIG` constant writing itself silently"
+
 ## [0.80.12] - 2026-05-28 — Cluster B prep: stop silently recreating config.json
 
 First fix from the v0.80.11 Cluster B persistence audit. Closes
