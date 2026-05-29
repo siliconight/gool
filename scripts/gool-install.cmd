@@ -76,6 +76,10 @@ echo.
 :: installer logic.
 
 echo  Downloading addon and installing...
+echo    The next step downloads ~3 MB of addon files. PowerShell needs
+echo    a moment to start, then runs the download silently to keep it
+echo    fast. Expect 5-60 seconds of no output, depending on your
+echo    connection. The window is not frozen.
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^

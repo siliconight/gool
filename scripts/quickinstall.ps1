@@ -202,8 +202,6 @@ $Platform = "windows-x86_64"
 $Filename = "gool-$VersionNumber-godot-addon-$Platform.zip"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$Filename"
 
-Write-Host "Downloading: $Filename"
-
 # ----------------------------------------------------------------------
 # Download to temp
 # ----------------------------------------------------------------------
@@ -211,6 +209,10 @@ Write-Host "Downloading: $Filename"
 $TempDir = Join-Path $env:TEMP "gool-quickinstall-$([System.Guid]::NewGuid().ToString('N'))"
 $TempZip = Join-Path $TempDir $Filename
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+
+Write-Host "Downloading: $Filename"
+Write-Host "  (~3 MB; download is silent while running to keep it fast)" -ForegroundColor DarkGray
+$DownloadStart = Get-Date
 
 try {
     $ProgressPreference = 'SilentlyContinue'  # speeds up Invoke-WebRequest dramatically
@@ -228,6 +230,8 @@ try {
     exit 1
 }
 
+$DownloadElapsed = (Get-Date) - $DownloadStart
+
 # Sanity-check the download — addon archives are typically ~500 KB.
 # Anything smaller than 50 KB is almost certainly a 404 page or a
 # corrupted download.
@@ -239,13 +243,15 @@ if ($Size -lt 50KB) {
     exit 1
 }
 $SizeMB = [math]::Round($Size / 1MB, 2)
-Write-Host "Downloaded $SizeMB MB" -ForegroundColor Green
+$ElapsedSec = [math]::Round($DownloadElapsed.TotalSeconds, 1)
+Write-Host "Downloaded $SizeMB MB in ${ElapsedSec}s" -ForegroundColor Green
 
 # ----------------------------------------------------------------------
 # Extract + locate addons/gool inside the archive
 # ----------------------------------------------------------------------
 
 $TempExtract = Join-Path $TempDir "extracted"
+Write-Host "Extracting..."
 Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force
 
 # The archive contains gool-X.Y.Z-godot-addon-PLATFORM/addons/gool/
@@ -295,6 +301,7 @@ if (Test-Path $AddonDest) {
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path $AddonDest -Parent) | Out-Null
+Write-Host "Installing files into addons\gool\..."
 try {
     Copy-Item $AddonSource $AddonDest -Recurse -Force -ErrorAction Stop
 } catch {

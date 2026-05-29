@@ -26,6 +26,67 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.15] - 2026-05-28 — Installer UX: explain the silent download
+
+A user installing v0.80.12 thought the installer had hung — the
+`gool-install.cmd` printed "Downloading addon and installing..."
+and then sat silent for the full PowerShell startup + 3 MB
+addon download (5-30 seconds depending on connection). The
+silent download was deliberate (Invoke-WebRequest's progress
+bar slows the transfer ~10x on Windows PowerShell 5.1), but
+nothing told the user that silence was expected.
+
+### Fixed
+
+  * **`scripts/gool-install.cmd` and `scripts/quickinstall.ps1`
+    now set clear expectations around silent operations and
+    print timing after each.**
+
+    `gool-install.cmd`: the "Downloading addon and installing..."
+    message now adds two lines explicitly saying the next step
+    runs silently for 5-60 seconds and the window is not frozen.
+
+    `scripts/quickinstall.ps1`:
+    - The download line is now followed by
+      `(~3 MB; download is silent while running to keep it fast)`
+      in dark gray, so the user knows silence is normal AND why.
+    - After download completes, prints
+      `Downloaded X.XX MB in Y.Zs` (green) — confirms the silence
+      was productive and gives a sense of network speed.
+    - `Expand-Archive` is now preceded by `Extracting...` so the
+      ~1-3 second extraction step has feedback.
+    - `Copy-Item` is now preceded by
+      `Installing files into addons\gool\...` so the actual
+      install step is acknowledged before the success banner.
+
+    No behavior changes — same fast `SilentlyContinue` download,
+    same files copied, same exit codes. Only messaging
+    additions.
+
+### Verification
+
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (all 5 sources at 0.80.15).
+  * Manual: visible feedback chain through the install is now
+    `Target project → Version → Downloading (note silent) →
+    Downloaded X MB in Ys → Extracting → Installing files →
+    Done banner → Enabling plugin → verify pass/fail`. Every
+    silent gap now has a "before" expectation and an "after"
+    confirmation.
+
+### Honesty about what this is and isn't
+
+This patch fixes the *perception* of hanging by setting
+expectations. It does NOT change the underlying silent
+download — that's still an `Invoke-WebRequest` with
+`$ProgressPreference = 'SilentlyContinue'`. A future patch
+could swap in a real progress indicator (BITS via
+`Start-BitsTransfer`, or `System.Net.WebClient` with event-
+based progress) for actual percentage feedback during the
+download. For now, "you'll see nothing for 5-60s, that's
+normal, the window will print again when done" is enough
+to remove the confusion.
+
 ## [0.80.14] - 2026-05-28 — Fix false-positive "config.json changed on disk" dialog
 
 A user testing v0.80.13 in a fresh project hit the
