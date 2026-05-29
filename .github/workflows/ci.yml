@@ -1023,3 +1023,32 @@ jobs:
       - name: Scan addon scripts
         run: |
           python3 scripts/check_addon_autoload_safety.py
+
+  # ----------------------------------------------------------------
+  # Job: LICENSE canonical-Apache-2.0 drift guard (v0.80.24).
+  #
+  # In May 2026, an MIT-license placeholder template (with the
+  # literal "[YOUR NAME OR ORGANIZATION]" never filled in) overwrote
+  # the actual Apache 2.0 LICENSE. README and fonts/README both
+  # still correctly stated Apache 2.0; only the LICENSE file itself
+  # was wrong. Caught during install verification, not by CI — this
+  # is the gate that catches that next time.
+  #
+  # Eight pattern checks: two regression detectors (MIT header,
+  # placeholder string), five Apache 2.0 structural integrity
+  # markers (header, version, terms section, appendix, etc.), and
+  # one project-specific (the Copyright line + third-party section).
+  #
+  # Detector lives at scripts/check_license_canonical.sh.
+  # Run locally before pushing — same script, same result.
+  # No path filter: LICENSE drift matters on every commit.
+  # ----------------------------------------------------------------
+  license-canonical:
+    name: license / canonical Apache 2.0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check LICENSE drift
+        run: |
+          bash scripts/check_license_canonical.sh

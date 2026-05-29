@@ -26,6 +26,100 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.24] - 2026-05-29 — #1 LICENSE: restore Apache 2.0 + CI drift guard
+
+The LICENSE file at the repo root had regressed to an MIT-license
+placeholder template at some point in May 2026 — complete with the
+literal string `[YOUR NAME OR ORGANIZATION]` never filled in. The
+README, fonts/README, and every other LICENSE reference correctly
+stated Apache 2.0; only the LICENSE file itself was wrong. Caught
+during install verification, not by CI.
+
+v0.80.24 does two things: restores the LICENSE to canonical Apache
+2.0 (fetched verbatim from apache.org/licenses/LICENSE-2.0.txt),
+and adds a CI guard that catches the regression on every commit
+going forward.
+
+### Changed
+
+  * **`LICENSE`** restored to the canonical Apache 2.0 text from
+    https://www.apache.org/licenses/LICENSE-2.0.txt, followed by:
+    - The project copyright statement: `Copyright 2026 Brannen Graves`
+    - A brief Apache 2.0 reference statement for the gool project
+    - The existing third-party components section (miniaudio,
+      dr_libs, stb_vorbis, libopus — preserved verbatim from the
+      prior LICENSE)
+    - Closing redistribution note (updated from "MIT terms above"
+      to "Apache 2.0 terms above")
+
+    The Apache 2.0 text is byte-canonical, including the appendix
+    template that has `Copyright [yyyy] [name of copyright owner]`
+    as a placeholder. That placeholder is part of the canonical
+    text (it's the recommended boilerplate for per-source-file
+    headers), not a project copyright; the actual project
+    copyright lives below the canonical block on its own line.
+
+### Added
+
+  * **`scripts/check_license_canonical.sh`**: drift guard. Eight
+    pattern checks:
+    1. NO `^MIT License` line (regression detector)
+    2. NO `YOUR NAME OR ORGANIZATION` placeholder (regression detector)
+    3. Has `Apache License` header
+    4. Has `Version 2.0, January 2004` subhead
+    5. Has `TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION`
+    6. Has `END OF TERMS AND CONDITIONS` marker
+    7. Has `APPENDIX: How to apply the Apache License to your work`
+    8. Has `^Copyright 20YY Brannen Graves$` on its own line
+    9. Has `Third-party components` section header
+
+    Each failure prints the specific check that fired and what
+    canonical text should look like. Same style as
+    `check_version_sync.sh`: loud, debuggable, fast.
+
+  * **CI job `license / canonical Apache 2.0`** (in `.github/workflows/ci.yml`):
+    runs the drift guard on every push and pull request. No path
+    filter — LICENSE drift matters on every commit, including
+    GDScript-only patches that would otherwise skip the C++ jobs
+    on the v0.80.18 fast-CI path.
+
+### Closes
+
+  * **#1** — LICENSE file regression: MIT placeholder overwrote
+    Apache 2.0. Restored to canonical, drift-protected.
+
+### Deferred (triage open question)
+
+The triage entry for #1 also asked: "Should Apache 2.0 source file
+headers be added to every .cpp/.h?" Apache recommends this; the
+gool codebase currently doesn't have it. That's a bigger lift
+(every source file gets a 12-line license header) and deserves a
+separate dedicated patch — not folded into the LICENSE-restore
+work. Tracked for v0.81.x or later.
+
+### Verification
+
+  * The new LICENSE passes `check_license_canonical.sh`:
+    `OK: LICENSE is canonical Apache 2.0 + project copyright
+    (Copyright 2026 Brannen Graves) + third-party section.`
+  * Regression test confirmed: temporarily restoring the old MIT
+    LICENSE causes the script to fail with 8 errors and exit 1.
+  * YAML structure of `.github/workflows/ci.yml` validates clean.
+  * README.md line 1108 still correctly says "Apache License 2.0";
+    line 563 still correctly says "Apache 2.0 license";
+    `godot/addons/gool/fonts/README.md:36` still correctly says
+    "Apache-2.0". All three references continue to match the now-
+    canonical LICENSE.
+  * All three scanners green: `version-sync` (5 sources at 0.80.24),
+    `addon-autoload-safety`, and `license-canonical`.
+
+### CI expectation
+
+This adds a new CI job. Expect the first PR after v0.80.24 to show
+4 GDScript-path jobs becoming 5 (the new `license-canonical` job
+runs alongside `version-sync`, `addon-autoload-safety`, and the
+build/test jobs that gate on cpp changes).
+
 ## [0.80.23] - 2026-05-29 — #19 update-checker: full diagnostic rewrite
 
 The editor's update checker had **6 silent-return paths** and wrote
