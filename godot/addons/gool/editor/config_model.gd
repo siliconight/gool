@@ -751,6 +751,93 @@ func _ensure_gool_dir() -> bool:
 	return true
 
 
+# --- v0.80.22: Backup/restore + dirty-query API (Cluster B #11, #24) ---
+#
+# .gool-backup lifecycle: it's a single-slot recovery file at
+# BACKUP_PATH ("res://gool/config.json.gool-backup"). The most recent
+# "state about to be lost" wins. Two writers contribute to it:
+#
+#   1. write_config (every successful save): before writing the new
+#      content, _copy_file(CONFIG_PATH, BACKUP_PATH) preserves the
+#      previous on-disk state byte-for-byte. This catches save-then-
+#      regret scenarios.
+#
+#   2. snapshot_to_backup (called by the dock before reload-from-disk
+#      on the conflict dialog, see #11): writes JSON.stringify(_parsed)
+#      to BACKUP_PATH. Catches reload-then-regret scenarios. Loses
+#      whitespace/formatting from _raw_text but the JSON is equivalent.
+#
+# Restore is a single public method: copy BACKUP_PATH → CONFIG_PATH,
+# then load_from_disk. Driven by the dock's "Restore from backup"
+# button (visible only when has_backup() is true).
+
+
+# v0.80.22: public dirty-state getter. Used by the dock to vary
+# confirmation-dialog text when destructive actions might discard
+# unsaved edits.
+func is_dirty() -> bool:
+	return _has_pending_save
+
+
+# v0.80.22: returns true if a backup file exists at BACKUP_PATH that
+# could be restored via restore_from_backup. Drives the visibility
+# of the "Restore from backup" button in the dock toolbar (#24).
+func has_backup() -> bool:
+	return FileAccess.file_exists(BACKUP_PATH)
+
+
+# v0.80.22: write the current in-memory state (_parsed) to BACKUP_PATH,
+# overwriting any prior backup. Safety net before destructive
+# operations like reload-on-conflict (#11) that discard the in-memory
+# state.
+#
+# Format note: this writes JSON.stringify(_parsed, "  ") via
+# store_buffer. The output is valid JSON but loses any original
+# whitespace/formatting from the source file (the patcher's byte-
+# fidelity property doesn't carry through stringify). That's
+# acceptable for a backup — restored content is functionally
+# equivalent, just re-formatted. write_config's own backup step
+# uses _copy_file for byte fidelity instead.
+#
+# Edge case: if _parsed is empty (model hasn't loaded, or load
+# failed), no-op and return OK. Don't clobber an existing backup
+# with an empty "{}" — that's worse than leaving the prior backup
+# alone.
+func snapshot_to_backup() -> int:
+	if _parsed.is_empty():
+		return OK
+	if not _ensure_gool_dir():
+		return ERR_CANT_CREATE
+	var f := FileAccess.open(BACKUP_PATH, FileAccess.WRITE)
+	if f == null:
+		return ERR_CANT_OPEN
+	f.store_buffer(JSON.stringify(_parsed, "  ").to_utf8_buffer())
+	f.close()
+	return OK
+
+
+# v0.80.22: replace config.json with the contents of BACKUP_PATH and
+# reload. Drives the "Restore from backup" button in the dock (#24)
+# and the recovery path from an accidental reload-on-conflict (#11).
+#
+# Uses _copy_file (byte-fidelity) for the copy step, then routes
+# through load_from_disk for the parse + state sync + signal
+# emission. The load_from_disk call clears any dirty state — by
+# design, restoring is meant to be a "discard and replace" action.
+#
+# Returns:
+#   - ERR_DOES_NOT_EXIST: no .gool-backup file (caller should have
+#     gated on has_backup before calling)
+#   - ERR_CANT_CREATE: copy failed (disk full, permission, etc.)
+#   - load_from_disk's return code on success/parse failure
+func restore_from_backup() -> int:
+	if not FileAccess.file_exists(BACKUP_PATH):
+		return ERR_DOES_NOT_EXIST
+	if not _copy_file(BACKUP_PATH, CONFIG_PATH):
+		return ERR_CANT_CREATE
+	return load_from_disk()
+
+
 # Returns OK on success, or an Error code on failure. Emits
 # model_saved or save_failed accordingly. Also emits
 # external_change_detected if disk contents differ from what we

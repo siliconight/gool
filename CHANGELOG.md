@@ -26,6 +26,186 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.22] - 2026-05-29 — Cluster B #11 + #24: backup/restore UX
+
+Two findings, one patch — both center on `.gool-backup`. v0.80.22
+surfaces the existing backup mechanism via a toolbar button, and
+adds a snapshot-before-reload safety net for the conflict-dialog
+reload path so accidental reloads are recoverable.
+
+### State going in
+
+`.gool-backup` already existed as a single-slot recovery file: every
+successful save writes the prior on-disk state to it (via
+`_copy_file(CONFIG_PATH, BACKUP_PATH)` inside `write_config`'s
+backup step). But there was no UI to see it existed or restore
+from it — users would have to manually rename the file. The triage
+called this out as "Hidden `.gool-backup` file: undocumented dock
+backup mechanism" (#24).
+
+Most of #11 ("Reload from disk silently discards unsaved structural
+changes") was already addressed by earlier Cluster B work:
+- v0.80.17 added `rename_bus` with `_mark_topology_dirty`
+- v0.80.19 wired the dock UI to rename_bus
+
+These together made the conflict dialog show the real dirty list,
+including structural edits (which used to show `(none)` per the
+triage repro). What remained from #11's fix plan: the "bonus"
+safety net — snapshot in-memory state before reload, so accidental
+clicks are recoverable. v0.80.22 adds that.
+
+### Added
+
+  * **`ConfigModel.is_dirty() -> bool`** — public getter for
+    `_has_pending_save`. Used by the dock's restore confirmation
+    dialog to vary copy by state.
+
+  * **`ConfigModel.has_backup() -> bool`** — `FileAccess.file_exists`
+    check on `BACKUP_PATH`. Drives the visibility of the "Restore
+    from backup" button in the toolbar.
+
+  * **`ConfigModel.snapshot_to_backup() -> int`** — writes
+    `JSON.stringify(_parsed, "  ")` to `BACKUP_PATH` via
+    `store_buffer`. Used as a safety net before destructive
+    operations (reload-on-conflict). Edge case: no-op when
+    `_parsed` is empty (so we never clobber an existing backup
+    with an empty `{}`).
+    Format note: this loses the original whitespace/formatting
+    that the patcher preserves. The restored content is JSON-
+    equivalent but re-formatted. Acceptable for a recovery file.
+    The save-path backup uses `_copy_file` for byte fidelity
+    instead.
+
+  * **`ConfigModel.restore_from_backup() -> int`** — `_copy_file`
+    of `BACKUP_PATH → CONFIG_PATH` (byte fidelity), then
+    `load_from_disk`. Drives the restore button (#24) and the
+    recovery path from a mistaken reload-on-conflict (#11).
+
+  * **"Restore from backup" toolbar button (#24)**. Flat-styled,
+    placed between Save and Help in the mixer dock toolbar.
+    Visible only when `.gool-backup` exists. Tooltip is
+    deliberately verbose because the `.gool-backup` mechanism
+    isn't something users will know about without being told:
+    explains when it's created, when to use it, that it's a
+    single-slot file (no multi-step undo).
+
+  * **Restore confirmation dialog**. Lazy-constructed on first
+    click. Dialog copy varies by `is_dirty()` — when dirty, it
+    warns explicitly that the current in-memory state will NOT
+    be backed up (only the existing `.gool-backup` content
+    remains after restore).
+
+### Changed
+
+  * **`_on_mtime_dialog_reload`** now calls
+    `snapshot_to_backup()` before
+    `reload_from_disk_discarding_edits()`. This is the #11
+    safety net: the user has consented to discarding their
+    edits via the conflict dialog, but if it was a mistake they
+    can recover via the toolbar's Restore button.
+
+  * **Conflict-dialog text** (both `external_change_detected`
+    and `external_removal_detected` variants) gains a final
+    sentence: *"Note: whichever you pick, the prior state is
+    saved to .gool-backup. Use 'Restore from backup' in the
+    toolbar to undo if needed."* So the user knows the safety
+    net exists when they're making the choice.
+
+  * **`_on_mtime_dialog_custom_action`** (the "Overwrite with
+    dock state" path) now calls `_refresh_restore_button_visibility`
+    after the overwrite — `overwrite_disk` routes through
+    `write_config` which creates the backup as part of its
+    standard safety stack.
+
+### `.gool-backup` lifecycle (post-v0.80.22)
+
+Two writers contribute to the single backup slot. Last write wins.
+
+1. **Every successful save** (`write_config` → `_copy_file`):
+   preserves the previous on-disk state byte-for-byte. Catches
+   save-then-regret.
+2. **Pre-reload-on-conflict** (`_on_mtime_dialog_reload` →
+   `snapshot_to_backup`): preserves the in-memory state about to
+   be discarded. Catches reload-then-regret.
+
+One reader:
+
+- **"Restore from backup" button** (`_on_restore_confirmed` →
+  `restore_from_backup`): copies `.gool-backup` to `config.json`,
+  reloads.
+
+### What this does NOT do
+
+- It does NOT add a multi-step undo stack. Only one prior state
+  is recoverable at any time — whichever was the most recent
+  thing about to be lost. A real undo would be follow-up work.
+- It does NOT auto-restore on parse failure. v0.54.3's
+  verify-before-write means the live `config.json` is never
+  corrupted by gool's own save path; the backup is for user-
+  error recovery, not parse-failure recovery.
+- It does NOT prune `.gool-backup` over time. The file
+  accumulates across sessions; if the user wants to disable
+  the recovery path, they can delete it manually.
+
+### Closes
+
+  * **#11** — Reload from disk silently discards unsaved structural
+    changes. Primary fix landed earlier (v0.80.17 + v0.80.19
+    completing dirty-tracking so the dialog shows the real dirty
+    list); v0.80.22 adds the safety-net snapshot that was the
+    "bonus" line in the triage fix plan.
+  * **#24** — Hidden `.gool-backup` file: undocumented dock backup
+    mechanism. Now surfaced via the toolbar button + tooltip.
+
+### Verification
+
+  * 4 new public methods on ConfigModel, all with doc comments
+    covering edge cases and format choices.
+  * Restore-button visibility refreshed at 5 sites: `_ready`
+    initial load, `_on_model_saved`, `_on_mtime_dialog_reload`
+    success, `_on_mtime_dialog_custom_action`, `_on_restore_confirmed`.
+  * Structural balance preserved (parens/braces/brackets balanced
+    in config_model.gd and mixer_dock.gd).
+  * Scanners clean (version-sync at 5 sources / 0.80.22; addon-
+    autoload-safety clean).
+  * Manual (post-push):
+    1. Open dock with no `.gool-backup` — Restore button hidden.
+    2. Edit a bus, wait for autosave — `.gool-backup` appears,
+       Restore button becomes visible.
+    3. Click Restore with no unsaved edits — dialog shows the
+       "undoes the most recent save" copy. Confirm — dock
+       reverts to pre-save state.
+    4. Edit again, click Restore mid-edit — dialog shows the
+       "you have unsaved edits, they will be DISCARDED" copy.
+    5. **#11 safety net**: edit → wait for autosave → externally
+       modify config.json → edit again → save triggers conflict
+       dialog → click "Reload from disk" → in-memory edits
+       discarded BUT `.gool-backup` now holds them → click
+       Restore → state recovered.
+    6. Empty-state survival: no config.json → empty-state →
+       Restore button hidden (no backup exists yet).
+
+### Cluster B status
+
+| Step | Status |
+|---|---|
+| 1. Audit | ✅ |
+| 2. #25 silent regen | ✅ v0.80.12 + v0.80.13 |
+| 3. Bus rename + ref propagation (#23, #27) | ✅ v0.80.17 + v0.80.19 |
+| 4. Dirty-tracking complete coverage (#12) | ✅ v0.80.17 + v0.80.19 |
+| 5. Dirty-state indicator (#10) | ✅ v0.80.21 |
+| 6. Single serializer entry point (#26) | ✅ v0.80.20 |
+| 7. .gool-backup restore UI (#24) | ✅ v0.80.22 ← |
+| 8. Reload-from-disk consent + dirty-aware (#11) | ✅ v0.80.22 ← |
+| 9. _exit_tree flush (#29) | ✅ v0.80.21 |
+
+**Cluster B closed.** All 9 steps of the persistence-layer audit
+plan are done.
+
+### CI expectation
+
+GDScript-only patch — the v0.80.18 fast-CI path applies.
+
 ## [0.80.21] - 2026-05-29 — Cluster B #10 + #29: dirty-state hygiene
 
 Two findings, one cohesive patch. Both are "the model knows something

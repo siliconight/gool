@@ -381,6 +381,15 @@ var _getting_started_banner: PanelContainer = null
 # _on_model_dirty_changed when ConfigModel emits dirty_changed.
 # Default hidden because a freshly-loaded model is clean.
 var _dock_dirty_indicator: Label = null
+# v0.80.22: "Restore from backup" toolbar button (#24). Visible only
+# when ConfigModel.has_backup() returns true. Refreshed after model
+# events that could create/update the .gool-backup file (saves,
+# external-removal/change resolutions, restores).
+var _restore_button: Button = null
+# v0.80.22: confirmation dialog for the destructive restore action.
+# Lazy-constructed on first button click; dialog text varies by
+# whether the dock has unsaved edits.
+var _restore_confirm_dialog: ConfirmationDialog = null
 var _mtime_conflict_dialog: ConfirmationDialog = null
 # v0.53.0: TabContainer at the dock root. Hosts the Mixer tab
 # (everything from v0.52.0 and earlier) plus the new Sound Bank
@@ -618,6 +627,34 @@ func _ready() -> void:
 	save_button.pressed.connect(_on_save_mix_to_config_pressed)
 	toolbar.add_child(save_button)
 
+	# v0.80.22: "Restore from backup" button (#24). Tucks between
+	# Save and Help to keep it discoverable but not visually
+	# competing with Save (flat styling). Hidden until
+	# ConfigModel.has_backup() reports a backup exists — which
+	# happens after the first successful save (write_config copies
+	# the prior config.json to .gool-backup before writing).
+	#
+	# Tooltip is deliberately verbose: .gool-backup is the kind of
+	# affordance users won't discover unless told what it is and
+	# when it's safe to use.
+	_restore_button = Button.new()
+	_restore_button.text = "Restore from backup"
+	_restore_button.flat = true
+	_restore_button.tooltip_text = (
+			"Replace res://gool/config.json with the contents of "
+			+ "res://gool/config.json.gool-backup and reload the "
+			+ "dock.\n\n"
+			+ "The backup file is written automatically before "
+			+ "every save (and before discarding edits via the "
+			+ "external-change conflict dialog), so this is the "
+			+ "dock's undo path. Only the most recent prior "
+			+ "state is recoverable — there's no multi-step undo "
+			+ "stack."
+	)
+	_restore_button.pressed.connect(_on_restore_from_backup_pressed)
+	_restore_button.visible = false  # _refresh_restore_button_visibility sets later
+	toolbar.add_child(_restore_button)
+
 	# v0.79.3: Help button. Small "?" icon-style button that opens
 	# the help panel (categorized list of keyboard shortcuts, editor
 	# tools, runtime API, diagnostics, links). Flat styling so it
@@ -686,6 +723,12 @@ func _ready() -> void:
 	if _getting_started_banner != null \
 			and _getting_started_banner.has_method("set_config_model"):
 		_getting_started_banner.set_config_model(_config_model)
+
+	# v0.80.22: refresh the "Restore from backup" button visibility
+	# now that the model is loaded. If a .gool-backup file exists
+	# from a prior editor session, the button should be visible
+	# immediately on dock open (not just after the next save).
+	_refresh_restore_button_visibility()
 
 	# v0.26.0: build static layout from config.json IMMEDIATELY.
 	# Strips are visible at editor time; live data comes later
@@ -1769,6 +1812,10 @@ func _on_add_bus_dialog_confirmed(input: LineEdit,
 # clear their indicators.
 func _on_model_saved(_bus_names_saved: Array) -> void:
 	_refresh_dirty_indicators()
+	# v0.80.22: every successful save creates/updates .gool-backup
+	# (via write_config's _copy_file step). If this is the first
+	# save in this session, the restore button needs to appear.
+	_refresh_restore_button_visibility()
 
 
 # Save failures are logged loudly. The dock keeps running; the model
@@ -1858,7 +1905,10 @@ func _on_model_external_change_detected(pending_dirty_buses: Array) -> void:
 		+ "  Reload from disk: discard the dock's in-memory edits, "
 		+ "reread config.json from disk.\n"
 		+ "  Overwrite with dock state: clobber the external changes "
-		+ "with the dock's current state."
+		+ "with the dock's current state.\n\n"
+		+ "Note: whichever you pick, the prior state is saved to "
+		+ ".gool-backup. Use \"Restore from backup\" in the toolbar to "
+		+ "undo if needed."
 	)
 	_mtime_conflict_dialog.popup_centered()
 
@@ -1888,7 +1938,10 @@ func _on_model_external_removal_detected(pending_dirty_buses: Array) -> void:
 		+ "its in-memory edits and switches to the empty-state "
 		+ "(\"No config.json yet — pick a template\").\n"
 		+ "  Overwrite with dock state: recreate config.json from "
-		+ "the current dock state (including unsaved edits)."
+		+ "the current dock state (including unsaved edits).\n\n"
+		+ "Note: whichever you pick, the prior state is saved to "
+		+ ".gool-backup. Use \"Restore from backup\" in the toolbar to "
+		+ "undo if needed."
 	)
 	_mtime_conflict_dialog.popup_centered()
 
@@ -1914,10 +1967,20 @@ func _on_mtime_dialog_reload() -> void:
 	# ConfirmationDialog's "OK" button = our "Reload" action.
 	if _config_model == null:
 		return
+	# v0.80.22 (#11 safety net): snapshot the in-memory state to
+	# .gool-backup BEFORE discarding it. The conflict dialog already
+	# tells the user what they're about to lose; this gives them a
+	# recovery path if the click was a mistake. The snapshot
+	# overwrites whatever was previously in .gool-backup — single-
+	# slot semantics, "most recent state about to be lost" wins.
+	_config_model.snapshot_to_backup()
 	var err: int = _config_model.reload_from_disk_discarding_edits()
 	if err == OK:
 		_load_static_layout_from_config()
 		_refresh_dirty_indicators()
+		# Backup just got written (snapshot), so the restore button
+		# definitely needs to be visible now.
+		_refresh_restore_button_visibility()
 
 
 func _on_mtime_dialog_custom_action(action: StringName) -> void:
@@ -1927,6 +1990,90 @@ func _on_mtime_dialog_custom_action(action: StringName) -> void:
 		return
 	_config_model.overwrite_disk()
 	_mtime_conflict_dialog.hide()
+	# v0.80.22: overwrite_disk goes through _do_save → write_config,
+	# which creates/updates .gool-backup as part of its safety stack.
+	_refresh_restore_button_visibility()
+
+
+# v0.80.22 (#24): refresh the visibility of _restore_button based on
+# whether ConfigModel.has_backup() reports a backup file. Called
+# from anywhere the backup-state might have changed:
+#   - _ready (initial state)
+#   - _on_model_saved (write_config wrote a fresh backup)
+#   - _on_mtime_dialog_reload (snapshot_to_backup wrote a fresh backup)
+#   - _on_mtime_dialog_custom_action (overwrite_disk goes through write_config)
+#   - _on_restore_confirmed (post-restore, backup still exists)
+# We don't poll on a Timer or fire on every dirty mark — saves are
+# the only events that legitimately create the backup, and we know
+# about all of them.
+func _refresh_restore_button_visibility() -> void:
+	if _restore_button == null or _config_model == null:
+		return
+	_restore_button.visible = _config_model.has_backup()
+
+
+# v0.80.22 (#24): handler for the toolbar "Restore from backup"
+# button. Opens a confirmation dialog because the action is
+# destructive (clobbers res://gool/config.json with the backup's
+# contents, then reloads — losing the current state). The dialog
+# text varies by whether the dock has unsaved edits, so the user
+# sees the right warning.
+func _on_restore_from_backup_pressed() -> void:
+	if _config_model == null:
+		return
+	# Lazy-construct the dialog — most users will never click this,
+	# so eager-build in _ready is wasteful.
+	if _restore_confirm_dialog == null:
+		_restore_confirm_dialog = ConfirmationDialog.new()
+		_restore_confirm_dialog.title = "gool: Restore from backup?"
+		_restore_confirm_dialog.ok_button_text = "Restore"
+		_restore_confirm_dialog.confirmed.connect(_on_restore_confirmed)
+		add_child(_restore_confirm_dialog)
+	# Dirty-state-aware copy. Pre-v0.80.21 there was no public
+	# is_dirty() on ConfigModel; v0.80.22 added it specifically
+	# because this dialog needs to vary by state.
+	if _config_model.is_dirty():
+		_restore_confirm_dialog.dialog_text = (
+			"This will replace res://gool/config.json with the "
+			+ "contents of res://gool/config.json.gool-backup and "
+			+ "reload the dock.\n\n"
+			+ "WARNING: you have unsaved edits in the dock right now. "
+			+ "Those edits will be DISCARDED. The current in-memory "
+			+ "state will not be backed up — only the post-save "
+			+ "snapshot in .gool-backup remains.\n\n"
+			+ "Continue?"
+		)
+	else:
+		_restore_confirm_dialog.dialog_text = (
+			"This will replace res://gool/config.json with the "
+			+ "contents of res://gool/config.json.gool-backup and "
+			+ "reload the dock.\n\n"
+			+ "No unsaved edits in the dock right now — restoring "
+			+ "just undoes the most recent save.\n\n"
+			+ "Continue?"
+		)
+	_restore_confirm_dialog.popup_centered()
+
+
+# v0.80.22 (#24): the user confirmed the restore action. Run the
+# model's restore_from_backup (byte-fidelity copy + load_from_disk),
+# rebuild the dock layout from the new state, refresh dirty
+# indicators (load_from_disk cleared the dirty state), and re-check
+# the backup button visibility (the backup file is still there
+# post-restore).
+func _on_restore_confirmed() -> void:
+	if _config_model == null:
+		return
+	var err: int = _config_model.restore_from_backup()
+	if err == OK:
+		_load_static_layout_from_config()
+		_refresh_dirty_indicators()
+		_refresh_restore_button_visibility()
+		print("[gool] mixer dock: restored config.json from .gool-backup")
+	else:
+		push_error("[gool] mixer dock: restore from backup failed "
+				+ "(err=%d). The live config.json may be unchanged "
+				+ "— check the Output panel for details." % err)
 
 
 # Walk strips and push their bus's dirty state. Called whenever the
