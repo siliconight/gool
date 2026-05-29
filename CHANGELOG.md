@@ -26,6 +26,78 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.16] - 2026-05-28 — Update banner: "How to update" button with copy-paste command
+
+Closes the update-flow gap discussed during the v0.80.15
+installer-UX work. Pre-v0.80.16 the dock's update banner told
+users "a new version is available" and let them view release
+notes — but never told them HOW to actually update. Users had
+to know about `gool-install.cmd`, or figure out from scratch
+that gool ships a PowerShell quickinstaller. v0.80.16 makes
+that flow discoverable from inside Godot.
+
+### Added
+
+  * **"How to update" button in the update-available banner.**
+    Sits between "View release notes" and "Don't notify for vX.Y.Z"
+    in the banner's button row. Reading order is now:
+    informational (what's new) → actionable (how to update) →
+    escape hatch (dismiss this version's notice).
+
+  * **Update-instructions dialog.** Clicking "How to update"
+    opens an AcceptDialog with:
+    - A four-step plain-language sequence (close Godot, open
+      PowerShell, run the command, reopen the project)
+    - The reason Godot has to be closed first (DLL is mapped
+      into the editor process and Windows won't replace mapped
+      DLLs)
+    - The PowerShell command in a read-only LineEdit (selectable,
+      Ctrl+C works)
+    - A **Copy command** button that puts the command on the
+      clipboard via `DisplayServer.clipboard_set()` and gives
+      visual feedback ("Copied ✓" for 1.5 seconds, then back to
+      "Copy command")
+    - A manual-alternative note for users who'd rather download
+      the zip from the releases page
+
+### What this isn't
+
+This is still a manual-but-discoverable update path, not an
+editor-initiated one. The user still has to close Godot, run
+the command, and reopen. An in-editor "Update now" that
+schedules a swap-and-restart was considered (Option B in the
+internal design discussion) and deferred — it's significantly
+more complex (editor-exit hooks, cross-platform staging,
+failure reporting without the editor running, edge cases like
+opening a different project mid-staging) and the simple "show
+the command" flow solves 95% of the actual user pain.
+
+### Why this is the right level of work
+
+The previous state — "we ship the notification half but not the
+action half" — was actively bad. A user seeing "v0.80.16 is
+available" and not knowing how to get it either Googles around,
+re-finds gool-install.cmd by luck, or just stays on the old
+version. Most users would probably just stay. The banner was a
+dead end.
+
+v0.80.16 turns the banner into a real referral: "here's what's
+new, here's exactly how to get it." About 90 lines of GDScript
+in `update_available_banner.gd`, no new install machinery, no
+behavior changes to the existing checker or dismiss flow.
+
+### Verification
+
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (all 5 sources at 0.80.16).
+  * Banner script: 9 functions defined (was 5), parens balanced,
+    all new handlers properly connected.
+  * Manual: the banner appears when a newer version is on
+    GitHub. The three buttons (View release notes / How to
+    update / Don't notify) all work. The help dialog's command
+    field is selectable and the Copy button puts the exact
+    `iwr -useb ... | iex` one-liner on the clipboard.
+
 ## [0.80.15] - 2026-05-28 — Installer UX: explain the silent download
 
 A user installing v0.80.12 thought the installer had hung — the
