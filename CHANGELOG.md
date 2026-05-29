@@ -26,6 +26,98 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.21] - 2026-05-29 — Cluster B #10 + #29: dirty-state hygiene
+
+Two findings, one cohesive patch. Both are "the model knows something
+the user/lifecycle doesn't see yet": #10 surfaces unsaved-state to the
+user, #29 ensures unsaved-state survives plugin disable / editor quit.
+Both leverage existing ConfigModel machinery (`_has_pending_save` flag,
+`force_save()` entry point) — the patch is mostly wiring, not new logic.
+
+### Added
+
+  * **`ConfigModel.dirty_changed(is_dirty: bool)` signal**. Emitted
+    whenever the dirty-state flag transitions (set or clear). Used by
+    the mixer dock to toggle a visible indicator. Listeners must be
+    idempotent — the signal is not deduplicated, so it re-fires on
+    every mutator call. Emitted from:
+    - `_mark_dirty` (both branches)
+    - `_mark_topology_dirty`
+    - `add_bus`, `remove_bus`, `rename_bus` (the three direct
+      `_buses_array_dirty = true` sites)
+    - `load_from_disk` (clear path; covers `reload_from_disk_discarding_edits`)
+    - `write_config` (clear path; covers `_do_save`,
+      `install_config_text`, and `overwrite_disk`)
+
+  * **Dirty-state indicator in the mixer dock toolbar (#10)**. A third
+    Label in the title block, below the path subtitle, reading
+    `● unsaved changes` in secondary text color. Visible only when
+    `ConfigModel` reports dirty state; hidden when in sync with disk.
+    Tooltip: `"The mixer has changes that haven't been written to
+    config.json yet. Autosave fires roughly half a second after the
+    last edit; the indicator clears once the file is in sync with
+    disk."`
+
+  * **`mixer_dock._exit_tree` that flushes pending edits (#29)**. Calls
+    `_config_model.force_save()` unconditionally; force_save no-ops
+    when nothing's pending (so no spurious `.gool-backup` writes on
+    clean shutdown). Loss horizons covered: plugin disable, editor
+    quit, any other path that removes the dock from the scene tree.
+    Loss horizons NOT covered (and called out in the code comment):
+    editor force-quit, process kill, OS shutdown without flush —
+    those would need a true write-ahead log to survive.
+
+### Why these two together
+
+They're independent in scope but cohesive in intent: both are
+"don't lie to the user about state". #10 stops the dock from
+silently being out of sync with what the user expects; #29 stops
+the debounce window from being a silent data-loss vector. Splitting
+them across two patches would have meant duplicating the design
+context in two CHANGELOGs.
+
+Both also leverage the same existing machinery — `_has_pending_save`
+flag, `force_save()` entry point, the post-v0.80.20 unified write
+path. No new state, no new save semantics: this patch is wiring +
+UI affordance.
+
+### Closes
+
+  * **#10** — No dirty-state indicator anywhere in the dock (BLOCKER per
+    triage).
+  * **#29** — Plugin disable / editor quit can lose unsaved dock edits.
+
+### Verification
+
+  * 8 emit sites total in config_model.gd (6 dirty-set, 2 dirty-clear).
+    All confirmed by grep.
+  * Structural balance preserved (parens/braces/brackets balanced in
+    config_model.gd and mixer_dock.gd).
+  * Scanners clean (version-sync at 5 sources / 0.80.21; addon-
+    autoload-safety clean).
+  * Manual (post-push):
+    1. Open dock with clean config — indicator hidden.
+    2. Tweak a gain slider — indicator appears immediately; clears
+       ~0.5s later when autosave fires.
+    3. Continuously drag a slider for 3s — indicator stays visible
+       throughout (debounce keeps resetting), clears once on release.
+    4. Add a bus via context menu — indicator shows; clears on
+       autosave.
+    5. Reload-from-disk-discarding-edits via the conflict prompt —
+       indicator clears.
+    6. Edit a slider, immediately disable the plugin in Project
+       Settings, re-enable. Verify edit persisted to config.json.
+       (Pre-v0.80.21 this would have lost the edit if the disable
+       happened within the 0.5s debounce window.)
+    7. Edit a slider, immediately quit the editor. Re-open project.
+       Verify edit persisted.
+    8. Clean shutdown (no edits) — disable plugin. Verify no spurious
+       `.gool-backup` file appears (force_save no-ops cleanly).
+
+### CI expectation
+
+GDScript-only patch — the v0.80.18 fast-CI path applies.
+
 ## [0.80.20] - 2026-05-28 — Cluster B #26: single serializer entry point
 
 Five separate code paths used to write res://gool/config.json — one

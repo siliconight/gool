@@ -377,6 +377,10 @@ var _config_model: GoolConfigModel = null
 # can route writes through ConfigModel.install_config_text — the
 # unified writer (see config_model.gd:write_config header).
 var _getting_started_banner: PanelContainer = null
+# v0.80.21: dirty-state indicator label (#10). Toggled from
+# _on_model_dirty_changed when ConfigModel emits dirty_changed.
+# Default hidden because a freshly-loaded model is clean.
+var _dock_dirty_indicator: Label = null
 var _mtime_conflict_dialog: ConfirmationDialog = null
 # v0.53.0: TabContainer at the dock root. Hosts the Mixer tab
 # (everything from v0.52.0 and earlier) plus the new Sound Bank
@@ -554,6 +558,30 @@ func _ready() -> void:
 		path_label.add_theme_font_override("font", mono)
 	title_block.add_child(path_label)
 
+	# v0.80.21: dirty-state indicator (#10). Shown when the model
+	# reports unsaved changes (i.e. an edit has been made but the
+	# debounced save hasn't fired yet, or a save failed). Visibility
+	# is toggled from _on_model_dirty_changed; default hidden because
+	# a freshly-loaded model is clean.
+	#
+	# Placement: third row in the title block, below the path. Keeps
+	# path identity and save-state visually separate; user reads
+	# the path to know WHICH file, the indicator to know if it's
+	# in sync. Same secondary-text color so it doesn't shout, but
+	# the leading bullet glyph reads as "status".
+	_dock_dirty_indicator = Label.new()
+	_dock_dirty_indicator.text = "● unsaved changes"
+	_dock_dirty_indicator.add_theme_color_override("font_color",
+			_theme_text_secondary())
+	_dock_dirty_indicator.add_theme_font_size_override("font_size", 11)
+	_dock_dirty_indicator.tooltip_text = (
+			"The mixer has changes that haven't been written to "
+			+ "config.json yet. Autosave fires roughly half a second "
+			+ "after the last edit; the indicator clears once the "
+			+ "file is in sync with disk.")
+	_dock_dirty_indicator.visible = false
+	title_block.add_child(_dock_dirty_indicator)
+
 	# Spacer pushes the action button to the right edge.
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -642,6 +670,9 @@ func _ready() -> void:
 	# ProjectSettings bus-name strings that the model itself doesn't
 	# own (material EQ impact/listener bus pointers).
 	_config_model.bus_renamed.connect(_on_model_bus_renamed)
+	# v0.80.21: dirty-state signal — handler toggles the
+	# _dock_dirty_indicator label in the toolbar (#10).
+	_config_model.dirty_changed.connect(_on_model_dirty_changed)
 	var load_err: int = _config_model.load_from_disk()
 	if load_err != OK and load_err != ERR_FILE_NOT_FOUND:
 		push_warning("[gool] config_model load_from_disk: error %d" % load_err)
@@ -1418,6 +1449,36 @@ func _on_model_bus_renamed(old_name: String, new_name: String) -> void:
 					% [old_name, new_name])
 	# Rebuild the strip row so the renamed bus's header updates.
 	_load_static_layout_from_config()
+
+
+# v0.80.21: handler for ConfigModel.dirty_changed (#10). Toggles
+# the visibility of _dock_dirty_indicator. The signal fires
+# possibly many times during continuous editing (every mutator
+# call); toggling .visible to the same value is a cheap no-op so
+# we don't bother deduplicating here.
+func _on_model_dirty_changed(is_dirty: bool) -> void:
+	if _dock_dirty_indicator == null:
+		return
+	_dock_dirty_indicator.visible = is_dirty
+
+
+# v0.80.21: flush any pending debounced save on dock teardown (#29).
+# Loss horizons covered:
+#   - Plugin disable: plugin._exit_tree → _unregister_mixer_dock →
+#     queue_free → next frame: dock._exit_tree → here.
+#   - Editor quit: same flow.
+# Loss horizons NOT covered (out of scope):
+#   - Editor force-quit or crash: no opportunity to run GDScript.
+#     Would need a true write-ahead log for resilience there.
+#
+# force_save is tree-independent (it bypasses the debounce timer
+# entirely, which is the thing that needs the tree) so it's safe
+# to call from _exit_tree even after we've been detached. It
+# no-ops when nothing's pending, so calling unconditionally is
+# fine — no spurious .gool-backup writes on a clean shutdown.
+func _exit_tree() -> void:
+	if _config_model != null:
+		_config_model.force_save()
 
 
 # --- Bus context menu (right-click on strip) ---

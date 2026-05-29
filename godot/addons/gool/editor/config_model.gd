@@ -261,6 +261,28 @@ signal external_change_detected(pending_dirty_buses: Array)
 signal external_removal_detected(pending_dirty_buses: Array)
 
 
+# v0.80.21: emitted whenever the dirty-state flag is set or cleared.
+# Used by the mixer dock to show an "unsaved changes" indicator
+# alongside the config.json path label.
+#
+# Contract:
+#   - Emitted with is_dirty=true from every dirty-mark site
+#     (_mark_dirty, _mark_topology_dirty, and the bus-add/remove/
+#     rename paths that set _buses_array_dirty directly). NOT
+#     deduplicated — re-firing while already dirty is expected; the
+#     listener's update is idempotent (set a label, repeatedly fine).
+#   - Emitted with is_dirty=false from every dirty-clear site
+#     (load_from_disk and write_config after the clear block, which
+#     means it also covers _do_save, install_config_text, and
+#     overwrite_disk since those all funnel through write_config).
+#
+# Why not derive listener UI from _has_pending_save polling: the dock
+# rebuilds widgets on model_loaded but not on every mutator call;
+# without a signal it'd have to poll on a Timer (wasteful) or know
+# the full set of mutators (coupling).
+signal dirty_changed(is_dirty: bool)
+
+
 # ---- State ---------------------------------------------------------
 
 # Last full file text we read from disk. Used as the basis for
@@ -314,6 +336,7 @@ func load_from_disk() -> int:
 	_dirty_buses.clear()
 	_buses_array_dirty = false
 	_has_pending_save = false
+	dirty_changed.emit(false)  # v0.80.21 — also covers reload_from_disk_discarding_edits
 
 	if not FileAccess.file_exists(CONFIG_PATH):
 		return ERR_FILE_NOT_FOUND
@@ -482,10 +505,12 @@ func _mark_dirty(bus_name: String) -> void:
 	if _dirty_buses.get(bus_name) == _DIRTY_TOPOLOGY:
 		_has_pending_save = true
 		_schedule_save()
+		dirty_changed.emit(true)  # v0.80.21
 		return
 	_dirty_buses[bus_name] = _DIRTY_VALUE
 	_has_pending_save = true
 	_schedule_save()
+	dirty_changed.emit(true)  # v0.80.21
 
 
 func _schedule_save() -> void:
@@ -688,6 +713,7 @@ func write_config(new_text: String, source_label: String,
 	_dirty_buses.clear()
 	_buses_array_dirty = false
 	_has_pending_save = false
+	dirty_changed.emit(false)  # v0.80.21 — covers _do_save, install_config_text, overwrite_disk
 	return OK
 
 
@@ -1799,6 +1825,7 @@ func add_bus(bus_name: String) -> int:
 	_buses_array_dirty = true
 	_has_pending_save = true
 	_schedule_save()
+	dirty_changed.emit(true)  # v0.80.21
 	bus_added.emit(bus_name)
 	return OK
 
@@ -1839,6 +1866,7 @@ func remove_bus(bus_name: String) -> int:
 	_buses_array_dirty = true
 	_has_pending_save = true
 	_schedule_save()
+	dirty_changed.emit(true)  # v0.80.21
 	bus_removed.emit(bus_name)
 	return OK
 
@@ -1959,6 +1987,7 @@ func rename_bus(old_name: String, new_name: String) -> int:
 	_buses_array_dirty = true
 	_has_pending_save = true
 	_schedule_save()
+	dirty_changed.emit(true)  # v0.80.21
 	bus_renamed.emit(old_name, trimmed_new)
 	return OK
 
@@ -2013,6 +2042,7 @@ func _mark_topology_dirty(bus_name: String) -> void:
 	_dirty_buses[bus_name] = _DIRTY_TOPOLOGY
 	_has_pending_save = true
 	_schedule_save()
+	dirty_changed.emit(true)  # v0.80.21
 
 
 # ===================================================================
