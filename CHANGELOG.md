@@ -26,6 +26,112 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.18] - 2026-05-28 — CI: fix the v0.80.11 path filter for version-bump-only patches + extend gate to all C++-only jobs
+
+Two related fixes to the CI pipeline. v0.80.11 added a path filter
+intended to skip clang-tidy on non-C++ changes, but the filter
+rules and the gate's narrow application meant every release
+patch v0.80.12 through v0.80.17 was still running the full C++
+pipeline — ~30-50 min of unnecessary work per patch. This patch
+corrects both.
+
+Cluster B's rename_bus UI shifts from v0.80.18 to v0.80.19 since
+v0.80.18 is this CI fix.
+
+### Fixed
+
+  * **Path filter no longer treats version bumps as C++ changes.**
+    The v0.80.11 cpp filter included `include/**` and
+    `**/CMakeLists.txt`. Every release patch bumps both
+    `include/audio_engine/version.h` (via the kVersion* sed) and
+    `CMakeLists.txt` (project VERSION line). Result: the filter
+    saw "C++ files changed" on every release patch, even when
+    the actual source changes were 100% GDScript. Every patch
+    from v0.80.12 onward ran clang-tidy (~27 min) and the rest
+    of the C++ pipeline unnecessarily.
+
+    v0.80.18:
+    - Adds `!include/audio_engine/version.h` exclusion — version
+      bumps to this file no longer trigger the C++ pipeline.
+    - Removes `**/CMakeLists.txt` from the filter entirely. Pure
+      CMake changes don't affect clang-tidy's analysis; the
+      analyzer looks at C++ source files, and CMake doesn't
+      change those. Genuine CMake changes that matter (new
+      source files, new compile flags) also touch `src/` or
+      `include/`, which still trigger the filter.
+
+  * **Gate extended to every C++-only job, not just clang-tidy.**
+    v0.80.11 only gated `clang-tidy`. The other C++-only jobs —
+    `build-and-test`, `sanitize-asan-ubsan`, `sanitize-tsan`,
+    `build-gdextension`, `cppcheck`, `lizard`, `coverage`, and
+    `footprint` — still ran on every push, including all the
+    version-bump-only patches. Combined runtime of those is
+    ~20-30 min on top of clang-tidy's 27, so the actual delta
+    saved per GDScript-only patch is closer to 50 min than 27.
+
+    All 9 C++-only jobs now share the same gate:
+    ```yaml
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    ```
+
+    Jobs that DO still run on every push (and should):
+    - `changes` (the gate itself)
+    - `gdscript-lint` (analyzes GDScript)
+    - `godot-headless-smoke` (Godot smoke test, doesn't need the
+      gdextension binary)
+    - `version-sync` (verifies version consistency across files)
+    - `addon-autoload-safety` (scans for parser-cache landmines
+      in addon GDScript)
+
+### Effect
+
+For a GDScript-only patch like the v0.80.17 rename_bus mutator:
+- **Pre-v0.80.18**: full ~50 min C++ pipeline runs (clang-tidy
+  27 min + sanitizers + cppcheck + lizard + coverage + footprint
+  + build-and-test + build-gdextension), even though zero C++
+  files changed.
+- **v0.80.18 onward**: only `gdscript-lint`, `godot-headless-smoke`,
+  `version-sync`, and `addon-autoload-safety` run. ~5 min total.
+
+Note: v0.80.18 itself IS a CI yaml change, which the filter
+intentionally treats as a C++ change (since CI changes could
+affect the pipeline). So this specific patch will run the full
+pipeline as a sanity-check that the gate change doesn't break
+anything. Subsequent GDScript-only patches see the fast path.
+
+### Honesty about the v0.80.11 design miss
+
+v0.80.11's design was right in principle (gate C++ jobs on
+changes-to-C++-files) but wrong in two specific ways that
+together meant the optimization saved roughly nothing on the
+patches that followed:
+
+1. The filter file list included files routinely touched on
+   non-C++ patches (version.h, CMakeLists.txt).
+2. The gate was applied to one job only, not all the relevant
+   ones.
+
+The combination meant five release patches (v0.80.12-16, then
+v0.80.17 too) shipped with ~50 min of unnecessary CI runtime
+each. I should have caught this in v0.80.11 by tracing what
+files actually changed on a release patch — the diff would
+have shown immediately that version.h and CMakeLists.txt are
+in every release diff, which would have prompted excluding them.
+
+### Verification
+
+  * Path filter logic: `include/audio_engine/version.h` explicitly
+    excluded; `**/CMakeLists.txt` removed from filter.
+  * `python3 -c "import yaml; yaml.safe_load(open('ci.yml'))"`
+    parses successfully; 14 jobs total, 9 gated.
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (all 5 sources at 0.80.18).
+  * Empirical (will surface after push): v0.80.18 IS a CI yaml
+    change, so the full pipeline runs once. v0.80.19 (the next
+    GDScript-only patch with the rename_bus UI) should see only
+    ~5 min total CI runtime.
+
 ## [0.80.17] - 2026-05-28 — Cluster B step 1: ConfigModel.rename_bus mutator + signal-driven propagation
 
 First step of the Cluster B architectural pass. Adds the missing

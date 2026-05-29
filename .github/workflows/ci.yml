@@ -40,9 +40,24 @@ jobs:
             cpp:
               - 'src/**'
               - 'include/**'
+              # v0.80.18: exclude version-bump-only changes. The version
+              # header is touched on every release (kVersionPatch +
+              # kVersionString + kVersionFull bump via sed) but doesn't
+              # change any C++ behavior — clang-tidy / cppcheck / etc.
+              # have nothing new to analyze. Pre-v0.80.18 every release
+              # patch through v0.80.12-17 triggered the full C++
+              # pipeline (clang-tidy alone is ~27 min) just because
+              # this file changed.
+              - '!include/audio_engine/version.h'
               - 'godot/src/**'
               - 'tests/**'
-              - '**/CMakeLists.txt'
+              # v0.80.18: removed '**/CMakeLists.txt'. The root file's
+              # only routine change is the project(... VERSION X.Y.Z)
+              # bump, which also doesn't affect what clang-tidy sees.
+              # Actual CMake changes that matter (new source files,
+              # changed compile flags) also touch src/ or include/,
+              # which still trigger the cpp filter. Add back if you
+              # need cmake-only changes to trigger full re-analysis.
               - 'cmake/**'
               - '.clang-tidy'
               - '.github/workflows/ci.yml'
@@ -52,6 +67,10 @@ jobs:
   # ----------------------------------------------------------------
   build-and-test:
     name: engine / ${{ matrix.os }} / ${{ matrix.build_type }}
+    # v0.80.18: skip on GDScript/docs/template/CI-config changes.
+    # Pure GDScript patches can't break the C++ build or tests.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -117,6 +136,9 @@ jobs:
   # ----------------------------------------------------------------
   sanitize-asan-ubsan:
     name: sanitize / asan+ubsan / ubuntu
+    # v0.80.18: skip on non-C++ changes.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -142,6 +164,9 @@ jobs:
 
   sanitize-tsan:
     name: sanitize / tsan / ubuntu
+    # v0.80.18: skip on non-C++ changes.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -180,6 +205,9 @@ jobs:
   # ----------------------------------------------------------------
   build-gdextension:
     name: gdextension / ${{ matrix.platform }}
+    # v0.80.18: skip on non-C++ changes.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -435,6 +463,9 @@ jobs:
   # ----------------------------------------------------------------
   cppcheck:
     name: static-analysis / cppcheck
+    # v0.80.18: skip on non-C++ changes.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -480,6 +511,9 @@ jobs:
   # ----------------------------------------------------------------
   lizard:
     name: static-analysis / lizard
+    # v0.80.18: skip on non-C++ changes.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     # v0.21.4: continue-on-error so the gate reports the 11+
     # complexity violations (in addition to the 3 documented in
@@ -530,6 +564,9 @@ jobs:
   # ----------------------------------------------------------------
   coverage:
     name: coverage / gcovr
+    # v0.80.18: skip on non-C++ changes.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -850,6 +887,10 @@ jobs:
   # ----------------------------------------------------------------
   footprint:
     name: footprint / binary-size report
+    # v0.80.18: skip on non-C++ changes — binary size only meaningful
+    # when source files affecting the build actually changed.
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     # Informational only — don't fail PRs on size yet. Once a few
     # runs of baseline data exist, set a budget and flip
