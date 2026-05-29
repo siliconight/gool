@@ -190,10 +190,18 @@ func _enter_tree() -> void:
 	_register_inspector_plugin()
 	_register_material_eq_inspector()    # v0.59.2 — Phase 6.E.1
 	_register_debugger_plugin()          # v0.25.0 (before mixer dock!)
+	# v0.80.23 (#19): register the update-check setting BEFORE the
+	# mixer dock instantiates the update checker. Pre-v0.80.23 the
+	# order was reversed; the checker worked anyway because
+	# ProjectSettings.get_setting(path, true) defaults to `true` when
+	# the setting doesn't exist yet. That worked-by-accident — a
+	# brief window existed where the setting didn't exist, and any
+	# refactor of the registration sequence risked breaking the
+	# implicit dependency. Explicit ordering removes the trap.
+	_register_update_check_setting()     # v0.79.2; moved before dock in v0.80.23
 	_register_mixer_dock()               # v0.24.0
 	_connect_filesystem_watch()
 	_register_tools_menu()               # v0.23.0
-	_register_update_check_setting()     # v0.79.2
 	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, debugger bridge, mixer dock, tools menu installed.")
 	# v0.75.2: prompt for editor restart on first enable so the
 	# GDScript parser sees the autoloads on its next sweep with a

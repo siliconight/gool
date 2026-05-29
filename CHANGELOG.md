@@ -26,6 +26,146 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.23] - 2026-05-29 — #19 update-checker: full diagnostic rewrite
+
+The editor's update checker had **6 silent-return paths** and wrote
+the cache file **only on the full happy path**. Any failure
+anywhere — network, HTTP, parse, schema — left no console output and
+no on-disk artifact, making the feature indistinguishable from one
+that doesn't exist. Field reports confirmed the cache file never
+appeared on real installs. v0.80.23 makes every outcome observable
+via console logs + an always-written cache file with a status code.
+
+This patch makes the root cause **discoverable**, not necessarily
+fixed. The actual failure mode (likely in the HTTPRequest chain,
+per triage diagnostics) will be identified from cache files /
+console output once v0.80.23 ships and we get reports back. Then
+a v0.80.24 (or similar) can fix that underlying issue.
+
+### Added
+
+  * **`_finish_with_status(latest, status, message)` helper** in
+    `update_checker.gd`. Single point of exit for every check()
+    outcome. Writes the cache, logs to console (`print` for normal
+    outcomes, `push_warning` for failures), and emits the signal.
+
+  * **Status codes** for every distinct outcome:
+    - `ok` — successful network check
+    - `cache_hit` — served from cache (logged inline, not via
+      `_finish_with_status`, to avoid overwriting the cache)
+    - `opt_out` — user disabled the setting
+    - `no_scene_root` — caller passed null/invalid tree parent
+    - `request_failed` — `HTTPRequest.request()` returned non-OK
+      (HTTPS/TLS init failure, malformed URL, etc.)
+    - `result_<n>` — `request_completed` fired with non-SUCCESS
+      result code (timeout, can't connect, can't resolve, TLS
+      handshake, etc.). The numeric suffix maps to Godot's
+      `HTTPRequest.Result` enum.
+    - `http_<code>` — HTTP response code other than 200
+      (rate-limit, repo moved, GitHub outage).
+    - `parse_failed` — body wasn't valid JSON, or root wasn't a
+      Dictionary.
+    - `tag_invalid` — `tag_name` empty or contained a hyphen
+      (pre-release).
+
+  * **Enriched cache schema** at `user://gool_update_check.json`:
+    ```
+    {
+      "latest":               "0.80.x" or "",
+      "checked_at":           <unix ts>,
+      "last_attempt_status":  "ok" | "cache_hit" | ...,
+      "last_attempt_message": "human-readable description"
+    }
+    ```
+    Backward compatible: pre-v0.80.23 caches lack the status fields;
+    `_load_cache` returns the dict as-is and the absence of
+    `last_attempt_status` defaults to `ok` semantically.
+
+  * **Verbose failure messages** in the cache and console: each
+    status includes the dynamic context that explains it (HTTP
+    code's typical causes, HTTPRequest result enum decoded, JSON
+    parse body sample, etc.). Bug reports become tractable.
+
+### Changed
+
+  * **`plugin.gd._enter_tree()` register order** — move
+    `_register_update_check_setting()` BEFORE `_register_mixer_dock()`.
+    The previous order worked by accident (`get_setting(path, true)`
+    defaults to true when the setting doesn't exist), but it created
+    a refactor trap. Explicit ordering removes it.
+
+  * **TTL logic for failure caches** — pre-v0.80.23, the 24h cache
+    TTL applied uniformly: one failure meant 24h of no retries.
+    v0.80.23 splits the TTL by cache content:
+    - Successful cache (`latest != ""`): 24h (unchanged)
+    - Failure cache (`latest == ""`): 5min retry window
+    
+    Within 5min of a failure, the cache is still served (emits empty
+    `latest`, no fresh network) so GitHub isn't hammered. After 5min,
+    next `check()` fires a fresh attempt.
+
+  * **Clock-skew defense** — if `checked_at` is in the future
+    (negative age), the cache is treated as not fresh. Prevents a
+    future-dated cache from locking out checks indefinitely.
+
+### Cluster B → Closed (since v0.80.22)
+
+`#19` was a *non*-Cluster B item, listed under "open" alongside
+LICENSE (#1), file-watcher dialog phrasing (#7), and a few others.
+With v0.80.23 it joins the closed pile.
+
+### What this does NOT do
+
+  * **In-dock UX for failed checks** (gray "couldn't check for
+    updates" stamp in the toolbar) — triage point #4 from #19's fix
+    plan. Out of scope; cache + logs are enough to debug. Add later
+    if users report wanting it.
+  * **CI mock GitHub API tests** — triage point #5. v0.81.x
+    territory; needs a fixture server.
+  * **Fix the underlying root cause** — whatever HTTPRequest issue
+    is actually firing for real users. This patch makes that
+    observable; the fix happens once we see the data.
+
+### Closes
+
+  * **#19** — Update checker fails silently with zero diagnostic
+    surface (blocker for release-discoverability).
+
+### Verification
+
+  * Every silent return in `update_checker.gd` is gone. All 6
+    pre-existing silent paths now route through `_finish_with_status`.
+    Verified by reading every `return` in the file (21 total — 11
+    routed through `_finish_with_status`, 5 in pure helpers like
+    `_is_newer` / `_load_cache`, 2 in the cache-hit branch with
+    inline print+emit, 3 are early-outs in pure-helper `_is_cache_fresh`).
+  * Structural balance preserved (parens/braces/brackets balanced
+    in `update_checker.gd` and `plugin.gd`).
+  * Scanners clean (version-sync at 5 sources / 0.80.23; addon-
+    autoload-safety clean).
+  * Manual (post-push):
+    1. **Default happy path**: fresh project, open mixer dock, wait
+       10s, check `user://gool_update_check.json`. Should exist with
+       `last_attempt_status: "ok"`, real `latest`, real `checked_at`.
+       Output panel shows `[gool] update check: ok, latest=…, current=0.80.23`.
+    2. **Cache hit**: reopen the dock. Should see `[gool] update
+       check: cache hit, latest=…, age=<n>s`. No network request.
+    3. **Opt-out**: untick `audio/gool/check_for_updates`, reopen
+       dock. Cache shows `last_attempt_status: "opt_out"`; console
+       shows `[gool] update check: skipped (opt_out)`.
+    4. **No network**: disconnect, delete cache, reopen dock, wait
+       5s. Cache shows `last_attempt_status: "result_<n>"` (most
+       likely 5=no_response or 12=timeout). Console shows a
+       `push_warning` with the decoded enum.
+    5. **Failure retry window**: with the failure cache from #4,
+       reopen dock within 5min. Console shows
+       `[gool] update check: recent failure (<n>s/300s ago), skipping
+       retry`. After 6min, fresh attempt fires.
+
+### CI expectation
+
+GDScript-only patch — the v0.80.18 fast-CI path applies.
+
 ## [0.80.22] - 2026-05-29 — Cluster B #11 + #24: backup/restore UX
 
 Two findings, one patch — both center on `.gool-backup`. v0.80.22
