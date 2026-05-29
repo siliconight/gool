@@ -26,6 +26,153 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.0] - 2026-05-29 — JSON dependency isolation; v0.80.x stabilization milestone
+
+v0.81.0 is the first minor bump since the v0.80.x stream began.
+Two reasons for the cut:
+
+  1. **The nlohmann/json template-expansion cost is removed from
+     every TU but one.** That was the load-bearing change. CI
+     clang-tidy time on the two affected files drops from ~2.5h +
+     ~1.5min (bus_config_loader + sound_bank) to ~3-5min total
+     once the wrapper TU is the only file paying nlohmann's cost.
+
+  2. **The v0.80.x stream has had enough soak time to call it
+     stable.** Cluster B persistence-layer audit closed 9/9
+     findings across v0.80.12-22. The post-audit gaps (denormal
+     protection, LICENSE drift guard) are both fixed. The
+     remaining triage items (#7, #9, #13, #15, #28) are all minor
+     UX polish or design-deferred items with no correctness or
+     legal stakes. Time to mark the line.
+
+### Added
+
+  * **`src/audio_engine/util/json_string_decoder.h`** — internal
+    utility header. Declares one function:
+    `audio::util::DecodeJsonStringLiteral(quoted_literal, out, error)`.
+    Template-free (only `<string>` and `<string_view>` includes).
+    Same convention as the other `src/audio_engine/util/*` headers
+    (internal layout, `audio::util` namespace).
+
+  * **`src/audio_engine/util/json_string_decoder.cpp`** — the
+    implementation. THE ONLY translation unit in the engine that
+    includes `<nlohmann/json.hpp>`. Lifts the try/catch block that
+    was previously duplicated in two TUs. noexcept boundary at the
+    function signature catches every exception nlohmann or its
+    dependencies might throw and converts to (bool, error_string).
+
+### Changed
+
+  * **`src/audio_engine/runtime/bus_config_loader.cpp`**:
+    - `#include <nlohmann/json.hpp>` → `#include "audio_engine/util/json_string_decoder.h"`
+    - `parseString()`: the inline `nlohmann::json::parse` try/catch
+      block is replaced with a single call to
+      `audio::util::DecodeJsonStringLiteral`. Source-position
+      tracking (`errLine = startLine`) happens at the call site,
+      since the wrapper has no visibility into the parser's stream
+      cursor. Same error semantics; same nlohmann diagnostic strings
+      passed through.
+
+  * **`src/audio_engine/assets/sound_bank.cpp`**:
+    - Same include swap.
+    - `ParseString()`: same replacement as bus_config_loader.
+      `err.line = startLine` set at call site.
+
+  * **`CMakeLists.txt`**:
+    - `src/audio_engine/util/json_string_decoder.cpp` added to the
+      engine source list. First `util/*.cpp` entry (the other util
+      headers are header-only templates).
+
+### NOT changed
+
+  * **Behavior.** This is a pure structural refactor. The wrapper
+    calls `nlohmann::json::parse(quoted_literal)` and unpacks the
+    result via `j.get<std::string>()` — identical to what the
+    inline code did. Every JSON escape sequence that worked
+    pre-v0.81.0 still works; every malformed input that was
+    rejected pre-v0.81.0 is still rejected with the same
+    nlohmann-sourced diagnostic.
+
+  * **The `shipped_artifacts_test`** still loads every shipped
+    .json template through the actual loader on every CI push.
+    The regression detector for "an artifact contains escapes the
+    parser can't handle" is unchanged — it now exercises the
+    wrapper path automatically.
+
+### Why this is a MINOR bump (kVersionMinor 80 → 81), not patch
+
+Semantically the refactor is invisible to consumers. But:
+
+  * Adding a new utility module (`src/audio_engine/util/json_string_decoder.{h,cpp}`)
+    expands the engine's internal structure.
+  * The CI behavior changes significantly (2.5h clang-tidy → minutes).
+  * v0.80.x was an unusually long patch stream (26 patches); marking
+    the end of it with a minor bump signals to downstream consumers
+    that the audit + Cluster B + audit-gap work has all landed.
+  * No API breakage (kVersionMajor stays at 0; pre-1.0 contracts apply).
+
+This is consistent with the v0.80.0 cut (which was the previous
+minor and similarly invisible from a behavior perspective — it just
+swapped in nlohmann for the hand-rolled escape decoder).
+
+### v0.80.x stream — what we're putting a bow on
+
+For posterity (the CHANGELOG entries themselves have the full
+detail; this is the rollup):
+
+  * **Cluster B persistence-layer audit — 9/9 findings closed.**
+    Silent regen, bus rename + ref propagation, complete dirty-
+    tracking coverage, toolbar dirty-state indicator, single
+    serializer entry point, .gool-backup restore UI, reload-from-
+    disk consent, _exit_tree flush. The editor is now correctness-
+    clean across the persistence layer.
+
+  * **Update checker (#19): full diagnostic rewrite.** Six silent-
+    return paths replaced with a single `_finish_with_status` exit,
+    9 distinct status codes, enriched cache schema with backward
+    compat.
+
+  * **LICENSE (#1):** Apache 2.0 restored canonical from
+    apache.org, eight-pattern drift guard in CI.
+
+  * **Audio-thread denormal protection (FTZ/DAZ):** the one real
+    production-readiness gap from the engine audit. Verified-as-
+    regression-check test.
+
+  * **clang-tidy unblock:** zero-init `double n;` in
+    `bus_config_loader.cpp` (the v0.80.26 patch that motivated
+    this whole nlohmann-isolation investigation).
+
+### Verification
+
+  * Both refactored files compile cleanly in environments without
+    nlohmann/json installed (direct evidence the include refactor
+    succeeded — pre-v0.81.0, both files would have failed with
+    `fatal error: nlohmann/json.hpp: No such file or directory`).
+  * `grep -rln 'nlohmann' src/ include/` returns 4 files:
+    json_string_decoder.{cpp,h} (legitimate — the wrapper itself),
+    bus_config_loader.cpp (comments only — historical/architectural
+    explanation), sound_bank.cpp (comments only — same). Zero
+    nlohmann symbols in code outside the wrapper.
+  * Brace balance preserved across both refactored files (pre vs
+    post diff identical, both pre-existing imbalances coming from
+    braces inside string literals and comments).
+  * All three scanners green: version-sync (5 sources at 0.81.0),
+    addon-autoload-safety, license-canonical.
+
+### CI expectation
+
+The clang-tidy job will now finish in minutes, not hours. The
+wrapper .cpp pays nlohmann's template-expansion cost — but it's
+~30 lines of code so the cost is bounded. bus_config_loader.cpp
+and sound_bank.cpp join the fast group along with the other 41
+TUs that don't include heavy template headers.
+
+Run-time behavior unchanged. Memory unchanged. Binary size
+essentially unchanged (the wrapper is a thin indirection — same
+nlohmann template instantiations end up in the final binary,
+just compiled in one TU instead of two).
+
 ## [0.80.26] - 2026-05-29 — clang-tidy unblock: zero-init double in bus_config_loader
 
 Emergency one-line fix. v0.80.23's clang-tidy job in CI ran for 2.5

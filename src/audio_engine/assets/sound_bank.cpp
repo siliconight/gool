@@ -21,20 +21,20 @@
 #include "audio_engine/emitter.h"
 #include "audio_engine/result.h"
 
-// v0.80.0: nlohmann/json drives JSON string decoding. The hand-rolled
-// ParseString prior to v0.80.0 handled eight of JSON's nine spec-
-// mandated escapes (\" \\ \/ \n \r \t \b \f) but rejected \u, leaving
-// every valid Unicode-escaped sound-bank name unreadable. The
-// bus-config loader had the same bug class (worse: it was also missing
-// \b and \f); see bus_config_loader.cpp for the full incident note.
-// v0.80.0's narrow fix is symmetric here: ParseString below captures
-// the raw quoted literal from the stream and delegates escape decoding
-// to nlohmann/json. The rest of the parser is unchanged. A future
-// release will replace the whole walker with a DOM-based version for
-// architectural symmetry; that work is deferred for a release cycle
-// that can support proper compile-and-validate cadence across all
-// schema call sites.
-#include <nlohmann/json.hpp>
+// v0.80.0: JSON string-escape decoding (the `\u` cases the pre-
+// v0.80.0 hand-rolled implementation missed, plus the rest of the
+// JSON spec's escape vocabulary) is delegated to nlohmann/json for
+// spec compliance. The bus-config loader had the same bug class
+// (worse: it was also missing \b and \f); see bus_config_loader.cpp
+// for the full incident note.
+//
+// v0.81.0: nlohmann is no longer included here directly. It lives
+// behind a thin wrapper at src/audio_engine/util/json_string_decoder.h.
+// See bus_config_loader.cpp's matching comment block for the
+// rationale (clang-tidy template-expansion cost on the strict CI
+// config). The wrapper's semantics match the previous inline
+// nlohmann calls.
+#include "audio_engine/util/json_string_decoder.h"
 
 #include <atomic>
 #include <array>
@@ -160,8 +160,9 @@ public:
     // decoding to nlohmann/json for spec compliance (the pre-v0.80.0
     // handwritten switch was missing the `\u` escape and would reject
     // any sound-bank name containing one). The Scanner still owns
-    // *finding* the string's bounds in the source stream; nlohmann
-    // owns the unescape pass on the captured literal.
+    // *finding* the string's bounds in the source stream; the wrapper
+    // (audio::util::DecodeJsonStringLiteral, v0.81.0) owns the
+    // unescape pass on the captured literal.
     bool ParseString(std::string& out, ParseError& err) {
         SkipWhitespace();
         if (Peek() != '"') {
@@ -178,38 +179,33 @@ public:
             if (c == '"') {
                 Advance(); // consume closing quote
                 const size_t literalLen = static_cast<size_t>(cur_ - startByte);
-                try {
-                    nlohmann::json j = nlohmann::json::parse(
-                        std::string_view(startByte, literalLen));
-                    if (!j.is_string()) {
-                        err.line = startLine;
-                        err.message = "internal: captured non-string at string position";
-                        return false;
-                    }
-                    out = j.get<std::string>();
-                    return true;
-                } catch (const nlohmann::json::parse_error& e) {
+                // v0.81.0: route through the JSON-string-decoder wrapper
+                // rather than calling nlohmann::json::parse inline. Same
+                // semantics as the pre-v0.81.0 try/catch block — see
+                // src/audio_engine/util/json_string_decoder.h.
+                std::string decoder_err;
+                if (!audio::util::DecodeJsonStringLiteral(
+                        std::string_view(startByte, literalLen),
+                        out, decoder_err)) {
                     err.line = startLine;
-                    err.message = e.what();
-                    return false;
-                } catch (const std::exception& e) {
-                    err.line = startLine;
-                    err.message = std::string("string decode failed: ") + e.what();
+                    err.message = decoder_err;
                     return false;
                 }
+                return true;
             }
             if (c == '\\') {
                 // Consume the backslash and the next char without
-                // interpreting them. nlohmann does the actual decoding.
+                // interpreting them. The wrapper does the actual decoding.
                 Advance();
                 if (!AtEnd()) Advance();
                 continue;
             }
             if (c == '\n') {
                 // Preserve pre-v0.80.0 behavior: literal newlines inside
-                // strings were rejected. nlohmann would also reject (per
-                // spec), but reporting it here lets us keep the friendlier
-                // pre-existing error message and the original line number.
+                // strings were rejected. The wrapper would also reject
+                // (per spec), but reporting it here lets us keep the
+                // friendlier pre-existing error message and the
+                // original line number.
                 err.line = line_;
                 err.message = "unterminated string (newline inside string)";
                 return false;

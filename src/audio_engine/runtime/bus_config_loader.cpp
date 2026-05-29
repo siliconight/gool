@@ -16,14 +16,14 @@
 #include <unordered_map>
 #include <vector>
 
-// v0.80.0: nlohmann/json drives JSON string decoding. The hand-rolled
-// parseString() prior to v0.80.0 handled only \" \\ \/ \n \t \r — six
-// of JSON's nine spec-mandated escapes — and would reject any string
-// containing \u, \b, or \f as "bad escape". The shipping FPS template
-// (templates/config_fps.json) contained \u2014 and \u2192 in its
-// _comment field, which made first-run installs fail for users who
-// picked the FPS preset. This was diagnosed as a user-side error for
-// twelve releases before being identified as a parser bug.
+// v0.80.0: JSON string-escape decoding (the `\uXXXX`, `\b`, `\f`
+// cases the pre-v0.80.0 hand-rolled implementation missed) is
+// delegated to nlohmann/json for spec compliance. The shipping FPS
+// template (templates/config_fps.json) contained \u2014 and \u2192
+// in its _comment field, which made first-run installs fail for
+// users who picked the FPS preset. This was diagnosed as a user-
+// side error for twelve releases before being identified as a
+// parser bug.
 //
 // v0.80.0's narrow fix:
 //   - parseString below captures the raw quoted literal from the
@@ -41,7 +41,17 @@
 //     every push. The combination of (nlohmann owns escape decoding) +
 //     (CI rejects any shipped artifact the loader can't parse) is the
 //     persistent fix against this bug class.
-#include <nlohmann/json.hpp>
+//
+// v0.81.0: nlohmann is no longer included here directly. It lives
+// behind a thin wrapper at src/audio_engine/util/json_string_decoder.h
+// because including <nlohmann/json.hpp> in this TU was causing
+// clang-tidy analysis times of ~2.5 hours per CI run (the strict
+// `cppcoreguidelines-init-variables` check walks every variable
+// declaration through every nlohmann template instantiation). The
+// wrapper isolates that cost to one ~30-line TU. The wrapper's
+// API is identical-in-spirit to the inline nlohmann calls that
+// previously lived here.
+#include "audio_engine/util/json_string_decoder.h"
 
 namespace audio::BusConfigLoader {
 
@@ -108,16 +118,19 @@ public:
     }
 
     // Parse a JSON string literal. v0.80.0: delegates escape decoding
-    // to nlohmann/json for spec compliance. The Scanner still owns
+    // to a spec-compliant decoder rather than the hand-rolled
+    // implementation that preceded it. The Scanner still owns
     // *finding* the string's bounds in the source stream (so line
     // tracking and the calling code's cursor advance are unchanged);
-    // nlohmann handles the unescape pass.
+    // the wrapper at src/audio_engine/util/json_string_decoder.h
+    // (v0.81.0) handles the unescape pass on the captured literal.
     //
-    // Why this shape: nlohmann::json::parse() requires a complete
-    // JSON value, and a bare quoted string ("foo") is a valid JSON
-    // value per RFC 8259. So we capture exactly that — the open quote,
-    // the body (with escapes intact, NOT decoded), and the close quote
-    // — and let nlohmann turn it into a std::string.
+    // Why this shape: a complete JSON value parser requires the full
+    // literal including quotes (a bare quoted string is itself a
+    // valid JSON value per RFC 8259). So we capture exactly that —
+    // the open quote, the body (with escapes intact, NOT decoded),
+    // and the close quote — and let the decoder turn it into a
+    // std::string.
     bool parseString(std::string& out, std::string& err, int& errLine) {
         skipWs();
         if (peek() != '"') {
@@ -129,43 +142,36 @@ public:
 
         // Scan to the matching closing quote, tracking backslash escapes
         // so we don't misidentify \" as the terminator. We don't decode
-        // here — nlohmann does. We just need to find where the literal
-        // ends so we can hand the right substring to nlohmann.
+        // here — the wrapper (audio::util::DecodeJsonStringLiteral)
+        // does. We just need to find where the literal ends so we can
+        // hand the right substring to the wrapper.
         while (!done()) {
             char c = peek();
             if (c == '"') {
                 advance(); // consume closing quote
                 const size_t literalLen = static_cast<size_t>(cur_ - startByte);
-                try {
-                    nlohmann::json j = nlohmann::json::parse(
-                        std::string_view(startByte, literalLen));
-                    if (!j.is_string()) {
-                        // Shouldn't happen — we captured a quoted literal.
-                        // Belt-and-suspenders for the impossible case.
-                        err = "internal: captured non-string at string position";
-                        errLine = startLine;
-                        return false;
-                    }
-                    out = j.get<std::string>();
-                    return true;
-                } catch (const nlohmann::json::parse_error& e) {
-                    // nlohmann's `what()` already includes a useful
-                    // description ("invalid string: '\\x' is not a valid
-                    // escape" or similar). Pass it through.
-                    err = e.what();
-                    errLine = startLine;
-                    return false;
-                } catch (const std::exception& e) {
-                    err = std::string("string decode failed: ") + e.what();
+                // v0.81.0: route through the JSON-string-decoder wrapper
+                // rather than calling nlohmann::json::parse inline. Same
+                // semantics as the pre-v0.81.0 try/catch block — see
+                // src/audio_engine/util/json_string_decoder.h for the
+                // contract. The wrapper sets `err` on failure; we add
+                // the source line number here since the wrapper has no
+                // visibility into our stream cursor.
+                std::string decoder_err;
+                if (!audio::util::DecodeJsonStringLiteral(
+                        std::string_view(startByte, literalLen),
+                        out, decoder_err)) {
+                    err = decoder_err;
                     errLine = startLine;
                     return false;
                 }
+                return true;
             }
             if (c == '\\') {
                 // Consume the backslash and the next character without
                 // interpreting them. The very last character before the
                 // closing quote could be `\\` which legitimately escapes
-                // itself; nlohmann will handle that.
+                // itself; the wrapper will handle that.
                 advance();
                 if (!done()) advance();
                 continue;

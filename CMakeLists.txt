@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(audio_engine
-    VERSION 0.80.26
+    VERSION 0.81.0
     DESCRIPTION "Runtime 3D Spatial Multiplayer Audio Engine"
     LANGUAGES CXX)
 
@@ -172,6 +172,7 @@ set(AUDIO_ENGINE_SOURCES
     src/audio_engine/runtime/thread_priority.cpp
     src/audio_engine/runtime/replication_rate_limiter.cpp
     src/audio_engine/runtime/telemetry.cpp
+    src/audio_engine/util/json_string_decoder.cpp
     src/audio_engine/default_bounds_validator.cpp
     src/audio_engine/version.cpp
 )
