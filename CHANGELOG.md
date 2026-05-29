@@ -26,6 +26,116 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.19] - 2026-05-28 — Cluster B step 2: dock UI for ConfigModel.rename_bus
+
+Pairs with v0.80.17's model layer. Adds the missing dock UI for
+invoking `rename_bus` — right-click any bus strip → "Rename
+bus..." → dialog with live validation → call into the model. End
+users can now rename buses entirely from inside the editor; no
+JSON editing or temporary GDScript needed.
+
+This is the patch that should hit the fast-CI path that v0.80.18
+just opened — pure GDScript, no version.h or CMakeLists.txt
+changes besides the version bump itself, which is now excluded
+from the cpp filter.
+
+### Added
+
+  * **"Rename bus..." action in the strip context menu.**
+    Right-clicking a bus strip header shows the menu (which
+    previously had only "Remove bus..."); v0.80.19 adds
+    "Rename bus '<name>'..." above it. The menu item is
+    **disabled with an explanatory tooltip for Master** — the
+    engine root sentinel can't be renamed per
+    `bus_config_loader.cpp:818` — so the action is discoverable
+    but visibly unavailable rather than silently absent.
+
+  * **Rename dialog with live validation.** Click "Rename bus..."
+    → `ConfirmationDialog` appears with:
+    - Prompt: `Rename bus '<name>' to:`
+    - `LineEdit` pre-filled with the current name (and
+      pre-selected, so the user can type immediately)
+    - Inline status label (red, hidden when there's no issue)
+    - OK / Cancel buttons
+
+    Validation runs on every keystroke and mirrors
+    `ConfigModel.rename_bus`'s three rejection cases:
+    | New text | OK button | Status label |
+    |---|---|---|
+    | Empty / whitespace | disabled | "Name cannot be empty." |
+    | Same as current name (no-op) | disabled | (hidden) |
+    | Collides with another bus | disabled | "A bus named 'X' already exists…" |
+    | Valid distinct name | enabled | (hidden) |
+
+    The dialog **refuses to commit anything the model would
+    reject**, so the rename always succeeds when the user can
+    actually click OK.
+
+  * **Enter-to-confirm.** Pressing Enter in the LineEdit fires
+    the OK button's `pressed` signal when validation is satisfied,
+    triggering the same confirmed-and-hide pathway as a mouse
+    click on OK.
+
+  * **Defensive error dialog** on the rare paths where the model
+    rejects despite UI validation (e.g. a race with an external
+    config edit, the Master defense-in-depth fallback, or any
+    future ConfigModel validation we don't duplicate in the
+    dialog). Shows a specific message matching the returned
+    error code, not just a code dump.
+
+### Closes (end-to-end with v0.80.17's model layer)
+
+  * **#12** (dirty-tracking misses structural changes) —
+    end-to-end via dock UI now.
+  * **#23** (bus rename loses effects + parent + category_routing
+    references) — propagated by the model layer, exposed by this UI.
+  * **#27** (ProjectSettings bus-name strings not updated on
+    rename) — propagated by mixer_dock's bus_renamed handler from
+    v0.80.17, triggered by this UI.
+
+### Cluster B status after v0.80.19
+
+Done: v0.80.12 (external removal detection), v0.80.13 (silent
+default writer removal + upgrade-path migration), v0.80.14
+(false-positive external-change dialog), v0.80.17 (rename_bus
+model + signal), v0.80.19 (rename_bus UI).
+
+Open for v0.81.0: #1 LICENSE restore, #7 delayed file-watcher
+dialog, #9/#10 Save discoverability + dirty-state UI, #11
+Reload-from-disk consent, #19 update-checker honesty (Cluster
+E), #22 empty-state regen (partial), #24 .gool-backup restore
+UI, #26 single serializer entry point (now five writers), #28
+EQ intensity dual writers, #29 _exit_tree flush.
+
+### Verification
+
+  * Wiring confirmed: menu item added, dispatch case present,
+    `_attempt_rename_bus` defined and referenced, model rename
+    called once from the confirmed handler.
+  * Static structure: parens / braces / brackets all balanced
+    in `mixer_dock.gd`.
+  * Scanners clean.
+  * Version sync clean (all 5 sources at 0.80.19).
+  * Manual: in a project with `gool-0.80.19` installed, open the
+    mixer dock with a working config. Right-click any non-Master
+    bus → "Rename bus 'X'..." → type a new name → OK. Verify:
+    (a) all in-config references update (parent, sidechain_bus,
+    category_routing), (b) Master is disabled in the menu with
+    a tooltip explaining why, (c) typing an existing bus name
+    shows the collision error and disables OK, (d) typing an
+    empty name shows the empty error and disables OK, (e)
+    typing the current name disables OK silently (no-op).
+
+### CI expectation
+
+This patch is the first true test of v0.80.18's path filter
+fix. Pure GDScript change — no C++ files modified, version.h
+and CMakeLists.txt are now excluded from the cpp filter, so
+clang-tidy and all the other C++-only jobs should SKIP. Expect
+total CI runtime around 5 minutes (gdscript-lint, headless-
+smoke, version-sync, addon-autoload-safety, and the changes
+gate itself), not the previous ~50 min.
+
 ## [0.80.18] - 2026-05-28 — CI: fix the v0.80.11 path filter for version-bump-only patches + extend gate to all C++-only jobs
 
 Two related fixes to the CI pipeline. v0.80.11 added a path filter

@@ -1404,9 +1404,18 @@ func _on_model_bus_renamed(old_name: String, new_name: String) -> void:
 
 func _on_strip_context_menu_requested(bus_name: String,
 		global_pos: Vector2) -> void:
-	# PopupMenu with a single "Remove bus..." entry for now. Future
-	# v0.28.8+ work can add Rename, Duplicate, etc.
+	# v0.80.19: PopupMenu with Rename + Remove. Pre-v0.80.19 only
+	# Remove existed; Rename was noted at this line as future work.
 	var menu := PopupMenu.new()
+	menu.add_item("Rename bus '%s'..." % bus_name, 1)
+	# Master can't be renamed — see ConfigModel.rename_bus contract
+	# (C++ bus parser hardcodes "Master" as the root sentinel).
+	if bus_name == "Master":
+		var rename_idx: int = menu.get_item_index(1)
+		menu.set_item_disabled(rename_idx, true)
+		menu.set_item_tooltip(rename_idx,
+				"'Master' is reserved as the engine root bus and "
+				+ "cannot be renamed.")
 	menu.add_item("Remove bus '%s'..." % bus_name, 0)
 	menu.id_pressed.connect(_on_strip_context_menu_id_pressed.bind(bus_name))
 	menu.close_requested.connect(menu.queue_free)
@@ -1422,6 +1431,8 @@ func _on_strip_context_menu_requested(bus_name: String,
 func _on_strip_context_menu_id_pressed(id: int, bus_name: String) -> void:
 	if id == 0:
 		_attempt_remove_bus(bus_name)
+	elif id == 1:
+		_attempt_rename_bus(bus_name)
 
 
 # Pre-check refs. If any → error dialog with the list. Else →
@@ -1466,6 +1477,146 @@ func _on_remove_bus_confirmed(bus_name: String,
 		if err != OK:
 			push_warning("[gool] remove_bus failed for '%s': %d"
 					% [bus_name, err])
+	dlg.queue_free()
+
+
+# v0.80.19: open the rename dialog for `bus_name`. The dialog has a
+# pre-filled LineEdit (selected for instant retype) plus an inline
+# status label that reports validation problems in real time. OK is
+# kept disabled until the new name is non-empty, different from
+# `bus_name`, and not a collision with another existing bus —
+# mirroring ConfigModel.rename_bus's same three validation checks
+# so the dialog refuses to commit anything the model would reject.
+#
+# Master is a hard "can't be renamed" — the context-menu builder
+# disables the menu item for Master, but this function also rejects
+# defensively in case the dispatch reaches us anyway.
+func _attempt_rename_bus(bus_name: String) -> void:
+	if _config_model == null:
+		return
+	if bus_name == "Master":
+		return  # defense in depth — menu should have prevented this
+
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "Rename bus"
+
+	# Dialog body: prompt + LineEdit + inline status label
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 8)
+
+	var prompt := Label.new()
+	prompt.text = "Rename bus '%s' to:" % bus_name
+	content.add_child(prompt)
+
+	var name_edit := LineEdit.new()
+	name_edit.text = bus_name
+	name_edit.select_all()
+	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_child(name_edit)
+
+	var status_label := Label.new()
+	status_label.add_theme_color_override("font_color",
+			Color(0.95, 0.4, 0.4))
+	status_label.visible = false
+	content.add_child(status_label)
+
+	dlg.add_child(content)
+
+	# Build a snapshot of existing bus names (excluding the one
+	# being renamed) so collision validation is fast and live.
+	var existing_names: PackedStringArray = PackedStringArray()
+	for b in _config_model.get_buses():
+		if not (b is Dictionary):
+			continue
+		var n: String = String((b as Dictionary).get("name", ""))
+		if n != "" and n != bus_name:
+			existing_names.append(n)
+
+	# Live validation. Same three rules as ConfigModel.rename_bus:
+	# empty (ERR_INVALID_PARAMETER), same-as-old (no-op return OK),
+	# collision (ERR_ALREADY_EXISTS). Disabling OK on no-op also
+	# prevents the user from confirming what would be a wasted save.
+	var validate := func(new_text: String) -> void:
+		var trimmed: String = new_text.strip_edges()
+		var ok_btn: Button = dlg.get_ok_button()
+		if trimmed.is_empty():
+			status_label.text = "Name cannot be empty."
+			status_label.visible = true
+			ok_btn.disabled = true
+		elif trimmed == bus_name:
+			status_label.visible = false  # no-op, not really an error
+			ok_btn.disabled = true
+		elif existing_names.has(trimmed):
+			status_label.text = ("A bus named '%s' already exists. "
+					+ "Two buses can't share a name.") % trimmed
+			status_label.visible = true
+			ok_btn.disabled = true
+		else:
+			status_label.visible = false
+			ok_btn.disabled = false
+
+	name_edit.text_changed.connect(validate)
+
+	# Enter in the LineEdit acts as OK when valid. Emitting the OK
+	# button's `pressed` signal triggers the dialog's own confirmed-
+	# and-hide pathway — same as a real click.
+	name_edit.text_submitted.connect(func(_t: String) -> void:
+		var ok_btn: Button = dlg.get_ok_button()
+		if not ok_btn.disabled:
+			ok_btn.pressed.emit()
+	)
+
+	dlg.confirmed.connect(_on_rename_bus_confirmed.bind(bus_name,
+			name_edit, dlg))
+	dlg.canceled.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
+	add_child(dlg)
+
+	# Initial state: text == bus_name, which is a no-op. OK disabled.
+	dlg.get_ok_button().disabled = true
+
+	dlg.popup_centered(Vector2i(420, 0))
+	name_edit.grab_focus()
+
+
+# Confirmed-OK handler for the rename dialog. UI pre-validation
+# should have made the rename_bus call succeed in the common case,
+# but the error path stays robust against rare scenarios — race
+# with an external config edit, a defensive reject from the model
+# for Master, or any future ConfigModel-side validation we don't
+# duplicate in the dialog. On non-OK, surface a specific message
+# rather than just logging.
+func _on_rename_bus_confirmed(old_name: String, name_edit: LineEdit,
+		dlg: ConfirmationDialog) -> void:
+	if _config_model == null:
+		dlg.queue_free()
+		return
+	var new_name: String = name_edit.text.strip_edges()
+	var result: int = _config_model.rename_bus(old_name, new_name)
+	if result != OK:
+		var err_dlg := AcceptDialog.new()
+		err_dlg.title = "Rename failed"
+		var msg: String = ""
+		match result:
+			ERR_INVALID_PARAMETER:
+				msg = "The new name is empty or invalid."
+			ERR_ALREADY_EXISTS:
+				msg = ("A bus named '%s' already exists. "
+						+ "Two buses can't share a name.") % new_name
+			ERR_INVALID_DATA:
+				if old_name == "Master":
+					msg = ("'Master' is reserved by the engine and "
+							+ "cannot be renamed.")
+				else:
+					msg = ("Bus '%s' no longer exists in the model. "
+							+ "Refresh the dock and try again.") % old_name
+			_:
+				msg = "Rename returned error code %d." % result
+		err_dlg.dialog_text = msg
+		err_dlg.confirmed.connect(err_dlg.queue_free)
+		err_dlg.close_requested.connect(err_dlg.queue_free)
+		add_child(err_dlg)
+		err_dlg.popup_centered()
 	dlg.queue_free()
 
 
