@@ -26,6 +26,99 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.26] - 2026-05-29 — clang-tidy unblock: zero-init double in bus_config_loader
+
+Emergency one-line fix. v0.80.23's clang-tidy job in CI ran for 2.5
+hours analyzing `bus_config_loader.cpp` (because that translation unit
+pulls in nlohmann/json's ~30K-line template expansion), then failed
+with `cppcoreguidelines-init-variables`:
+
+```
+src/audio_engine/runtime/bus_config_loader.cpp:747:20:
+  error: variable 'n' is not initialized
+        [cppcoreguidelines-init-variables,-warnings-as-errors]
+              double n;
+                     ^
+                       = NAN
+```
+
+### What changed
+
+Line 747: `double n;` → `double n = 0.0;`.
+
+That matches the convention used by every other `parseNumber`
+temporary in the same file — lines 301, 479, 565 all use explicit
+zero-init. The v0.80.9 addition of `global_reverb_send` parsing was
+the only one without it.
+
+### Was there actually UB?
+
+No. `parseNumber(n, ...)` writes to `n` only on success; the path
+that reads `n` (the bounds check and `static_cast<float>(n)`) is
+only reached after `parseNumber` returned true. But
+`cppcoreguidelines-init-variables` can't prove that flow from the
+local declaration alone — it just sees an uninitialized variable
+and flags it. The strict-checks CI config (`bugprone-*`, `cert-*`,
+`cppcoreguidelines-*` per `.clang-tidy`) treats this as an error,
+which is the right call: explicit zero-init costs nothing and
+removes a class of "what if a future refactor reads it early" bugs.
+
+### About the 2.5-hour analysis time
+
+The slow analysis is not new — it's been the case since v0.80.0
+added `nlohmann/json.hpp` to bus_config_loader for robust JSON-
+string escape decoding. Most v0.80.x patches were GDScript-only and
+took the v0.80.18 fast-CI path, which skips clang-tidy entirely;
+that's why this hasn't been visible until now. The C++ patches
+landing soon (v0.80.24, v0.80.25, v0.80.26 itself) all run the full
+clang-tidy job.
+
+The cause is `cppcoreguidelines-init-variables` walking every
+variable declaration through every nlohmann template instantiation
+in this TU. `sound_bank.cpp` is the only other TU including
+nlohmann/json and hits a milder version of the same slowdown
+(~1.5 minutes vs 2.5 hours in the visible CI log).
+
+Two follow-up options for v0.81.x:
+
+  1. **Hide nlohmann behind a wrapper TU** — `bus_config_loader.cpp`
+     uses nlohmann for one purpose: JSON string-escape decoding for
+     the `\uXXXX` sequences the hand-rolled parser couldn't handle.
+     A 30-line `string_escape_decoder.cpp` wrapper that's the only
+     TU including nlohmann would isolate the slow analysis to one
+     small file. The rest of the parser would shed the nlohmann
+     dependency entirely.
+
+  2. **Per-file clang-tidy exclusion** — drop `cppcoreguidelines-
+     init-variables` for the two nlohmann-touching TUs only.
+     Quicker to land but loses the check on those files.
+
+Option 1 is the right architectural move; option 2 is the
+emergency relief valve if CI minutes become a problem before option
+1 lands.
+
+### Closes
+
+  * **v0.80.23 CI failure** (clang-tidy job timeout / late error
+    on the strict init-variables check).
+
+### Verification
+
+  * Local syntax check passes (the nlohmann include fails in this
+    sandbox because the dep isn't pre-fetched here; CI fetches it
+    via FetchContent and the real build is fine).
+  * `grep "double n;" src/audio_engine/runtime/bus_config_loader.cpp`
+    returns zero results post-fix — no other uninitialized-double
+    declarations in this file.
+  * All scanners green: version-sync (5 sources / 0.80.26),
+    addon-autoload-safety, license-canonical.
+
+### CI expectation
+
+C++ patch. Full clang-tidy job runs. bus_config_loader.cpp will
+again take 2.5 hours but now passes at the end. That slow-analysis
+problem is tracked as v0.81.x work, not blocking v0.80.x progress.
+
 ## [0.80.25] - 2026-05-29 — Audio-thread denormal protection (FTZ/DAZ)
 
 The code audit before this patch (session log) surfaced one real

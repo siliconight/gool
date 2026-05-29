@@ -744,7 +744,16 @@ ParseResult ParseFromJson(std::string_view json) {
             // of every spatialized voice routed to the kBusReverb bus
             // (id=1) by the default spatializer. 0 = dormant. Enables
             // the dedicated-reverb-send path from a JSON-only config.
-            double n;
+            //
+            // v0.80.26: initialize n to 0.0 to match the convention
+            // used by every other parseNumber temporary in this file
+            // (lines 301, 479, 565). The v0.80.9 addition was the
+            // only one without explicit zero-init. parseNumber writes
+            // to n only on success and we early-return on failure, so
+            // there's no UB — but cppcoreguidelines-init-variables in
+            // the strict CI config can't prove that and errored on it,
+            // blocking the v0.80.23 build for 2.5 hours of analysis.
+            double n = 0.0;
             if (!s.parseNumber(n, r.error, r.errorLine)) return r;
             if (n < 0.0 || n > 1.0) {
                 r.error = "global_reverb_send must be in [0, 1], got "
