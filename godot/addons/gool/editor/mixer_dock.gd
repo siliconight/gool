@@ -628,6 +628,10 @@ func _ready() -> void:
 	_config_model.topology_changed.connect(_on_model_topology_changed)
 	_config_model.bus_added.connect(_on_model_bus_added)
 	_config_model.bus_removed.connect(_on_model_bus_removed)
+	# v0.80.17: bus rename signal — handler propagates the rename to
+	# ProjectSettings bus-name strings that the model itself doesn't
+	# own (material EQ impact/listener bus pointers).
+	_config_model.bus_renamed.connect(_on_model_bus_renamed)
 	var load_err: int = _config_model.load_from_disk()
 	if load_err != OK and load_err != ERR_FILE_NOT_FOUND:
 		push_warning("[gool] config_model load_from_disk: error %d" % load_err)
@@ -1358,6 +1362,41 @@ func _on_model_bus_added(_bus_name: String) -> void:
 
 # A bus was removed. Rebuild the strip row.
 func _on_model_bus_removed(_bus_name: String) -> void:
+	_load_static_layout_from_config()
+
+
+# v0.80.17: bus rename propagation to external state. The
+# ConfigModel.rename_bus mutator updates every reference inside
+# config.json; this handler covers the two ProjectSettings entries
+# that hold bus names by string for material EQ routing
+# (`gool/material_eq/impact_bus` and `gool/material_eq/listener_bus`,
+# read by runtime_singleton.gd at startup). Without this propagation,
+# renaming the bus that was the impact-EQ or listener-EQ target
+# would silently break the material EQ wiring — no error, no log,
+# just no EQ. Also rebuilds the strip row so the visible bus header
+# updates to the new name.
+func _on_model_bus_renamed(old_name: String, new_name: String) -> void:
+	const _IMPACT_BUS_SETTING := "gool/material_eq/impact_bus"
+	const _LISTENER_BUS_SETTING := "gool/material_eq/listener_bus"
+	var changed := false
+	if ProjectSettings.get_setting(_IMPACT_BUS_SETTING, "") == old_name:
+		ProjectSettings.set_setting(_IMPACT_BUS_SETTING, new_name)
+		changed = true
+	if ProjectSettings.get_setting(_LISTENER_BUS_SETTING, "") == old_name:
+		ProjectSettings.set_setting(_LISTENER_BUS_SETTING, new_name)
+		changed = true
+	if changed:
+		var err := ProjectSettings.save()
+		if err != OK:
+			push_warning(("[gool] failed to persist bus-rename in "
+					+ "ProjectSettings (Error %d). Material EQ wiring "
+					+ "may need to be reset manually in Project "
+					+ "Settings → audio → gool.") % err)
+		else:
+			print("[gool] bus rename propagated to ProjectSettings "
+					+ "material EQ wiring: %s → %s"
+					% [old_name, new_name])
+	# Rebuild the strip row so the renamed bus's header updates.
 	_load_static_layout_from_config()
 
 

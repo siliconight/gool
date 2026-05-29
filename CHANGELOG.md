@@ -26,6 +26,116 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.17] - 2026-05-28 — Cluster B step 1: ConfigModel.rename_bus mutator + signal-driven propagation
+
+First step of the Cluster B architectural pass. Adds the missing
+`rename_bus` mutator to ConfigModel that was acknowledged as
+future work at `mixer_dock.gd:1366` ("v0.28.8+ work can add
+Rename, Duplicate, etc."). Closes triage findings #12, #23, and
+#27 in one coherent patch.
+
+UI for invoking rename from the dock follows in v0.80.18 — this
+patch is model + propagation only. The mutator is callable from
+GDScript right now if needed for testing (`_config_model.rename_bus(old, new)`),
+but normal end-user flow will arrive with the v0.80.18 dock UI.
+
+### Added
+
+  * **`ConfigModel.rename_bus(old_name, new_name) -> int`**, a
+    cross-bus mutator that atomically updates every in-config
+    reference to a renamed bus:
+    1. The bus's own `name` field
+    2. Other buses' `parent` field pointing at the renamed bus
+    3. Compressor effects' `sidechain_bus` field
+    4. `category_routing` entries pointing at the renamed bus
+
+    Returns specific error codes for invalid input so UI can
+    surface targeted messages:
+    - `ERR_INVALID_PARAMETER` — new_name is empty or whitespace
+    - `ERR_INVALID_DATA` — old_name doesn't exist, or old_name
+      is "Master" (reserved by the C++ bus parser at
+      `bus_config_loader.cpp:818` as the root sentinel — renaming
+      it would break parent resolution for every other bus)
+    - `ERR_ALREADY_EXISTS` — new_name collides with another bus
+
+    Idempotent no-op (returns OK) if `new_name.strip_edges() ==
+    old_name`. Trims whitespace from new_name.
+
+    Sets `_buses_array_dirty = true` to trigger full re-serialization
+    on save (the surgical patcher is per-bus and can't represent
+    cross-bus reference updates). Moves any `_dirty_buses[old_name]`
+    entry off the old key to keep that dictionary's invariant
+    (keys are valid bus names) clean. Schedules a save via the
+    existing debounce.
+
+  * **`bus_renamed(old_name, new_name)` signal on ConfigModel.**
+    Fires AFTER all in-config propagation completes. Mirrors the
+    `bus_added` / `bus_removed` signals' role in the model's
+    bus-topology signal triplet. Listeners that hold bus-name
+    references OUTSIDE config.json should propagate the rename
+    to their own state in this handler.
+
+  * **`_on_model_bus_renamed` handler in `mixer_dock.gd`** wired
+    to the new signal. Propagates rename to two ProjectSettings
+    bus-name strings used by `runtime_singleton.gd` for material
+    EQ routing — `gool/material_eq/impact_bus` and
+    `gool/material_eq/listener_bus`. Without this propagation,
+    renaming the bus that was the impact-EQ or listener-EQ
+    target would silently break the material EQ wiring (no
+    error, no log, just no EQ effect at runtime). Calls
+    `ProjectSettings.save()` if either setting changed; logs a
+    confirmation print on success or a `push_warning` on save
+    failure (non-fatal: in-config rename has already succeeded;
+    only the EQ wiring would need manual reset).
+
+    Handler also calls `_load_static_layout_from_config()` so
+    the dock's strip headers update to show the new name — same
+    pattern the bus_added / bus_removed handlers use.
+
+### Findings closed
+
+  * **#12** (dirty-tracking misses rename). The audit
+    recharacterization showed this was "no mutator exists" rather
+    than "dirty-tracking flawed." Adding the proper mutator
+    routes rename through the standard `_buses_array_dirty` →
+    `_schedule_save()` path, giving renames the same dirty-tracking
+    coverage as add_bus and remove_bus.
+  * **#23** (bus rename loses effect/parent/category_routing
+    references). The propagation through `_parsed` handles every
+    in-config reference, matching the field set
+    `collect_bus_references` reports — keeping the two functions
+    symmetric on what counts as "a reference to this bus."
+  * **#27** (ProjectSettings bus-name strings don't update on
+    rename). The signal-driven propagation in `mixer_dock.gd`
+    handles the two material EQ bus-name settings.
+
+### What's still open in Cluster B
+
+After v0.80.17: #1, #7, #9, #10, #11, #19, #22, #24, #26, #28,
+#29. The next focused patch (v0.80.18) is the dock UI for
+invoking `rename_bus` — context-menu "Rename..." action on bus
+strips with a small dialog for entering the new name and
+showing validation errors.
+
+### Verification
+
+  * Wiring: signal declared, defined function present, emit and
+    connect each exactly once — confirmed.
+  * Static structure: parens and braces balance once strings/
+    comments are excluded. +34 parens in `config_model.gd`
+    consistent with the new function size.
+  * `scripts/check_addon_autoload_safety.py` — passes.
+  * `scripts/check_version_sync.sh` — passes (all 5 sources at 0.80.17).
+  * Manual GDScript test (optional, for power users who want to
+    validate ahead of v0.80.18's UI): from any tool script or
+    inside the dock's debug console, call
+    `_config_model.rename_bus("OldName", "NewName")` and verify
+    config.json on disk has the new name in every place
+    (buses[].name, buses[].parent, sidechain_bus values,
+    category_routing entries). For a bus that's targeted by
+    Material EQ ProjectSettings, also confirm those entries
+    in `project.godot` reflect the new name.
+
 ## [0.80.16] - 2026-05-28 — Update banner: "How to update" button with copy-paste command
 
 Closes the update-flow gap discussed during the v0.80.15

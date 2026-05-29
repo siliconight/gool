@@ -1555,6 +1555,15 @@ var _buses_array_dirty: bool = false
 signal topology_changed(bus_name: String)
 signal bus_added(bus_name: String)
 signal bus_removed(bus_name: String)
+# v0.80.17: bus rename signal. Fires AFTER rename_bus has propagated
+# the rename through every in-config reference (the bus's own name,
+# child buses' "parent" fields, compressor sidechain_bus fields, and
+# category_routing entries). Listeners that hold bus-name references
+# OUTSIDE config.json — currently the ProjectSettings entries
+# `gool/material_eq/impact_bus` and `gool/material_eq/listener_bus`
+# used by runtime_singleton for material-EQ routing — should
+# propagate the rename to their own state in this handler.
+signal bus_renamed(old_name: String, new_name: String)
 
 
 # ===================================================================
@@ -1723,6 +1732,126 @@ func remove_bus(bus_name: String) -> int:
 	_has_pending_save = true
 	_schedule_save()
 	bus_removed.emit(bus_name)
+	return OK
+
+
+# v0.80.17: rename a bus and propagate the rename through every
+# in-config reference atomically. Closes triage findings #12 (no
+# dirty-tracking for renames because there was no proper mutator),
+# #23 (renaming a bus left dangling effect/parent/category_routing
+# references), and #27 (ProjectSettings bus-name strings — handled
+# via the bus_renamed signal listener in mixer_dock.gd).
+#
+# Propagation in _parsed (handled here):
+#   1. The bus's own "name"
+#   2. Other buses' "parent" field
+#   3. Compressor effects' "sidechain_bus" field on every bus
+#   4. category_routing values pointing at old_name
+#
+# Propagation outside _parsed (handled by mixer_dock via signal):
+#   5. ProjectSettings gool/material_eq/impact_bus (if matches)
+#   6. ProjectSettings gool/material_eq/listener_bus (if matches)
+#
+# Reserved-name policy: refuses to rename "Master". The C++ bus
+# parser at bus_config_loader.cpp:818 hardcodes "Master" (and
+# lowercase "master") as the root sentinel — renaming it would
+# break parent resolution for every other bus. To rename what's
+# conceptually the master bus, you'd have to either accept that
+# constraint or do an engine-side change to look up the root by ID
+# instead of name. Not in scope here.
+#
+# Returns OK on success, or:
+#   ERR_INVALID_PARAMETER if new_name is empty/whitespace
+#   ERR_INVALID_DATA     if old_name doesn't exist, or old_name is
+#                        "Master" (reserved as engine root)
+#   ERR_ALREADY_EXISTS   if new_name collides with another bus
+#
+# Idempotent no-op (returns OK) if new_name trims to old_name.
+func rename_bus(old_name: String, new_name: String) -> int:
+	var trimmed_new := new_name.strip_edges()
+	if trimmed_new.is_empty():
+		push_error("[gool config] rename_bus: empty new name rejected")
+		return ERR_INVALID_PARAMETER
+	if trimmed_new == old_name:
+		return OK  # idempotent no-op
+	if old_name == "Master":
+		push_error("[gool config] rename_bus: 'Master' is reserved as "
+				+ "the engine root sentinel and cannot be renamed")
+		return ERR_INVALID_DATA
+
+	var arr_v: Variant = _parsed.get("buses", null)
+	if not (arr_v is Array):
+		push_error("[gool config] rename_bus: buses array missing/invalid")
+		return ERR_INVALID_DATA
+	var buses: Array = arr_v
+
+	# Single pass to find the source bus and check for collision.
+	var src_idx: int = -1
+	for i in range(buses.size()):
+		var b_v: Variant = buses[i]
+		if not (b_v is Dictionary):
+			continue
+		var n: String = String((b_v as Dictionary).get("name", ""))
+		if n == old_name:
+			src_idx = i
+		elif n == trimmed_new:
+			push_error("[gool config] rename_bus: '%s' already exists"
+					% trimmed_new)
+			return ERR_ALREADY_EXISTS
+	if src_idx == -1:
+		push_error("[gool config] rename_bus: '%s' not found" % old_name)
+		return ERR_INVALID_DATA
+
+	# Propagate through _parsed:
+
+	# 1. The bus's own name
+	(buses[src_idx] as Dictionary)["name"] = trimmed_new
+
+	# 2 + 3. Other buses' parent + sidechain_bus references. Single
+	# pass since we're iterating buses for both. Matches the field
+	# set in collect_bus_references — keeping the two functions
+	# symmetric on what counts as "a reference to this bus".
+	for b_v in buses:
+		if not (b_v is Dictionary):
+			continue
+		var b: Dictionary = b_v
+		if String(b.get("parent", "")) == old_name:
+			b["parent"] = trimmed_new
+		var effects_v: Variant = b.get("effects", [])
+		if effects_v is Array:
+			for e_v in (effects_v as Array):
+				if not (e_v is Dictionary):
+					continue
+				var e: Dictionary = e_v
+				if e.get("kind") == "compressor" \
+						and String(e.get("sidechain_bus", "")) == old_name:
+					e["sidechain_bus"] = trimmed_new
+
+	# 4. category_routing entries pointing at old_name
+	var routing_v: Variant = _parsed.get("category_routing", null)
+	if routing_v is Dictionary:
+		var routing: Dictionary = routing_v
+		for cat in routing.keys():
+			if String(routing[cat]) == old_name:
+				routing[cat] = trimmed_new
+
+	# Move dirty-edit tracking off the old name. The _buses_array_dirty
+	# flag below means per-bus tracking is moot for the save itself
+	# (full re-serialization rewrites everything from _parsed), but
+	# keeping _dirty_buses free of stale names maintains the invariant
+	# that its keys are valid bus names — important for any code that
+	# reads _dirty_buses.keys() (e.g. external_change_detected's
+	# emit signature).
+	if _dirty_buses.has(old_name):
+		_dirty_buses.erase(old_name)
+
+	# Full re-serialization required. The surgical patcher operates
+	# per-bus; cross-bus reference updates (parent, sidechain_bus,
+	# category_routing) aren't representable in its per-bus model.
+	_buses_array_dirty = true
+	_has_pending_save = true
+	_schedule_save()
+	bus_renamed.emit(old_name, trimmed_new)
 	return OK
 
 
