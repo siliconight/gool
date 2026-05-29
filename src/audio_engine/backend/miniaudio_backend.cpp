@@ -31,6 +31,7 @@
 #include <miniaudio.h>
 
 #include "audio_engine/backend/miniaudio_backend.h"
+#include "audio_engine/denormal_protection.h"
 
 #include <atomic>
 #include <cstdio>
@@ -126,6 +127,22 @@ struct MiniaudioBackend::Impl {
                              void*       output,
                              const void* /*input*/,
                              ma_uint32   frameCount) noexcept {
+        // v0.80.25: ensure denormal protection (FTZ + DAZ on x86,
+        // FZ on ARM) is enabled on the audio thread. Idempotent and
+        // ~5 ns on x86 — calling every callback is simpler than
+        // tracking a thread-local "did we set it yet" flag, and
+        // defends against any custom DSP plugin in the render path
+        // accidentally clearing the bits between invocations.
+        //
+        // Without this, IIR feedback paths (biquads, reverb tanks,
+        // compressor envelopes) decay into the denormal range during
+        // silence and the FPU drops out of its fast path, spiking
+        // CPU 10-100x on x86 specifically during the quiet moments
+        // when slowdowns are most audible. See
+        // include/audio_engine/denormal_protection.h for the full
+        // rationale.
+        (void)SetCurrentThreadDenormalProtection();
+
         auto* self = static_cast<Impl*>(dev->pUserData);
         const size_t buf_bytes =
             static_cast<size_t>(frameCount) *

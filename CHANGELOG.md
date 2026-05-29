@@ -26,6 +26,127 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.25] - 2026-05-29 — Audio-thread denormal protection (FTZ/DAZ)
+
+The code audit before this patch (session log) surfaced one real
+gap in the audio thread's real-time safety story: no FTZ/DAZ
+discipline. IIR feedback paths (biquads in the EQ, the reverb
+tank's cross-feedback, compressor envelopes) decay exponentially
+toward zero during silence. They eventually hit the denormal range
+(~1e-38) and on x86 the FPU drops out of its fast path into
+microcode-emulated arithmetic — a documented 10–100× slowdown. The
+audible effect is the audio thread spiking CPU specifically during
+the quiet moments after sounds end, which is exactly when users
+expect it to be cheapest.
+
+v0.80.25 closes that gap with a portable per-thread denormal-
+protection setter, hooked into both audio backends, with a test
+that's verified to actually catch the regression.
+
+### Added
+
+  * **`audio::SetCurrentThreadDenormalProtection()`** in
+    `include/audio_engine/denormal_protection.h`. Sets FTZ +
+    DAZ on x86 via `_mm_setcsr` (MXCSR bits 6 and 15), FZ + FZ16
+    on ARM64 via `MRS/MSR fpcr` (bits 24 and 19), FZ on ARM32 via
+    `VMRS/VMSR fpscr` (bit 24). No-op with `ok=true` on unknown
+    platforms so callers don't need to special-case. Returns a
+    result struct with `ok` / `platform` / `details` mirroring
+    the existing `SetCurrentThreadAudioPriority` pattern.
+
+  * **Implementation** at `src/audio_engine/runtime/denormal_protection.cpp`.
+    Direct CSR register access via `_mm_getcsr/_mm_setcsr` on x86
+    (portable across MSVC/GCC/Clang) and inline asm `MRS/MSR` on
+    ARM. Read-modify-write so we only flip FTZ/DAZ, never
+    clobbering rounding mode or sticky flags that the host runtime
+    may rely on.
+
+  * **`tests/unit/denormal_protection_test.cpp`** — four checks:
+    - Return-value metadata (ok, platform, details all populated)
+    - Direct probe: `min_normal * 0.5` must yield exactly `0.0f`
+      after the setter (without FTZ this yields a denormal)
+    - IIR feedback probe: simulates a biquad-style decay (`state =
+      state * 0.5` repeated). With FTZ, state hits exactly `0.0f`
+      within ~30 iterations; without, drifts through denormal
+      range forever
+    - Idempotence: two consecutive calls produce same result and
+      preserve behavior (validates "safe to call from every
+      callback")
+    
+    Uses `volatile` operands to defeat constant-folding so the
+    runtime MXCSR/FPCR state is actually exercised. Self-verified
+    to catch the regression: substituting a no-op implementation
+    causes the direct probe to fail with a clear error message.
+
+### Changed
+
+  * **`MiniaudioBackend::Impl::DataCallback`** now calls
+    `SetCurrentThreadDenormalProtection()` at the very top of every
+    invocation, before any other work. Idempotent and ~5 ns on
+    x86, so calling every callback is simpler than tracking a
+    thread-local flag and defends against any custom DSP plugin
+    in the render path accidentally clearing the bits between
+    invocations.
+
+  * **`NullAudioBackend::RenderLoop`** sets denormal protection
+    once at thread entry. The loop runs entirely on one engine-
+    owned `std::thread` so single-set is sufficient; the MXCSR/
+    FPCR state is per-thread and sticky for the loop lifetime.
+
+### Why this matters specifically
+
+For a 4-player coop FPS with continuous gunshot bursts and music
+(the immediate use case), denormals rarely accumulate during
+gameplay — new signal constantly pushes IIR state vars back out
+of the denormal range. **But** the slowdown surfaces during:
+
+  * Menu screens with reverb tails decaying from level audio
+  * Paused gameplay
+  * The few seconds of reverb tail after combat ends
+  * Dialogue sequences with quiet ambient beds
+  * Anywhere the bus graph's IIR-based effects run with near-zero input
+
+Without FTZ, any of those moments can produce an audio-thread CPU
+spike. With FTZ, the entire class of bug is structurally impossible.
+Standard practice in every shipping audio engine; gool now matches.
+
+### Cost
+
+Approximately 5 nanoseconds per audio callback on modern x86 (one
+`stmxcsr` + one `ldmxcsr`). Imperceptible against a 10ms audio
+buffer. The cost is one CSR write whether you call it once or
+every callback; we chose every-callback for the simpler invariant.
+
+### Closes
+
+  * **Audio-thread real-time safety gap #1** identified in the
+    v0.80.x code audit (session log). The remaining gaps from that
+    audit (`@stable` API markers, microbench breadth, streaming-
+    pump headroom for Opus on slow CPUs) are intrinsic to pre-1.0
+    or minor; this was the only one that could surface as user-
+    visible audio glitching in production.
+
+### Verification
+
+  * Compiled clean: `-std=c++20 -Wall -Wextra -Wpedantic -Werror -O2`
+  * Test passes on this x86_64 Linux host: direct probe, IIR probe,
+    metadata, idempotence — all green.
+  * **Test verified as a regression check**: substituting a no-op
+    `SetCurrentThreadDenormalProtection()` (returns success without
+    actually writing MXCSR) makes the direct probe fail with the
+    expected diagnostic message.
+  * All four scanners green: `version-sync` (5 sources at 0.80.25),
+    `addon-autoload-safety`, `license-canonical`, plus the new
+    test joins `ctest`.
+
+### CI expectation
+
+C++ patch with one new source file, one new test. The full C++
+matrix runs (no fast-CI path skip since `cpp` files changed).
+Sanitizer build will exercise the new code under ASAN + UBSAN; TSAN
+will verify the MXCSR write doesn't race anything (it can't — per-
+thread register, but TSAN still validates the surrounding code).
+
 ## [0.80.24] - 2026-05-29 — #1 LICENSE: restore Apache 2.0 + CI drift guard
 
 The LICENSE file at the repo root had regressed to an MIT-license

@@ -1,6 +1,7 @@
 // audio_engine/backend/null_audio_backend.cpp
 
 #include "audio_engine/backend/null_audio_backend.h"
+#include "audio_engine/denormal_protection.h"
 
 #include <chrono>
 
@@ -36,6 +37,17 @@ void NullAudioBackend::Stop() {
 }
 
 void NullAudioBackend::RenderLoop() {
+    // v0.80.25: ensure denormal protection is enabled on this thread.
+    // Set once at thread entry; the MXCSR (x86) / FPCR (ARM) state
+    // is per-thread and persists for the loop's lifetime. Unlike the
+    // miniaudio backend (where we re-set every callback as defense
+    // against third-party DSP plugins), this thread is engine-owned
+    // end-to-end so a single set is enough.
+    //
+    // See include/audio_engine/denormal_protection.h for the rationale
+    // (IIR feedback paths producing denormals during silence → 10-100x
+    // CPU spike).
+    (void)SetCurrentThreadDenormalProtection();
     using clock = std::chrono::steady_clock;
 
     const auto periodNs = std::chrono::nanoseconds{
