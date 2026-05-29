@@ -258,13 +258,13 @@ func _set_empty_state_message(heading_text: String, body_text: String) -> void:
 # project. Adds the full reverb chain + sidechain ducking + Dialogue
 # routing recommended for FPS projects.
 func _on_create_default_config_pressed() -> void:
-	var path: String = "res://gool/config.json"
-	var dir := DirAccess.open("res://")
-	if dir == null:
-		push_error("[gool] mixer dock: cannot open res:// for writing")
+	if _config_model == null:
+		push_error("[gool] mixer dock: no _config_model, can't create default")
 		return
-	if not dir.dir_exists("gool"):
-		dir.make_dir("gool")
+	# Default minimal mixer-dock config: 4 buses + category_routing,
+	# no effects. (The banner's "minimal template" has different
+	# contents — 3 buses with reverb on Sfx. Content consolidation
+	# is tracked separately.)
 	var cfg: Dictionary = {
 		"sample_rate": 48000,
 		"buffer_size": 512,
@@ -280,46 +280,45 @@ func _on_create_default_config_pressed() -> void:
 			"voice": "Voice",
 		},
 	}
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		push_error("[gool] mixer dock: cannot open %s for writing" % path)
-		return
-	f.store_string(JSON.stringify(cfg, "  "))
-	f.close()
-	print("[gool] mixer dock: wrote default config to %s" % path)
-	# Reload the model from disk so the dock rebuilds.
-	if _config_model != null:
-		_config_model.load_from_disk()
-	_load_static_layout_from_config()
+	# v0.80.20: route through ConfigModel.install_config_text instead
+	# of writing directly. install_config_text handles the res://gool/
+	# dir creation, backup of any existing file, JSON verify, write,
+	# readback, _parsed sync, and model_loaded emission so the dock
+	# rebuilds. See config_model.gd for the unified writer header.
+	var result: int = _config_model.install_config_text(
+			JSON.stringify(cfg, "  "), "mixer-dock create-default")
+	if result == OK:
+		print("[gool] mixer dock: wrote default config to res://gool/config.json")
+		_load_static_layout_from_config()
+	else:
+		push_error("[gool] mixer dock: create-default failed (err=%d)" % result)
 
 func _on_use_fps_template_pressed() -> void:
+	if _config_model == null:
+		push_error("[gool] mixer dock: no _config_model, can't install FPS template")
+		return
 	var src: String = "res://addons/gool/templates/config_fps.json"
-	var dst: String = "res://gool/config.json"
 	if not FileAccess.file_exists(src):
 		push_warning("[gool] mixer dock: FPS template not found at %s" % src)
 		return
-	var dir := DirAccess.open("res://")
-	if dir == null:
-		push_error("[gool] mixer dock: cannot open res:// for writing")
+	# v0.80.20: route through ConfigModel.install_config_text. The
+	# v0.80.8 reason for the dir.copy() specialization — byte-for-
+	# byte fidelity to preserve clean diffs against the upstream
+	# template — is preserved: the unified writer uses store_buffer
+	# (no platform EOL conversion). get_file_as_string reads the
+	# template bytes verbatim, install_config_text writes them
+	# verbatim. Same on-disk result as the old dir.copy.
+	var template_text: String = FileAccess.get_file_as_string(src)
+	if template_text.is_empty():
+		push_error("[gool] mixer dock: FPS template at %s is empty or unreadable" % src)
 		return
-	if not dir.dir_exists("gool"):
-		dir.make_dir("gool")
-	# v0.80.8: byte-for-byte copy via DirAccess.copy(). Pre-v0.80.8
-	# this read the template via FileAccess.get_file_as_string and
-	# wrote via store_string, which converts to platform-default
-	# line endings (CRLF on Windows). The parser handles both fine,
-	# but byte-for-byte consistency means anyone diffing their on-
-	# disk config against the canonical upstream template sees a
-	# clean diff instead of every line flagged changed.
-	var copy_err: int = dir.copy(src, dst)
-	if copy_err != OK:
-		push_error("[gool] mixer dock: cannot copy %s → %s (err=%d)"
-				% [src, dst, copy_err])
-		return
-	print("[gool] mixer dock: copied FPS template → %s" % dst)
-	if _config_model != null:
-		_config_model.load_from_disk()
-	_load_static_layout_from_config()
+	var result: int = _config_model.install_config_text(
+			template_text, "mixer-dock FPS template")
+	if result == OK:
+		print("[gool] mixer dock: installed FPS template")
+		_load_static_layout_from_config()
+	else:
+		push_error("[gool] mixer dock: FPS template install failed (err=%d)" % result)
 
 # Meter display range — minimum dBFS visible.
 const DB_METER_FLOOR: float = -60.0
@@ -370,6 +369,14 @@ var _debugger_plugin: EditorDebuggerPlugin = null
 #     between our last load and our next save, the dock shows a
 #     ConfirmationDialog with Reload / Overwrite / Cancel
 var _config_model: GoolConfigModel = null
+# v0.80.20: stored reference so we can wire the ConfigModel into it
+# AFTER the ConfigModel is instantiated. The banner is created early
+# in _ready (it goes above the toolbar in the UI), the ConfigModel
+# is created late (historical ordering). We pass the model into the
+# banner after both exist so the banner's template-install handlers
+# can route writes through ConfigModel.install_config_text — the
+# unified writer (see config_model.gd:write_config header).
+var _getting_started_banner: PanelContainer = null
 var _mtime_conflict_dialog: ConfirmationDialog = null
 # v0.53.0: TabContainer at the dock root. Hosts the Mixer tab
 # (everything from v0.52.0 and earlier) plus the new Sound Bank
@@ -501,6 +508,9 @@ func _ready() -> void:
 		# Banner goes ABOVE the toolbar (first child of root_vbox)
 		# so it's the first thing the user sees if they need it.
 		root_vbox.add_child(banner)
+		# v0.80.20: store the ref so we can wire the ConfigModel
+		# into it later in _ready (after the model is created).
+		_getting_started_banner = banner
 
 	# v0.51.0: themed toolbar — banner with a title on the left, the
 	# Save Mix to Config action on the right. Replaces the v0.48.0
@@ -635,6 +645,16 @@ func _ready() -> void:
 	var load_err: int = _config_model.load_from_disk()
 	if load_err != OK and load_err != ERR_FILE_NOT_FOUND:
 		push_warning("[gool] config_model load_from_disk: error %d" % load_err)
+
+	# v0.80.20: hand the ConfigModel reference to the Getting Started
+	# banner so its template-install buttons can route writes through
+	# ConfigModel.install_config_text (the unified writer). Created
+	# earlier in _ready as a member ref; if banner_script.load
+	# failed back then, _getting_started_banner stayed null and this
+	# is a no-op.
+	if _getting_started_banner != null \
+			and _getting_started_banner.has_method("set_config_model"):
+		_getting_started_banner.set_config_model(_config_model)
 
 	# v0.26.0: build static layout from config.json IMMEDIATELY.
 	# Strips are visible at editor time; live data comes later

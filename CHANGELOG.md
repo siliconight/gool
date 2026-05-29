@@ -26,6 +26,169 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.80.20] - 2026-05-28 — Cluster B #26: single serializer entry point
+
+Five separate code paths used to write res://gool/config.json — one
+canonical (with the full safety stack: external-change pre-flight,
+backup, JSON verify, readback) and four bypasses (template installs,
+empty-state buttons) that skipped some or all of those safeguards.
+v0.80.20 consolidates all five through a single bedrock writer
+(`ConfigModel.write_config`) plus a thin convenience wrapper for
+the install/overwrite paths (`ConfigModel.install_config_text`).
+The four bypass writers are gone; their bodies collapsed to ~3
+lines apiece.
+
+### Added
+
+  * **`ConfigModel.write_config(new_text, source_label, force=false)`**
+    — the bedrock writer. Every config.json write terminates here.
+    Provides: external-removal pre-flight, external-content-change
+    pre-flight (both skippable via `force=true`), backup to
+    `.gool-backup`, JSON verify before touching disk, `store_buffer`
+    write for byte-for-byte fidelity, disk readback for `_raw_text`
+    sync, `_parsed` repopulation, `_last_seen_mtime` refresh, dirty-
+    state clearing. Emits no signals — callers control which signal
+    fires.
+
+  * **`ConfigModel.install_config_text(new_text, source_label)`** —
+    thin wrapper for empty-state and template-install callers. Calls
+    `write_config` with `force=true` (intent IS overwrite) and emits
+    `model_loaded` on success so dock listeners rebuild. Hides the
+    `force` argument from callers that shouldn't have to think about
+    it.
+
+  * **`ConfigModel._ensure_gool_dir()`** — internal helper. Idempotent
+    res://gool/ directory creation. Used by `write_config` so callers
+    don't need to do it themselves.
+
+### Changed
+
+  * **`_do_save` shrinks to a thin wrapper.** Previously ~155 lines
+    duplicating the entire safety stack. Now ~35 lines: run the
+    patcher to build `new_text` from dirty `_parsed`, snapshot the
+    dirty bus list (write_config clears it), delegate to
+    `write_config` with `force=false`, emit `model_saved` on
+    success. All the pre-flight, backup, verify, write, readback,
+    and state sync live in one place now.
+
+  * **`store_buffer` everywhere, no more `store_string` for config**.
+    `store_string` applies platform default text-mode line-ending
+    conversion (LF→CRLF on Windows); `store_buffer` writes raw UTF-8
+    bytes verbatim. The unified writer uses `store_buffer`, which
+    means:
+    - Byte-for-byte fidelity is now a STRUCTURAL property of every
+      write path, not a special case for template installs.
+    - v0.80.8's `dir.copy` specialization for the FPS template can
+      go away — we get the same byte preservation through
+      `get_file_as_string` → `install_config_text` → `store_buffer`.
+    - v0.80.14's false-positive class of bug (store_string converts
+      bytes on Windows → next save's external-change check reads
+      different bytes from disk than `_raw_text` → false-positive
+      "config.json changed externally" dialog) is now structurally
+      impossible. The defensive readback stays as belt-and-suspenders
+      against future encoding edge cases (BOMs, etc.).
+
+  * **`mixer_dock._on_create_default_config_pressed`**: 38 lines →
+    ~25 lines. The default-config Dictionary is unchanged; only the
+    write path is replaced.
+
+  * **`mixer_dock._on_use_fps_template_pressed`**: 28 lines → ~20 lines.
+    `dir.copy` → `get_file_as_string` + `install_config_text`. Same
+    on-disk result.
+
+  * **`getting_started_banner._on_use_fps_template`**: 30 lines →
+    ~25 lines. Same `dir.copy` → unified-writer swap.
+
+  * **`getting_started_banner._write_minimal_template_and_finish`**:
+    12 lines → ~12 lines. Direct `store_string` → `install_config_text`.
+
+  * **Banner ↔ ConfigModel wiring**: the banner now accepts a
+    `GoolConfigModel` reference via a new `set_config_model(model)`
+    setter. The dock stores the banner as `_getting_started_banner`
+    and hands its model in after both are constructed in `_ready`.
+
+### Removed
+
+  * **`getting_started_banner._ensure_project_gool_dir`** — dead code
+    after the refactor (its only callers were the two banner writers,
+    which now route through `install_config_text`; `ConfigModel.
+    _ensure_gool_dir` does the same job for everyone now).
+
+### Architecture after v0.80.20
+
+```
+write paths to res://gool/config.json:
+
+  _do_save  ──┐                                  ┌── store_buffer
+              │                                  │   (atomic write)
+  install_   ─┼──>  write_config(force) ─────────┤
+  config_text │                                  ├── disk readback
+              │                                  │   (_raw_text sync)
+              │                                  │
+              │                                  └── re-parse
+              │                                      (_parsed sync)
+              │
+              ▼
+       (callers emit signals: model_saved
+        for canonical save, model_loaded
+        for template installs)
+```
+
+### What this does NOT change
+
+  * **Content of the two minimal templates** (mixer_dock's 4-bus +
+    category_routing vs banner's 3-bus + reverb on Sfx). They're
+    still different. Content consolidation is a separate concern.
+  * **Existing config.json files**. The patcher operates on `_raw_text`
+    as-is; whatever line endings are on disk stay there through edit
+    cycles. Fresh template installs after v0.80.20 produce LF on all
+    platforms (because the addon's template files are LF in git, and
+    `store_buffer` preserves bytes); pre-existing Windows files with
+    CRLF stay CRLF.
+  * **`.gool-backup` mechanism**, **v0.80.12's external-removal
+    detection**, **v0.80.13's silent-default-writer removal**, or
+    **v0.80.14's readback defense**. All preserved inside
+    `write_config`.
+
+### Closes
+
+  * **#26** — Single serializer entry point (architectural). Five
+    writers → one bedrock writer + one thin wrapper. The duplicated
+    safety-stack code is gone.
+
+### Verification
+
+  * Wiring: 4 callers route through `install_config_text` (2 mixer_dock,
+    2 banner); `_do_save` routes through `write_config(force=false)`.
+    All confirmed by grep.
+  * Static structure: parens/braces/brackets balanced in all three
+    edited files (config_model.gd, mixer_dock.gd, getting_started_banner.gd).
+  * No orphaned references: dead `_ensure_project_gool_dir` in banner
+    removed.
+  * Single active `store_buffer` for config writes (config_model.gd line
+    in `write_config`); single active `store_string` for the
+    diagnostic `.failed` dump only.
+  * Scanners: addon-autoload-safety clean, version-sync clean (5
+    sources at 0.80.20).
+  * Manual (post-push):
+    1. Empty-state → "Create default config" → verify dock rebuilds, file
+       contents match the inline mixer_dock minimal.
+    2. Empty-state → "Use FPS template" → verify file byte-matches
+       `addons/gool/templates/config_fps.json` (the v0.80.8 property
+       preserved).
+    3. Banner → "Use FPS template" → same as #2 but triggered from
+       banner.
+    4. Banner → "Use minimal template" → verify file matches the
+       banner's `_MINIMAL_CONFIG_JSON` (3-bus + reverb on Sfx).
+    5. Edit a bus parameter → save → verify external-change protection
+       still fires when config.json is modified externally before save.
+    6. Edit a bus parameter → save → repeat → verify no false-positive
+       "config.json changed externally" dialog (v0.80.14 regression check).
+
+### CI expectation
+
+GDScript-only patch — the v0.80.18 fast-CI path should apply.
+
 ## [0.80.19] - 2026-05-28 — Cluster B step 2: dock UI for ConfigModel.rename_bus
 
 Pairs with v0.80.17's model layer. Adds the missing dock UI for

@@ -56,6 +56,23 @@ const _PROJECT_CONFIG_PATH: String = "res://gool/config.json"
 const _ADDON_FPS_TEMPLATE:  String = "res://addons/gool/templates/config_fps.json"
 const _DISMISS_META_KEY:    String = "addons/gool/editor/getting_started_dismissed"
 
+# v0.80.20: reference to the dock's ConfigModel, set by the parent
+# mixer_dock after it instantiates its model. Used by the template-
+# install handlers to route writes through the unified writer
+# (ConfigModel.install_config_text) instead of writing res://gool/
+# config.json directly. The banner may be parented and visible before
+# the dock has finished _ready (the model is created late in the
+# dock's _ready for historical reasons), so this stays null until the
+# dock calls set_config_model — but that's fine: the writers only
+# fire when the user clicks a template button, long after both nodes
+# are ready.
+var _config_model: GoolConfigModel = null
+
+
+# Called from mixer_dock._ready after _config_model is instantiated.
+func set_config_model(model: GoolConfigModel) -> void:
+	_config_model = model
+
 const _MINIMAL_CONFIG_JSON: String = """{
   "buses": [
     {
@@ -209,27 +226,30 @@ func _on_use_fps_template() -> void:
 				+ "file by default. Reinstall the addon or check the "
 				+ "templates folder.")
 		return
-	# v0.80.8: byte-for-byte copy via DirAccess.copy(). Pre-v0.80.8
-	# this read the template as text and wrote via store_string,
-	# which converts to platform-default line endings on write —
-	# CRLF on Windows, LF elsewhere. The parser handles both, but
-	# byte-for-byte consistency means anyone diffing their on-disk
-	# config against the canonical upstream template sees a clean
-	# diff instead of every line marked changed.
-	if not _ensure_project_gool_dir():
+	if _config_model == null:
+		_log_error("Internal: ConfigModel not yet wired to banner. "
+				+ "Close the Gool dock and reopen it, then try again.")
 		return
-	# DirAccess.copy is bound on an instance — open at res:// since
-	# both paths are res://-relative; the instance handles them as
-	# Godot virtual paths.
-	var dir := DirAccess.open("res://")
-	if dir == null:
-		_log_error("Could not open res:// for FPS template copy (err=%d)."
-				% DirAccess.get_open_error())
+	# v0.80.20: route through ConfigModel.install_config_text. The
+	# v0.80.8 reason for the dir.copy() specialization — byte-for-
+	# byte fidelity preserving clean diffs against the upstream
+	# template — is preserved: the unified writer uses store_buffer
+	# (no platform EOL conversion). get_file_as_string reads the
+	# template bytes verbatim, install_config_text writes them
+	# verbatim. Same on-disk result as the old dir.copy.
+	#
+	# install_config_text also handles res://gool/ dir creation,
+	# backup of any existing file, JSON verify, _parsed sync, and
+	# model_loaded emission — so the call site is just three lines.
+	var template_text: String = FileAccess.get_file_as_string(_ADDON_FPS_TEMPLATE)
+	if template_text.is_empty():
+		_log_error("FPS template at %s is empty or unreadable."
+				% _ADDON_FPS_TEMPLATE)
 		return
-	var copy_err: int = dir.copy(_ADDON_FPS_TEMPLATE, _PROJECT_CONFIG_PATH)
-	if copy_err != OK:
-		_log_error("Could not copy %s → %s (err=%d)."
-				% [_ADDON_FPS_TEMPLATE, _PROJECT_CONFIG_PATH, copy_err])
+	var result: int = _config_model.install_config_text(
+			template_text, "banner FPS template")
+	if result != OK:
+		_log_error("FPS template install failed (err=%d)." % result)
 		return
 	_finish_template_install("FPS template")
 
@@ -244,30 +264,29 @@ func _on_use_minimal_template() -> void:
 # store_string. String constants are LF in GDScript, so no line-
 # ending conversion happens. (The Windows CRLF bug only bit the
 # FPS template path, which was reading from a file via get_as_text.)
+# v0.80.20: routes through ConfigModel.install_config_text instead
+# of writing directly via store_string. The minimal config is still
+# a const GDScript string (LF endings, never converted by anything
+# in our pipeline now that the unified writer uses store_buffer).
 func _write_minimal_template_and_finish() -> void:
-	if not _ensure_project_gool_dir():
+	if _config_model == null:
+		_log_error("Internal: ConfigModel not yet wired to banner. "
+				+ "Close the Gool dock and reopen it, then try again.")
 		return
-	var f := FileAccess.open(_PROJECT_CONFIG_PATH, FileAccess.WRITE)
-	if f == null:
-		_log_error("Could not open %s for write (err=%d)."
-				% [_PROJECT_CONFIG_PATH, FileAccess.get_open_error()])
+	var result: int = _config_model.install_config_text(
+			_MINIMAL_CONFIG_JSON, "banner minimal template")
+	if result != OK:
+		_log_error("Minimal template install failed (err=%d)." % result)
 		return
-	f.store_string(_MINIMAL_CONFIG_JSON)
-	f.close()
 	_finish_template_install("minimal template")
 
 
-# v0.80.8: helper — ensure res://gool/ exists. Idempotent; returns
-# true on success (including "already existed"), false on fatal
-# error (logged via _log_error before return).
-func _ensure_project_gool_dir() -> bool:
-	var dir_err: int = DirAccess.make_dir_recursive_absolute(
-			ProjectSettings.globalize_path("res://gool"))
-	if dir_err != OK and dir_err != ERR_ALREADY_EXISTS:
-		_log_error("Could not create res://gool/ directory (err=%d)."
-				% dir_err)
-		return false
-	return true
+# v0.80.20: _ensure_project_gool_dir removed. Its only callers were
+# the inline FPS-template and minimal-template write paths, both of
+# which now route through ConfigModel.install_config_text — and
+# ConfigModel handles res://gool/ creation itself (see _ensure_gool_dir
+# in config_model.gd). Kept as a CHANGELOG-anchored note rather than
+# left as orphaned dead code.
 
 
 # v0.80.8: helper — shared post-install actions. Persist the dismiss

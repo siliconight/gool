@@ -518,56 +518,227 @@ func _on_save_timer_fired(timer_ref: SceneTreeTimer) -> void:
 
 # ---- Internal: the actual save ------------------------------------
 
-# Returns OK on success, or an Error code on failure. Emits
-# model_saved or save_failed accordingly. Also emits
-# external_change_detected if disk contents differ from what we
-# last saw.
-func _do_save() -> int:
-	# v0.80.12: external-removal detection. If config.json existed
-	# when we loaded (so _raw_text is non-empty) but no longer
-	# exists, the user removed/renamed it outside the editor. Pre-
-	# v0.80.12 the two safety blocks below (external-change check
-	# and backup) were both gated on `file_exists(CONFIG_PATH)`,
-	# so when the file was gone both checks were skipped and the
-	# save proceeded — silently recreating config.json from the
-	# stale in-memory state, including any unsaved edits the user
-	# thought they'd thrown away by removing the file. Surface
-	# the situation instead: emit external_removal_detected and
-	# return without writing. The dock's handler offers the user
-	# the choice (accept the removal → empty-state, or recreate
-	# from dock state via overwrite_disk).
-	if not FileAccess.file_exists(CONFIG_PATH) and not _raw_text.is_empty():
-		var dirty_list: Array = _dirty_buses.keys()
-		external_removal_detected.emit(dirty_list)
+# --- v0.80.20: Unified config writer (Cluster B #26) ------------
+#
+# Before v0.80.20, FIVE different code paths wrote res://gool/config.json:
+#
+#   1. ConfigModel._do_save       (canonical dirty-tracked save)
+#   2. mixer_dock _on_create_default_config_pressed   (empty-state)
+#   3. mixer_dock _on_use_fps_template_pressed         (empty-state)
+#   4. getting_started_banner _on_use_fps_template     (banner)
+#   5. getting_started_banner _write_minimal_template_and_finish (banner)
+#
+# Only #1 had the full safety stack: external-change pre-flight, backup,
+# JSON verify before write, disk readback for _raw_text sync, _parsed
+# re-population. The other four wrote directly via store_string or
+# dir.copy, skipping some or all of those. That meant template installs
+# could clobber unsaved edits without warning, could silently produce
+# unparseable JSON, and required callers to manually call
+# load_from_disk() afterward to refresh _parsed.
+#
+# v0.80.20 collapses all five paths through write_config below. _do_save
+# becomes a thin wrapper that builds new_text via the patcher and then
+# delegates. The empty-state and banner paths call install_config_text
+# (which is write_config + force=true + model_loaded emission). Five
+# code paths → ONE bedrock writer.
+#
+# Why store_buffer instead of store_string: store_string applies the
+# platform's default text-mode line-ending conversion (LF→CRLF on
+# Windows). store_buffer writes raw UTF-8 bytes verbatim. Using
+# store_buffer gives us byte-for-byte fidelity — the same property
+# v0.80.8's dir.copy fix preserved for the FPS-template install — so
+# the unified path doesn't lose anything the special-case template
+# copy used to gain. As a side effect, the v0.80.14 false-positive
+# external-change-after-our-own-write issue is structurally
+# impossible now (we're not transforming bytes during write); the
+# defensive readback stays as belt-and-suspenders against any future
+# encoding edge case.
+
+
+# Source-of-truth writer for res://gool/config.json. ALL paths that
+# need to persist config state — whether canonical dirty-tracked
+# saves, empty-state template installs, or recovery overwrites — go
+# through this method.
+#
+# What it does:
+#   1. Pre-flight: detect external removal (config.json gone but
+#      _raw_text remembers content) → emit external_removal_detected,
+#      return ERR_FILE_NOT_FOUND. Caller must reconcile.
+#   2. Pre-flight: detect external content change (disk doesn't match
+#      _raw_text) → emit external_change_detected, return
+#      ERR_FILE_UNRECOGNIZED. Caller must reconcile.
+#   3. Backup existing config.json to config.json.gool-backup (if
+#      config.json exists). Skipped on first install.
+#   4. Verify new_text parses as JSON before touching disk. Bad
+#      candidates get dumped to config.json.failed for diagnosis;
+#      live config.json is untouched.
+#   5. Write via store_buffer for byte-for-byte fidelity (no platform
+#      EOL conversion).
+#   6. Re-read disk for _raw_text sync.
+#   7. Re-parse for _parsed sync.
+#   8. Clear dirty state, refresh _last_seen_mtime.
+#
+# What it does NOT do:
+#   - Emit signals to listeners. Callers control which signal fires
+#     (model_saved for canonical _do_save, model_loaded for fresh-
+#     install paths). This keeps the contract uncoupled from caller
+#     intent.
+#
+# Pass force=true to skip the external-removal / external-change
+# pre-flight checks. Empty-state and template-install callers use
+# this because they intend to overwrite whatever's on disk
+# (typically nothing or a stale template). Canonical _do_save uses
+# force=false to protect the user from clobbering external edits.
+#
+# `source_label` is purely informational — appears in error
+# messages and the .failed sidecar so log readers can tell which
+# path triggered the write.
+#
+# Returns one of:
+#   - OK: write succeeded; _raw_text + _parsed + dirty state synced
+#   - ERR_FILE_NOT_FOUND: external removal detected (force=false)
+#   - ERR_FILE_UNRECOGNIZED: external change detected (force=false)
+#   - ERR_CANT_CREATE: backup failed, or res://gool/ dir creation failed
+#   - ERR_INVALID_DATA: new_text isn't parseable JSON
+#   - ERR_CANT_OPEN: couldn't open config.json for write
+func write_config(new_text: String, source_label: String,
+		force: bool = false) -> int:
+	# Pre-flight 1: external removal
+	if not force and not FileAccess.file_exists(CONFIG_PATH) \
+			and not _raw_text.is_empty():
+		var dirty_list_removal: Array = _dirty_buses.keys()
+		external_removal_detected.emit(dirty_list_removal)
 		return ERR_FILE_NOT_FOUND
 
-	# v0.28.6: external-change detection switched from mtime-based
-	# to CONTENT-based. The mtime approach (v0.28.4) was producing
-	# a false positive on every save: Godot's filesystem watcher /
-	# resource cache touches the file's mtime AFTER our write,
-	# bumping it past our cached _last_seen_mtime, so the next
-	# save saw it as "modified externally" and prompted. Comparing
-	# actual byte contents is robust against any mtime weirdness:
-	# if the disk content matches _raw_text, no external edit has
-	# happened regardless of what mtime says.
-	if FileAccess.file_exists(CONFIG_PATH):
+	# Pre-flight 2: external content change. v0.28.6: content-based,
+	# not mtime-based — Godot's filesystem watcher / resource cache
+	# was bumping mtime after our own writes and producing false
+	# positives on every save.
+	if not force and FileAccess.file_exists(CONFIG_PATH):
 		var f_check := FileAccess.open(CONFIG_PATH, FileAccess.READ)
 		if f_check != null:
 			var disk_text: String = f_check.get_as_text()
 			f_check.close()
 			if disk_text != _raw_text and not _raw_text.is_empty():
-				var dirty_list: Array = _dirty_buses.keys()
-				external_change_detected.emit(dirty_list)
-				return ERR_FILE_UNRECOGNIZED  # generic "needs user input"
+				var dirty_list_change: Array = _dirty_buses.keys()
+				external_change_detected.emit(dirty_list_change)
+				return ERR_FILE_UNRECOGNIZED
 
-	# Backup current on-disk contents. If the patcher produces
-	# something the engine can't parse, this is what we restore.
+	# Backup. Skipped on first install (no existing file to back up).
 	if FileAccess.file_exists(CONFIG_PATH):
 		if not _copy_file(CONFIG_PATH, BACKUP_PATH):
-			var msg := "could not create %s backup" % BACKUP_PATH
-			save_failed.emit(msg)
+			save_failed.emit("could not create %s backup [%s]"
+					% [BACKUP_PATH, source_label])
 			return ERR_CANT_CREATE
 
+	# Verify new_text BEFORE touching live config. Pre-v0.54.3 order
+	# was write → verify → restore-from-bak; that left a window
+	# where corrupted JSON was on disk. New order: parse in memory
+	# first, only open for write after we know the candidate is
+	# valid.
+	var verify_v: Variant = JSON.parse_string(new_text)
+	if verify_v == null or not (verify_v is Dictionary):
+		var failed_path: String = "res://gool/config.json.failed"
+		var f_dump := FileAccess.open(failed_path, FileAccess.WRITE)
+		if f_dump != null:
+			f_dump.store_string(new_text)
+			f_dump.close()
+		save_failed.emit(
+				"save aborted [%s]: candidate is not valid JSON. "
+				+ "res://gool/config.json is UNCHANGED. Failing "
+				+ "candidate dumped to %s for diagnosis."
+				% [source_label, failed_path])
+		return ERR_INVALID_DATA
+
+	# Ensure res://gool/ exists. New projects don't have it yet
+	# until the first install runs.
+	if not _ensure_gool_dir():
+		save_failed.emit("could not create res://gool/ directory [%s]"
+				% source_label)
+		return ERR_CANT_CREATE
+
+	# Write. store_buffer (not store_string) — see header comment.
+	var f := FileAccess.open(CONFIG_PATH, FileAccess.WRITE)
+	if f == null:
+		save_failed.emit("could not open %s for write [%s]"
+				% [CONFIG_PATH, source_label])
+		return ERR_CANT_OPEN
+	f.store_buffer(new_text.to_utf8_buffer())
+	f.close()
+
+	# Sync internal state from canonical disk content. The readback
+	# is structurally redundant with store_buffer (which doesn't
+	# transform bytes), but it's belt-and-suspenders for BOMs,
+	# future encoding quirks, and any path-specific filesystem
+	# layer that might intervene.
+	var f_readback := FileAccess.open(CONFIG_PATH, FileAccess.READ)
+	if f_readback != null:
+		_raw_text = f_readback.get_as_text()
+		f_readback.close()
+	else:
+		# Read-back failed (very unlikely — we JUST wrote it). Fall
+		# back to new_text so in-memory state stays self-consistent.
+		_raw_text = new_text
+
+	# Re-parse for _parsed sync. We already parsed once for verify;
+	# reuse that result rather than parsing again.
+	_parsed = verify_v as Dictionary
+
+	_last_seen_mtime = FileAccess.get_modified_time(CONFIG_PATH)
+	_dirty_buses.clear()
+	_buses_array_dirty = false
+	_has_pending_save = false
+	return OK
+
+
+# Install fresh config content, replacing whatever's on disk. Thin
+# wrapper for empty-state and template-install callers — write_config
+# with force=true (the install intent IS overwrite, not preserve),
+# plus a model_loaded emission so the dock rebuilds from the new
+# _parsed.
+#
+# Use this from:
+#   - "Create default config" buttons (empty-state)
+#   - "Use FPS template" / "Use minimal template" buttons
+#   - Any "overwrite on-disk state with this content" UX
+#
+# Do NOT use this from canonical save paths. The canonical path is
+# _do_save (which uses write_config with force=false), respecting
+# external-change protection.
+func install_config_text(new_text: String, source_label: String) -> int:
+	var result: int = write_config(new_text, source_label, true)
+	if result == OK:
+		model_loaded.emit()
+	return result
+
+
+# Helper: ensure res://gool/ exists. Idempotent; returns true if the
+# directory exists (or was just created), false on any failure.
+func _ensure_gool_dir() -> bool:
+	var dir := DirAccess.open("res://")
+	if dir == null:
+		return false
+	if not dir.dir_exists("gool"):
+		var err: int = dir.make_dir("gool")
+		if err != OK:
+			return false
+	return true
+
+
+# Returns OK on success, or an Error code on failure. Emits
+# model_saved or save_failed accordingly. Also emits
+# external_change_detected if disk contents differ from what we
+# last saw.
+#
+# v0.80.20: the entire safety stack (external-removal pre-flight,
+# external-change pre-flight, backup, JSON verify, store_buffer
+# write, readback, state sync) now lives in write_config — see the
+# header comment there. _do_save is the canonical *dirty-tracked*
+# save: it runs the patcher to convert _parsed edits into a new
+# JSON text, snapshots the dirty bus list (because write_config
+# clears it), delegates the actual write, and emits model_saved
+# on success.
+func _do_save() -> int:
 	# Apply every dirty bus's pending edits to the raw text. The
 	# walk uses the current _parsed (which already reflects all
 	# the user's edits) as the source of values; the raw text is
@@ -598,82 +769,19 @@ func _do_save() -> int:
 		save_failed.emit("patch errors: " + ", ".join(write_errors))
 		return ERR_INVALID_DATA
 
-	# v0.54.3: verify BEFORE writing to disk. The previous flow was
-	# write → verify → restore-from-bak-on-failure, which left a
-	# window where corrupted data was on disk, and which silently
-	# kept the corruption if the restore itself failed (the
-	# _copy_file return value was discarded). A real user hit this
-	# in v0.54.1: a save produced "gain_db": %g, the verify caught
-	# it, but the restore didn't complete cleanly and the user's
-	# config.json on disk stayed as the broken version. On next F5
-	# the C++ JSON parser rejected the file and runtime init failed.
-	#
-	# New flow: parse new_text in memory. Only open config.json for
-	# write after we know the candidate is valid JSON. Bad candidates
-	# get dumped to .failed for diagnosis but NEVER touch the live
-	# config.
-	var verify_v: Variant = JSON.parse_string(new_text)
-	if verify_v == null or not (verify_v is Dictionary):
-		# Dump the failing text to a sibling file for diagnosis. The
-		# live config.json is untouched — anything that reads it
-		# (F5'd runtime, other editor tools) sees the previous good
-		# state, NOT this candidate.
-		var failed_path: String = "res://gool/config.json.failed"
-		var f_dump := FileAccess.open(failed_path, FileAccess.WRITE)
-		if f_dump != null:
-			f_dump.store_string(new_text)
-			f_dump.close()
-		save_failed.emit(
-				"save aborted: patcher produced invalid JSON. "
-				+ "res://gool/config.json is UNCHANGED. "
-				+ "Failing candidate dumped to %s for diagnosis. "
-				+ "This is a bug in gool's patched-save path — please "
-				+ "report the .failed file."
-				% failed_path)
-		return ERR_INVALID_DATA
-
-	# Verified. Safe to write.
-	var f := FileAccess.open(CONFIG_PATH, FileAccess.WRITE)
-	if f == null:
-		save_failed.emit("could not open %s for write" % CONFIG_PATH)
-		return ERR_CANT_OPEN
-	f.store_string(new_text)
-	f.close()
-
-	# v0.80.14: re-read disk content for _raw_text sync, instead of
-	# using new_text directly. FileAccess.store_string on Windows
-	# applies platform line-ending conversion (LF→CRLF) — same issue
-	# documented at mixer_dock.gd:307-313 for the v0.80.8 FPS-template
-	# fix. If we set _raw_text = new_text (the in-memory pre-write
-	# version) when store_string actually wrote a CRLF-converted
-	# version, the next save's external-change pre-flight reads disk
-	# (CRLF), compares to _raw_text (still has the original LF), sees
-	# them differ, and fires external_change_detected — a false
-	# positive on the dock's OWN previous write. The user sees a
-	# "config.json changed on disk" dialog they didn't cause.
-	#
-	# Re-reading via get_as_text returns the canonical disk bytes,
-	# whatever conversion store_string applied, so _raw_text now
-	# byte-matches disk and the next pre-flight passes cleanly.
-	# Robust against any encoding/EOL/BOM divergence regardless of
-	# specific platform behavior.
-	var f_readback := FileAccess.open(CONFIG_PATH, FileAccess.READ)
-	if f_readback != null:
-		_raw_text = f_readback.get_as_text()
-		f_readback.close()
-	else:
-		# Read-back failed (unlikely — we JUST wrote it). Fall back
-		# to new_text so we at least have a self-consistent in-memory
-		# state, even if it might disagree with disk by some bytes.
-		# Better than leaving _raw_text empty.
-		_raw_text = new_text
-	_last_seen_mtime = FileAccess.get_modified_time(CONFIG_PATH)
+	# Snapshot the dirty list BEFORE write_config — it clears
+	# _dirty_buses as part of the post-write state sync, so we
+	# couldn't read the list after the call for the signal payload.
 	var saved_buses: Array = _dirty_buses.keys()
-	_dirty_buses.clear()
-	_buses_array_dirty = false
-	_has_pending_save = false
-	model_saved.emit(saved_buses)
-	return OK
+
+	# Delegate the safe-write stack. force=false because canonical
+	# saves MUST respect the external-change / external-removal
+	# protection (the user might have edited config.json outside
+	# the editor since we loaded).
+	var result: int = write_config(new_text, "dirty-tracked save", false)
+	if result == OK:
+		model_saved.emit(saved_buses)
+	return result
 
 
 # Force-reload from disk, dropping any pending local edits. Used
