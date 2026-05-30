@@ -26,6 +26,158 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.5] - 2026-05-30 — FPSCoopAudio prefab: opinionated 4P FPS PvE drop-in
+
+Adds a second drop-in prefab, one level above CoopAudioRoot in the
+hierarchy: **`FPSCoopAudio`** is shaped for the specific case of a
+4-player FPS PvE game, with five purpose-built audio categories and
+a built-in diagnostic overlay so devs can verify the audio system
+works without writing test code first.
+
+CoopAudioRoot (v0.81.4) is generic — one event channel, you pick
+the replication mode per call. FPSCoopAudio is opinionated — five
+named categories with the right mode, radius, and priority for
+each baked in. The intended layering:
+
+  * **Lowest level**: `NetworkedAudioEvent` + `GoolListener3D` +
+    `GoolSoundBankLoader` (compose manually for full control).
+  * **Mid level**: `CoopAudioRoot` (one shared channel, generic API).
+  * **Top level**: `FPSCoopAudio` (five named channels, FPS-specific
+    semantic API).
+
+Each level is independent — you don't have to use one to get the
+others. The progression is "drop down" as your needs outgrow the
+abstraction, not "build up."
+
+### Why this exists
+
+Two things motivated landing this on top of CoopAudioRoot:
+
+  1. **"Even easier" for the FPS PvE case.** With CoopAudioRoot,
+     you still have to decide which replication mode applies to
+     each call. With FPSCoopAudio, calling `play_weapon(...)` vs.
+     `play_enemy(...)` vs. `play_world(...)` makes that decision
+     for you — and the defaults are tuned for the genre.
+
+  2. **Developer validation.** The built-in diagnostic overlay
+     (`show_diagnostic_overlay: bool` export, defaults off) lets
+     a developer drop the prefab in, run the project, and see
+     per-category event counts (fired locally vs. received from
+     peers), listener-attached state, and sound-bank-loaded state
+     in real-time. The common failure modes — multiplayer wiring
+     broken, sound bank not registered, listener not attached —
+     are visible without launching a debugger.
+
+### The five categories
+
+| Category | Mode | Radius | Priority | What it's for |
+|----------|------|--------|----------|---------------|
+| WEAPONS | CLIENT_PREDICTED | 100m | 200 | Gunshots, reloads. Shooter hears instantly; others after RTT. |
+| ENEMIES | SERVER_AUTHORITATIVE | 80m | 150 | AI bot footsteps, attacks, deaths. Server owns truth. |
+| WORLD | SERVER_AUTHORITATIVE | 200m | 180 | Explosions, scripted events. Wide radius. |
+| MOVEMENT | CLIENT_AUTHORITATIVE | 30m | 80 | Footsteps, jumps. Cheap, low-priority. |
+| HUD | (local only) | — | 240 | UI feedback. Never replicates. |
+
+Constants live at the top of the script (`_MODES`, `_RADII`,
+`_PRIORITIES` arrays) so future-you can audit or tweak them
+without spelunking through the API surface.
+
+### Added
+
+  * **`godot/addons/gool/prefabs/fps_coop_audio.gd`** (~450 lines
+    including the doc comment). Single `Node` subclass,
+    `class_name FPSCoopAudio`. Public API:
+
+    - `play_weapon(name, pos) -> int` — client-predicted weapon
+      audio. Returns prediction ID for use with `cancel_weapon()`.
+    - `play_enemy(name, pos) -> int` — server-authoritative AI audio.
+    - `play_world(name, pos) -> int` — server-authoritative scripted
+      audio (explosions, etc.).
+    - `play_movement(name, pos) -> int` — client-authoritative
+      high-frequency audio (footsteps).
+    - `play_hud(name)` — local-only HUD audio. No replication, no
+      radius. Routes through `Gool.play_one_shot()` directly.
+    - `cancel_weapon(prediction_id, fade_out_ms)` — abort a rejected
+      prediction. Convenience wrapper.
+    - `set_local_player(target)` — listener binding.
+    - `detach_listener()` — release the listener (spectator handoff).
+    - `get_diagnostic_summary() -> Dictionary` — programmatic
+      access to the same data the overlay shows.
+
+  * **`godot/addons/gool/prefabs/fps_coop_audio.svg`** — 16x16
+    monochromatic icon: FPS crosshair with audio rings emanating
+    from the center and four peer dots at the corners.
+
+### Signals
+
+  * `sound_bank_loaded(results)` — SoundBank registration complete.
+  * `event_played(category, sound, position, source_peer_id)` —
+    fires for both local and replicated events. `category` is the
+    enum index; cross-reference with `Category` for human-readable
+    names.
+  * `listener_attached(target)` — listener bound to a Node3D.
+  * `diagnostic_updated(summary)` — fires each time the overlay
+    refreshes (default 4 Hz, settable via `diagnostic_refresh_s`).
+
+### Diagnostic overlay
+
+When `show_diagnostic_overlay` is enabled, a Panel renders in the
+top-left of the screen showing:
+
+```
+FPSCoopAudio diagnostic
+─────────────────────
+listener: ✓ Player1
+sound bank: ✓ loaded
+
+Weapons:  fired   14  recv    9  (0.3s ago)
+Enemies:  fired    0  recv    6  (1.2s ago)
+World:    fired    1  recv    1  (4.5s ago)
+Movement: fired   42  recv  108  (0.1s ago)
+Hud:      fired    7  recv    0  (—)
+```
+
+`fired` is what this client triggered locally. `recv` is what
+arrived via replication from other peers. For non-HUD categories,
+seeing `fired` go up but `recv` stay at 0 on other clients is the
+"multiplayer wiring broken" signature. `recv` columns let you
+sanity-check that the 4 peers are actually exchanging events.
+
+### NOT changed
+
+No engine code, no other prefabs, no API on existing types.
+CoopAudioRoot (v0.81.4) remains and is the right choice for non-FPS
+coop games. The two prefabs are independent — you wouldn't use
+both in the same project; you'd pick the one matching your game.
+
+### Verification
+
+  * `class_name FPSCoopAudio` is unique across the addon.
+  * `Gool.play_one_shot(name, position)` API confirmed by reading
+    `godot/addons/gool/runtime_singleton.gd`. The implementation
+    correctly resolves the autoload via `get_node_or_null("/root/Gool")`
+    (matching the NetworkedAudioEvent pattern) rather than the
+    incorrect `Engine.get_singleton` path.
+  * Apache-headers scanner sees the new file (263 covered, up from
+    262). All 5 scanners green.
+  * `addon-autoload-safety` scanner passes — no bare class-body
+    references to the `Gool` autoload identifier.
+
+### CI expectation
+
+GDScript-only changes. Fast-CI path skips C++. Expected runtime
+~30s with all five scanners green plus the gdscript-lint and
+headless-smoke Godot jobs.
+
+### What's next
+
+The prefab is ready for use. The natural next step if you want
+even less friction is a minimal example scene at
+`examples/fps_coop_minimal/` showing FPSCoopAudio wired into a
+4-player Godot multiplayer lobby with a tiny test level — but
+that's a separate deliverable. The prefab itself can be dropped
+into any existing FPS project today.
+
 ## [0.81.4] - 2026-05-30 — CoopAudioRoot prefab: drop-in 4-player coop audio
 
 Adds a new addon prefab — `CoopAudioRoot` — that composes the

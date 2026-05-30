@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FPSCoopAudio — crosshair (FPS reticle) with audio rings emanating
+     outward and four small peer dots at the corners (4-player coop).
+     16x16 viewBox, monochromatic Godot editor-icon style. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g stroke="#e0e0e0" fill="none" stroke-linecap="round">
+    <!-- Crosshair / reticle -->
+    <line x1="8" y1="4" x2="8" y2="6.2" stroke-width="1.1"/>
+    <line x1="8" y1="9.8" x2="8" y2="12" stroke-width="1.1"/>
+    <line x1="4" y1="8" x2="6.2" y2="8" stroke-width="1.1"/>
+    <line x1="9.8" y1="8" x2="12" y2="8" stroke-width="1.1"/>
+    <circle cx="8" cy="8" r="0.8" fill="#e0e0e0" stroke="none"/>
+
+    <!-- Audio rings emanating from the center, dense → sparse -->
+    <circle cx="8" cy="8" r="3.5" stroke-width="0.7" opacity="0.4"/>
+    <circle cx="8" cy="8" r="5.0" stroke-width="0.6" opacity="0.2"/>
+
+    <!-- Four peer dots at the corners (4-player coop) -->
+    <g fill="#e0e0e0" stroke="none">
+      <circle cx="2" cy="2" r="1"/>
+      <circle cx="14" cy="2" r="1"/>
+      <circle cx="2" cy="14" r="1"/>
+      <circle cx="14" cy="14" r="1"/>
+    </g>
+  </g>
+</svg>
