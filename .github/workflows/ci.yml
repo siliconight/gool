@@ -1120,3 +1120,35 @@ jobs:
       - name: Check Apache 2.0 header coverage
         run: |
           python3 scripts/apply_apache_headers.py --check
+
+  # ----------------------------------------------------------------
+  # Job: example-addon drift guard (v0.81.13).
+  #
+  # The repo contains four copies of the gool addon:
+  #
+  #   godot/addons/gool/                              ← canonical
+  #   examples/coop_shooter_template/addons/gool/     ← copy
+  #   examples/voice_chat/addons/gool/                ← copy
+  #   examples/coop_4p_minimal/addons/gool/           ← copy
+  #
+  # Through v0.81.12 these were kept in sync by hand and silently
+  # drifted: by v0.81.12 the examples had ~10% of canonical's
+  # files, producing parse errors in the example projects. This
+  # scanner enforces byte-for-byte parity going forward.
+  #
+  # Detector lives at scripts/check_addon_drift.py. Run locally
+  # with --fix to auto-sync:
+  #
+  #   python3 scripts/check_addon_drift.py --fix
+  #
+  # then commit the result.
+  # ----------------------------------------------------------------
+  addon-drift:
+    name: examples / addon drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check example addon copies mirror canonical
+        run: |
+          python3 scripts/check_addon_drift.py

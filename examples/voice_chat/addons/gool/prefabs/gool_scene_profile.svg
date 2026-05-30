@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GoolSceneProfile — schematic room boundary with a soft reverb glow. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#e0e0e0" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Outer "room" rectangle, the spatial boundary -->
+    <rect x="2" y="3.5" width="12" height="9" stroke-width="1.1"/>
+    <!-- Inner soft "tail" rectangle, suggesting the reverb body -->
+    <rect x="4" y="5.5" width="8" height="5" stroke-width="0.8" opacity="0.55"/>
+    <!-- Source dot, slightly off-center -->
+    <circle cx="6" cy="8" r="0.9" fill="#e0e0e0" stroke="none"/>
+    <!-- Tail arrows suggesting reverb propagation -->
+    <path d="M7.2 8 L9.5 7.5" stroke-width="0.7" opacity="0.7"/>
+    <path d="M7.2 8 L10 8.5" stroke-width="0.7" opacity="0.55"/>
+    <path d="M7.2 8 L11 8" stroke-width="0.7" opacity="0.4"/>
+  </g>
+</svg>

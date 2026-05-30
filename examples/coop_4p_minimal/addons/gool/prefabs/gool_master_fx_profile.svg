@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GoolMasterFxProfile — schematic level meter + peak limiter tick. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#e0e0e0" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Meter frame -->
+    <rect x="1.5" y="5" width="13" height="6" stroke-width="1"/>
+    <!-- Filled green section (signal in safe range) -->
+    <rect x="2.5" y="6" width="6" height="4" fill="#e0e0e0" opacity="0.55" stroke="none"/>
+    <!-- Filled yellow section (signal approaching ceiling) -->
+    <rect x="8.5" y="6" width="2.5" height="4" fill="#e0e0e0" opacity="0.85" stroke="none"/>
+    <!-- Ceiling tick -->
+    <line x1="12.5" y1="4.2" x2="12.5" y2="11.8" stroke-width="1.2"/>
+    <!-- Small indicator dot above ceiling -->
+    <circle cx="12.5" cy="3.0" r="0.7" fill="#e0e0e0" stroke="none"/>
+  </g>
+</svg>

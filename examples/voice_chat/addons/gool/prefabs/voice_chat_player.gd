@@ -14,25 +14,25 @@
 
 # addons/gool/prefabs/voice_chat_player.gd
 #
-# Per-player voice chat node. Add one of these to each player's
-# scene (or instantiate dynamically when a peer connects). It:
+## Per-player voice chat node. Add one of these to each player's
+## scene (or instantiate dynamically when a peer connects). It:
 #
-#   - Registers a voice source with the gool runtime on _ready
-#   - Receives RPC voice packets from the network and routes them
-#     to runtime.submit_voice_packet
-#   - Polls jitter/loss every second and emits a signal if the
-#     connection degrades past warning thresholds
+##   - Registers a voice source with the gool runtime on _ready
+##   - Receives RPC voice packets from the network and routes them
+##     to runtime.submit_voice_packet
+##   - Polls jitter/loss every second and emits a signal if the
+##     connection degrades past warning thresholds
 #
-# The host's networking layer is responsible for capturing the
-# local microphone, encoding through libopus (or any codec the
-# host wires through IVoiceCodec), and sending the encoded bytes
-# via send_voice_packet RPC. This script handles only the receive
-# side — capturing audio is platform-specific in Godot and outside
-# the scope of a generic prefab.
+## The host's networking layer is responsible for capturing the
+## local microphone, encoding through libopus (or any codec the
+## host wires through IVoiceCodec), and sending the encoded bytes
+## via send_voice_packet RPC. This script handles only the receive
+## side — capturing audio is platform-specific in Godot and outside
+## the scope of a generic prefab.
 #
-# Multiplayer model: this node uses Godot's standard MultiplayerAPI.
-# Set the multiplayer authority (typically the player_id) and the
-# RPC will fan out automatically.
+## Multiplayer model: this node uses Godot's standard MultiplayerAPI.
+## Set the multiplayer authority (typically the player_id) and the
+## RPC will fan out automatically.
 
 @tool
 class_name VoiceChatPlayer

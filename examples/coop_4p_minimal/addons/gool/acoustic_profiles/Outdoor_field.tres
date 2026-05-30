@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="GoolAcousticProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_acoustic_profile.gd" id="1_profile"]
+
+[resource]
+script = ExtResource("1_profile")
+profile_name = "Outdoor field"
+description = "Open outdoor space, no walls — minimal reverb, mostly dry. Use for fields, open landscapes, rooftops, anywhere reflections are far."
+profile_schema_version = 1
+reverb_decay = 0.1
+reverb_lf_damping = 0.2
+reverb_hf_damping = 0.55
+reverb_diffusion = 0.4
+reverb_predelay_ms = 5.0
+reverb_wet_gain_db = -24.0

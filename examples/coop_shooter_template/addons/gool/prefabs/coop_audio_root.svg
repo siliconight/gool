@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CoopAudioRoot — four peer nodes (corners of a square) connected by
+     network lines to a central sound-pulse, illustrating "4-player
+     RPC event audio." 16x16 viewBox, matches the other gool prefab
+     icons. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#e0e0e0" stroke="#e0e0e0" stroke-linecap="round">
+    <!-- Four peer dots at the corners -->
+    <circle cx="3"  cy="3"  r="1.4"/>
+    <circle cx="13" cy="3"  r="1.4"/>
+    <circle cx="3"  cy="13" r="1.4"/>
+    <circle cx="13" cy="13" r="1.4"/>
+
+    <!-- Network lines from each peer to the center -->
+    <g stroke-width="0.9" opacity="0.65" fill="none">
+      <line x1="3.8"  y1="3.8"  x2="6.8"  y2="6.8"/>
+      <line x1="12.2" y1="3.8"  x2="9.2"  y2="6.8"/>
+      <line x1="3.8"  y1="12.2" x2="6.8"  y2="9.2"/>
+      <line x1="12.2" y1="12.2" x2="9.2"  y2="9.2"/>
+    </g>
+
+    <!-- Central sound-pulse (concentric rings, dense → sparse outward) -->
+    <g fill="none" stroke-width="1">
+      <circle cx="8" cy="8" r="1.1" fill="#e0e0e0" stroke="none"/>
+      <circle cx="8" cy="8" r="2.1" opacity="0.55"/>
+      <circle cx="8" cy="8" r="3.0" opacity="0.25"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="GoolMaterialEqPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_material_eq_preset.gd" id="1_preset"]
+
+[resource]
+script = ExtResource("1_preset")
+preset_name = "Library"
+description = "Hushed soft space — slight low warmth, soft mids, dampened HF. Use for libraries, studies, quiet interiors."
+preset_schema_version = 1
+low_freq_hz = 200.0
+low_gain_db = 1.0
+mid_freq_hz = 1000.0
+mid_gain_db = -1.0
+mid_q = 0.7
+high_freq_hz = 6000.0
+high_gain_db = -3.0

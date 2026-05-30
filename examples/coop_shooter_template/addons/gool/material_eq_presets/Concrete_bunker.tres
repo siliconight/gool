@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="GoolMaterialEqPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_material_eq_preset.gd" id="1_preset"]
+
+[resource]
+script = ExtResource("1_preset")
+preset_name = "Concrete bunker"
+description = "Weighty hard-surface space. Signature upper-mid bite plus low-end body and HF hardness. Use for underground rooms, parking garages."
+preset_schema_version = 1
+low_freq_hz = 200.0
+low_gain_db = 2.0
+mid_freq_hz = 1500.0
+mid_gain_db = 3.0
+mid_q = 1.0
+high_freq_hz = 6000.0
+high_gain_db = 2.0

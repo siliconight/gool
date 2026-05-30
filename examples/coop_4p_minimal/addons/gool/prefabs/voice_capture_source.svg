@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- VoiceCaptureSource — microphone capsule + a gating bracket
+     showing PCM frames being filtered. Conveys "voice in, gated by
+     policy, voice out (or not)." 16x16, monochromatic. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#e0e0e0" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Microphone capsule (rounded rectangle on a stand) -->
+    <rect x="5.5" y="2" width="3" height="6" rx="1.5" ry="1.5"
+          fill="#e0e0e0" stroke="none"/>
+    <!-- Mic stand U-shape -->
+    <path d="M 4 7 Q 4 9.5 7 9.5 Q 10 9.5 10 7"
+          stroke-width="1" fill="none"/>
+    <!-- Mic vertical post + base -->
+    <line x1="7" y1="9.5" x2="7" y2="11.5" stroke-width="1"/>
+    <line x1="5.5" y1="11.5" x2="8.5" y2="11.5" stroke-width="1.2"/>
+
+    <!-- Gate bracket on the right — three short vertical lines
+         decreasing in length, suggesting a gated waveform. -->
+    <g stroke-width="1">
+      <line x1="11.5" y1="6" x2="11.5" y2="10"/>
+      <line x1="13" y1="7" x2="13" y2="9"/>
+      <line x1="14.5" y1="7.5" x2="14.5" y2="8.5" opacity="0.5"/>
+    </g>
+  </g>
+</svg>

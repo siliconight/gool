@@ -53,6 +53,22 @@ const DIALOGUE_DIRECTOR_AUTOLOAD_PATH := "res://addons/gool/dialogue_director.gd
 const MULTIPLAYER_BRIDGE_AUTOLOAD_NAME := "MultiplayerBridge"
 const MULTIPLAYER_BRIDGE_AUTOLOAD_PATH := "res://addons/gool/multiplayer_bridge.gd"
 
+# v0.75.2: first-enable restart dialog. The first time gool is enabled
+# in a project, Godot's GDScript parser may have already cached symbol
+# tables for project scripts WITHOUT the three autoloads (Gool,
+# DialogueDirector, MultiplayerBridge) registered. The autoload
+# registrations land in project.godot during _enter_tree, but the
+# parser's stale cache still emits a cascade of "Identifier 'Gool' not
+# declared" errors — and in some cases hard-crashes the editor before
+# the user sees the cascade. Reopening the project clears the cache and
+# everything parses cleanly.
+#
+# Fix: detect first enable via a project setting, pop a modal explaining
+# the situation, offer one-click restart via EditorInterface.restart_editor().
+# Project-setting-gated so the dialog never fires again in this project,
+# mirroring the v0.74.x getting-started banner dismiss pattern.
+const _FIRST_ENABLE_KEY := "addons/gool/editor/first_enable_completed"
+
 const PREFAB_DIR := "res://addons/gool/prefabs/"
 
 # (class_name, base_node, script_path, icon_path)
@@ -87,118 +103,34 @@ const PREFABS := [
 	# separate autoload (see DIALOGUE_DIRECTOR_AUTOLOAD_* above)
 	# rather than appearing here.
 	["AudioMaterialTag",          "Node",   "audio_material_tag.gd",          "audio_material_tag.svg"],
+	# v0.62.0: scene-level acoustic profile prefab. Drop into the
+	# scene root, pick a GoolAcousticProfile from the dropdown (8
+	# built-ins ship with gool at res://addons/gool/acoustic_profiles/;
+	# user profiles live at res://gool/acoustic_profiles/), F5. The
+	# scene's reverb bus is configured at scene load. ReverbZones
+	# still override per-region on top.
+	["GoolSceneProfile",          "Node",   "gool_scene_profile.gd",          "gool_scene_profile.svg"],
+	# v0.63.0: Phase 7 Master FX Lite profile prefab. Drop into the
+	# scene tree, pick a GoolMasterFxPreset from the dropdown (5
+	# built-ins ship with gool at res://addons/gool/master_fx_presets/;
+	# user presets save to res://gool/master_fx_presets/), F5. The
+	# master bus chain is reconfigured at scene load. Pairs with
+	# GoolSceneProfile (which handles per-scene reverb).
+	["GoolMasterFxProfile",       "Node",   "gool_master_fx_profile.gd",      "gool_master_fx_profile.svg"],
 ]
 
 const CONFIG_PATH := "res://gool/config.json"
 
-# Default audio config written on plugin enable. Uses the v0.10
-# richer schema:
-#   - "buses" is an array of { name, parent, gain_db, silent, effects }
-#   - effects are dicts with kind + per-kind fields
-#   - sidechain_bus references resolve by bus name at engine init
-#
-# This default builds a ready-to-use multi-tier ducking topology
-# (LocalSfx > RemoteSfx > Music) that gives the L4D2-style mix
-# behavior out of the box. Projects that want a simpler graph can
-# overwrite res://gool/config.json after the plugin enables.
-const DEFAULT_CONFIG := {
-	"sample_rate": 48000,
-	"buffer_size": 512,
-	"buses": [
-		{ "name": "Master", "gain_db": 0.0 },
-
-		# Music bus: ducks under the local-player SFX so the player's
-		# own gun wins the mix, AND ducks under Dialogue so NPC
-		# callouts ("TANK!") cut through the soundtrack. Two
-		# compressors in series — each sidechained to a different
-		# trigger bus.
-		{ "name": "Music",  "parent": "Master", "gain_db": -3.0,
-		  "effects": [
-			{ "kind": "compressor",
-			  "threshold_db": -30.0, "ratio": 8.0,
-			  "attack_ms": 5.0,  "release_ms": 250.0,
-			  "makeup_db": 0.0,
-			  "knee_width_db": 4.0,
-			  "sidechain_bus": "LocalSfx" },
-			{ "kind": "compressor",
-			  "threshold_db": -25.0, "ratio": 8.0,
-			  "attack_ms": 3.0,  "release_ms": 250.0,
-			  "makeup_db": 0.0,
-			  "knee_width_db": 4.0,
-			  "max_reduction_db": 12.0,
-			  "sidechain_bus": "Dialogue" }
-		  ] },
-
-		# Submix that holds both local + remote SFX. Per-tier
-		# processing happens on its children, not here.
-		{ "name": "SfxAll", "parent": "Master" },
-
-		# Local-player SFX — your gun, your footsteps, your reload.
-		# Ducks under Dialogue so callouts cut through your own
-		# gunfire (the core L4D2 mix feel). Drives the sidechain
-		# triggers on Music + RemoteSfx — leave its trigger path
-		# clean (this compressor only ducks LocalSfx, doesn't
-		# alter what LocalSfx sends to the sidechains).
-		{ "name": "LocalSfx", "parent": "SfxAll",
-		  "effects": [
-			{ "kind": "compressor",
-			  "threshold_db": -22.0, "ratio": 6.0,
-			  "attack_ms": 3.0,  "release_ms": 200.0,
-			  "knee_width_db": 4.0,
-			  "max_reduction_db": 10.0,
-			  "sidechain_bus": "Dialogue" }
-		  ] },
-
-		# Remote-player SFX — teammate guns, NPC barks, ambient
-		# impacts. Ducks under LocalSfx so the local action wins
-		# over teammate action, AND ducks under Dialogue so
-		# callouts cut through teammate gunfire.
-		{ "name": "RemoteSfx", "parent": "SfxAll",
-		  "effects": [
-			{ "kind": "compressor",
-			  "threshold_db": -30.0, "ratio": 8.0,
-			  "attack_ms": 5.0,  "release_ms": 250.0,
-			  "sidechain_bus": "LocalSfx" },
-			{ "kind": "compressor",
-			  "threshold_db": -22.0, "ratio": 6.0,
-			  "attack_ms": 3.0,  "release_ms": 200.0,
-			  "knee_width_db": 4.0,
-			  "max_reduction_db": 10.0,
-			  "sidechain_bus": "Dialogue" }
-		  ] },
-
-		# Voice chat — separate bus, not ducked (intelligibility
-		# priority). If you want voice to also win over music,
-		# add it as a sidechain bus on Music's compressor.
-		{ "name": "Voice",   "parent": "Master", "gain_db": 0.0 },
-
-		# v0.43.0: Dialogue — NPC barks, callouts, narration.
-		# Drives ducking on Music + LocalSfx + RemoteSfx via the
-		# sidechain compressors above. Itself has no effects, so
-		# dialogue plays at full level uncolored. Route bark
-		# sounds in your sound bank with "bus": "Dialogue" — the
-		# DialogueDirector autoload calls Gool.play_3d which uses
-		# the sound's bank-defined bus.
-		{ "name": "Dialogue", "parent": "Master", "gain_db": 0.0 },
-
-		# Ambient world bed — quiet, doesn't trigger any ducker.
-		{ "name": "Ambient", "parent": "Master", "gain_db": -6.0 }
-	],
-
-	# Default category routing. Hosts can override per-emitter when
-	# registering sounds; this is the fallback for emitters that
-	# don't specify a target bus explicitly.
-	"category_routing": {
-		"music":    "Music",
-		"sfx":      "LocalSfx",   # safe default: assume "your" sfx
-		"voice":    "Voice",
-		"ambience": "Ambient",
-		"ui":       "Master",
-		"dialogue": "Dialogue"   # v0.43.0: now routes to the dedicated bus
-	}
-}
-
 const INSPECTOR_PLUGIN_PATH := "res://addons/gool/editor/sound_name_inspector.gd"
+
+# v0.59.2: Phase 6.E.1 — per-material EQ curve preview in the
+# inspector. Triggers when a GoolAudioMaterial.tres is selected;
+# renders a frequency-response plot of the engine's curve for the
+# selected material, plus a numerical readout and a realism-
+# intensity slider tied to ProjectSettings("gool/material_eq/
+# intensity"). See addons/gool/editor/material_eq_inspector.gd
+# for the full surface description.
+const MATERIAL_EQ_INSPECTOR_PATH := "res://addons/gool/editor/material_eq_inspector.gd"
 
 # v0.23.0: paths the auto-scaffolder creates on plugin enable.
 # Idempotent — anything that already exists is left alone, so a
@@ -221,11 +153,17 @@ const EMITTER_3D_SCRIPT := "res://addons/gool/prefabs/audio_emitter_3d.gd"
 const BANK_LOADER_SCRIPT := "res://addons/gool/prefabs/gool_sound_bank_loader.gd"
 
 # Submenu label under Project → Tools.
-const TOOLS_MENU_NAME := "Gool"
+# v0.80.6: Lowercase per the established brand convention.
+# "gool" is the brand/product name in all display strings; "Gool"
+# is reserved for code identifiers (the autoload name, etc.). The
+# help panel, console logs, and plugin.cfg already use "gool"
+# lowercase; these two display constants are the last surfaces
+# where the brand was incorrectly Title-Cased.
+const TOOLS_MENU_NAME := "gool"
 
 # v0.24.0: read-only mixer dock script path + bottom-panel label.
 const MIXER_DOCK_SCRIPT := "res://addons/gool/editor/mixer_dock.gd"
-const MIXER_DOCK_LABEL := "Gool Mixer"
+const MIXER_DOCK_LABEL := "gool Mixer"
 
 # v0.25.0: cross-process bridge from running game → editor mixer
 # dock. EditorDebuggerPlugin instance is created in _enter_tree,
@@ -238,6 +176,11 @@ const DEBUGGER_PLUGIN_SCRIPT := "res://addons/gool/editor/debugger_plugin.gd"
 # a script path).
 var _sound_name_inspector: EditorInspectorPlugin = null
 
+# v0.59.2: Phase 6.E.1 inspector for GoolAudioMaterial resources.
+# Held alongside the sound-name inspector since both follow the
+# same EditorInspectorPlugin lifecycle.
+var _material_eq_inspector: EditorInspectorPlugin = null
+
 # v0.24.0: instance of the mixer dock Control, stored for symmetric
 # removal in _exit_tree via remove_control_from_bottom_panel.
 var _mixer_dock: Control = null
@@ -249,20 +192,43 @@ var _debugger_plugin: EditorDebuggerPlugin = null
 func _enter_tree() -> void:
 	_add_autoload()
 	_register_prefabs()
-	_write_default_config_if_missing()
+	# v0.80.13: removed _write_default_config_if_missing() — it
+	# silently wrote a stale DEFAULT_CONFIG dict (SfxAll, no Reverb
+	# bus, no UI bus, pre-v0.80.9 layout) on every plugin enable
+	# where res://gool/config.json didn't exist. The empty-state UI
+	# in the mixer dock and the getting-started banner both offer
+	# explicit template choices ("Use FPS template", "Use minimal");
+	# the silent writer pre-empted those with an opinionated default
+	# the user never asked for. See Cluster B persistence audit.
 	_scaffold_sounds_tree_if_missing()   # v0.23.0
 	_register_inspector_plugin()
+	_register_material_eq_inspector()    # v0.59.2 — Phase 6.E.1
 	_register_debugger_plugin()          # v0.25.0 (before mixer dock!)
+	# v0.80.23 (#19): register the update-check setting BEFORE the
+	# mixer dock instantiates the update checker. Pre-v0.80.23 the
+	# order was reversed; the checker worked anyway because
+	# ProjectSettings.get_setting(path, true) defaults to `true` when
+	# the setting doesn't exist yet. That worked-by-accident — a
+	# brief window existed where the setting didn't exist, and any
+	# refactor of the registration sequence risked breaking the
+	# implicit dependency. Explicit ordering removes the trap.
+	_register_update_check_setting()     # v0.79.2; moved before dock in v0.80.23
 	_register_mixer_dock()               # v0.24.0
 	_connect_filesystem_watch()
 	_register_tools_menu()               # v0.23.0
 	print("[gool] plugin enabled — autoload, prefabs, default config, inspector, scaffolding, debugger bridge, mixer dock, tools menu installed.")
+	# v0.75.2: prompt for editor restart on first enable so the
+	# GDScript parser sees the autoloads on its next sweep with a
+	# clean cache. No-op if this isn't the first enable. Called LAST
+	# so all setup has settled before we offer to restart.
+	_maybe_show_first_enable_restart_prompt()
 
 func _exit_tree() -> void:
 	_unregister_tools_menu()             # v0.23.0
 	_disconnect_filesystem_watch()
 	_unregister_mixer_dock()             # v0.24.0
 	_unregister_debugger_plugin()        # v0.25.0
+	_unregister_material_eq_inspector()  # v0.59.2 — Phase 6.E.1
 	_unregister_inspector_plugin()
 	_unregister_prefabs()
 	_remove_autoload()
@@ -293,6 +259,34 @@ func _unregister_inspector_plugin() -> void:
 		return
 	remove_inspector_plugin(_sound_name_inspector)
 	_sound_name_inspector = null
+
+# v0.59.2: Phase 6.E.1 per-material EQ curve preview. Inspector
+# plugin that recognizes GoolAudioMaterial resources and adds a
+# frequency-response plot + numerical readout + realism intensity
+# slider under the resource's normal property fields. Read-only —
+# the engine's per-material curve table is the source of truth;
+# this is a designer-facing visualizer for it. See
+# addons/gool/editor/material_eq_inspector.gd for the full
+# implementation.
+func _register_material_eq_inspector() -> void:
+	var script := load(MATERIAL_EQ_INSPECTOR_PATH)
+	if script == null:
+		push_warning(
+			"[gool] could not load %s; the per-material EQ "
+			% MATERIAL_EQ_INSPECTOR_PATH
+			+ "curve preview is unavailable. GoolAudioMaterial "
+			+ "resources still work; you just won't see the "
+			+ "curve visualization in the inspector."
+		)
+		return
+	_material_eq_inspector = script.new()
+	add_inspector_plugin(_material_eq_inspector)
+
+func _unregister_material_eq_inspector() -> void:
+	if _material_eq_inspector == null:
+		return
+	remove_inspector_plugin(_material_eq_inspector)
+	_material_eq_inspector = null
 
 # v0.24.0: read-only mixer dock — bottom-panel Control that polls
 # Gool.get_bus_stats() at 30 Hz and renders per-bus peak meters.
@@ -436,6 +430,32 @@ func _on_filesystem_changed() -> void:
 		inspector_script.clear_cache()
 
 func _add_autoload() -> void:
+	# v0.80.13: migrate pre-v0.80.5 autoload registration. The
+	# v0.80.5 BREAKING rename changed the bridge's autoload name
+	# from "GoolMultiplayerBridge" to "MultiplayerBridge", but the
+	# v0.80.5 release didn't include migration logic — anyone whose
+	# project.godot had `autoload/GoolMultiplayerBridge=...` from a
+	# pre-v0.80.5 install kept that entry forever, and the plugin's
+	# call to add_autoload_singleton("MultiplayerBridge", ...) below
+	# would add a SECOND registration pointing at the same script.
+	# Result: multiplayer_bridge.gd loads as two distinct autoloads,
+	# double _enter_tree, conflicting signal connections, editor
+	# crash on first open. Five releases (v0.80.5 - v0.80.12) shipped
+	# with this bug latent.
+	#
+	# The migration: if `autoload/GoolMultiplayerBridge` exists in
+	# project settings, remove it before adding the new registration.
+	# Idempotent — safe to run on every plugin enable.
+	const _OLD_BRIDGE_NAME := "GoolMultiplayerBridge"
+	if ProjectSettings.has_setting("autoload/" + _OLD_BRIDGE_NAME):
+		remove_autoload_singleton(_OLD_BRIDGE_NAME)
+		print("[gool] v0.80.13 migration: removed stale "
+				+ "'GoolMultiplayerBridge' autoload registration from "
+				+ "project.godot (renamed to 'MultiplayerBridge' in "
+				+ "v0.80.5). If you have project code that still calls "
+				+ "`GoolMultiplayerBridge.foo()`, rename those references "
+				+ "to `MultiplayerBridge.foo()`.")
+
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 	# v0.43.0: DialogueDirector autoload. Registered AFTER Gool so
 	# the director's _ready() can safely reach the gool autoload.
@@ -454,6 +474,109 @@ func _remove_autoload() -> void:
 	remove_autoload_singleton(MULTIPLAYER_BRIDGE_AUTOLOAD_NAME)
 	remove_autoload_singleton(DIALOGUE_DIRECTOR_AUTOLOAD_NAME)
 	remove_autoload_singleton(AUTOLOAD_NAME)
+
+# v0.75.2: first-enable restart prompt. See _FIRST_ENABLE_KEY's comment
+# at the top of this file for the underlying parser-cache problem this
+# solves. Idempotent: after the first call, the project setting is
+# flipped and subsequent calls return immediately.
+func _maybe_show_first_enable_restart_prompt() -> void:
+	# Already prompted in this project — nothing to do.
+	# (Stays true across enable/disable cycles, so the dialog is
+	# strictly first-enable-per-project, not first-enable-per-session.)
+	if ProjectSettings.has_setting(_FIRST_ENABLE_KEY) \
+			and bool(ProjectSettings.get_setting(_FIRST_ENABLE_KEY)):
+		return
+
+	# Mark BEFORE showing the dialog. If the user accepts the restart,
+	# the editor will save project.godot (the restart_editor(true) call
+	# below does save-on-exit), so the setting persists. If the user
+	# dismisses, we still want the dialog to not reappear — so flip
+	# the setting first and call ProjectSettings.save() to persist it
+	# regardless of the user's choice.
+	ProjectSettings.set_setting(_FIRST_ENABLE_KEY, true)
+	# `set_initial_value(false)` ensures the setting is treated as
+	# "non-default" by Godot's project settings editor — it'll show
+	# up as a customized value rather than being filtered out as a
+	# default. Mirrors how the getting-started banner's dismiss flag
+	# is stored.
+	ProjectSettings.set_initial_value(_FIRST_ENABLE_KEY, false)
+	var save_result := ProjectSettings.save()
+	if save_result != OK:
+		# Saving project.godot can fail on read-only filesystems or
+		# when the file is checked out exclusive in some VCS layouts.
+		# Not fatal — we'll just show the dialog again next enable.
+		# Surface a warning so users on those setups know what's up.
+		push_warning(
+			"[gool] could not persist first-enable flag "
+			+ "(ProjectSettings.save returned %d). The first-time "
+			+ "restart prompt may reappear next enable." % save_result)
+
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "gool: first-time setup"
+	# v0.80.5: Explicitly non-exclusive. Default ConfirmationDialog
+	# behavior in Godot 4 is exclusive=true, which fails with the
+	# "another exclusive child" error when this dialog appears while
+	# Project Settings → Plugins is also open (the most common path
+	# users take to enable the plugin). Non-exclusive lets both
+	# windows coexist; the dialog is informational with a primary
+	# action, not a hard block.
+	dialog.exclusive = false
+	# v0.80.5: Body rewritten. Pre-v0.80.4 this dialog warned about
+	# a parse-error cascade that could "crash the editor on the next
+	# project open" — that cascade originated in verify_install.gd's
+	# bare-identifier reference (v0.80.4 fix). With the cascade
+	# closed, the old copy was misleading: it described a problem
+	# that no longer existed. Replaced with honest copy that frames
+	# the restart as recommended-for-cleanliness, not required-to-
+	# avoid-disaster.
+	dialog.dialog_text = (
+		"gool installed.\n\n"
+		+ "The three autoloads — Gool, DialogueDirector, "
+		+ "MultiplayerBridge — are registered, and the mixer + "
+		+ "sound-bank docks are ready to use.\n\n"
+		+ "A quick editor restart is recommended so any scripts "
+		+ "you have open in the script editor pick up the new "
+		+ "autoload definitions for autocomplete. It's not "
+		+ "required and skipping it won't cause errors.\n\n"
+		+ "Restart Godot now?")
+	# Button labels mirror "I get it, do it" vs "I'll handle it myself."
+	dialog.ok_button_text       = "Restart Editor Now"
+	dialog.cancel_button_text   = "I'll Restart Manually"
+	# Best-effort dialog ownership: parent to the editor base control
+	# so it floats correctly and is destroyed when the editor closes.
+	# If EditorInterface isn't ready yet (rare; shouldn't happen
+	# inside _enter_tree but defensive coding), fall back to the
+	# plugin's own scene tree.
+	var editor_base := EditorInterface.get_base_control()
+	if editor_base != null:
+		editor_base.add_child(dialog)
+	else:
+		add_child(dialog)
+	# Wire signals. `confirmed` fires on OK; `canceled` on Cancel or
+	# escape. Both clean up the dialog node.
+	dialog.confirmed.connect(_on_first_enable_restart_confirmed.bind(dialog))
+	dialog.canceled.connect(_on_first_enable_restart_dismissed.bind(dialog))
+	# Defer popup until the editor finishes its current frame —
+	# popping up inside _enter_tree itself can interleave badly with
+	# Godot's plugin-init UI updates.
+	dialog.popup_centered.call_deferred(Vector2(560, 240))
+
+func _on_first_enable_restart_confirmed(dialog: ConfirmationDialog) -> void:
+	dialog.queue_free()
+	# `true` = save before restart, so the user's project settings
+	# (including our just-flipped _FIRST_ENABLE_KEY) get persisted
+	# along with anything else that's dirty. Available since Godot
+	# 4.0; the bool parameter is the save-on-exit flag.
+	EditorInterface.restart_editor(true)
+
+func _on_first_enable_restart_dismissed(dialog: ConfirmationDialog) -> void:
+	# User chose to handle it themselves. The first-enable flag is
+	# already persisted so the dialog won't reappear. v0.80.4 closed
+	# the parse-error cascade that used to make skipping the restart
+	# painful (verify_install.gd:64); skipping it now is a clean
+	# no-op — autocomplete in open scripts may be stale until the
+	# user restarts on their own schedule, but nothing breaks.
+	dialog.queue_free()
 
 func _register_prefabs() -> void:
 	for entry in PREFABS:
@@ -479,17 +602,6 @@ func _register_prefabs() -> void:
 func _unregister_prefabs() -> void:
 	for entry in PREFABS:
 		remove_custom_type(entry[0])
-
-func _write_default_config_if_missing() -> void:
-	if FileAccess.file_exists(CONFIG_PATH):
-		return
-	DirAccess.make_dir_recursive_absolute("res://gool")
-	var f := FileAccess.open(CONFIG_PATH, FileAccess.WRITE)
-	if f == null:
-		push_warning("[gool] could not write default config at %s" % CONFIG_PATH)
-		return
-	f.store_string(JSON.stringify(DEFAULT_CONFIG, "  "))
-	f.close()
 
 # v0.23.0: auto-scaffolding ----------------------------------------------------
 #
@@ -559,7 +671,7 @@ func _scaffold_sounds_tree_if_missing() -> void:
 			+ "and they appear in the AudioEmitter3D sound_name dropdown."
 		)
 
-# v0.23.0: Project → Tools → Gool menu -----------------------------------------
+# v0.23.0: Project → Tools → gool menu -----------------------------------------
 #
 # Adds editor commands for the common scene-setup tasks that used to
 # require manually adding three nodes and configuring four inspector
@@ -584,6 +696,8 @@ enum ToolsMenuItem {
 	OPEN_QUICKSTART    = 2,
 	ADD_DEBUG_OVERLAY  = 3,   # v0.23.1
 	RUN_PREFAB_SMOKE_TEST = 4,  # v0.45.0
+	RUN_FPS_SCENE_SMOKE_TEST = 5,  # v0.50.0
+	OPEN_HELP_PANEL = 6,  # v0.79.3
 }
 
 func _register_tools_menu() -> void:
@@ -603,6 +717,19 @@ func _register_tools_menu() -> void:
 	_tools_menu.add_separator()
 	_tools_menu.add_item("Run prefab smoke test (find missing autoload wrappers)",
 		ToolsMenuItem.RUN_PREFAB_SMOKE_TEST)
+	# v0.50.0: scene-level FPS smoke test. Scans every .tscn for
+	# gool prefab usage and cross-references with config.json to
+	# detect "added a feature but didn't wire its dependency"
+	# bugs (ReverbZone with no Reverb in bus chain, VoiceChatPlayer
+	# with no Voice bus, etc.). See addons/gool/tools/fps_scene_smoke_test.gd.
+	_tools_menu.add_item("Run FPS scene smoke test (find missing config dependencies)",
+		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST)
+	# v0.79.3: Help panel — second entry point for the help content
+	# (alongside the "?" button in the Mixer Dock). Users who don't
+	# open the dock can still find help from the Project menu.
+	_tools_menu.add_separator()
+	_tools_menu.add_item("Help (keyboard shortcuts, API, tools)",
+		ToolsMenuItem.OPEN_HELP_PANEL)
 	_tools_menu.id_pressed.connect(_on_tools_menu_pressed)
 	add_tool_submenu_item(TOOLS_MENU_NAME, _tools_menu)
 
@@ -634,6 +761,34 @@ func _on_tools_menu_pressed(id: int) -> void:
 			_add_debug_overlay_to_current_scene()
 		ToolsMenuItem.RUN_PREFAB_SMOKE_TEST:
 			_run_prefab_smoke_test()
+		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST:
+			_run_fps_scene_smoke_test()
+		ToolsMenuItem.OPEN_HELP_PANEL:
+			_open_help_panel()
+
+
+# v0.79.3: Open the help panel from the Tools menu. Second entry
+# point alongside the "?" button in the Mixer Dock toolbar — users
+# who don't open the dock can still find help. Mirrors the
+# idempotency check from mixer_dock.gd::_on_help_button_pressed
+# so clicking Help twice doesn't spawn duplicate panels.
+func _open_help_panel() -> void:
+	var base := EditorInterface.get_base_control()
+	if base == null:
+		return
+	for child in base.get_children():
+		if child is Window and child.title == "gool — Help":
+			child.grab_focus()
+			child.move_to_foreground()
+			return
+	var help_script := load("res://addons/gool/editor/help_panel.gd")
+	if help_script == null:
+		push_warning("[gool] help_panel.gd not found — was the "
+				+ "addon fully extracted?")
+		return
+	var panel: Window = help_script.new()
+	base.add_child(panel)
+	panel.popup_centered()
 
 # v0.45.0: run the static-analysis smoke test from the Tools menu.
 # Tool prints findings to the Output panel. Pure analysis — no F5
@@ -659,6 +814,59 @@ func _run_prefab_smoke_test() -> void:
 			+ "is called from. Same bug shape as v0.44.1 / v0.44.2."
 		)
 
+# v0.50.0: run the scene-level FPS smoke test from the Tools menu.
+# Walks all .tscn under res:// (excluding addons/), counts gool
+# prefab usage per scene, and cross-references with config.json
+# to find missing dependencies (ReverbZone with no Reverb in any
+# bus chain, VoiceChatPlayer with no Voice bus, etc.).
+func _run_fps_scene_smoke_test() -> void:
+	var tool_script := load("res://addons/gool/tools/fps_scene_smoke_test.gd")
+	if tool_script == null:
+		push_error("[gool] fps_scene_smoke_test.gd not found")
+		return
+
+	# v0.81.11: SKIP vs FAIL discrimination. A project that hasn't
+	# created res://gool/config.json yet (new project, custom config
+	# path) isn't FAILING the smoke test — there's just nothing to
+	# check. Surface a distinct dialog so the user understands their
+	# project is fine; they just need to enable gool and let it
+	# write the default config (which happens on first plugin
+	# enable), OR move their config to res://gool/config.json if
+	# they've put it elsewhere.
+	if not FileAccess.file_exists("res://gool/config.json"):
+		_show_info_dialog(
+			"gool: FPS scene smoke test SKIPPED",
+			("This test cross-references your scenes against "
+			+ "res://gool/config.json (bus topology, voice config, "
+			+ "etc.) to detect missing dependencies. That file "
+			+ "doesn't exist in this project yet.\n\n"
+			+ "Two ways to proceed:\n\n"
+			+ "1. If gool is freshly installed, enabling the plugin "
+			+ "writes a default config — Project Settings → Plugins "
+			+ "→ tick 'gool'.\n\n"
+			+ "2. If you've moved the config elsewhere, this test "
+			+ "currently only checks the canonical path. Move it "
+			+ "back, or skip this test until that's reconciled.")
+		)
+		return
+
+	var tool = tool_script.new()
+	var ok: bool = tool.run()
+	if ok:
+		_show_info_dialog(
+			"gool: FPS scene smoke test PASSED",
+			"No errors detected. Some scenes may have warnings or "
+			+ "info notes — see the Output panel for the full report."
+		)
+	else:
+		_show_info_dialog(
+			"gool: FPS scene smoke test FAILED",
+			"One or more error-severity findings detected. See the "
+			+ "Output panel for the list. Common causes: ReverbZone "
+			+ "without a Reverb effect in any bus chain, "
+			+ "VoiceChatPlayer without a Voice bus in config.json."
+		)
+
 # v0.23.0: scene scaffolding command.
 #
 # Inserts the three gool nodes a 3D audio scene needs:
@@ -675,7 +883,7 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 		_show_info_dialog(
 			"No scene open",
 			"Open a scene first (Scene → New Scene, or open an "
-			+ "existing one), then try Project → Tools → Gool again."
+			+ "existing one), then try Project → Tools → gool again."
 		)
 		return
 	if not (root is Node3D):
@@ -688,6 +896,28 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 			+ "scene (Scene → New Scene → 3D Scene) and try again."
 		)
 		return
+
+	# v0.81.11: idempotency. Walk the root's direct children and
+	# check for an existing GoolListener3D (matching by script
+	# resource_path so subclasses also count). If found, the scene
+	# already has scaffolding and re-adding would create duplicates,
+	# which doubles audio at runtime — a real bug class.
+	for child in root.get_children():
+		var s := child.get_script()
+		if s != null and s.resource_path == LISTENER_3D_SCRIPT:
+			_show_info_dialog(
+				"Already present",
+				("This scene already has a GoolListener3D node "
+				+ "('%s'). 3D scaffolding has been added previously; "
+				+ "running the tool again would create duplicate "
+				+ "listeners, emitters, and bank loaders, which "
+				+ "doubles audio at runtime.\n\nTo modify the existing "
+				+ "scaffolding: select the relevant node in the scene "
+				+ "and edit it in the Inspector. To start fresh: "
+				+ "delete the existing scaffolding nodes first, then "
+				+ "re-run this tool.") % child.name
+			)
+			return
 
 	# Three nodes to add. Each entry: (script_path, node_name).
 	# We use the prefab script paths directly so the class_name
@@ -718,27 +948,51 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 	# Pre-assign bank.tres on the loader so the user doesn't have
 	# to do the drag-and-drop step manually. The setter is exposed
 	# as a property on the loader script.
+	#
+	# v0.81.11: track whether we successfully wired up a bank so
+	# the post-add dialog can give specific guidance for the
+	# common-but-failure-prone "no bank exists yet" case (a fresh
+	# project just enabling gool for the first time).
 	var loader: Node = root.get_node_or_null("GoolSoundBankLoader")
+	var bank_wired := false
 	if loader != null and FileAccess.file_exists(BANK_PATH):
 		var bank_resource: Resource = load(BANK_PATH)
 		if bank_resource != null:
 			loader.bank = bank_resource
+			bank_wired = true
 
 	# Notify the user. The scene is now dirty (add_child marks it),
 	# but we surface a dialog so they know what happened and what
 	# to do next.
+	var next_steps: String
+	if bank_wired:
+		next_steps = (
+			"\n\nNext steps:\n"
+			+ "  1. Save the scene (Ctrl+S).\n"
+			+ "  2. Drop audio files into res://sounds/sfx/ (or any\n"
+			+ "     other sounds/ subfolder).\n"
+			+ "  3. Select the AudioEmitter3D, click its 'Sound Name'\n"
+			+ "     field — your file appears in the dropdown.\n"
+			+ "  4. Check Autoplay → On.\n"
+			+ "  5. F5 to verify."
+		)
+	else:
+		next_steps = (
+			"\n\nThe GoolSoundBankLoader's 'bank' property is empty "
+			+ "— %s doesn't exist yet. To finish setup:\n\n"
+			% BANK_PATH
+			+ "  1. Project → Tools → gool → Create new GoolFolderSoundBank...\n"
+			+ "     (or create a GoolSoundBank.tres manually).\n"
+			+ "  2. Select the GoolSoundBankLoader node in this scene\n"
+			+ "     and drag your new bank.tres into its 'bank' property.\n"
+			+ "  3. Drop audio files into the folder the bank scans.\n"
+			+ "  4. Save the scene (Ctrl+S), F5 to verify."
+		)
 	_show_info_dialog(
 		"Added gool 3D scaffolding",
 		"Added the following to '%s':\n\n" % root.name
 		+ "\n".join(added_names.duplicate())
-		+ "\n\nNext steps:\n"
-		+ "  1. Save the scene (Ctrl+S).\n"
-		+ "  2. Drop audio files into res://sounds/sfx/ (or any\n"
-		+ "     other sounds/ subfolder).\n"
-		+ "  3. Select the AudioEmitter3D, click its 'Sound Name'\n"
-		+ "     field — your file appears in the dropdown.\n"
-		+ "  4. Check Autoplay → On.\n"
-		+ "  5. F5 to verify."
+		+ next_steps
 	)
 
 # v0.23.0: create-new-bank command.
@@ -758,6 +1012,36 @@ func _create_new_folder_bank() -> void:
 	dialog.popup_centered_ratio(0.6)
 
 func _on_new_bank_path_selected(path: String) -> void:
+	# v0.81.11: overwrite confirmation. ResourceSaver.save will
+	# happily clobber an existing .tres file; for designer-owned
+	# sound banks (potentially representing hours of curation),
+	# silent overwrite is a data-safety hazard. Confirm first.
+	if FileAccess.file_exists(path):
+		var confirm := ConfirmationDialog.new()
+		confirm.title = "Overwrite existing file?"
+		confirm.dialog_text = (
+			"A file already exists at:\n%s\n\n" % path
+			+ "Saving a new GoolFolderSoundBank here will overwrite "
+			+ "the existing file. This action cannot be undone from "
+			+ "inside the editor.\n\nOverwrite?"
+		)
+		confirm.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		confirm.min_size = Vector2i(520, 220)
+		confirm.confirmed.connect(_save_new_folder_bank.bind(path))
+		# Self-clean either way.
+		confirm.confirmed.connect(confirm.queue_free)
+		confirm.canceled.connect(confirm.queue_free)
+		EditorInterface.get_base_control().add_child(confirm)
+		confirm.popup_centered()
+		return
+	# No conflict — save directly.
+	_save_new_folder_bank(path)
+
+
+# Extracted from _on_new_bank_path_selected so the overwrite path
+# can call it after confirmation. No business logic changes from
+# the pre-v0.81.11 version; just the save + post-save UX.
+func _save_new_folder_bank(path: String) -> void:
 	var script := load(FOLDER_SOUND_BANK_SCRIPT)
 	if script == null:
 		push_warning("[gool] could not load GoolFolderSoundBank script")
@@ -810,7 +1094,7 @@ func _add_debug_overlay_to_current_scene() -> void:
 		_show_info_dialog(
 			"No scene open",
 			"Open a scene first (Scene → New Scene), then try "
-			+ "Project → Tools → Gool → Add debug overlay again."
+			+ "Project → Tools → gool → Add debug overlay again."
 		)
 		return
 	# Check for existing overlay; one per scene is the right model.
@@ -847,3 +1131,24 @@ func _add_debug_overlay_to_current_scene() -> void:
 		+ "Inspector. For shipping builds, set "
 		+ "visible_at_startup=false."
 	)
+
+
+# v0.79.2: Register the update-check opt-out setting so it appears
+# in Project Settings → audio → gool → check_for_updates. Default is
+# `true` (check enabled); users in restricted environments or those
+# who simply don't want the editor to make outbound HTTPS calls can
+# untick this. The setting is read by addons/gool/editor/
+# update_checker.gd before any network activity.
+func _register_update_check_setting() -> void:
+	var setting_path := "audio/gool/check_for_updates"
+	if not ProjectSettings.has_setting(setting_path):
+		ProjectSettings.set_setting(setting_path, true)
+	ProjectSettings.set_initial_value(setting_path, true)
+	ProjectSettings.add_property_info({
+		"name": setting_path,
+		"type": TYPE_BOOL,
+		"hint": PROPERTY_HINT_NONE,
+		"hint_string": ("Check GitHub for new gool releases when the "
+				+ "editor opens (once per 24h, cached). Disable to "
+				+ "prevent outbound HTTPS calls from the editor."),
+	})

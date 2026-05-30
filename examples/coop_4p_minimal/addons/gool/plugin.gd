@@ -824,6 +824,32 @@ func _run_fps_scene_smoke_test() -> void:
 	if tool_script == null:
 		push_error("[gool] fps_scene_smoke_test.gd not found")
 		return
+
+	# v0.81.11: SKIP vs FAIL discrimination. A project that hasn't
+	# created res://gool/config.json yet (new project, custom config
+	# path) isn't FAILING the smoke test — there's just nothing to
+	# check. Surface a distinct dialog so the user understands their
+	# project is fine; they just need to enable gool and let it
+	# write the default config (which happens on first plugin
+	# enable), OR move their config to res://gool/config.json if
+	# they've put it elsewhere.
+	if not FileAccess.file_exists("res://gool/config.json"):
+		_show_info_dialog(
+			"gool: FPS scene smoke test SKIPPED",
+			("This test cross-references your scenes against "
+			+ "res://gool/config.json (bus topology, voice config, "
+			+ "etc.) to detect missing dependencies. That file "
+			+ "doesn't exist in this project yet.\n\n"
+			+ "Two ways to proceed:\n\n"
+			+ "1. If gool is freshly installed, enabling the plugin "
+			+ "writes a default config — Project Settings → Plugins "
+			+ "→ tick 'gool'.\n\n"
+			+ "2. If you've moved the config elsewhere, this test "
+			+ "currently only checks the canonical path. Move it "
+			+ "back, or skip this test until that's reconciled.")
+		)
+		return
+
 	var tool = tool_script.new()
 	var ok: bool = tool.run()
 	if ok:
@@ -871,6 +897,28 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 		)
 		return
 
+	# v0.81.11: idempotency. Walk the root's direct children and
+	# check for an existing GoolListener3D (matching by script
+	# resource_path so subclasses also count). If found, the scene
+	# already has scaffolding and re-adding would create duplicates,
+	# which doubles audio at runtime — a real bug class.
+	for child in root.get_children():
+		var s := child.get_script()
+		if s != null and s.resource_path == LISTENER_3D_SCRIPT:
+			_show_info_dialog(
+				"Already present",
+				("This scene already has a GoolListener3D node "
+				+ "('%s'). 3D scaffolding has been added previously; "
+				+ "running the tool again would create duplicate "
+				+ "listeners, emitters, and bank loaders, which "
+				+ "doubles audio at runtime.\n\nTo modify the existing "
+				+ "scaffolding: select the relevant node in the scene "
+				+ "and edit it in the Inspector. To start fresh: "
+				+ "delete the existing scaffolding nodes first, then "
+				+ "re-run this tool.") % child.name
+			)
+			return
+
 	# Three nodes to add. Each entry: (script_path, node_name).
 	# We use the prefab script paths directly so the class_name
 	# registration order at plugin-enable time doesn't matter.
@@ -900,27 +948,51 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 	# Pre-assign bank.tres on the loader so the user doesn't have
 	# to do the drag-and-drop step manually. The setter is exposed
 	# as a property on the loader script.
+	#
+	# v0.81.11: track whether we successfully wired up a bank so
+	# the post-add dialog can give specific guidance for the
+	# common-but-failure-prone "no bank exists yet" case (a fresh
+	# project just enabling gool for the first time).
 	var loader: Node = root.get_node_or_null("GoolSoundBankLoader")
+	var bank_wired := false
 	if loader != null and FileAccess.file_exists(BANK_PATH):
 		var bank_resource: Resource = load(BANK_PATH)
 		if bank_resource != null:
 			loader.bank = bank_resource
+			bank_wired = true
 
 	# Notify the user. The scene is now dirty (add_child marks it),
 	# but we surface a dialog so they know what happened and what
 	# to do next.
+	var next_steps: String
+	if bank_wired:
+		next_steps = (
+			"\n\nNext steps:\n"
+			+ "  1. Save the scene (Ctrl+S).\n"
+			+ "  2. Drop audio files into res://sounds/sfx/ (or any\n"
+			+ "     other sounds/ subfolder).\n"
+			+ "  3. Select the AudioEmitter3D, click its 'Sound Name'\n"
+			+ "     field — your file appears in the dropdown.\n"
+			+ "  4. Check Autoplay → On.\n"
+			+ "  5. F5 to verify."
+		)
+	else:
+		next_steps = (
+			"\n\nThe GoolSoundBankLoader's 'bank' property is empty "
+			+ "— %s doesn't exist yet. To finish setup:\n\n"
+			% BANK_PATH
+			+ "  1. Project → Tools → gool → Create new GoolFolderSoundBank...\n"
+			+ "     (or create a GoolSoundBank.tres manually).\n"
+			+ "  2. Select the GoolSoundBankLoader node in this scene\n"
+			+ "     and drag your new bank.tres into its 'bank' property.\n"
+			+ "  3. Drop audio files into the folder the bank scans.\n"
+			+ "  4. Save the scene (Ctrl+S), F5 to verify."
+		)
 	_show_info_dialog(
 		"Added gool 3D scaffolding",
 		"Added the following to '%s':\n\n" % root.name
 		+ "\n".join(added_names.duplicate())
-		+ "\n\nNext steps:\n"
-		+ "  1. Save the scene (Ctrl+S).\n"
-		+ "  2. Drop audio files into res://sounds/sfx/ (or any\n"
-		+ "     other sounds/ subfolder).\n"
-		+ "  3. Select the AudioEmitter3D, click its 'Sound Name'\n"
-		+ "     field — your file appears in the dropdown.\n"
-		+ "  4. Check Autoplay → On.\n"
-		+ "  5. F5 to verify."
+		+ next_steps
 	)
 
 # v0.23.0: create-new-bank command.
@@ -940,6 +1012,36 @@ func _create_new_folder_bank() -> void:
 	dialog.popup_centered_ratio(0.6)
 
 func _on_new_bank_path_selected(path: String) -> void:
+	# v0.81.11: overwrite confirmation. ResourceSaver.save will
+	# happily clobber an existing .tres file; for designer-owned
+	# sound banks (potentially representing hours of curation),
+	# silent overwrite is a data-safety hazard. Confirm first.
+	if FileAccess.file_exists(path):
+		var confirm := ConfirmationDialog.new()
+		confirm.title = "Overwrite existing file?"
+		confirm.dialog_text = (
+			"A file already exists at:\n%s\n\n" % path
+			+ "Saving a new GoolFolderSoundBank here will overwrite "
+			+ "the existing file. This action cannot be undone from "
+			+ "inside the editor.\n\nOverwrite?"
+		)
+		confirm.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		confirm.min_size = Vector2i(520, 220)
+		confirm.confirmed.connect(_save_new_folder_bank.bind(path))
+		# Self-clean either way.
+		confirm.confirmed.connect(confirm.queue_free)
+		confirm.canceled.connect(confirm.queue_free)
+		EditorInterface.get_base_control().add_child(confirm)
+		confirm.popup_centered()
+		return
+	# No conflict — save directly.
+	_save_new_folder_bank(path)
+
+
+# Extracted from _on_new_bank_path_selected so the overwrite path
+# can call it after confirmation. No business logic changes from
+# the pre-v0.81.11 version; just the save + post-save UX.
+func _save_new_folder_bank(path: String) -> void:
 	var script := load(FOLDER_SOUND_BANK_SCRIPT)
 	if script == null:
 		push_warning("[gool] could not load GoolFolderSoundBank script")

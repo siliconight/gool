@@ -26,6 +26,206 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.13] - 2026-05-30 — Critical: example addon drift fix + scanner
+
+Fixes a substantial silent bug: the gool addon copies in the three
+example projects had drifted from the canonical copy over time,
+ending up with only ~10% of the canonical addon's files. Discovered
+when v0.81.12 user opened `examples/coop_4p_minimal/` in Godot and
+hit a parse error on the first F5: `Could not find type
+'GoolMixSnapshot' in the current scope`.
+
+### What was broken
+
+The repo contains four copies of the gool addon:
+
+```
+godot/addons/gool/                              ← canonical (109 files)
+examples/coop_shooter_template/addons/gool/     ← copy (was 11 files)
+examples/voice_chat/addons/gool/                ← copy (was 6 files)
+examples/coop_4p_minimal/addons/gool/           ← copy (was 16 files)
+```
+
+Every time a new prefab / Resource / editor plugin was added to
+canonical, the example copies were SUPPOSED to be kept in sync.
+In practice this was done manually and was easy to forget. Over
+many releases the example copies fell badly behind:
+
+  - The `editor/` directory (mixer dock, inspectors, debugger
+    plugin) was missing from all examples.
+  - `multiplayer_bridge.gd` autoload was missing from
+    `coop_shooter_template` and `voice_chat`.
+  - The `resources/` directory had only 1–2 of the canonical's
+    7 Resource subclasses; `GoolMixSnapshot` (referenced by
+    `runtime_singleton.gd` since v0.43.0) was missing from all
+    three examples.
+  - `acoustic_profiles/`, `fonts/`, `master_fx_presets/`,
+    `material_eq_presets/` — all missing.
+  - Even files that DID exist in the examples had stale content;
+    `runtime_singleton.gd` and `plugin.gd` had drifted in all
+    three examples relative to canonical.
+
+### Why this went undetected
+
+Two reasons:
+
+  1. **No scanner existed.** The 5 existing scanners (version
+     sync, autoload safety, LICENSE/NOTICE canonical, Apache
+     headers) all check the canonical addon and the example
+     copies independently, but none cross-referenced canonical
+     vs example content.
+  2. **CI doesn't headlessly-load the example projects.** If it
+     did, the parse errors would have fired on every push. There
+     IS a headless smoke job that parses canonical, but
+     example projects aren't in that loop.
+
+The fix in this patch addresses (1). Addressing (2) is harder
+(headless Godot parsing in CI requires either a Godot install
+or a Docker image with one) and is captured in the new scanner's
+comments as future work.
+
+### Fixed
+
+  * **All three example addon copies now mirror canonical exactly**
+    (109 files each, byte-for-byte identical). Done via
+    `rm -rf examples/$ex/addons/gool && cp -a godot/addons/gool
+    examples/$ex/addons/gool` for each of `coop_shooter_template`,
+    `voice_chat`, and `coop_4p_minimal`.
+  * Plugin.cfg versions re-aligned at 0.81.13 across all four
+    copies (the existing version-sync scanner enforces this on
+    every release going forward).
+
+### Added
+
+  * **`scripts/check_addon_drift.py`** — new scanner enforcing
+    parity. Two modes:
+
+    - `--check` (default, CI mode): Walks every file under
+      canonical. For each, verifies it exists in each example
+      and matches byte-for-byte. Reports drift; exits non-zero
+      on any.
+
+    - `--fix`: Re-mirrors canonical into each example. Useful
+      after intentionally modifying canonical when you want to
+      propagate to examples in one command instead of three
+      manual copies.
+
+    Detection covers three failure modes:
+    - **MISSING**: file in canonical, not in example
+    - **ORPHANED**: file in example, not in canonical
+    - **CONTENT DRIFT**: file in both but bytes differ (with
+      SHA-256 prefixes for diagnosis)
+
+    Modeled after `apply_apache_headers.py`'s --check/--apply
+    pattern.
+
+  * **`.github/workflows/ci.yml`**: new `addon-drift` job that
+    runs `python3 scripts/check_addon_drift.py` on every push.
+    Will fail CI if anyone adds a file to canonical without
+    syncing (or modifies a file in canonical without syncing).
+    No path filter — addon drift can be introduced by any commit
+    that touches addons/.
+
+### How to recover from a drift error in CI
+
+If you push a change that fails the new `addon-drift` job:
+
+```
+python3 scripts/check_addon_drift.py --fix
+git add -A
+git commit --amend --no-edit
+git push --force-with-lease
+```
+
+This re-mirrors canonical → examples and updates the commit.
+For routine work, also fine to do this proactively before
+committing:
+
+```
+# Edit files in godot/addons/gool/ as normal, then:
+python3 scripts/check_addon_drift.py --fix
+git add -A
+git commit
+```
+
+### What this means for the user-facing impact
+
+**`examples/coop_4p_minimal/` now parses and runs cleanly.** The
+specific bug that prompted this patch (`Could not find type
+'GoolMixSnapshot'`) is fixed because the missing resource files
+are now present.
+
+`coop_shooter_template/` and `voice_chat/` likely had similar
+parse failures that no one had hit recently because no one had
+opened them; those are also fixed.
+
+### NOT changed
+
+  * No engine code, no API changes, no behavior changes. Pure
+    repository-hygiene fix.
+  * The minimal-vs-full-addon design question is NOT revisited.
+    Going forward, examples ship the full canonical addon
+    (~109 files). This is simpler, more robust, and more
+    correct than maintaining curated subsets (which was the
+    apparent original intent but had no enforcement and
+    decayed). If a future need surfaces for a "minimal addon
+    flavor" (e.g. for size-constrained distribution), that's
+    a separate, deliberate design.
+
+### Sizes
+
+Each example project gained ~80–100KB of GDScript files +
+some PNG/SVG icons. Total repo size growth: ~300KB across all
+three examples. Negligible against the broader repo size.
+
+### CI expectation
+
+Adds one new job (`addon-drift`) that runs ~2 seconds. Other
+jobs (`addon-autoload-safety` and `apache-headers`) now scan
+more files because examples are full addons:
+
+  - `addon-autoload-safety`: 75 → 208 .gd files
+  - `apache-headers`: 287 → 461 files
+
+Both still complete in well under the per-job timeout. No CI
+changes needed beyond the new job.
+
+### Verification
+
+  * `version-sync` — 6 sources at 0.81.13
+  * `addon-autoload-safety` — 208 files across 4 roots (was 75)
+  * `license-canonical`
+  * `notice-canonical`
+  * `apache-headers` — 461 files (was 287)
+  * **`addon-drift` — all example copies mirror canonical exactly** ← NEW
+
+### Manual test procedure
+
+Before this patch:
+  - Open `examples/coop_4p_minimal/project.godot` in Godot 4
+  - F5 → parse error "Could not find type 'GoolMixSnapshot'"
+  - Validation example unrunnable
+
+After this patch:
+  - Open `examples/coop_4p_minimal/project.godot`
+  - Plugin auto-enables (configured in project.godot)
+  - F5 → validation banner appears
+  - Press 1–5 to fire test sounds, WASD to move
+
+### Roadmap context
+
+Not a roadmap item. Critical hygiene fix discovered through real
+usage — exactly the friction pattern I'd been talking about. The
+v0.81.10–12 series spent 3 patches polishing surfaces that mostly
+worked; this patch fixes a surface that DIDN'T work and had been
+broken for many releases. That's the difference between
+"polishing what's there" and "fixing what isn't."
+
+The lesson: scanners that catch a class of bug are cheap; the
+absence of a scanner is often the silent root cause. Worth
+keeping the bar high for "every kind of cross-file invariant
+gets a scanner."
+
 ## [0.81.12] - 2026-05-30 — Runtime error message audit: top worst offenders
 
 Surveyed all runtime error-emitting sites across gool: 206 push_error

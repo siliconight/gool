@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NetworkedAudioEmitter3D — speaker + small network badge to distinguish
+     from local AudioEmitter3D. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#e0e0e0">
+    <!-- Speaker body and cone (slightly smaller to make room for the badge) -->
+    <path d="M1.5 6 L3.5 6 L6.5 3 L6.5 13 L3.5 10 L1.5 10 Z"/>
+    <!-- Sound waves -->
+    <path d="M8 5.5 Q9.5 8 8 10.5" fill="none" stroke="#e0e0e0" stroke-width="1" stroke-linecap="round"/>
+    <!-- Network badge: small disc-with-segments suggesting "globe / net" in
+         the lower-right -->
+    <circle cx="12" cy="12" r="3" fill="none" stroke="#e0e0e0" stroke-width="1"/>
+    <path d="M9 12 L15 12" stroke="#e0e0e0" stroke-width="0.8" fill="none"/>
+    <path d="M12 9 Q14 12 12 15 Q10 12 12 9" stroke="#e0e0e0" stroke-width="0.8" fill="none"/>
+  </g>
+</svg>

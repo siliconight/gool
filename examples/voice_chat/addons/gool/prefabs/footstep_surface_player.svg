@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FootstepSurfacePlayer — stylized footprint (heel + 5 toe pads). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#e0e0e0">
+    <!-- Heel: large rounded teardrop -->
+    <ellipse cx="8" cy="11" rx="3" ry="3.5"/>
+    <!-- Ball of foot — slightly higher, narrower -->
+    <ellipse cx="8" cy="6.5" rx="2.4" ry="2"/>
+    <!-- Five toe pads, arc across the top -->
+    <circle cx="5.5" cy="4.2" r="0.7"/>
+    <circle cx="7" cy="3.1" r="0.85"/>
+    <circle cx="8.6" cy="2.5" r="0.95"/>
+    <circle cx="10.2" cy="3.1" r="0.85"/>
+    <circle cx="11.4" cy="4.4" r="0.7"/>
+  </g>
+</svg>

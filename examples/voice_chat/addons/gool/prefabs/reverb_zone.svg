@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ReverbZone — three concentric arcs suggesting a sphere of reverb tails. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#e0e0e0" stroke-linecap="round">
+    <!-- Outer arc (loudest, fainter line) -->
+    <circle cx="8" cy="8" r="6.5" stroke-width="1" opacity="0.5"/>
+    <!-- Middle arc -->
+    <circle cx="8" cy="8" r="4.3" stroke-width="1" opacity="0.75"/>
+    <!-- Inner arc (source area) -->
+    <circle cx="8" cy="8" r="2.2" stroke-width="1.1"/>
+    <!-- Source dot in center -->
+    <circle cx="8" cy="8" r="0.9" fill="#e0e0e0" stroke="none"/>
+  </g>
+</svg>

@@ -31,6 +31,31 @@ extends Node
 const CONFIG_PATH := "res://gool/config.json"
 
 var _runtime: Node = null
+
+# v0.54.2: rate-limit flag for play_networked's "called before
+# init" warning. Auto-firing weapons that trigger play_networked
+# every frame can produce 40+ identical errors per second when
+# init has failed. The first warning is actionable; the rest are
+# noise that buries the actual init-failure error higher in the
+# log. Set true on first warn, never reset (init only happens
+# once per process lifetime, so re-init isn't a real scenario).
+var _play_networked_warning_emitted: bool = false
+
+# v0.55.0: bus-name cache built from cfg_dict at init time. Used
+# by has_bus() and register_sound_definition's pre-check, so we
+# can detect missing target_bus_name values without triggering
+# the C++ side's "unknown bus" log on every miss. Keys are bus
+# names (String), values are true. The empty dict represents
+# "init hasn't run yet or no buses configured"; has_bus returns
+# false in both cases.
+var _known_bus_names: Dictionary = {}
+
+# v0.55.0: dedupe set for register_sound_definition's "missing
+# target_bus_name" warning. Each missing bus name warns once
+# per session — without this, a project that registers 8 impact
+# sounds all targeting the same missing bus produces 8 identical
+# warnings.
+var _warned_missing_target_buses: Dictionary = {}
 var _ready_emitted: bool = false
 
 # Lazy-instantiated GoolMusicChannel for the play_music_state facade.
@@ -147,6 +172,13 @@ func _ready() -> void:
 		and cfg_dict["buses"] is Array \
 		and (cfg_dict["buses"] as Array).size() > 0
 
+	# v0.78.5: cache the chosen values so diagnose() can surface them.
+	# These are the actual values handed to init/init_with_config —
+	# the source of truth for "what is gool running at right now."
+	_diag_sample_rate = sr
+	_diag_buffer_size = bs
+	_diag_has_bus_graph = has_bus_graph
+
 	var ok: bool
 	if has_bus_graph:
 		# Pass the raw JSON text through — the C++ side parses it
@@ -160,13 +192,28 @@ func _ready() -> void:
 
 	if not ok:
 		if has_bus_graph:
+			# v0.80.0: rewrote this message after the prior version
+			# (v0.54.2 through v0.79.9) blamed users for spec-compliant
+			# JSON that gool's hand-rolled parser couldn't handle. The
+			# parser now uses nlohmann/json for string-escape decoding,
+			# so any parse error reaching here is a real schema-level
+			# problem (duplicate ids, dangling parent references,
+			# unknown effect kind) — not a JSON syntax issue. The
+			# parser line above names the file location.
 			push_error(
 				"[gool] runtime init failed: bus config rejected. "
-				+ "Check the prior error from the JSON parser above for "
-				+ "the specific line. Common causes: duplicate bus ids, "
-				+ "a bus that references a parent which doesn't exist, "
-				+ "an effect kind that isn't recognized. Fix res://gool/"
-				+ "config.json or delete it to regenerate defaults."
+				+ "Read the prior error from the parser — it names "
+				+ "the specific line and reason. Common schema "
+				+ "failures: a bus has a duplicate id, references "
+				+ "a parent that doesn't exist, lists an unknown "
+				+ "effect kind, or category_routing points at a "
+				+ "bus that wasn't declared.\n"
+				+ "Recovery: open res://gool/config.json and fix "
+				+ "the line named in the parser error. Or — if the "
+				+ "config has drifted from what you want — delete "
+				+ "the file and use the mixer dock's empty-state "
+				+ "buttons (Create default config / Use FPS template) "
+				+ "to rebuild from a shipping baseline."
 			)
 		else:
 			push_error(
@@ -216,6 +263,15 @@ func _ready() -> void:
 		GoolLog.info("runtime", "audio device unknown",
 			{"reason": "backend doesn't expose name"})
 	_ready_emitted = true
+
+	# v0.55.0: cache the bus names declared in the user's config so
+	# downstream code (register_sound_definition, ReverbZone, the
+	# Phase 6 EQ setup) can do cheap existence checks WITHOUT
+	# triggering the C++ side's "unknown bus" log on each miss. The
+	# cache is read-only after init; if the user reloads the config
+	# at runtime (rare), they'll need to call _rebuild_known_buses.
+	_rebuild_known_buses(cfg_dict)
+
 	# v0.34.0 (Phase 6.B): set up automatic per-material EQ for
 	# impact sounds. Reads the configured impact-EQ bus name from
 	# project settings, verifies its effect chain matches the 3-
@@ -232,6 +288,29 @@ func _ready() -> void:
 	# project settings. Affects both 6.B impact EQ and 6.C
 	# listener EQ when applied via the GDScript helpers below.
 	_setup_eq_intensity()
+	# v0.68.0: register a default global hotkey (Ctrl+Shift+G) for
+	# dumping the session log to JSONL. Zero-code "press a key,
+	# attach the file to a bug report" workflow available in any
+	# project that has gool installed — no per-project keybinding
+	# code needed. Configurable via Project Settings → Input Map
+	# (action "gool_dump_session_log") and the addons/gool/logging/
+	# dump_log_* settings registered below.
+	_register_session_log_hotkey_settings()
+	_setup_session_log_hotkey()
+	# v0.78.1: register custom Performance monitors so engine-level
+	# perf details (Update tick microseconds, eviction rates, voice
+	# throughput, etc.) show up as graphs in Godot's Debugger →
+	# Monitors panel alongside FPS and frame time. Always-on; the
+	# callbacks only fire while the Monitors panel is open, so
+	# shipped games pay essentially nothing.
+	_setup_perf_monitors()
+	# v0.79.0: load and apply player audio preferences (master volume,
+	# per-category sliders, voice mutes) so the engine is in the
+	# player-preferred state BEFORE ready_to_play fires. Games listening
+	# for ready_to_play can assume Gool already reflects the player's
+	# saved preferences; if a game wants to override, it can call the
+	# authoritative set_master_volume_db / set_bus_gain_db after.
+	load_player_preferences()
 	ready_to_play.emit()
 
 # v0.22.7: render-thread health polling. Reads the diagnostic atomics
@@ -270,6 +349,53 @@ const _RENDER_STATS_INTERVAL: float = 2.0   # seconds between logs
 var _render_stats_accum: float = 0.0
 var _render_stats_last_invocations: int = 0
 var _render_stats_last_frames: int = 0
+
+# v0.78.5: cached snapshot of the values passed to init() / init_with_config()
+# at startup, surfaced by diagnose(). _diag_sample_rate and _diag_buffer_size
+# are the actual ints the engine was initialized with (post-config-merge,
+# pre-device-negotiation). _diag_has_bus_graph indicates whether the JSON
+# config supplied a bus graph or we fell back to single-master legacy init.
+# A value of -1 / false means "not yet set", which diagnose() reports as
+# "init has not run" — useful while debugging an init failure.
+var _diag_sample_rate: int = -1
+var _diag_buffer_size: int = -1
+var _diag_has_bus_graph: bool = false
+
+# v0.79.0: Player-side audio preferences.
+#
+# Architectural split (server-authoritative vs client-preference):
+#   - Game/server code calls set_master_volume_db / set_bus_gain_db
+#     to control mix snapshots, ducking, etc. Those values land in
+#     _authoritative_*_db.
+#   - Player code (settings menu) calls set_player_master_volume /
+#     set_player_category_volume with 0-100 slider values. Those
+#     map to dB and land in _player_pref_*_db.
+#   - When applied to the engine, the two are SUMMED in dB
+#     (multiplied in linear). Player preference is a scalar on top
+#     of whatever the game's current authoritative mix says. This
+#     keeps dynamic game mixes audible while still honoring the
+#     player's overall preference.
+#
+# _muted_voice_peers stores peer_ids whose voice packets should be
+# dropped at submit time. Persisted across sessions; games using
+# ephemeral peer_ids (re-assigned each session) should call
+# clear_muted_voice_players() at session start.
+const _PLAYER_CATEGORY_BUSES: Dictionary = {
+	"sfx":      "SFX",
+	"music":    "Music",
+	"voice":    "Voice",
+	"ambience": "Ambience",
+	"dialogue": "Dialogue",
+	"ui":       "UI",
+}
+const _PLAYER_PREFS_PATH: String = "user://gool_player_preferences.cfg"
+const _PLAYER_DB_FLOOR: float = -80.0  # slider=0 maps here; effective mute
+
+var _authoritative_master_db: float = 0.0
+var _authoritative_bus_db: Dictionary = {}   # bus_name -> dB
+var _player_pref_master_db: float = 0.0
+var _player_pref_bus_db: Dictionary = {}     # bus_name -> dB
+var _muted_voice_peers: Dictionary = {}      # peer_id (int) -> true
 
 # v0.25.0: cross-process metering for the editor mixer dock. When
 # the game is launched from F5 (debugger attached), the runtime
@@ -380,7 +506,7 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 
 
 func _handle_set_bus_gain(bus_name: String, db: float) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_gain"):
 		return
 	# Clamp to a sensible range matching the mixer dock's fader.
 	# Out-of-range values shouldn't crash the runtime, just clamp.
@@ -395,7 +521,55 @@ func _handle_set_bus_gain(bus_name: String, db: float) -> void:
 	# user dragged a fader during F5.
 	var ok: bool = _runtime.set_bus_gain_db(bus_name, db)
 	if not ok:
-		push_warning("[gool] set_bus_gain('%s', %.2fdB) failed" % [bus_name, db])
+		push_warning(_format_bus_op_error("set_bus_gain", bus_name,
+				"%.2fdB" % db))
+
+
+# v0.81.12: shared helper for the four set_bus_* operations'
+# error reporting. Replaces a generic "[gool] set_bus_X('foo', 0.5)
+# failed" message that gave no actionable info with introspection-
+# based diagnosis. By the time this is called, _check_init() has
+# already returned true, so _runtime is non-null AND initialized;
+# the most common cause of `ok == false` from a set_bus_X call is
+# that bus_name isn't in the runtime's bus topology (typo or
+# config drift).
+func _format_bus_op_error(op_name: String, bus_name: String,
+		params: String) -> String:
+	# Defensive: get_bus_stats should always return a Dict by this
+	# point, but in case it doesn't (unexpected runtime state), fall
+	# back to a sensible message instead of crashing.
+	var stats: Variant = _runtime.get_bus_stats()
+	if not (stats is Dictionary):
+		return ("[gool] %s('%s', %s) failed: " % [op_name, bus_name, params]
+				+ "runtime returned unexpected bus-stats shape. This is "
+				+ "an engine-internal issue; please report at "
+				+ "https://github.com/siliconight/gool/issues with the "
+				+ "Output panel contents from this session.")
+	var stats_dict: Dictionary = stats
+	if not stats_dict.has(bus_name):
+		var available: Array = stats_dict.keys()
+		var bus_list: String
+		if available.is_empty():
+			bus_list = ("no buses are configured in the runtime. "
+					+ "Check that res://gool/config.json exists and has "
+					+ "a 'buses' section. If you deleted it, the mixer "
+					+ "dock's empty-state buttons can recreate a "
+					+ "default.")
+		else:
+			bus_list = "available buses: " + ", ".join(available)
+		return ("[gool] %s('%s', %s) failed: " % [op_name, bus_name, params]
+				+ "bus '%s' is not in the topology. %s" % [bus_name, bus_list])
+	# Bus exists but the op was rejected. Rare — the runtime accepted
+	# the bus lookup but refused the operation. Most likely the
+	# Godot-bus mirror is in use and the operation tried to set state
+	# that conflicts (e.g. set_bus_muted on a mirror-driven bus
+	# where Godot's AudioServer owns the mute state).
+	return ("[gool] %s('%s', %s) failed: " % [op_name, bus_name, params]
+			+ "bus exists in the topology but the runtime rejected the "
+			+ "operation. If this bus is mirroring a Godot AudioServer "
+			+ "bus, the corresponding state may be owned by the Godot "
+			+ "bus and need to be set via AudioServer.set_bus_volume_db / "
+			+ "set_bus_mute instead.")
 
 
 # v0.27.0: per-bus mute / solo / effect-bypass debugger-command handlers.
@@ -403,27 +577,30 @@ func _handle_set_bus_gain(bus_name: String, db: float) -> void:
 # autoload-level wrapper, per the discipline in
 # docs/engineering/lessons_learned.md §"Wrappers vs direct member calls").
 func _handle_set_bus_mute(bus_name: String, muted: bool) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_mute"):
 		return
 	var ok: bool = _runtime.set_bus_muted(bus_name, muted)
 	if not ok:
-		push_warning("[gool] set_bus_mute('%s', %s) failed" % [bus_name, muted])
+		push_warning(_format_bus_op_error("set_bus_mute", bus_name,
+				str(muted)))
 
 
 func _handle_set_bus_solo(bus_name: String, soloed: bool) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_solo"):
 		return
 	var ok: bool = _runtime.set_bus_soloed(bus_name, soloed)
 	if not ok:
-		push_warning("[gool] set_bus_solo('%s', %s) failed" % [bus_name, soloed])
+		push_warning(_format_bus_op_error("set_bus_solo", bus_name,
+				str(soloed)))
 
 
 func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_bus_bypass"):
 		return
 	var ok: bool = _runtime.set_bus_effects_bypassed(bus_name, bypassed)
 	if not ok:
-		push_warning("[gool] set_bus_bypass('%s', %s) failed" % [bus_name, bypassed])
+		push_warning(_format_bus_op_error("set_bus_bypass", bus_name,
+				str(bypassed)))
 
 
 # v0.28.0 (Phase 3.3c-1): live effect parameter set. Same direct-call
@@ -433,7 +610,7 @@ func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
 # at the OnParameter layer).
 func _handle_set_effect_parameter(bus_name: String, effect_index: int,
 		param_id: int, value: float) -> void:
-	if not is_initialized():
+	if not _check_init("_handle_set_effect_parameter"):
 		return
 	var ok: bool = _runtime.set_effect_parameter(
 			bus_name, effect_index, param_id, value)
@@ -698,6 +875,11 @@ func _poll_mirrored_buses() -> void:
 		_runtime.set_bus_gain_db(gool_bus_name, db)
 
 func _exit_tree() -> void:
+	# v0.78.1: drop custom Performance monitors BEFORE shutting down
+	# the runtime. Performance holds the callable; if the runtime is
+	# torn down first, a late poll-tick could land in a callback that
+	# dereferences a freed runtime. Order matters here.
+	_teardown_perf_monitors()
 	if _runtime != null and _runtime.is_initialized():
 		_runtime.shutdown()
 
@@ -706,6 +888,322 @@ func _exit_tree() -> void:
 
 func is_initialized() -> bool:
 	return _runtime != null and _runtime.is_initialized()
+
+
+# v0.71.0: Loud first-call errors. Previously, calling any Gool API
+# method before the autoload finished initializing silently returned
+# 0/null/false/[] — and new users hit this and didn't understand why
+# their sounds weren't playing. The classic "register_sound called
+# from _ready" timing trap.
+#
+# _check_init() replaces the bare `if not is_initialized()` guard at
+# every API site. First time it sees a pre-init call for a given
+# method name, it pushes a warning explaining the timing and pointing
+# the user at the ready_to_play signal. Subsequent pre-init calls
+# from the same method stay quiet (so we don't spam Output when an
+# autoload-local loop hammers an API in _ready).
+#
+# Hot-path cost: one is_initialized() check, identical to the
+# previous guard. The dict-lookup slow path only fires when the
+# runtime isn't ready, which is the rare case we want to surface.
+# v0.73.1 hotfix: a previous v0.71.0 form of this constant used
+# multi-line string concatenation with `+`. That syntax fails to
+# parse on real Godot because GDScript's constant-folding pass
+# does not evaluate `+` between string literals at parse time —
+# the operator stays runtime-only. Result: runtime_singleton.gd
+# wouldn't compile on fresh installs, the Gool autoload never
+# registered, every script referencing `Gool.X` errored. Static
+# analysis on this end missed it (it only checked shape, not
+# parse-time constant rules). Now uses a single literal —
+# unambiguously parser-friendly across all GDScript versions.
+const _NOT_INITIALIZED_WARNING: String = "[gool] %s() called before the runtime is ready. Call this after the Gool autoload's `ready_to_play` signal fires, or guard with `if Gool.is_initialized():`. (This warning fires once per method per session.)"
+var _not_init_warned: Dictionary = {}
+
+# Returns true if the runtime is ready (caller may proceed).
+# Returns false otherwise, having emitted a one-time warning for
+# the given method name.
+func _check_init(method_name: String) -> bool:
+	if is_initialized():
+		return true
+	if not _not_init_warned.get(method_name, false):
+		push_warning(_NOT_INITIALIZED_WARNING % method_name)
+		_not_init_warned[method_name] = true
+	return false
+
+
+# ---- v0.67.0: session log dump (game-thread API) ---------------------
+#
+# Convenience wrappers on the Gool singleton for the always-on session
+# log buffer maintained by GoolLog. Every emit() call (info/warn/error/
+# etc.) pushes a structured entry into a bounded ring; these methods
+# read and dump it.
+#
+# Why expose these here as well as on GoolLog directly?
+# Two reasons:
+#   1. Discoverability — Gool.dump_session_log() is the path a user
+#      finds via autocomplete on the Gool autoload. GoolLog.dump_*
+#      requires knowing the helper class exists.
+#   2. Symmetry with the existing Gool API surface — register_sound,
+#      get_bus_stats, etc. all live on Gool. The session dump fits the
+#      same shape: "diagnostic capability you reach through the
+#      autoload."
+#
+# Typical usage:
+#
+#   var path := Gool.dump_session_log()        # auto-named .jsonl in user://
+#   prints("[gool] %d entries dumped to %s" % [
+#       Gool.get_session_log_size(), path])
+#
+#   Gool.dump_session_log("res://debug/last.jsonl")   # explicit path
+#   Gool.clear_session_log()                          # reset between tests
+#
+# The JSONL format is one JSON object per line (timestamp_ms, level,
+# category, msg, fields, source, label) — grep/jq-friendly for
+# post-session analysis.
+
+func dump_session_log(path: String = "") -> String:
+	# When path is empty, GoolLog auto-generates
+	# user://gool_session_<datetime>_<ms>.jsonl so a user who just
+	# wants "a file I can attach to a bug report" doesn't have to
+	# invent a path. Returns the resolved path on success, "" on
+	# failure (an error was already logged via GoolLog.error in the
+	# helper, so we don't double-log here).
+	return GoolLog.dump_session_to_file(path)
+
+
+func clear_session_log() -> void:
+	# Resets the ring buffer to empty and rebases the t_ms timeline
+	# to "now." Useful for bracketing the part of a session a user
+	# wants to inspect — call before reproducing a bug, then dump
+	# after, and the resulting file contains only the relevant
+	# window rather than all setup noise.
+	GoolLog.clear_session()
+
+
+func get_session_log_size() -> int:
+	# Current entry count in the ring (saturates at the configured
+	# capacity; default 4096). Useful for sanity checks like "did
+	# the suspect path actually log anything between this clear()
+	# and this dump()?"
+	return GoolLog.session_entry_count()
+
+
+# ---- v0.66.0 introspection (v0.67.1: autoload forwarders) -------------
+#
+# These three methods exist on the C++ binding (GoolAudioRuntime;
+# bound in gool_godot.cpp around line 513 via ClassDB::bind_method),
+# but in v0.66.0 they were NOT exposed as forwarders on the Gool
+# autoload — even though the documentation everywhere (including
+# the gool_godot.cpp doc comment around line 1656) shows the
+# intended usage as Gool.has_sound("music"), Gool.get_sound_info(...),
+# etc. v0.67.1 closes the gap.
+#
+# Defensive coding pattern (the original v0.66.0 motivation):
+#
+#   if not Gool.has_sound("music"):
+#       push_warning("[Audition] 'music' not registered; "
+#                  + "is audio_setup.gd running as an autoload AND "
+#                  + "completing before audition's _ready?")
+#       return
+#   var handle := Gool.create_emitter("music", Vector3.ZERO, true, 250.0)
+#
+# Returns safe values when the runtime isn't initialized yet:
+# has_sound = false, get_sound_info = {}, get_registered_sound_count = 0.
+# This mirrors the C++ side's contract and means callers can ask
+# these questions before init without special-casing.
+
+func has_sound(name: String) -> bool:
+	if _runtime == null:
+		return false
+	return _runtime.has_sound(name)
+
+
+func get_sound_info(name: String) -> Dictionary:
+	if _runtime == null:
+		return {}
+	return _runtime.get_sound_info(name)
+
+
+func get_registered_sound_count() -> int:
+	if _runtime == null:
+		return 0
+	return _runtime.get_registered_sound_count()
+
+
+# ---- v0.68.0: built-in session log dump hotkey ------------------------
+#
+# Default Ctrl+Shift+G in any gool-using project. The whole point is
+# "drop in gool, get logs" — no per-project keybinding code.
+#
+# Mechanism:
+#
+#   1. Project settings registered with sensible defaults (in
+#      _register_session_log_hotkey_settings, called from _ready).
+#   2. InputMap action "gool_dump_session_log" registered at runtime
+#      with default Ctrl+Shift+G binding IF the action doesn't
+#      already exist. If the user has added the action to their
+#      project's Input Map (in Project Settings) with custom keys,
+#      we respect that — InputMap.has_action returns true, we skip
+#      the default binding, and the user's binding wins.
+#   3. _unhandled_input listens for the action. On press, dumps the
+#      session log via GoolLog.dump_session_to_file(""), prints the
+#      resolved path + entry count to Output, and (optionally)
+#      reveals the dumped file in the host OS file manager via
+#      OS.shell_show_in_file_manager. On Windows that opens Explorer
+#      with the .jsonl highlighted; on macOS, Finder; on Linux,
+#      the containing folder in the default file manager.
+#
+# Project settings (all under addons/gool/logging/):
+#
+#   dump_log_enabled   (bool, default true)
+#       Master switch. Set false in release/export builds if you
+#       don't want the hotkey active in shipped games.
+#
+#   dump_log_open_dir  (bool, default true)
+#       Whether to reveal the dumped .jsonl in the host OS file
+#       manager via OS.shell_show_in_file_manager. Disable if the
+#       file-manager pop is jarring (e.g. fullscreen game). When
+#       disabled, the file path is still printed to Output for
+#       manual copy/attach.
+#
+# To rebind the key without code: Project Settings → Input Map,
+# find "gool_dump_session_log", change/add events.
+
+const _PS_DUMP_LOG_ENABLED: String  = "addons/gool/logging/dump_log_enabled"
+const _PS_DUMP_LOG_OPEN_DIR: String = "addons/gool/logging/dump_log_open_dir"
+const _DUMP_LOG_ACTION: String      = "gool_dump_session_log"
+
+var _dump_log_enabled: bool  = true
+var _dump_log_open_dir: bool = true
+
+
+func _register_session_log_hotkey_settings() -> void:
+	if not ProjectSettings.has_setting(_PS_DUMP_LOG_ENABLED):
+		ProjectSettings.set_setting(_PS_DUMP_LOG_ENABLED, true)
+		ProjectSettings.add_property_info({
+			"name": _PS_DUMP_LOG_ENABLED,
+			"type": TYPE_BOOL,
+		})
+		ProjectSettings.set_initial_value(_PS_DUMP_LOG_ENABLED, true)
+	if not ProjectSettings.has_setting(_PS_DUMP_LOG_OPEN_DIR):
+		ProjectSettings.set_setting(_PS_DUMP_LOG_OPEN_DIR, true)
+		ProjectSettings.add_property_info({
+			"name": _PS_DUMP_LOG_OPEN_DIR,
+			"type": TYPE_BOOL,
+		})
+		ProjectSettings.set_initial_value(_PS_DUMP_LOG_OPEN_DIR, true)
+
+
+func _setup_session_log_hotkey() -> void:
+	# Cache settings once so _unhandled_input is a cheap predicate.
+	_dump_log_enabled  = bool(ProjectSettings.get_setting(
+			_PS_DUMP_LOG_ENABLED, true))
+	_dump_log_open_dir = bool(ProjectSettings.get_setting(
+			_PS_DUMP_LOG_OPEN_DIR, true))
+	# Register the default InputMap action only if absent — respects
+	# any rebind the user did in Project Settings → Input Map.
+	if not InputMap.has_action(_DUMP_LOG_ACTION):
+		InputMap.add_action(_DUMP_LOG_ACTION)
+		var ev := InputEventKey.new()
+		ev.keycode = KEY_G
+		ev.ctrl_pressed = true
+		ev.shift_pressed = true
+		InputMap.action_add_event(_DUMP_LOG_ACTION, ev)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	# Hot-path predicate: bail before any allocation if disabled.
+	if not _dump_log_enabled:
+		return
+	# Defensive: action could have been removed at runtime by the
+	# host project. Treat that as "feature disabled" rather than
+	# crashing.
+	if not InputMap.has_action(_DUMP_LOG_ACTION):
+		return
+	if event.is_action_pressed(_DUMP_LOG_ACTION):
+		# Consume the event so it doesn't also fire any host-
+		# project action bound to the same keys.
+		get_viewport().set_input_as_handled()
+		_do_dump_session_log()
+
+
+func _do_dump_session_log() -> void:
+	var path: String = GoolLog.dump_session_to_file("")
+	if path == "":
+		push_warning("[gool] session log dump failed (empty path returned). "
+				+ "Check the Output panel for the underlying file-write error.")
+		return
+	var n: int = GoolLog.session_entry_count()
+	# Globalize the path so we can show it in OS-native form and
+	# pass it to shell APIs. ProjectSettings.globalize_path on a
+	# "user://" path returns the absolute filesystem path (e.g.
+	# C:\Users\...\AppData\Roaming\Godot\app_userdata\<proj>\
+	# gool_session_...jsonl on Windows). On an already-absolute
+	# path it's a no-op.
+	var os_path: String = ProjectSettings.globalize_path(path)
+	# Print BOTH paths. The user:// form is what Godot scripts use
+	# internally; the OS path is what the user pastes into a bug
+	# report or copies into their file manager's address bar.
+	# Having both visible means even if shell_show_in_file_manager
+	# fails, the user has a copyable path printed in plain text.
+	print("[gool] session log dumped (%d entries):" % n)
+	print("    user://  %s" % path)
+	print("    OS path  %s" % os_path)
+	if _dump_log_open_dir:
+		# v0.69.1: switched from OS.shell_open(dir) to
+		# OS.shell_show_in_file_manager(file).
+		#
+		# OS.shell_open on a directory uses Windows ShellExecute's
+		# default verb on a folder path; on some configurations
+		# that falls through to the Microsoft Store's "which app
+		# should we use?" picker — clearly the wrong outcome for
+		# "show me where this file is."
+		#
+		# OS.shell_show_in_file_manager (Godot 4.3+, gool compat
+		# min 4.4 so available) is purpose-built for this exact
+		# use case: on Windows it opens Explorer with the file
+		# selected; on macOS it reveals in Finder; on Linux it
+		# opens the containing folder via xdg-open. Different,
+		# more reliable code path per OS.
+		#
+		# As a bonus, "reveal the file with it highlighted" is
+		# better UX than "open the folder and let the user hunt
+		# for the most recent .jsonl" anyway.
+		var err: int = OS.shell_show_in_file_manager(os_path)
+		if err != OK:
+			push_warning("[gool] shell_show_in_file_manager(\"%s\") "
+					% os_path
+					+ "failed (err=%d). The dumped file is still at " % err
+					+ "the OS path printed above; paste it into your "
+					+ "file manager's address bar.")
+
+
+# v0.55.0: cheap bus-existence check. Reads from a cache built at
+# init time, NOT from the C++ runtime — the C++ side logs "unknown
+# bus" when queried for a missing bus, which is exactly the noise
+# we want to avoid in graceful-degradation paths. Returns false if
+# init hasn't run yet or if the bus isn't in the cache.
+func has_bus(bus_name: String) -> bool:
+	return _known_bus_names.has(bus_name)
+
+
+# v0.55.0: rebuild _known_bus_names from the parsed config dict.
+# Called from _ready after init succeeds. Tolerates malformed
+# buses entries (missing name, non-string name) by skipping them
+# silently — those would have been caught at init time by the C++
+# side's stricter parse.
+func _rebuild_known_buses(cfg_dict: Dictionary) -> void:
+	_known_bus_names.clear()
+	var buses_v: Variant = cfg_dict.get("buses", [])
+	if not (buses_v is Array):
+		return
+	var buses: Array = buses_v
+	for b_v in buses:
+		if not (b_v is Dictionary):
+			continue
+		var n: String = String(b_v.get("name", ""))
+		if n != "":
+			_known_bus_names[n] = true
 
 # Returns the engine version as a Dictionary:
 #   { "major": int, "minor": int, "patch": int,
@@ -777,7 +1275,7 @@ func get_backend_description() -> String:
 
 func register_pcm_sound(name: String, samples: PackedFloat32Array,
 						 sr: int = 48000, ch: int = 1) -> int:
-	if not is_initialized():
+	if not _check_init("register_pcm_sound"):
 		return 0
 	return _runtime.register_pcm_sound(name, samples, sr, ch)
 
@@ -812,8 +1310,7 @@ const FORMAT_OPUS:        int = 4
 ## to keep resident, see the upcoming streaming-from-file binding
 ## (deferred to a follow-up release; see CHANGELOG).
 func register_sound_from_file(name: String, path: String) -> int:
-	if not is_initialized():
-		push_error("[gool] register_sound_from_file called before init")
+	if not _check_init("register_sound_from_file"):
 		return 0
 	return _runtime.register_sound_from_file(name, path)
 
@@ -826,8 +1323,7 @@ func register_sound_from_file(name: String, path: String) -> int:
 ## OggS+Vorbis for Vorbis, fLaC for FLAC.
 func register_sound_from_bytes(name: String, bytes: PackedByteArray,
 								  format_hint: int = FORMAT_AUTO) -> int:
-	if not is_initialized():
-		push_error("[gool] register_sound_from_bytes called before init")
+	if not _check_init("register_sound_from_bytes"):
 		return 0
 	return _runtime.register_sound_from_bytes(name, bytes, format_hint)
 
@@ -851,8 +1347,7 @@ func register_sound_from_bytes(name: String, bytes: PackedByteArray,
 ##
 ## Returns the AudioSoundId on success, 0 on failure.
 func register_sound_from_stream(name: String, stream: AudioStream) -> int:
-	if not is_initialized():
-		push_error("[gool] register_sound_from_stream called before init")
+	if not _check_init("register_sound_from_stream"):
 		return 0
 	return _runtime.register_sound_from_stream(name, stream)
 
@@ -887,14 +1382,26 @@ func register_sound_definition(name: String, spatialized: bool = true,
 								 loop_crossfade_ms: float = 0.0,
 								 category: int = CATEGORY_SFX,
 								 target_bus_name: String = "",
-								 occlusion_enabled: bool = true) -> void:
-	if not is_initialized():
+								 occlusion_enabled: bool = true,
+								 priority: int = 128) -> void:
+	if not _check_init("register_sound_definition"):
 		return
+	# v0.55.0: pre-check target_bus_name against the cache to avoid
+	# the C++ side's "unknown bus" log when it's missing. Without
+	# this, registering 8 impact sounds all targeting a missing
+	# ImpactEq bus produces 8 identical warnings; one per missing
+	# bus name is enough.
+	var resolved_target: String = target_bus_name
+	if target_bus_name != "" and not has_bus(target_bus_name):
+		if not _warned_missing_target_buses.has(target_bus_name):
+			_warned_missing_target_buses[target_bus_name] = true
+			push_warning("[gool] register_sound_definition: target_bus_name '%s' doesn't exist in res://gool/config.json. Sounds targeting this bus will fall back to category routing. (Further warnings for this bus suppressed.)" % target_bus_name)
+		resolved_target = ""
 	_runtime.register_sound_definition(name, spatialized, looping,
 										 min_distance, max_distance,
 										 loop_crossfade_ms,
-										 category, target_bus_name,
-										 occlusion_enabled)
+										 category, resolved_target,
+										 occlusion_enabled, priority)
 
 ## v0.49.0: Dictionary-based form of register_sound_definition.
 ## Eliminates the 9-positional-argument footgun in the original
@@ -930,7 +1437,7 @@ func register_sound_definition(name: String, spatialized: bool = true,
 ## the keys, and a wrong key prints a warning instead of silently
 ## using the default.
 func register_sound(name: String, opts: Dictionary = {}) -> void:
-	if not is_initialized():
+	if not _check_init("register_sound"):
 		return
 
 	# Validate keys so typos surface as warnings rather than
@@ -969,7 +1476,7 @@ func register_sound(name: String, opts: Dictionary = {}) -> void:
 ## set_effect_parameter). O(N) over kMaxBuses; fine for init/
 ## registration time, not per-frame.
 func find_bus_id_by_name(name: String) -> int:
-	if not is_initialized():
+	if not _check_init("find_bus_id_by_name"):
 		return -1
 	return _runtime.find_bus_id_by_name(name)
 
@@ -989,7 +1496,7 @@ func find_bus_id_by_name(name: String) -> int:
 ## unchanged; this wrapper makes it actually work.)
 func set_effect_parameter(bus_name: String, effect_index: int,
 							 param_id: int, value: float) -> bool:
-	if not is_initialized():
+	if not _check_init("set_effect_parameter"):
 		return false
 	return _runtime.set_effect_parameter(bus_name, effect_index,
 										   param_id, value)
@@ -1023,7 +1530,7 @@ func set_effect_parameter(bus_name: String, effect_index: int,
 ## { "wet_gain_db": -6.0 } to dip it.
 func apply_reverb_preset(bus_name: String, effect_index: int,
 						   preset: Dictionary) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_reverb_preset"):
 		return false
 	# JSON key → EffectParameter ID. Mirrors GoolPresets._REVERB_PARAM_ID;
 	# duplicated as a local const so this method has no hard dependency
@@ -1041,7 +1548,7 @@ func apply_reverb_preset(bus_name: String, effect_index: int,
 	for key in preset:
 		var param_id: int = PARAM_ID.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_reverb_preset: unknown key "
+			push_warning(("[gool] apply_reverb_preset: unknown key "
 					+ "'%s' on bus='%s' — expected one of: "
 					+ "predelay_ms, decay, lf_damping, hf_damping, "
 					+ "diffusion, wet_gain_db, dry_gain_db")
@@ -1052,7 +1559,7 @@ func apply_reverb_preset(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_reverb_preset: "
+			push_warning(("[gool] apply_reverb_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1072,7 +1579,7 @@ func apply_reverb_preset(bus_name: String, effect_index: int,
 ## it to forward, but the autoload didn't expose it. Now it
 ## does.)
 func get_bus_effects(bus_name: String) -> Array:
-	if not is_initialized():
+	if not _check_init("get_bus_effects"):
 		return []
 	return _runtime.get_bus_effects(bus_name)
 
@@ -1101,7 +1608,7 @@ func get_bus_effects(bus_name: String) -> Array:
 ## and are skipped; partial presets are valid.
 func apply_compressor_preset(bus_name: String, effect_index: int,
 								preset: Dictionary) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_compressor_preset"):
 		return false
 	# JSON key → EffectParameter ID. Mirrors GoolPresets._COMPRESSOR_PARAM_ID;
 	# duplicated as a local const so this method has no hard dependency on
@@ -1123,7 +1630,7 @@ func apply_compressor_preset(bus_name: String, effect_index: int,
 	for key in preset:
 		var param_id: int = PARAM_ID.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_compressor_preset: unknown key "
+			push_warning(("[gool] apply_compressor_preset: unknown key "
 					+ "'%s' on bus='%s' — expected one of: %s")
 					% [key, bus_name, ", ".join(PARAM_ID.keys())])
 			all_ok = false
@@ -1132,7 +1639,7 @@ func apply_compressor_preset(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_compressor_preset: "
+			push_warning(("[gool] apply_compressor_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1170,7 +1677,7 @@ func apply_eq_preset(bus_name: String, preset: Dictionary,
 					   low_effect_index: int = 0,
 					   mid_effect_index: int = 1,
 					   high_effect_index: int = 2) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_eq_preset"):
 		return false
 	# JSON key → EffectParameter ID for biquad params, used per band.
 	# Mirrors GoolPresets._BIQUAD_PARAM_ID; local const for the same
@@ -1217,7 +1724,7 @@ func apply_eq_preset(bus_name: String, preset: Dictionary,
 			"high_gain_db", "high_freq_hz"]
 	for key in preset:
 		if not VALID_KEYS.has(key):
-			push_warning(("[Gool] apply_eq_preset: unknown key '%s' "
+			push_warning(("[gool] apply_eq_preset: unknown key '%s' "
 					+ "on bus='%s' — expected one of: %s")
 					% [key, bus_name, ", ".join(VALID_KEYS)])
 			all_ok = false
@@ -1233,7 +1740,7 @@ func _apply_biquad_band(bus_name: String, effect_index: int,
 	for key in band:
 		var param_id: int = param_id_map.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_eq_preset (internal): unknown "
+			push_warning(("[gool] apply_eq_preset (internal): unknown "
 					+ "biquad key '%s' — bug in apply_eq_preset; "
 					+ "report this") % key)
 			all_ok = false
@@ -1242,7 +1749,7 @@ func _apply_biquad_band(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_eq_preset: "
+			push_warning(("[gool] apply_eq_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1268,7 +1775,7 @@ func _apply_biquad_band(bus_name: String, effect_index: int,
 ## Same return / warning semantics as apply_reverb_preset.
 func apply_saturation_preset(bus_name: String, effect_index: int,
 								preset: Dictionary) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_saturation_preset"):
 		return false
 	# Mirrors GoolPresets._SATURATION_PARAM_ID; same load-order pattern.
 	const PARAM_ID: Dictionary = {
@@ -1282,7 +1789,7 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 	for key in preset:
 		var param_id: int = PARAM_ID.get(key, -1)
 		if param_id < 0:
-			push_warning(("[Gool] apply_saturation_preset: unknown key "
+			push_warning(("[gool] apply_saturation_preset: unknown key "
 					+ "'%s' on bus='%s' — expected one of: %s")
 					% [key, bus_name, ", ".join(PARAM_ID.keys())])
 			all_ok = false
@@ -1291,7 +1798,7 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 		var ok: bool = _runtime.set_effect_parameter(bus_name,
 				effect_index, param_id, value)
 		if not ok:
-			push_warning(("[Gool] apply_saturation_preset: "
+			push_warning(("[gool] apply_saturation_preset: "
 					+ "set_effect_parameter failed for bus='%s' "
 					+ "effect=%d param='%s' value=%f — check that "
 					+ "the bus exists and effect_index points at a "
@@ -1324,7 +1831,7 @@ func apply_saturation_preset(bus_name: String, effect_index: int,
 ##   stealth.label = "stealth"
 ##   ResourceSaver.save(stealth, "res://mixes/stealth.tres")
 func capture_mix_snapshot(bus_names: PackedStringArray) -> GoolMixSnapshot:
-	if not is_initialized():
+	if not _check_init("capture_mix_snapshot"):
 		return null
 	return GoolMixSnapshot.capture_from(bus_names)
 
@@ -1357,9 +1864,14 @@ func apply_mix_snapshot(snap: GoolMixSnapshot) -> bool:
 ## Gool.set_master_volume_db before v0.37.0 would have hit
 ## "Nonexistent function".)
 func set_master_volume_db(db: float) -> void:
-	if not is_initialized():
+	if not _check_init("set_master_volume_db"):
 		return
-	_runtime.set_master_volume_db(db)
+	# v0.79.0: remember what the game asked for, then apply the
+	# combined (authoritative + player-preference) value to the
+	# engine. dB addition is linear-domain multiplication, which is
+	# the correct combine semantics for output gain.
+	_authoritative_master_db = db
+	_runtime.set_master_volume_db(db + _player_pref_master_db)
 
 ## v0.37.0: forwarder for the engine's set_bus_gain_db. Sets the
 ## gain of a named bus in decibels.
@@ -1372,9 +1884,15 @@ func set_master_volume_db(db: float) -> void:
 ##
 ## (Same auto-load wrapper hole as set_master_volume_db.)
 func set_bus_gain_db(bus_name: String, gain_db: float) -> void:
-	if not is_initialized():
+	if not _check_init("set_bus_gain_db"):
 		return
-	_runtime.set_bus_gain_db(bus_name, gain_db)
+	# v0.79.0: same combine pattern as set_master_volume_db. The
+	# game's authoritative value is remembered so future player-pref
+	# changes can recompute the effective value without forgetting
+	# what the game intended.
+	_authoritative_bus_db[bus_name] = gain_db
+	var pref_db: float = float(_player_pref_bus_db.get(bus_name, 0.0))
+	_runtime.set_bus_gain_db(bus_name, gain_db + pref_db)
 
 ## Toggle occlusion globally at runtime.
 ##
@@ -1392,7 +1910,7 @@ func set_bus_gain_db(bus_name: String, gain_db: float) -> void:
 ## doesn't write back to project settings — it's a runtime
 ## override for this session.
 func set_occlusion_enabled(enabled: bool) -> void:
-	if not is_initialized():
+	if not _check_init("set_occlusion_enabled"):
 		return
 	_runtime.set_occlusion_enabled(enabled)
 
@@ -1412,7 +1930,7 @@ func set_occlusion_enabled(enabled: bool) -> void:
 ## cleanly. Useful for dramatic moments: bump intensity during a
 ## cutscene corridor, drop it during a critical conversation.
 func set_occlusion_intensity(intensity: float) -> void:
-	if not is_initialized():
+	if not _check_init("set_occlusion_intensity"):
 		return
 	_runtime.set_occlusion_intensity(intensity)
 
@@ -1428,12 +1946,12 @@ func set_occlusion_intensity(intensity: float) -> void:
 ## to consult, and the feature silently no-op'd in every scene
 ## using gool_listener_3d. This wrapper closes that loop.
 func set_audio_world_space_rid(rid: RID) -> void:
-	if not is_initialized():
+	if not _check_init("set_audio_world_space_rid"):
 		return
 	_runtime.set_audio_world_space_rid(rid)
 
 func play_sound_at_location(name: String, position: Vector3) -> void:
-	if not is_initialized():
+	if not _check_init("play_sound_at_location"):
 		return
 	_runtime.play_sound_at_location(name, position)
 
@@ -1464,7 +1982,7 @@ func play_sound_at_location(name: String, position: Vector3) -> void:
 func load_sound_bank_from_json(json_string: String,
 								 gpak_path: String = "",
 								 skip_validation: bool = false) -> bool:
-	if not is_initialized():
+	if not _check_init("load_sound_bank_from_json"):
 		return false
 	return _runtime.load_sound_bank_from_json(
 			json_string, gpak_path, skip_validation)
@@ -1531,7 +2049,7 @@ var _next_custom_material_id: int = MATERIAL_CUSTOM_BASE
 ##
 ## v0.49.0: also resolves custom-registered materials (IDs >= 100).
 func material_name(material: int) -> String:
-	if not is_initialized():
+	if not _check_init("material_name"):
 		return ""
 	if material >= 0 and material < _MATERIAL_NAMES.size():
 		return _MATERIAL_NAMES[material]
@@ -1587,7 +2105,7 @@ func material_name(material: int) -> String:
 ##     # Requires you've registered a sound named "footstep_wet_stone"
 ##     # in your bank (or matching whatever suffix you chose).
 func register_material(opts: Dictionary) -> int:
-	if not is_initialized():
+	if not _check_init("register_material"):
 		return MATERIAL_DEFAULT
 	var id: int = _next_custom_material_id
 	_next_custom_material_id += 1
@@ -1605,7 +2123,7 @@ func register_material(opts: Dictionary) -> int:
 ## referenced by ReverbZone / AudioMaterialTag / etc. will fall
 ## through to Default after unregistration.
 func unregister_material(id: int) -> bool:
-	if not is_initialized():
+	if not _check_init("unregister_material"):
 		return false
 	if id < MATERIAL_CUSTOM_BASE:
 		return false
@@ -1617,7 +2135,7 @@ func unregister_material(id: int) -> bool:
 ## v0.49.0: return all custom material IDs currently registered.
 ## Useful for debug UIs that enumerate the material catalog.
 func get_custom_material_ids() -> Array:
-	if not is_initialized():
+	if not _check_init("get_custom_material_ids"):
 		return []
 	return _custom_materials.keys()
 
@@ -1654,7 +2172,7 @@ func get_custom_material_ids() -> Array:
 ## The old name is preserved as a deprecated alias below for one
 ## release; migrate calls to this `get_` form.
 func get_reverb_preset_for_material(material: int) -> Dictionary:
-	if not is_initialized():
+	if not _check_init("get_reverb_preset_for_material"):
 		return {}
 	# v0.49.0: custom materials take precedence. Built-in IDs (0-12)
 	# fall through to the C++ engine table.
@@ -1700,7 +2218,7 @@ func reverb_preset_for_material(material: int) -> Dictionary:
 ## getter. The old name is preserved as a deprecated alias below
 ## for one release; migrate calls to this `get_` form.
 func get_material_eq_for_material(material: int) -> Dictionary:
-	if not is_initialized():
+	if not _check_init("get_material_eq_for_material"):
 		return {}
 	# v0.49.0: custom materials take precedence. Built-in IDs (0-12)
 	# fall through to the C++ engine table.
@@ -1714,6 +2232,48 @@ func get_material_eq_for_material(material: int) -> Dictionary:
 ## the pre-v0.44.2 name still works. Will be removed in v0.46.0.
 func material_eq_for_material(material: int) -> Dictionary:
 	return get_material_eq_for_material(material)
+
+## v0.60.0: same as material_from_collider but returns the
+## GoolAudioMaterial Resource when one is set as collider metadata,
+## preserving its override_enabled / per-band override fields.
+## Falls back to int (MATERIAL_DEFAULT or group lookup) when no
+## resource is set.
+##
+## Designers who want .tres-authored EQ overrides to flow through
+## play_impact_sound should use this instead of
+## material_from_collider:
+##
+##   var mat = Gool.material_resource_from_collider(hit.collider)
+##   Gool.play_impact_sound("bullet_impact", hit.position, mat)
+##
+## play_impact_sound accepts both forms (int or Resource).
+## material_from_collider() continues to return just int and is
+## the right choice for callers that don't need override values.
+##
+## Returns: GoolAudioMaterial Resource when collider metadata is
+## one; otherwise int (MATERIAL_DEFAULT for unknown).
+func material_resource_from_collider(node: Node) -> Variant:
+	if node == null:
+		return MATERIAL_DEFAULT
+	# 1. Metadata path: prefer the resource form (preserves overrides).
+	if node.has_meta("gool_audio_material"):
+		var meta = node.get_meta("gool_audio_material")
+		if meta is GoolAudioMaterial:
+			return meta
+		if meta is int:
+			return meta
+		# Duck-type fallback for older custom resource scripts
+		# without class_name. Same conservative path
+		# material_from_collider uses.
+		if meta != null and "material" in meta:
+			return int(meta.material)
+	# 2. Group fallback — group is a string tag, no override fields
+	# to preserve, so return as int.
+	for i in range(_MATERIAL_NAMES.size()):
+		if node.is_in_group("audio_material:" + _MATERIAL_NAMES[i]):
+			return i
+	return MATERIAL_DEFAULT
+
 
 ## Resolve a Node's AudioMaterial. Checks two sources in order:
 ##
@@ -1778,8 +2338,40 @@ func material_from_collider(node: Node) -> int:
 ##
 ## For non-by_material groups (or plain sounds), `material` is
 ## ignored and behavior matches `play_sound_at_location`.
-func play_impact_sound(name: String, position: Vector3, material: int) -> void:
-	if not is_initialized():
+## v0.60.0: `material` accepts either an int (legacy, fast C++ path)
+## OR a GoolAudioMaterial Resource (new, preserves override fields).
+## Passing the resource is how designers get per-instance EQ tweaks
+## (override_enabled=true on the .tres) routed through this call.
+## Passing an int continues to work unchanged — backward compat for
+## every existing caller.
+##
+## When given a Resource with override_enabled=false, behavior is
+## identical to passing `.material` (the int): zero override cost,
+## C++ fast path. When given a Resource with override_enabled=true,
+## the per-band override values flow through the GDScript-side
+## apply helper (same path v0.36.0 intensity scaling uses).
+func play_impact_sound(name: String, position: Vector3,
+		material) -> void:
+	if not _check_init("play_impact_sound"):
+		return
+
+	# v0.60.0: unwrap Resource → (material_int, override_curve_or_null).
+	# Override-disabled resources fall through to the int path so
+	# they take the C++ fast path; only override-enabled resources
+	# get the slower GDScript apply.
+	var material_int: int = MATERIAL_DEFAULT
+	var override_curve: Dictionary = {}
+	if material is int:
+		material_int = material
+	elif material is GoolAudioMaterial:
+		material_int = material.material
+		if material.override_enabled:
+			override_curve = material.get_curve()
+	else:
+		push_warning("[gool] play_impact_sound: invalid material "
+				+ "argument (expected int or GoolAudioMaterial, "
+				+ "got %s). Defaulting to MATERIAL_DEFAULT."
+				% typeof(material))
 		return
 
 	# v0.49.0: custom material path. Custom materials live entirely
@@ -1790,8 +2382,8 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 	# using the registered custom EQ dict (the C++
 	# apply_material_eq_to_bus would fall through to Default for an
 	# unrecognized material ID).
-	if _custom_materials.has(material):
-		var entry: Dictionary = _custom_materials[material]
+	if _custom_materials.has(material_int):
+		var entry: Dictionary = _custom_materials[material_int]
 		var suffix: String = String(entry.get("impact_sound_suffix", ""))
 		var effective_name: String = name
 		if not suffix.is_empty():
@@ -1804,6 +2396,21 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 				and not bool(custom_eq.get("is_neutral", false)):
 			_apply_custom_material_eq_to_bus(_impact_eq_bus_name, custom_eq)
 		play_3d(effective_name, position, 128)
+		return
+
+	# v0.60.0: per-instance override path. The resource provided a
+	# custom curve via override_enabled=true. Apply it through the
+	# same GDScript helper the custom material path uses (intensity
+	# scaling included). We use the curve directly rather than
+	# routing through _apply_scaled_material_eq_to_bus(int) so the
+	# engine table doesn't get queried again.
+	if not override_curve.is_empty():
+		if _impact_eq_bus_name != "" \
+				and not bool(override_curve.get("is_neutral", false)):
+			_apply_custom_material_eq_to_bus(_impact_eq_bus_name, override_curve)
+		# Sound variant lookup still uses the material int (so a
+		# Concrete override still picks Concrete impact variants).
+		_runtime.play_sound_at_location_for_material(name, position, material_int)
 		return
 
 	# v0.34.0: push the material's EQ curve to the impact bus
@@ -1827,13 +2434,13 @@ func play_impact_sound(name: String, position: Vector3, material: int) -> void:
 	# to the three gain bands). At intensity exactly 1.0, the
 	# C++ binding is cheaper and the result identical.
 	if _impact_eq_bus_name != "" \
-			and material != MATERIAL_DEFAULT \
-			and material != MATERIAL_AIR:
+			and material_int != MATERIAL_DEFAULT \
+			and material_int != MATERIAL_AIR:
 		if abs(_eq_intensity - 1.0) < 0.001:
-			_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material)
+			_runtime.apply_material_eq_to_bus(_impact_eq_bus_name, material_int)
 		else:
-			_apply_scaled_material_eq_to_bus(_impact_eq_bus_name, material)
-	_runtime.play_sound_at_location_for_material(name, position, material)
+			_apply_scaled_material_eq_to_bus(_impact_eq_bus_name, material_int)
+	_runtime.play_sound_at_location_for_material(name, position, material_int)
 
 # v0.49.0: apply a custom-material EQ dict to a bus. Used by
 # play_impact_sound for custom materials. Mirrors the structure of
@@ -1867,10 +2474,10 @@ func _apply_custom_material_eq_to_bus(bus_name: String, eq: Dictionary) -> void:
 func _setup_impact_eq() -> void:
 	# Register the project setting on first run so it appears
 	# editable under Project Settings → General → Gool → Material Eq.
-	# Default "ImpactEq" matches the bus name shipped in the
-	# default gool config; empty string disables the auto-EQ
-	# behavior entirely (designers can opt out without touching
-	# their bus graph).
+	# Default "ImpactEq" is the conventional name for the EQ bus,
+	# but the FEATURE is opt-in: you opt in by adding a bus with
+	# that name + the right 3-biquad shape to your gool config.
+	# Just leaving the default doesn't enable it.
 	if not ProjectSettings.has_setting(_IMPACT_EQ_BUS_SETTING):
 		ProjectSettings.set_setting(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
 		ProjectSettings.set_initial_value(_IMPACT_EQ_BUS_SETTING, "ImpactEq")
@@ -1881,18 +2488,27 @@ func _setup_impact_eq() -> void:
 		# coloring through some other mechanism).
 		return
 
-	# Verify the bus exists with the right shape.
+	# v0.55.0: cheap existence check via the cached bus list. The
+	# pre-v0.55.0 path called _runtime.get_bus_effects(configured)
+	# immediately, which triggers the C++ side's "unknown bus" log
+	# on every fresh install (no project ships with an ImpactEq bus
+	# by default — not even the FPS template). Now we use the cache
+	# and stay silent when the bus is missing, matching the v0.35.0
+	# listener_eq graceful-degradation pattern. The feature being
+	# opt-in means missing-bus is the EXPECTED default state, not
+	# a configuration error worth warning about.
+	if not has_bus(configured):
+		return
+
+	# Bus exists — now verify its effect chain matches the contract.
+	# If the chain is misshapen (wrong count, wrong kinds), THAT is
+	# a real misconfiguration worth a warning: the designer added
+	# the bus on purpose but got the contract wrong.
 	var effects: Array = _runtime.get_bus_effects(configured)
 	if effects.is_empty():
-		push_warning(
-			"[gool] Phase 6.B impact EQ disabled: bus '%s' " % configured
-			+ "not found in the gool config (or has no effects). "
-			+ "Add a bus with 3 biquads (LowShelf → Peak → HighShelf) "
-			+ "to enable automatic per-material impact coloring. "
-			+ "See docs/cookbook.md section 14 for the authoring "
-			+ "contract. Set gool/material_eq/impact_bus to '' to "
-			+ "suppress this warning."
-		)
+		# Bus exists in config but has no effects yet. Same opt-in
+		# logic: stay quiet. Designer either hasn't finished adding
+		# the chain or wants the bus for some other purpose.
 		return
 	if effects.size() < 3:
 		push_warning(
@@ -1946,13 +2562,19 @@ func _setup_listener_eq() -> void:
 		# that don't want this strong an editorial effect.
 		return
 
+	# v0.55.0: same cache-based pre-check as _setup_impact_eq. The
+	# GDScript already stayed silent when the bus was missing, but
+	# the C++ side's get_bus_effects() call would still log
+	# "unknown bus" each time. Now we skip the C++ call entirely
+	# when the bus isn't in the cache.
+	if not has_bus(configured):
+		return
+
 	var effects: Array = _runtime.get_bus_effects(configured)
 	if effects.is_empty():
-		# Listener EQ bus not in config. This is the *expected*
-		# case for projects that haven't opted in to Phase 6.C
-		# yet — don't warn unless a ReverbZone actually requests
-		# listener EQ (handled in the zone's _ready). Stay quiet
-		# here.
+		# Bus exists in config but has no effects yet. Same opt-in
+		# logic: stay quiet — designer hasn't finished setup or
+		# wants the bus for some other purpose.
 		return
 	if effects.size() < 3:
 		push_warning(
@@ -2049,7 +2671,7 @@ func get_eq_intensity() -> float:
 # bus doesn't exist, or first 3 effects aren't biquads.
 func _apply_scaled_material_eq_to_bus(bus_name: String,
 									   material: int) -> bool:
-	if not is_initialized():
+	if not _check_init("_apply_scaled_material_eq_to_bus"):
 		return false
 	var curve: Dictionary = material_eq_for_material(material)
 	if curve.is_empty():
@@ -2090,42 +2712,113 @@ func _apply_scaled_material_eq_to_bus(bus_name: String,
 ## (e.g. a custom UI sound, a cinematic moment, a one-off whose
 ## bus isn't the default impact bus).
 func apply_material_eq_to_bus(bus_name: String, material: int) -> bool:
-	if not is_initialized():
+	if not _check_init("apply_material_eq_to_bus"):
 		return false
 	return _runtime.apply_material_eq_to_bus(bus_name, material)
 
+## v0.59.3 (Phase 6.E.1 audition): pure-DSP offline processing of a
+## sample buffer through a material's EQ curve. Used by the editor
+## inspector's audition button so designers can hear what a material
+## sounds like without running an F5 session.
+##
+## Bit-identical to what the runtime impact / listener EQ paths
+## produce for the same input (uses the same BiquadFilterEffect
+## class with the same RBJ cookbook coefficients).
+##
+## NOTE: This calls a STATIC method on GoolAudioRuntime; it does not
+## require the autoload to be initialized. Editor inspector code
+## can equivalently call `GoolAudioRuntime.process_buffer_through_material_eq`
+## directly — both routes hit the same C++ entry point. This wrapper
+## exists so game-context callers have a stable Gool.* API surface
+## consistent with every other gool getter.
+##
+## buffer    : a PackedFloat32Array of mono input samples. Typical
+##             length is 1 second at the target sample rate.
+## material  : AudioMaterial int. Same range/semantics as the rest
+##             of the material API.
+## intensity : the realism-intensity multiplier scaling all three
+##             band gains. Defaults to 1.0 (curves as-tabled).
+## sample_rate : 48000 default. Should match whatever the caller
+##             plays the returned buffer back at.
+##
+## Returns: a PackedFloat32Array of the same length as input.
+## Empty array on invalid input.
+func process_buffer_through_material_eq(buffer: PackedFloat32Array,
+		material: int, intensity: float = 1.0,
+		sample_rate: int = 48000) -> PackedFloat32Array:
+	# No is_initialized() check: the underlying C++ method is static
+	# and works regardless of runtime init state. Editor inspector
+	# code calls GoolAudioRuntime.process_buffer_through_material_eq()
+	# directly, bypassing this wrapper.
+	return GoolAudioRuntime.process_buffer_through_material_eq(
+			buffer, material, intensity, sample_rate)
+
+## v0.71.0: Convenience wrapper around `create_emitter` for the
+## most common case: "just make a sound play at a position, I don't
+## need to control it."
+##
+## Returns the emitter handle for parity with `create_emitter`, but
+## you can ignore the return value for true fire-and-forget. The
+## sound auto-frees when it finishes.
+##
+## Defaults: not looping, no fade-in. If you need either, use
+## `create_emitter` directly.
+##
+## Equivalent to: `Gool.create_emitter(name, position, false, 0.0)`
+##
+## Example:
+##   [codeblock]
+##   func _on_button_pressed() -> void:
+##       Gool.play_one_shot("ui_click")            # at origin
+##   
+##   func _on_enemy_hit(pos: Vector3) -> void:
+##       Gool.play_one_shot("hit_sfx", pos)        # at a 3D pos
+##   [/codeblock]
+func play_one_shot(name: String, position: Vector3 = Vector3.ZERO) -> int:
+	return create_emitter(name, position, false, 0.0)
+
 func create_emitter(name: String, position: Vector3,
 					 looping: bool = false,
-					 fade_in_ms: float = 0.0) -> int:
-	if not is_initialized():
+					 fade_in_ms: float = 0.0,
+					 priority: int = -1) -> int:
+	if not _check_init("create_emitter"):
 		return 0
-	return _runtime.create_emitter(name, position, looping, fade_in_ms)
+	return _runtime.create_emitter(name, position, looping, fade_in_ms, priority)
 
 func destroy_emitter(handle: int, fade_out_ms: float = 0.0) -> void:
-	if not is_initialized():
+	if not _check_init("destroy_emitter"):
 		return
 	_runtime.destroy_emitter(handle, fade_out_ms)
 
+## Returns the priority assigned to a live emitter (0..255), or -1 if
+## the handle is invalid / the emitter has been destroyed / the
+## runtime isn't initialized. New in v0.74.0. See create_emitter's
+## priority parameter for the band convention.
+func get_emitter_priority(handle: int) -> int:
+	if not _check_init("get_emitter_priority"):
+		return -1
+	return _runtime.get_emitter_priority(handle)
+
 func set_emitter_transform(handle: int, position: Vector3,
 							  forward: Vector3, velocity: Vector3) -> void:
-	if not is_initialized():
+	if not _check_init("set_emitter_transform"):
 		return
 	_runtime.set_emitter_transform(handle, position, forward, velocity)
 
 func set_emitter_playback_speed(handle: int, speed: float,
 								   smoothing_ms: float = 50.0) -> void:
-	if not is_initialized():
+	if not _check_init("set_emitter_playback_speed"):
 		return
 	_runtime.set_emitter_playback_speed(handle, speed, smoothing_ms)
 
 func set_listener_transform(position: Vector3, forward: Vector3,
 							  velocity: Vector3 = Vector3.ZERO) -> void:
-	if not is_initialized():
+	if not _check_init("set_listener_transform"):
 		return
 	_runtime.set_listener_transform(position, forward, velocity)
 
 func register_voice_source(player_id: int) -> bool:
-	if not is_initialized():
+	if not _check_init("register_voice_source"):
 		return false
 	var ok: bool = _runtime.register_voice_source(player_id)
 	# v0.44.0: track registered player IDs so the editor's Live
@@ -2135,6 +2828,46 @@ func register_voice_source(player_id: int) -> bool:
 	if ok and not _known_voice_player_ids.has(player_id):
 		_known_voice_player_ids.append(player_id)
 	return ok
+
+## v0.76.0: explicit unregister for voice sources. Pairs with
+## register_voice_source; the binding internally rounds the
+## player_id → VoiceSourceHandle lookup so game code can stay
+## peer-id-keyed throughout. Returns true on successful unregister,
+## false if the player_id was never registered or the engine
+## rejected the call.
+##
+## Idempotent: calling unregister twice for the same player_id is
+## safe — the second call returns false (not an error). Production
+## use cases: clean peer disconnect handling, voice scenario
+## teardown in tests, per-room voice channel lifecycle.
+func unregister_voice_source(player_id: int) -> bool:
+	if not _check_init("unregister_voice_source"):
+		return false
+	var ok: bool = _runtime.unregister_voice_source(player_id)
+	# Mirror the tracking list so the editor's Live Stats panel
+	# stops showing peers that have been torn down.
+	if ok:
+		_known_voice_player_ids.erase(player_id)
+	return ok
+
+## v0.76.0: per-player replication stats for multiplayer flood-
+## protection verification. The aggregate counters in
+## get_render_stats answer "is the limiter firing across the
+## population," but not "is it firing on THIS peer specifically."
+## Returns a Dictionary with three int keys:
+##   - events_accepted    : packets/events that passed the bucket
+##   - events_rate_limited: rejected by the per-category limiter
+##   - events_rejected    : rejected by other paths (validator,
+##                          new-id-budget, etc.)
+##
+## Empty Dictionary if player_id has no slot in the rate limiter's
+## table (never seen, or LRU-evicted under load). Check
+## result.is_empty() to distinguish "no slot" from "slot exists
+## with zero activity."
+func get_per_player_replication_stats(player_id: int) -> Dictionary:
+	if not _check_init("get_per_player_replication_stats"):
+		return {}
+	return _runtime.get_per_player_replication_stats(player_id)
 
 ## v0.44.0: returns the player IDs the autoload knows about
 ## (i.e. that have been passed to register_voice_source since
@@ -2154,19 +2887,25 @@ func submit_voice_packet(player_id: int, bytes: PackedByteArray,
 							sequence_number: int,
 							send_timestamp_ms: int,
 							arrival_timestamp_ms: int = -1) -> bool:
-	if not is_initialized():
+	if not _check_init("submit_voice_packet"):
 		return false
+	# v0.79.0: drop packets from peers the local player has muted.
+	# Returning true ("accepted") suppresses any caller-side retry
+	# logic — from the network's perspective the packet was handled;
+	# the local user just chose not to listen.
+	if _muted_voice_peers.has(player_id):
+		return true
 	return _runtime.submit_voice_packet(
 		player_id, bytes, sequence_number,
 		send_timestamp_ms, arrival_timestamp_ms)
 
 func get_voice_jitter_ms(player_id: int) -> float:
-	if not is_initialized():
+	if not _check_init("get_voice_jitter_ms"):
 		return 0.0
 	return _runtime.get_voice_jitter_ms(player_id)
 
 func get_voice_packet_loss_ratio(player_id: int) -> float:
-	if not is_initialized():
+	if not _check_init("get_voice_packet_loss_ratio"):
 		return 0.0
 	return _runtime.get_voice_packet_loss_ratio(player_id)
 
@@ -2177,7 +2916,7 @@ func get_voice_packet_loss_ratio(player_id: int) -> float:
 ## C++ binding existed all along, just not surfaced through the
 ## autoload that VoiceChatPlayer reaches through.
 func set_voice_source_muted(player_id: int, muted: bool) -> bool:
-	if not is_initialized():
+	if not _check_init("set_voice_source_muted"):
 		return false
 	return _runtime.set_voice_source_muted(player_id, muted)
 
@@ -2185,14 +2924,14 @@ func set_voice_source_muted(player_id: int, muted: bool) -> bool:
 ## Returns true on success. Same backfill reason as
 ## set_voice_source_muted above.
 func set_voice_source_volume(player_id: int, volume: float) -> bool:
-	if not is_initialized():
+	if not _check_init("set_voice_source_volume"):
 		return false
 	return _runtime.set_voice_source_volume(player_id, volume)
 
 # ---- Replication / multiplayer ----
 
 func on_tick_advanced(simulation_tick: int, server_time_ms: int) -> void:
-	if not is_initialized():
+	if not _check_init("on_tick_advanced"):
 		return
 	_runtime.on_tick_advanced(simulation_tick, server_time_ms)
 
@@ -2200,7 +2939,7 @@ func submit_event_local(sound_name: String, position: Vector3,
 						  prediction_id: int = 0,
 						  priority: int = 128,
 						  timestamp_ms: int = 0) -> void:
-	if not is_initialized():
+	if not _check_init("submit_event_local"):
 		return
 	_runtime.submit_event_local(sound_name, position,
 								  prediction_id, priority, timestamp_ms)
@@ -2209,28 +2948,51 @@ func submit_replicated_event(sound_name: String, position: Vector3,
 							   simulation_tick: int = 0,
 							   server_time_ms: int = 0,
 							   priority: int = 128) -> void:
-	if not is_initialized():
+	if not _check_init("submit_replicated_event"):
 		return
 	_runtime.submit_replicated_event(sound_name, position,
 									   simulation_tick, server_time_ms,
 									   priority)
 
+# v0.75.0: per-peer + per-category replicated event submission.
+# Production game code typically uses the multiplayer_bridge's RPC path
+# which derives peer identity from Godot's MultiplayerAPI. This direct
+# form is for stress tests, replay tools, and integration tests that
+# need to simulate specific peers without a real network.
+#
+# Category indices match AudioCategory:
+#   0 = SFX (default)    3 = Ambience
+#   1 = Voice            4 = UI
+#   2 = Music            5 = Dialogue
+# Out-of-range category falls back to SFX in the binding.
+func submit_replicated_event_as_peer(peer_id: int, sound_name: String,
+									   position: Vector3,
+									   simulation_tick: int = 0,
+									   server_time_ms: int = 0,
+									   priority: int = 128,
+									   category: int = 0) -> void:
+	if not _check_init("submit_replicated_event_as_peer"):
+		return
+	_runtime.submit_replicated_event_as_peer(peer_id, sound_name, position,
+											   simulation_tick, server_time_ms,
+											   priority, category)
+
 func cancel_predicted_event(prediction_id: int,
 							   fade_out_ms: float = 50.0) -> void:
-	if not is_initialized():
+	if not _check_init("cancel_predicted_event"):
 		return
 	_runtime.cancel_predicted_event(prediction_id, fade_out_ms)
 
 func update_replicated_transform(handle: int, position: Vector3,
 									forward: Vector3, velocity: Vector3,
 									simulation_tick: int) -> void:
-	if not is_initialized():
+	if not _check_init("update_replicated_transform"):
 		return
 	_runtime.update_replicated_transform(handle, position, forward,
 											velocity, simulation_tick)
 
 func make_prediction_id() -> int:
-	if not is_initialized():
+	if not _check_init("make_prediction_id"):
 		return 0
 	return _runtime.make_prediction_id()
 
@@ -2266,13 +3028,24 @@ func play_networked(sound_name: String,
 					   position: Vector3 = Vector3.ZERO,
 					   volume_db: float = 0.0,
 					   pitch: float = 1.0) -> void:
-	if not is_initialized():
-		push_error(
-			"[gool] play_networked('%s') called before runtime init. "
-			% sound_name
-			+ "Either wait for the ready_to_play signal or call from "
-			+ "_ready() after the autoload has finished initializing."
-		)
+	if not _check_init("play_networked"):
+		# v0.54.2: rate-limit this warning. Auto-firing weapons or
+		# any sound triggered every frame can spam 40+ identical
+		# errors per second when init has failed; the underlying
+		# init failure is already in the log at this point and is
+		# the actionable diagnostic. Emit once and let the cascade
+		# stay quiet so the real root cause stays visible.
+		if not _play_networked_warning_emitted:
+			_play_networked_warning_emitted = true
+			push_error(
+				"[gool] play_networked('%s') called before runtime init. "
+				% sound_name
+				+ "Either wait for the ready_to_play signal or call from "
+				+ "_ready() after the autoload has finished initializing. "
+				+ "(Further warnings of this kind suppressed for this "
+				+ "session — check the FIRST error in the log for the "
+				+ "real cause.)"
+			)
 		return
 	var t_ms: int = Time.get_ticks_msec()
 	# Local immediate play.
@@ -2299,7 +3072,7 @@ func play_networked(sound_name: String,
 func _rpc_play_networked(sound_name: String, position: Vector3,
 							volume_db: float, pitch: float,
 							sender_t_ms: int) -> void:
-	if not is_initialized():
+	if not _check_init("_rpc_play_networked"):
 		return
 	# Optional staleness check: if the event is more than 250ms old
 	# by our clock, drop it. Matches the default category-staleness
@@ -2332,7 +3105,7 @@ func _rpc_play_networked(sound_name: String, position: Vector3,
 # Returns true if the event was queued; false if the runtime is not
 # initialized or the queue is full.
 func play_3d(name: String, position: Vector3, priority: int = 128) -> bool:
-	if not is_initialized():
+	if not _check_init("play_3d"):
 		return false
 	# v0.46.1 fix: submit_event_local is void on the C++ side. Pre-
 	# v0.46.1 this function tried to capture an int return value
@@ -2713,3 +3486,576 @@ var _mirrored_buses: Dictionary = {}
 # set_bus_gain_db every frame for static volumes.
 var _mirrored_last_db: Dictionary = {}
 
+
+# ===========================================================================
+# v0.78.1: Custom Godot Performance monitors
+#
+# Surfaces gool's internal stats as graphs in Debugger → Monitors so the
+# host game (and the stress test rig) can correlate engine-level CPU cost
+# with Godot's frame budget in one view. Per the Godot 4.0+ Performance
+# API, registered callbacks fire only while the Monitors panel is open
+# watching that monitor — in a shipped game with no debugger, no cost.
+#
+# Audience-first design: each monitor's name is what a Godot dev with
+# little audio background would search for ("why is my game stuttering
+# when this sound plays") — concrete signals, not internal jargon.
+#
+# Two kinds of monitor:
+#
+#   Snapshots (gool/load/*, gool/interest/*, gool/runtime/*, gool/render/*)
+#     return the current value of a point-in-time stat. Examples:
+#     active emitters right now; microseconds the last Update tick took.
+#
+#   Rates (gool/eviction/*, gool/voice/*, gool/replication/*)
+#     convert cumulative counters into per-second rates inside the
+#     callback. Without this, a monotonically-growing counter just plots
+#     as a ramp — useless for spotting the spike that matters.
+#
+# Determinism note: gool/runtime/update_tick_us reads wall-clock time
+# inside the engine (see Stats::updateTickUs comment). It must not be
+# part of any replay-comparison surface. The other monitors derive
+# from deterministic counters and are replay-safe.
+
+# Names of every monitor we've registered, for _teardown_perf_monitors.
+# Filled by _setup_perf_monitors; cleared on shutdown.
+var _perf_monitor_names: Array[String] = []
+
+# Per-monitor state for rate computation. Keys are monitor names; values
+# are { last_ms: int, last_val: int }. Initialized lazily on first call.
+var _perf_rate_state: Dictionary = {}
+
+func _setup_perf_monitors() -> void:
+	# Performance is the engine-wide singleton in 4.0+. add_custom_monitor
+	# takes (StringName name, Callable callback, Array args = []).
+	# Callbacks must return a Variant convertible to a Number for graphing.
+	if _runtime == null:
+		return
+
+	# --- Snapshots ---------------------------------------------------------
+	_register_perf_monitor("gool/runtime/update_tick_us",
+		_perf_snap.bind("update_tick_us"))
+	_register_perf_monitor("gool/load/active_emitters",
+		_perf_snap.bind("active_emitters"))
+	_register_perf_monitor("gool/load/mixer_voices_active",
+		_perf_snap.bind("mixer_voices_active"))
+	_register_perf_monitor("gool/load/active_voice_sources",
+		_perf_snap.bind("active_voice_sources"))
+	_register_perf_monitor("gool/interest/processed_last_tick",
+		_perf_snap.bind("emitters_processed_last_tick"))
+	_register_perf_monitor("gool/interest/skipped_last_tick",
+		_perf_snap.bind("emitters_skipped_by_interest_last_tick"))
+	# Cumulative but kept as a snapshot: ANY nonzero value is the alarm,
+	# and the absolute number is more informative than a rate. If you see
+	# this graph leave zero, something is wrong with audio output.
+	_register_perf_monitor("gool/render/underruns",
+		_perf_snap.bind("render_underruns"))
+
+	# --- Rates -------------------------------------------------------------
+	_register_perf_monitor("gool/eviction/one_shots_per_sec",
+		_perf_rate.bind("one_shot_evictions"))
+	_register_perf_monitor("gool/eviction/persistent_per_sec",
+		_perf_rate.bind("emitters_evicted_by_priority"))
+	_register_perf_monitor("gool/eviction/full_pool_drops_per_sec",
+		_perf_rate.bind("one_shots_dropped_full_pool"))
+	_register_perf_monitor("gool/voice/packets_accepted_per_sec",
+		_perf_rate.bind("voice_packets_accepted"))
+	_register_perf_monitor("gool/voice/budget_dropped_per_sec",
+		_perf_rate.bind("voice_frames_budget_dropped"))
+	_register_perf_monitor("gool/voice/bytes_sent_per_sec",
+		_perf_rate.bind("voice_bytes_sent"))
+	_register_perf_monitor("gool/replication/transforms_dropped_per_sec",
+		_perf_rate.bind("transforms_dropped_by_priority"))
+	# Special case: rate_limited_by_category is an Array of 6, not a
+	# scalar. We graph the sum across categories. Per-category breakdown
+	# is available via Gool.get_stats() for a debug UI that wants it.
+	_register_perf_monitor("gool/replication/rate_limited_per_sec",
+		_perf_rate_array_sum.bind("replication_rate_limited_by_category"))
+
+func _teardown_perf_monitors() -> void:
+	# Performance.remove_custom_monitor was added in Godot 4.3; on
+	# earlier versions the registration leaks the callable. Guard with
+	# has_method so the singleton still loads on 4.0/4.1/4.2 even
+	# though shutdown won't be fully clean there.
+	if not Performance.has_method("remove_custom_monitor"):
+		_perf_monitor_names.clear()
+		return
+	for name in _perf_monitor_names:
+		Performance.remove_custom_monitor(name)
+	_perf_monitor_names.clear()
+	_perf_rate_state.clear()
+
+func _register_perf_monitor(name: String, callback: Callable) -> void:
+	Performance.add_custom_monitor(name, callback)
+	_perf_monitor_names.append(name)
+
+# Snapshot callback: returns the current integer value of a stats key.
+# Returns 0 if the runtime is gone or the key is missing — avoids
+# raising errors during teardown races.
+#
+# v0.78.3: calls _runtime.get_render_stats() — NOT get_stats(). The
+# binding's GDScript-visible method name (set in gool_godot.cpp's
+# _bind_methods via D_METHOD("get_render_stats", ...)) is
+# get_render_stats. v0.78.1 shipped this and the two callbacks below
+# calling the wrong name; the bug was invisible to compile-time and
+# unit tests, surfaced only at runtime when the Performance monitor
+# polled the callback. Classic static-reading-isn't-verification
+# trap from the recurring lessons.
+func _perf_snap(key: String) -> int:
+	if _runtime == null or not _runtime.is_initialized():
+		return 0
+	var stats : Dictionary = _runtime.get_render_stats()
+	return int(stats.get(key, 0))
+
+# Rate callback: returns per-second rate computed from the delta in a
+# cumulative counter since the last callback invocation. The first call
+# returns 0 (no delta to compute against). Per-key state lives in
+# _perf_rate_state so each monitor tracks its own last-sampled value.
+func _perf_rate(key: String) -> float:
+	if _runtime == null or not _runtime.is_initialized():
+		return 0.0
+	var stats : Dictionary = _runtime.get_render_stats()
+	var current : int = int(stats.get(key, 0))
+	return _compute_rate(key, current)
+
+# Same as _perf_rate but for fields that are Arrays of ints; sums the
+# array first, then computes the rate of the sum.
+func _perf_rate_array_sum(key: String) -> float:
+	if _runtime == null or not _runtime.is_initialized():
+		return 0.0
+	var stats : Dictionary = _runtime.get_render_stats()
+	var arr = stats.get(key, [])
+	if not (arr is Array):
+		return 0.0
+	var total : int = 0
+	for v in arr:
+		total += int(v)
+	return _compute_rate(key, total)
+
+# Shared delta-over-dt helper. Uses Time.get_ticks_msec() to measure the
+# real interval between callback invocations (the Performance polling
+# rate is engine-controlled and not exposed to user code, so we sample
+# our own clock). Returns 0.0 on first call, or when dt is zero or
+# negative (clock skew shouldn't happen with monotonic ticks_msec, but
+# guarded anyway).
+func _compute_rate(key: String, current: int) -> float:
+	var now_ms := Time.get_ticks_msec()
+	var state : Dictionary = _perf_rate_state.get(key, {})
+	if state.is_empty():
+		_perf_rate_state[key] = {"last_ms": now_ms, "last_val": current}
+		return 0.0
+	var last_ms : int = state["last_ms"]
+	var last_val : int = state["last_val"]
+	var dt_ms : int = now_ms - last_ms
+	# Refresh state for next call regardless of whether we return a rate.
+	state["last_ms"] = now_ms
+	state["last_val"] = current
+	if dt_ms <= 0:
+		return 0.0
+	return float(current - last_val) * 1000.0 / float(dt_ms)
+
+# ===========================================================================
+# v0.78.5: Gool.diagnose()
+#
+# Prints (well, returns) a self-test report covering every step between
+# "addon is on disk" and "audio is playing." The most common gool support
+# question is "I installed it and it's not working" — diagnose() turns
+# that into "step N failed, here's what to fix" without anyone having to
+# read source. Equivalent to `cargo --version && cargo check` for Rust:
+# not glamorous, but the most-asked-for tool for any toolchain.
+#
+# Returns the report as a String so callers can decide what to do with
+# it: `print(Gool.diagnose())` for the Output panel, or display in a UI,
+# or capture into a test assertion. The format is plain text (no BBCode)
+# because Godot's Output panel renders monospace and ignores rich markup.
+#
+# Status conventions per line:
+#     [ok]   - check passed
+#     [warn] - check passed but with a caveat (non-fatal)
+#     [fail] - check failed, gool will not work as expected; hint follows
+# Final line is a summary: "All checks passed" or "N failure(s) detected".
+#
+# diagnose() can be called any time after _ready. Calling it before
+# _ready (during script load) returns a partial report — the runtime
+# checks will say "init has not run" rather than crashing.
+func diagnose() -> String:
+	var lines: Array = []
+	var failures: int = 0
+	var warnings: int = 0
+	lines.append("gool diagnose")
+	lines.append("=============")
+
+	# ── Version ────────────────────────────────────────────────────────
+	# get_version() returns {string, full, commit} from the C++ binding's
+	# version stamp. If the binding didn't load at all, calling it would
+	# fail earlier than this — but we guard anyway in case _runtime is
+	# nil from a non-_ready call.
+	var v_str: String = "?"
+	if _runtime != null:
+		var v: Dictionary = _runtime.get_version()
+		v_str = "%s  (commit %s)" % [
+			v.get("full", "?"), v.get("commit", "unknown")]
+	lines.append("  [ok]   version           %s" % v_str)
+
+	# ── Platform + binary ──────────────────────────────────────────────
+	# Read addons/gool/gool.gdextension as a ConfigFile and check that
+	# the library entry for the current OS points at a file that exists
+	# on disk. This catches the most common "I deployed to Linux and
+	# nothing happens" failure (no Linux build bundled).
+	var os_name: String = OS.get_name()
+	var platform_key: String = ""
+	match os_name:
+		"Windows":
+			platform_key = "windows.x86_64"
+		"Linux", "FreeBSD", "OpenBSD", "NetBSD":
+			platform_key = "linux.x86_64"
+		"macOS":
+			platform_key = "macos"
+		_:
+			platform_key = ""
+	lines.append("  [ok]   platform          %s" % os_name)
+	if platform_key == "":
+		failures += 1
+		lines.append("  [fail] binary            no known binary key for "
+			+ "platform '%s'" % os_name)
+		lines.append("         → gool currently ships builds for Windows, "
+			+ "Linux, and macOS x86_64. Other platforms need a custom build.")
+	else:
+		var gd := ConfigFile.new()
+		var err := gd.load("res://addons/gool/gool.gdextension")
+		if err != OK:
+			failures += 1
+			lines.append("  [fail] binary            "
+				+ "res://addons/gool/gool.gdextension missing or unreadable "
+				+ "(error %d)" % err)
+			lines.append("         → re-extract the gool addon. The "
+				+ ".gdextension file is required for Godot to find the DLL.")
+		else:
+			var dll_path: String = gd.get_value(
+				"libraries", platform_key, "")
+			if dll_path == "":
+				failures += 1
+				lines.append("  [fail] binary            "
+					+ ".gdextension has no entry for '%s'" % platform_key)
+				lines.append("         → this gool build was packaged "
+					+ "without a binary for your platform.")
+			elif not FileAccess.file_exists(dll_path):
+				failures += 1
+				lines.append(("  [fail] binary            "
+					+ "configured path missing: %s") % dll_path)
+				lines.append("         → the .gdextension references a file "
+					+ "that isn't there. Re-extract the addon, or verify "
+					+ "the install script didn't fail mid-download.")
+			else:
+				lines.append("  [ok]   binary            %s" % dll_path)
+
+	# ── Autoload ───────────────────────────────────────────────────────
+	# If we got into this method, the Gool autoload is registered by
+	# definition (otherwise the call site couldn't have resolved
+	# `Gool.diagnose()`). Report it for completeness so the user sees
+	# the full chain confirmed end-to-end.
+	if ProjectSettings.has_setting("autoload/Gool"):
+		var auto_path: String = ProjectSettings.get_setting(
+			"autoload/Gool", "")
+		lines.append("  [ok]   autoload          %s" % auto_path)
+	else:
+		# Reachable if the user calls diagnose() on a non-autoloaded
+		# instance, e.g. preloaded the singleton script and instantiated
+		# it manually. Surface as a warning rather than failure — the
+		# call worked, but most gool code paths assume Gool is at /root.
+		warnings += 1
+		lines.append("  [warn] autoload          "
+			+ "Gool is not configured as a project autoload")
+		lines.append("         → in Project Settings → Autoload, add "
+			+ "res://addons/gool/runtime_singleton.gd as 'Gool'.")
+
+	# ── Runtime init ───────────────────────────────────────────────────
+	if _runtime == null:
+		failures += 1
+		lines.append("  [fail] runtime           "
+			+ "_runtime is null (binding failed to instantiate)")
+		lines.append("         → almost always a DLL load failure. Check "
+			+ "Output for 'Failed to load GDExtension' near startup.")
+	elif not _runtime.is_initialized():
+		failures += 1
+		lines.append("  [fail] runtime           init() returned failure")
+		lines.append("         → check Output for 'gool runtime init "
+			+ "failed' near startup; the message names the cause.")
+	else:
+		lines.append("  [ok]   runtime           initialized")
+		var rate_label: String = ("%d Hz" % _diag_sample_rate
+			if _diag_sample_rate > 0 else "(not recorded)")
+		lines.append("  [ok]   sample rate       %s" % rate_label)
+		var buf_label: String = ("%d frames" % _diag_buffer_size
+			if _diag_buffer_size > 0 else "(not recorded)")
+		lines.append("  [ok]   buffer size       %s" % buf_label)
+		var graph_label: String = ("bus graph from config.json"
+			if _diag_has_bus_graph else "legacy single-master fallback")
+		lines.append("  [ok]   bus topology      %s" % graph_label)
+
+		# Backend description — usually includes the OS-level device
+		# name miniaudio opened (e.g. "WASAPI / Speakers (Realtek...)").
+		# Empty string is treated as warn, not fail: gool is technically
+		# running, just talking to a no-op or muted device.
+		var backend: String = _runtime.get_backend_description()
+		if backend == "":
+			warnings += 1
+			lines.append("  [warn] audio device      "
+				+ "backend returned empty description")
+			lines.append("         → the engine started but didn't open "
+				+ "a real audio device. Likely running headless or with "
+				+ "no system audio configured. Audio output will be silent.")
+		else:
+			lines.append("  [ok]   audio device      %s" % backend)
+
+	# ── Bus configuration ──────────────────────────────────────────────
+	if _runtime != null and _runtime.is_initialized():
+		var bus_stats: Array = _runtime.get_bus_stats()
+		if bus_stats.is_empty():
+			failures += 1
+			lines.append("  [fail] buses             "
+				+ "no buses registered (get_bus_stats empty)")
+			lines.append("         → bus graph parsing may have failed "
+				+ "silently. Re-check config.json against the schema.")
+		else:
+			# Pull bus names if the dictionaries carry them. The exact
+			# key varies by binding version — try common spellings and
+			# fall back to count-only if none hit.
+			var names: Array = []
+			for b in bus_stats:
+				if b is Dictionary:
+					var n = b.get("name", b.get("bus_name", ""))
+					if n != "":
+						names.append(n)
+			if names.is_empty():
+				lines.append("  [ok]   buses             %d configured"
+					% bus_stats.size())
+			else:
+				lines.append(("  [ok]   buses             %d: %s")
+					% [bus_stats.size(), ", ".join(names)])
+
+	# ── Performance monitors (v0.78.1+) ───────────────────────────────
+	# Spot-check that at least one well-known monitor name resolves. If
+	# the monitor isn't registered, the perf probe in the stress rig
+	# (and any host using Debugger → Monitors → gool/*) will silently
+	# read zero. Single-monitor check is enough — if one is registered
+	# they all are (they share a setup function).
+	if Performance.has_custom_monitor("gool/runtime/update_tick_us"):
+		lines.append("  [ok]   perf monitors     "
+			+ "registered (gool/* visible in Debugger → Monitors)")
+	else:
+		warnings += 1
+		lines.append("  [warn] perf monitors     "
+			+ "not registered — _setup_perf_monitors did not run")
+		lines.append("         → expected only if Performance is "
+			+ "unavailable (rare). Debugger → Monitors won't show "
+			+ "gool/* graphs.")
+
+	# ── Verdict ────────────────────────────────────────────────────────
+	lines.append("")
+	if failures == 0 and warnings == 0:
+		lines.append("All checks passed. gool is ready.")
+	elif failures == 0:
+		lines.append("Passed with %d warning(s). gool will work but "
+			% warnings + "review the [warn] lines above.")
+	else:
+		lines.append(("FAILED: %d failure(s)%s. Address [fail] lines "
+			+ "above; gool is not in a healthy state.")
+			% [failures,
+				(", %d warning(s)" % warnings if warnings > 0 else "")])
+	return "\n".join(lines)
+
+# ===========================================================================
+# v0.79.0: Player audio preferences (client-side settings)
+#
+# Public API for a game's settings menu to expose audio controls that
+# only affect the local player's experience. Server-authoritative
+# settings (bus topology, mix snapshots, voice routing policy) remain
+# the responsibility of set_master_volume_db / set_bus_gain_db / the
+# mix snapshot system; player preferences sit ON TOP of those values
+# and combine via dB addition (linear multiplication).
+#
+# All sliders are 0-100, mapped logarithmically to dB:
+#   slider=100 → 0 dB (unity, no attenuation)
+#   slider= 50 → ~-6 dB (perceptually "half")
+#   slider= 10 → -20 dB
+#   slider=  1 → -40 dB
+#   slider=  0 → effectively muted (mapped to -80 dB floor)
+# The formula matches what shipping games conventionally feel like;
+# linear sliders feel "stuck at loud" because human hearing is log.
+#
+# Persistence: user://gool_player_preferences.cfg (per-OS-user app
+# data, doesn't sync to other players, survives reinstalls). Auto-
+# saved on every set_* call, auto-loaded in _ready before
+# ready_to_play fires.
+# ===========================================================================
+
+# Convert a 0-100 slider value to dB.
+static func _player_slider_to_db(slider: float) -> float:
+	if slider <= 0.0:
+		return _PLAYER_DB_FLOOR
+	if slider >= 100.0:
+		return 0.0
+	# 20 * log10(s/100). Godot's log() is natural; divide by log(10).
+	return 20.0 * log(slider / 100.0) / log(10.0)
+
+# Inverse of _player_slider_to_db. For initializing a slider UI from
+# stored state without round-tripping through the dB representation.
+static func _player_db_to_slider(db: float) -> float:
+	if db <= _PLAYER_DB_FLOOR:
+		return 0.0
+	if db >= 0.0:
+		return 100.0
+	return pow(10.0, db / 20.0) * 100.0
+
+## Set the player's master output volume from a 0-100 slider value.
+## Combines (in dB / linearly) with any game-driven master volume
+## the server has set. Auto-saves to user://gool_player_preferences.cfg.
+func set_player_master_volume(slider: float) -> void:
+	if not _check_init("set_player_master_volume"):
+		return
+	_player_pref_master_db = _player_slider_to_db(slider)
+	# Re-apply the combined value. We can't just call our own
+	# set_master_volume_db wrapper because that would overwrite
+	# _authoritative_master_db; bypass to the binding directly.
+	_runtime.set_master_volume_db(
+		_authoritative_master_db + _player_pref_master_db)
+	save_player_preferences()
+
+## Read the current master slider value (0-100). Useful for
+## initializing a settings UI from the saved/current state.
+func get_player_master_volume() -> float:
+	return _player_db_to_slider(_player_pref_master_db)
+
+## Set per-category slider. Categories: "sfx", "music", "voice",
+## "ambience", "dialogue", "ui". slider is 0-100. Unknown categories
+## are pushed as a warning and otherwise ignored — typical cause is
+## a typo or a project missing the standard bus set.
+func set_player_category_volume(category: String, slider: float) -> void:
+	if not _check_init("set_player_category_volume"):
+		return
+	var bus: String = _PLAYER_CATEGORY_BUSES.get(category, "")
+	if bus == "":
+		push_warning("[gool] unknown player category '%s' — known: %s"
+			% [category, str(_PLAYER_CATEGORY_BUSES.keys())])
+		return
+	_player_pref_bus_db[bus] = _player_slider_to_db(slider)
+	# Re-apply combined value. Bypass our own set_bus_gain_db wrapper
+	# for the same reason as the master setter.
+	var auth_db: float = float(_authoritative_bus_db.get(bus, 0.0))
+	_runtime.set_bus_gain_db(
+		bus, auth_db + _player_pref_bus_db[bus])
+	save_player_preferences()
+
+## Read the current category slider (0-100). Returns 100 (unity)
+## for unknown categories so a UI that queries before applying
+## defaults gracefully rather than crashing.
+func get_player_category_volume(category: String) -> float:
+	var bus: String = _PLAYER_CATEGORY_BUSES.get(category, "")
+	if bus == "":
+		return 100.0
+	return _player_db_to_slider(
+		float(_player_pref_bus_db.get(bus, 0.0)))
+
+## Mute (or unmute) voice packets from a specific peer. peer_id
+## semantics are whatever the host game uses for register_voice_source
+## and submit_voice_packet — typically MultiplayerAPI peer IDs.
+## Muted packets are silently dropped at submit_voice_packet time;
+## the peer isn't notified.
+func mute_voice_player(peer_id: int, muted: bool = true) -> void:
+	if muted:
+		_muted_voice_peers[peer_id] = true
+	else:
+		_muted_voice_peers.erase(peer_id)
+	save_player_preferences()
+
+## Query whether a specific peer is currently muted on the local player's side.
+func is_voice_player_muted(peer_id: int) -> bool:
+	return _muted_voice_peers.has(peer_id)
+
+## Return all currently-muted peer IDs as an Array of ints. Order is
+## unspecified. Useful for populating a "muted players" UI list.
+func get_muted_voice_players() -> Array:
+	return _muted_voice_peers.keys()
+
+## Clear ALL voice-player mutes. Games using ephemeral peer IDs
+## (re-assigned per session) should call this at session start so
+## yesterday's mute of peer_id=2 doesn't accidentally silence today's
+## different peer_id=2.
+func clear_muted_voice_players() -> void:
+	_muted_voice_peers.clear()
+	save_player_preferences()
+
+## Write the current player preferences to disk. Called automatically
+## by every set_* method, so games typically don't need to call this
+## explicitly. Returns a Godot Error code (OK on success).
+func save_player_preferences() -> int:
+	var cfg := ConfigFile.new()
+	cfg.set_value("player_volumes", "master", get_player_master_volume())
+	for category in _PLAYER_CATEGORY_BUSES:
+		cfg.set_value("player_volumes", category,
+			get_player_category_volume(category))
+	var ids := PackedInt64Array()
+	for peer in _muted_voice_peers:
+		ids.append(int(peer))
+	cfg.set_value("player_muted_peers", "ids", ids)
+	return cfg.save(_PLAYER_PREFS_PATH)
+
+## Read player preferences from disk and apply them to the runtime.
+## Called automatically from _ready just before ready_to_play fires.
+## Safe to call again later — for instance, after the player changes
+## settings in another tool. Silently no-ops if the prefs file
+## doesn't exist (a fresh install starts at all-100 sliders).
+func load_player_preferences() -> void:
+	var cfg := ConfigFile.new()
+	var err := cfg.load(_PLAYER_PREFS_PATH)
+	if err != OK:
+		# No prefs file yet (first run on this machine) — that's
+		# expected, not an error. Leave defaults in place.
+		return
+
+	# Master
+	var master_slider: float = float(
+		cfg.get_value("player_volumes", "master", 100.0))
+	_player_pref_master_db = _player_slider_to_db(master_slider)
+
+	# Per-category
+	_player_pref_bus_db.clear()
+	for category in _PLAYER_CATEGORY_BUSES:
+		var bus: String = _PLAYER_CATEGORY_BUSES[category]
+		var slider: float = float(
+			cfg.get_value("player_volumes", category, 100.0))
+		_player_pref_bus_db[bus] = _player_slider_to_db(slider)
+
+	# Muted peers
+	_muted_voice_peers.clear()
+	var muted_ids = cfg.get_value(
+		"player_muted_peers", "ids", PackedInt64Array())
+	if muted_ids is PackedInt64Array or muted_ids is Array:
+		for id in muted_ids:
+			_muted_voice_peers[int(id)] = true
+
+	# Apply the loaded preferences to the runtime. The authoritative
+	# values default to 0 dB (no game adjustment yet) so the effective
+	# state right after _ready is "player preferences only."
+	if _runtime != null and _runtime.is_initialized():
+		_runtime.set_master_volume_db(
+			_authoritative_master_db + _player_pref_master_db)
+		for bus_name in _player_pref_bus_db:
+			var auth_db: float = float(
+				_authoritative_bus_db.get(bus_name, 0.0))
+			_runtime.set_bus_gain_db(
+				bus_name, auth_db + _player_pref_bus_db[bus_name])
+
+## Reset all player preferences to defaults (all sliders at 100,
+## no muted peers) and persist. Useful for a "Reset to defaults"
+## button in a settings menu.
+func reset_player_preferences() -> void:
+	_player_pref_master_db = 0.0
+	_player_pref_bus_db.clear()
+	_muted_voice_peers.clear()
+	# Push reset state to the engine (effective = authoritative + 0).
+	if _runtime != null and _runtime.is_initialized():
+		_runtime.set_master_volume_db(_authoritative_master_db)
+		for bus in _authoritative_bus_db:
+			_runtime.set_bus_gain_db(bus, _authoritative_bus_db[bus])
+	save_player_preferences()

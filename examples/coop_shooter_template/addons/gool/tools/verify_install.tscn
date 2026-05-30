@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://goolverifyinstall1"]
+
+[ext_resource type="Script" path="res://addons/gool/tools/verify_install.gd" id="1_verify"]
+
+[node name="VerifyInstall" type="Node"]
+script = ExtResource("1_verify")

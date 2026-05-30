@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="GoolMasterFxPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_master_fx_preset.gd" id="1_preset"]
+
+[resource]
+script = ExtResource("1_preset")
+preset_name = "Loud and aggressive"
+description = "Competitive PvP / arcade shooter loudness target. Heavier compression for tight dynamics, -12 LUFS target matching the design doc's 'Competitive clarity' profile, harder limiter. The mix feels punchy and present at the cost of dynamic range."
+preset_schema_version = 1
+glue_enabled = true
+rider_enabled = true
+limiter_enabled = true
+glue_threshold_db = -10.0
+glue_ratio = 3.5
+glue_attack_ms = 5.0
+glue_release_ms = 150.0
+glue_knee_db = 4.0
+glue_makeup_db = 1.5
+rider_target_lufs = -12.0
+rider_time_constant_ms = 2000.0
+rider_max_gain_db = 8.0
+rider_min_gain_db = -8.0
+rider_freeze_below_lufs = -6.0
+limiter_ceiling_dbtp = -1.0
+limiter_release_ms = 30.0
+limiter_lookahead_ms = 5.0

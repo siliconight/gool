@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="GoolMaterialEqPreset" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/resources/gool_material_eq_preset.gd" id="1_preset"]
+
+[resource]
+script = ExtResource("1_preset")
+preset_name = "Wooden cabin"
+description = "Warm wood-paneled space — low-mid body, soft top. Use for cabins, wooden interiors, intimate small rooms."
+preset_schema_version = 1
+low_freq_hz = 250.0
+low_gain_db = 3.0
+mid_freq_hz = 500.0
+mid_gain_db = 2.0
+mid_q = 0.7
+high_freq_hz = 5000.0
+high_gain_db = -2.0

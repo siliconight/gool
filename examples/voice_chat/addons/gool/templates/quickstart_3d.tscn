@@ -1,0 +1,48 @@
+; gool quickstart 3D scene template (v0.22.4+)
+;
+; A pre-configured scene that produces audible output the moment you
+; open it and press F5 — assuming gool is installed correctly. Use
+; this to verify "is gool working at all in my project" before
+; building a real scene.
+;
+; What's in here:
+;   - GoolListener3D at origin (the "ears" for spatialized audio)
+;   - AudioEmitter3D at origin, autoplay=on, stream=test_beep.wav
+;     (a tiny 0.5s 440Hz sine bundled with the addon)
+;
+; What you should see/hear on F5:
+;   1. A short beep within 1-2 seconds of pressing F5
+;   2. In the Output panel:
+;        [gool] !!! AUTOLOAD IS RUNNING !!!  (no — that was a debug print,
+;                                             gone in v0.22.4)
+;        [gool] ready: version=0.22.4 rate=48000Hz buffer=512 buses=8 config=res://gool/config.json
+;        [AudioEmitter3D 'AudioEmitter3D'] play: sound='auto:res://addons/gool/templates/test_beep.wav' pos=(0, 0, 0) looping=false
+;
+; If you hear the beep AND see those Output lines → gool is fully
+; working. Build your real scene with confidence.
+;
+; If you DON'T hear the beep:
+;   - Check the Output panel for [gool] warnings/errors
+;   - Try running Godot's native AudioStreamPlayer with the same .wav
+;     to verify Windows audio routing works
+;   - See README "Troubleshooting" for the full diagnostic checklist
+;
+; This scene is safe to copy elsewhere, modify, or delete. It lives
+; in addons/gool/templates/ alongside the test_beep.wav it references
+; (via res://-absolute path, so it works from any location).
+
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/gool/prefabs/gool_listener_3d.gd" id="1_listener"]
+[ext_resource type="Script" path="res://addons/gool/prefabs/audio_emitter_3d.gd" id="2_emitter"]
+[ext_resource type="AudioStream" path="res://addons/gool/templates/test_beep.wav" id="3_beep"]
+
+[node name="GoolQuickstart3D" type="Node3D"]
+
+[node name="GoolListener3D" type="Node3D" parent="."]
+script = ExtResource("1_listener")
+
+[node name="AudioEmitter3D" type="Node3D" parent="."]
+script = ExtResource("2_emitter")
+stream = ExtResource("3_beep")
+autoplay = true

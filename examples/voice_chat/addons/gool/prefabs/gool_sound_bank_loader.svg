@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GoolSoundBankLoader — three stacked discs (the "bank") with an outflow
+     arrow on the right (the "load" direction into the runtime).
+     16x16 viewBox, monochromatic editor-icon convention. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#e0e0e0" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Stacked discs (database / bank metaphor) -->
+    <ellipse cx="5" cy="3.8" rx="3.6" ry="1.1" stroke-width="1"/>
+    <path d="M 1.4 3.8 V 7.8 Q 1.4 8.9 5 8.9 Q 8.6 8.9 8.6 7.8 V 3.8"
+          stroke-width="1"/>
+    <path d="M 1.4 6 Q 1.4 7.1 5 7.1 Q 8.6 7.1 8.6 6"
+          stroke-width="0.9" opacity="0.7"/>
+    <path d="M 1.4 8 V 11.8 Q 1.4 12.9 5 12.9 Q 8.6 12.9 8.6 11.8 V 8"
+          stroke-width="1"/>
+    <path d="M 1.4 10 Q 1.4 11.1 5 11.1 Q 8.6 11.1 8.6 10"
+          stroke-width="0.9" opacity="0.7"/>
+    <!-- Outflow arrow: load direction (bank → runtime) -->
+    <path d="M 10.5 8 H 14.2" stroke-width="1.2"/>
+    <path d="M 12.6 6.4 L 14.2 8 L 12.6 9.6" stroke-width="1.2"/>
+  </g>
+</svg>

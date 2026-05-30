@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- VoiceChatPlayer — microphone. Capsule + stand + base. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#e0e0e0">
+    <!-- Microphone capsule: rounded rectangle -->
+    <rect x="6" y="2" width="4" height="7" rx="2" ry="2"/>
+    <!-- Receiver arc beneath the capsule -->
+    <path d="M4 7 Q4 11 8 11 Q12 11 12 7" fill="none" stroke="#e0e0e0" stroke-width="1.1" stroke-linecap="round"/>
+    <!-- Stand -->
+    <rect x="7.5" y="11" width="1" height="3"/>
+    <!-- Base -->
+    <rect x="5" y="13.5" width="6" height="1.2" rx="0.4"/>
+  </g>
+</svg>

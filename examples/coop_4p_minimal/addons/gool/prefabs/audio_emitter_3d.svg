@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AudioEmitter3D — speaker with sound waves. 16x16 viewBox, follows Godot's
+     monochromatic editor-icon convention. The icon picks up the editor theme
+     color automatically when set via class_name. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#e0e0e0">
+    <!-- Speaker body: small rectangle + trapezoid cone -->
+    <path d="M2 6 L4 6 L7 3 L7 13 L4 10 L2 10 Z"/>
+    <!-- Sound waves, increasing arcs -->
+    <path d="M9 5.5 Q10.5 8 9 10.5" fill="none" stroke="#e0e0e0" stroke-width="1.1" stroke-linecap="round"/>
+    <path d="M11 4 Q13.5 8 11 12" fill="none" stroke="#e0e0e0" stroke-width="1.1" stroke-linecap="round"/>
+  </g>
+</svg>

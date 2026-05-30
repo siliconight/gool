@@ -1,0 +1,42 @@
+{
+  "_comment": "Paste these entries into your gool/config.json 'buses' array to wire up DialogueDirector. The Dialogue bus drives sidechain ducking on Music, LocalSfx, and RemoteSfx so callouts cut through gunfire and the soundtrack — the L4D2 mix signature. If you already have buses named Music/LocalSfx/RemoteSfx with compressors, ADD a second compressor entry on each one with sidechain_bus='Dialogue' rather than replacing the existing one. See docs/audio_design/dialogue_setup.md for the full explanation.",
+
+  "_new_bus_to_add": {
+    "name": "Dialogue",
+    "parent": "Master",
+    "gain_db": 0.0
+  },
+
+  "_new_compressors_to_add_to_existing_buses": {
+    "Music": {
+      "kind": "compressor",
+      "threshold_db": -25.0,
+      "ratio": 8.0,
+      "attack_ms": 3.0,
+      "release_ms": 250.0,
+      "knee_width_db": 4.0,
+      "max_reduction_db": 12.0,
+      "sidechain_bus": "Dialogue"
+    },
+    "LocalSfx": {
+      "kind": "compressor",
+      "threshold_db": -22.0,
+      "ratio": 6.0,
+      "attack_ms": 3.0,
+      "release_ms": 200.0,
+      "knee_width_db": 4.0,
+      "max_reduction_db": 10.0,
+      "sidechain_bus": "Dialogue"
+    },
+    "RemoteSfx": {
+      "kind": "compressor",
+      "threshold_db": -22.0,
+      "ratio": 6.0,
+      "attack_ms": 3.0,
+      "release_ms": 200.0,
+      "knee_width_db": 4.0,
+      "max_reduction_db": 10.0,
+      "sidechain_bus": "Dialogue"
+    }
+  }
+}
