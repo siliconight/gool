@@ -26,6 +26,198 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.8] - 2026-05-30 — VoiceCaptureSource prefab: closes roadmap 2.2 (PTT + VAD)
+
+Adds the first-party voice capture front-end with push-to-talk and
+voice-activity-detection gating. Closes roadmap item 2.2 — one of
+the two remaining must-have items for shipping a 4P FPS PvE coop
+game (the other being 2.1 encrypted voice, scoped for v0.81.9 or
+deferred entirely if shipping via Steam GameNetworkingSockets).
+
+### Why this is a GDScript-only patch
+
+The roadmap text describes 2.2 as "adding VoiceCaptureMode to the
+voice capture path," which sounds like it belongs in the C++ engine.
+In practice gool's voice path is receive-side only:
+`submit_voice_packet`, `register_voice_source`, the jitter buffer,
+PLC, decode, mix. The CAPTURE side — pulling PCM from the OS mic,
+gating it, encoding it, dispatching it over the network — is
+host policy. gool doesn't own the microphone.
+
+PTT/VAD belongs at the capture front-end, so the cleanest place
+to ship it is a first-party prefab that wraps Godot's
+`AudioStreamMicrophone` + `AudioEffectCapture` and applies the
+gating policy before handing PCM to the host's encoder. The new
+`VoiceCaptureSource` prefab is that front-end. No C++ engine
+changes needed.
+
+### Added
+
+  * **`godot/addons/gool/prefabs/voice_capture_source.gd`**
+    (~440 lines including doc comment). Single `Node` subclass,
+    `class_name VoiceCaptureSource`. Public surface:
+
+    - `capture_mode: CaptureMode` export — three modes:
+      `ALWAYS_ON` (legacy / loopback), `PUSH_TO_TALK` (InputMap
+      action driven, default action `&"voice_ptt"`),
+      `VOICE_ACTIVITY` (energy-threshold VAD with hangover —
+      default mode).
+    - `enabled: bool` master switch.
+    - `push_to_talk_action: StringName` — InputMap action for
+      PTT mode. Warns once on startup if the action isn't
+      defined; gates everything until it is.
+    - `vad_energy_threshold: float` (default 0.01) and
+      `vad_hangover_ms: float` (default 200ms) — tunable VAD
+      parameters.
+    - `pcm_frames_per_packet: int` (default 960 = 20ms at 48kHz,
+      matching Opus standard frame size) and `sample_rate: int`
+      (default 48000).
+    - `pcm_frame_ready(frame: PackedFloat32Array)` signal —
+      fires only when the gate passes. Consumers connect their
+      encoder + dispatcher.
+    - `transmit_state_changed(transmitting: bool)` signal — for
+      mic-on/mic-off HUD indicators.
+    - `frames_transmitted` / `frames_gated` counters for
+      diagnostic display.
+    - `begin_transmit()` / `end_transmit()` / `release_override()`
+      programmatic API for scripted/cinematic voice (cutscenes,
+      emergency channels) — takes precedence over capture_mode.
+
+  * **`godot/addons/gool/prefabs/voice_capture_source.svg`** —
+    16x16 monochromatic icon: microphone capsule with a gating
+    bracket on the right showing PCM frames being filtered.
+
+### VAD design — why energy threshold instead of ML
+
+The roadmap text specifies: "simple energy-threshold detector with
+hangover (200 ms trailing window so words don't get clipped). No
+ML needed for the indie use case." That's exactly what shipped.
+RMS over the current PCM frame; if above threshold, transmit and
+refresh the hangover timer; if below, transmit only while within
+the hangover window from the last above-threshold frame.
+
+This is sufficient for the multiplayer-indie use case where the
+goal is "stop transmitting when no one's talking," not
+"distinguish speech from music." Energy threshold + hangover
+catches typical cases (speech, shouting, laughter) and gates the
+common silence cases (typing, ambient room noise, breathing).
+False-positive rate depends on `vad_energy_threshold`; the
+default 0.01 works for typical headset + quiet room. Documented
+tuning guidance is in the export property's doc comment.
+
+### Push-to-talk design — InputMap + programmatic override
+
+Two PTT paths because real games need both:
+
+  1. **InputMap-driven** — the typical case. Player holds the key,
+     transmit on. Releases, transmit off. Action name is
+     configurable; default `&"voice_ptt"`. If the action isn't
+     defined, the prefab warns once and gates silently — no
+     console spam, no crashes.
+
+  2. **Programmatic** — `begin_transmit()` / `end_transmit()` /
+     `release_override()`. Useful for scripted "force radio on"
+     moments (cutscenes, emergency channels) where you want
+     transmit regardless of capture_mode. Stored as a tristate
+     override that takes precedence over the mode logic; calling
+     `release_override()` hands control back to the mode.
+
+Both paths coexist cleanly. A game can use InputMap as the
+default and call `begin_transmit()` in a cutscene without
+having to swap modes.
+
+### Usage shape
+
+```gdscript
+# In the local player's scene:
+$VoiceCaptureSource.pcm_frame_ready.connect(_on_voice_frame)
+$VoiceCaptureSource.transmit_state_changed.connect(_on_mic_state)
+
+func _on_voice_frame(frame: PackedFloat32Array) -> void:
+    var encoded := _opus_encoder.encode(frame)
+    _network.send_voice_packet.rpc(encoded)
+
+func _on_mic_state(transmitting: bool) -> void:
+    $HUD/MicIndicator.visible = transmitting
+```
+
+The prefab fires `pcm_frame_ready` only when transmit should
+happen — when PTT is held, when VAD detects voice, when
+ALWAYS_ON is set, or when `begin_transmit()` was called. Gated
+frames don't fire the signal, so the encoder never runs and no
+bytes hit the network. Bandwidth for the gated window is
+literally zero.
+
+### NOT changed
+
+  * No C++ engine code. gool's voice path is receive-side and
+    didn't need any changes for this feature.
+  * No other prefabs. Existing voice-chat-related prefabs
+    (`VoiceChatPlayer` on the receive side) work unchanged
+    alongside the new capture-side prefab.
+  * No example update. The voice_chat example still uses its
+    own `voice_capture.gd` script with stubbed encoder; users
+    can migrate to the new prefab when convenient. A future
+    patch may rewrite that example to demonstrate
+    VoiceCaptureSource end-to-end.
+  * No new telemetry sink hook. The `frames_transmitted` /
+    `frames_gated` counters are exposed as prefab properties
+    that hosts can read directly. If/when there's user demand
+    for these surfacing through `IRuntimeTelemetrySink`,
+    that's a future iteration. (Cardinality is per-player,
+    which is the same constraint that kept per-player voice
+    network stats off the sink interface in v0.6.0.)
+
+### Verification
+
+  * `class_name VoiceCaptureSource` unique across all four addon
+    roots (canonical + three example copies).
+  * Apache-headers scanner: 285 files covered (was 284, +1 for
+    the new prefab).
+  * All five scanners green:
+    - `version-sync` — 6 sources at 0.81.8
+    - `addon-autoload-safety` — 75 files across 4 roots (was 74)
+    - `license-canonical`
+    - `notice-canonical`
+    - `apache-headers`
+
+### Manual test procedure (satisfies DoD)
+
+The roadmap DoD is "prefab inspector exposes capture mode
+dropdown; switching to PTT during gameplay gates the upstream
+packet rate to zero outside of held input." Verify in Godot:
+
+  1. In a new scene, add a `VoiceCaptureSource` node.
+  2. Inspector should show the `capture_mode` dropdown with three
+     options: ALWAYS_ON, PUSH_TO_TALK, VOICE_ACTIVITY.
+  3. Connect `pcm_frame_ready` to a debug print.
+  4. Set mode to `ALWAYS_ON` — debug prints fire continuously.
+  5. Set mode to `PUSH_TO_TALK` with no InputMap action defined —
+     console emits one warning, prints stop firing.
+  6. Add an InputMap action named `voice_ptt`, bind to a key. Hold
+     the key — prints fire. Release — prints stop.
+  7. Set mode to `VOICE_ACTIVITY`, speak into the mic — prints
+     fire. Stay silent — prints stop after ~200ms hangover.
+
+### CI expectation
+
+GDScript-only changes. Fast-CI path skips C++. Expected runtime
+~30s. The Godot headless-smoke job parses the new prefab; if
+GDScript syntax is invalid, the smoke job catches it.
+
+### Roadmap status
+
+Item 2.2 (Push-to-talk + voice activity detection) — **closed
+in this release**. With 2.2 done, the only remaining "required
+to ship" item from the v0.81.7 audit is 2.1 (encrypted voice
+transport), and that's only required if shipping over a
+non-encrypted multiplayer transport. Shipping via Steam
+GameNetworkingSockets, EOS Voice, or any transport that
+encrypts at the network layer makes 2.1 unnecessary.
+
+The 4P FPS PvE coop audio stack is now genuinely ship-ready
+for the typical Steam-distributed coop indie game.
+
 ## [0.81.7] - 2026-05-30 — Documentation honesty: validation example + B-path sustainability
 
 The v0.81.6 patch shipped the `coop_4p_minimal` validation example
