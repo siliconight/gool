@@ -74,6 +74,21 @@ your change spans multiple file types, run multiple sections.
       so that log messages like `push_warning("set_foo failed")`
       don't false-positive. The lazy regex `r'"[^"\n]*"'` followed
       by `r"'[^'\n]*'"` is good enough for single-line strings.
+- [ ] **Type-inference discipline**: any `var x :=` whose
+      right-hand side could return Variant needs an explicit cast
+      (`as TypeName`) or untyped declaration. The CI's
+      `godot-headless-smoke` does NOT catch this class — see
+      "Headless smoke's parse-error blind spot" under CI signals
+      for why. Greps:
+
+      ```
+      grep -rEn 'var [a-z_]+ := [a-z_][a-z_0-9]*\[' godot/addons/gool/
+      grep -rEn 'var [a-z_]+ := [a-z_][a-z_0-9]*\.get\(' godot/addons/gool/
+      ```
+
+      Any hit not ending in `as TypeName` is suspect. See the
+      "`:=` on Array/Dict element access" entry under GDScript
+      pitfalls for the full discussion.
 
 ### For `.cpp` / `.h` file changes
 
@@ -679,6 +694,110 @@ gool's discipline: internal autoload methods always use the
 explicit receiver form. The grep `^func set_X` should match
 exactly when an autoload-level setter wrapper exists.
 
+
+### `:=` on Array/Dict element access (or any Variant-returning call)
+*(Surfaced v0.82.1 via fps_coop_audio.gd:513.)*
+
+GDScript 4's strict type inference refuses to deduce a concrete
+type from a Variant. Indexing an untyped Array or Dictionary, and
+calling `.get()` on a Dictionary, both return Variant. Using `:=`
+against them produces:
+
+```
+Parse Error: Cannot infer the type of "X" variable because the
+value doesn't have a set type.
+```
+
+```gdscript
+# Pattern that fails:
+var _channels: Array = []        # untyped Array
+# ...
+var channel := _channels[i]      # ERROR: can't infer from Variant
+
+# Two valid fixes — pick whichever expresses intent best:
+var channel := _channels[i] as Node    # explicit cast
+var channel = _channels[i]             # untyped (allowed; channel is Variant)
+```
+
+Same applies to `Dictionary.get(key)` and any function with no
+declared return type:
+
+```gdscript
+var v := some_dict.get("key", null)    # ERROR
+var v: int = some_dict.get("key", 0)   # OK (explicit type)
+var v = some_dict.get("key", 0)        # OK (untyped)
+```
+
+**Discipline**: when writing `:=`, if the right-hand side could
+return Variant, add `as ConcreteType`. The cast doesn't add
+runtime cost — it's purely a static-analysis hint.
+
+**Grep helper**:
+```
+grep -rEn 'var [a-z_]+ := [a-z_][a-z_0-9]*\[' godot/addons/gool/
+grep -rEn 'var [a-z_]+ := [a-z_][a-z_0-9]*\.get\(' godot/addons/gool/
+```
+
+Either pattern that doesn't end in `as TypeName` is suspect. The
+codebase was audited in v0.82.1 — every existing instance had the
+cast except the one in fps_coop_audio.gd:513 (which was the
+surfacing bug, now fixed).
+
+**Why CI's `godot-headless-smoke` didn't catch this**: the smoke
+job uses `load() == null` as its failure signal, but Godot 4's
+`load()` returns non-null Resource even for some type-inference
+errors — only flags hard syntax errors. See CI signals → smoke
+job's failure-signal gap below for the full discussion.
+
+
+### `PopupMenu.popup(Rect2i)` expects global screen coordinates, not viewport-local
+*(Surfaced v0.82.1 via mixer_dock.gd::_show_reparent_picker.)*
+
+A subtle Godot 4 API contract: `PopupMenu.popup(Rect2i)` positions
+the popup using the Rect2i's `position` field interpreted as
+**global screen coordinates**, not viewport-local coordinates.
+
+This trips up code that gets the mouse position via:
+
+```gdscript
+# WRONG — viewport-local coords passed where screen coords expected.
+# Popup lands near the top-left of whatever monitor the viewport's
+# origin maps to. From the user's perspective: "the menu appeared
+# in the bottom-left corner instead of at my cursor."
+picker.popup(Rect2i(
+        Vector2i(get_viewport().get_mouse_position()),
+        Vector2i(0, 0)))
+```
+
+The right call for popup positioning is `DisplayServer`:
+
+```gdscript
+# RIGHT — DisplayServer.mouse_get_position() returns true global
+# screen coordinates regardless of viewport hierarchy.
+picker.popup(Rect2i(
+        DisplayServer.mouse_get_position(),
+        Vector2i(0, 0)))
+```
+
+**General rule**: any time you're positioning a Window, Popup, or
+PopupMenu using coordinates, the API expects screen-global coords.
+Use:
+
+  - `DisplayServer.mouse_get_position()` for the cursor
+  - `Control.get_screen_position()` for an editor-space anchor
+  - `Window.position` for already-placed windows
+
+`get_viewport().get_mouse_position()` is for in-viewport hit-testing
+(e.g. detecting which 3D object the user clicked on); it's not a
+substitute for screen coords.
+
+If you're passing a position FROM a signal that already provides
+the right coord space — like `context_menu_requested(name, global_pos)`
+where `global_pos` is the right-click screen position — just pass
+it through. The strip context menu in `mixer_dock.gd` follows that
+pattern correctly (line 1554 in v0.82.1).
+
+
 ---
 
 ## Editor-game plugin architecture
@@ -1174,6 +1293,58 @@ the most prominent.
 When in doubt, run the local sweeps (`grep` equivalents of the
 CI patterns) against the source before shipping. The pre-ship
 checklist above includes these.
+
+
+### Headless smoke's parse-error blind spot
+*(Surfaced v0.82.1 via fps_coop_audio.gd:513.)*
+
+The smoke job's failure signal is `load() == null`. Godot 4's
+`load()` returns the script Resource even when the parser emits
+`Parse Error: Cannot infer the type of "X"` (type-inference
+errors). So a script with a real, project-breaking type-inference
+bug parses to a non-null Resource in the smoke context, smoke
+reports `SMOKE OK`, and the bug ships.
+
+It only surfaces when a real user opens the addon in a real
+project — at which point the same error fires and breaks plugin
+init. v0.82.1 hit exactly this: fps_coop_audio.gd had been
+broken since whenever it was authored, smoke had been green every
+push, the user hit "Cannot infer the type of \"channel\"" on
+first fresh-install F5.
+
+Why the smoke job can't just grep `Parse Error:` to fail:
+
+  - The smoke project deliberately does NOT enable the gool
+    plugin (it's a parse check, not a behavior check)
+  - With the plugin disabled, Godot's global class table is
+    empty
+  - Every `class_name` cross-reference in the addon
+    (`AudioRelevancyFilter`, `GoolSoundBank`, etc.) then fails
+    type resolution and produces `Parse Error: ...`
+  - Those scripts still parse syntactically and work in real
+    projects where the plugin populates the class table
+  - So `Parse Error:` over-fires in the smoke context
+
+The pre-v0.21.5 smoke job grepped `Parse Error:` and failed
+constantly on those false positives. The fix at the time was
+"trust main.gd's verdict" (load() return). That created the
+current gap.
+
+Workaround until smoke is hardened: audit `:=` patterns with
+the greps in the "`:=` on Array/Dict element access" entry
+above. Run them before shipping any change touching prefab
+scripts. The pattern only bit once in this codebase's history;
+the audit is fast enough to repeat.
+
+Future improvement opportunity (NOT shipped as of v0.82.1):
+distinguish "type-inference parse error" from "class_name
+cross-reference parse error" in the smoke job's grep. The
+type-inference variants have specific text ("Cannot infer the
+type of"); the class_name variants reference specific identifier
+names like `Identifier "GoolSoundBank" not declared`. A targeted
+greplist could catch the dangerous class without over-firing on
+the benign class. Worth a separate v0.82.x patch if this bites
+again.
 
 ---
 

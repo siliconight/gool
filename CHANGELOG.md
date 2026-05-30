@@ -26,6 +26,121 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.82.2] - 2026-05-30 — Lessons learned: type inference, popup positioning, smoke gap
+
+Pure documentation patch. Captures the v0.82.1 bug fixes as lessons
+in `docs/engineering/lessons_learned.md` so the patterns don't bite
+twice. Adds three entries plus a pre-ship checklist bullet:
+
+### Added to `docs/engineering/lessons_learned.md`
+
+**GDScript / Godot 4 pitfalls section:**
+
+  * **`:=` on Array/Dict element access (or any Variant-returning
+    call)** — explains the type-inference parse error that broke
+    fps_coop_audio.gd:513, the failing pattern, two valid fixes
+    (`as TypeName` cast vs untyped declaration), and grep helpers
+    for auditing. Notes that the codebase was audited in v0.82.1
+    and only this one file had the issue (now fixed).
+
+  * **`PopupMenu.popup(Rect2i)` expects global screen coordinates,
+    not viewport-local** — explains the v0.81.18 reparent picker
+    positioning bug. `get_viewport().get_mouse_position()` is
+    viewport-local; `DisplayServer.mouse_get_position()` is global.
+    Generalizes to any Window/Popup positioning.
+
+**CI signals section:**
+
+  * **Headless smoke's parse-error blind spot** — documents that
+    the smoke job uses `load() == null` as its failure signal, but
+    Godot 4's `load()` returns non-null Resource even for some
+    type-inference errors. So scripts with project-breaking
+    "Cannot infer the type of X" bugs ship green from CI.
+
+    Explains why the smoke can't just grep `Parse Error:` — the
+    smoke deliberately doesn't enable the plugin, so every
+    `class_name` cross-reference produces a benign Parse Error
+    line. Distinguishing benign from real is the future
+    improvement opportunity.
+
+**Pre-ship checklist (.gd section):**
+
+  * **Type-inference discipline** bullet — concrete actionable
+    item with the audit greps. Links back to the new lesson entry
+    for context.
+
+### Audit results (recorded for future-self)
+
+Audited all of `godot/addons/gool/` for the dangerous pattern:
+
+```
+grep -rEn 'var [a-z_]+ := [a-z_][a-z_0-9]*\[' godot/addons/gool/
+grep -rEn 'var [a-z_]+ := [a-z_][a-z_0-9]*\.get\(' godot/addons/gool/
+```
+
+Findings:
+  - 2 hits total, BOTH in `fps_coop_audio.gd` (lines 375 and 513)
+  - Line 375 already had the correct `as Node` cast
+  - Line 513 was missing the cast (the v0.82.1 fix)
+  - Zero hits for `.get()` returns without explicit type
+    annotations elsewhere in the codebase
+  - The codebase is otherwise disciplined about this pattern
+
+Conclusion: the bug class is narrowly localized; no new scanner
+needed. Discipline + lessons_learned + the pre-ship checklist
+together cover the gap without adding scanner overhead.
+
+### Why no new scanner
+
+I considered adding an 8th scanner specifically for this pattern.
+Decided against it for three reasons:
+
+  1. **The audit found only 2 hits ever** (both in one file, both
+     now fixed). Adding a scanner for a pattern that bit once is
+     premature; the existing scanners cover bug classes that have
+     bitten repeatedly. Per the project's "When a new class of bug
+     bites once, capture it here. When it bites twice, add
+     automated checks" rule, this is a once-class.
+
+  2. **The existing godot-headless-smoke SHOULD catch this** but
+     has a known gap. The right long-term fix is hardening that
+     job's parse-error detection (distinguish type-inference
+     parse errors from class_name cross-reference parse errors),
+     not adding a separate static-grep scanner.
+
+  3. **Static greps for type inference are inherently noisy**.
+     `:= identifier[i]` can be valid (if `identifier` is a typed
+     Array like `Array[Node]`). A scanner would either over-fire
+     (annoying) or have to do real type analysis (expensive).
+     The grep-on-demand approach in the pre-ship checklist
+     captures the diagnostic value without the maintenance cost.
+
+If this class of bug bites again, the calculus changes — promote
+the audit to a scanner at that point.
+
+### NOT changed
+
+  * No code changes. Pure docs.
+  * No new scanner. The audit results don't justify one.
+  * No smoke job hardening. That's deliberately deferred to a
+    future patch — the design needs care to avoid the previous
+    over-fire (v0.21.5 era).
+
+### Verification
+
+  * All 7 scanners green at v0.82.2 (no version drift; only the
+    version triple + plugin.cfg + the doc file changed).
+
+### Process
+
+The user asked the right two questions at the right time: (1)
+add to lessons_learned? and (2) what other audits to run? Both
+are good instincts. The answer to (1) is yes (this patch); the
+answer to (2) is "we audited and the answer is encouraging — only
+one file had the pattern, both instances now fixed, no new
+scanner needed." The discipline of asking before assuming is
+exactly what catches regressions early.
+
 ## [0.82.1] - 2026-05-30 — Bug fixes from v0.82.0 / v0.81.18 testing
 
 Two fixes from real fresh-install testing of the v0.81.18 + v0.82.0
