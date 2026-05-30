@@ -253,6 +253,34 @@ func _ready() -> void:
 		"buses": bus_count,
 		"config": config_source,
 	})
+	# v0.81.16: when running in defaults mode (no config.json),
+	# point the user at the recovery path. The defaults-config init
+	# path in C++ has a known inconsistency between get_bus_stats()
+	# and FindBusIdByName() — the auto-created "Master" bus shows
+	# up in stats but the name lookup returns kInvalidBusId, which
+	# causes get_bus_effects() polls to fire warnings. Creating a
+	# real config.json avoids the bug entirely. This is a one-time
+	# message at boot, NOT per-frame, so it doesn't contribute to
+	# the spam class it warns against.
+	if config_source == "defaults":
+		GoolLog.info("runtime",
+			"booted in defaults mode (no res://gool/config.json)",
+			{
+				"effect": "single Master bus, no effect chains, "
+					+ "no sub-buses; mixer dock is mostly empty",
+				"recommended_action": "Project → Tools → gool → "
+					+ "Create new GoolFolderSoundBank... (to bootstrap "
+					+ "a bank), then open the mixer dock and use its "
+					+ "'Create default config' button to write a "
+					+ "starter config.json. Once res://gool/config.json "
+					+ "exists, gool will use it on next project load.",
+				"known_issue": "defaults mode triggers warnings from "
+					+ "get_bus_effects polling due to an internal C++ "
+					+ "name-registry inconsistency; the GDScript layer "
+					+ "rate-limits the spam (v0.81.16+) but the root "
+					+ "cause is a separate bug to be fixed in the "
+					+ "C++ runtime initialization path.",
+			})
 	# v0.22.7: log the audio device miniaudio actually opened. If the
 	# name doesn't match where the user expects sound, that's the bug
 	# (wrong default output device) — no further C++ debugging needed.
@@ -349,6 +377,18 @@ const _RENDER_STATS_INTERVAL: float = 2.0   # seconds between logs
 var _render_stats_accum: float = 0.0
 var _render_stats_last_invocations: int = 0
 var _render_stats_last_frames: int = 0
+
+# v0.81.16: TTL cache for get_bus_effects polling.
+# _emit_bus_stats_to_debugger runs at ~30 Hz; without this cache,
+# every bus in get_bus_stats triggers a C++ get_bus_effects call
+# (and a push_warning if the bus name doesn't resolve in
+# FindBusIdByName, which happens in defaults-config mode for the
+# auto-created "Master" bus). The cache drops effective poll
+# frequency to 0.5 Hz per bus, more than enough for the mixer
+# dock's effect-chain badges to track real changes.
+const _BUS_EFFECTS_POLL_INTERVAL_MS := 2000
+var _bus_effects_cache: Dictionary = {}              # bus_name → Array of effect dicts
+var _bus_effects_last_polled_ms: Dictionary = {}     # bus_name → int ticks_msec
 
 # v0.78.5: cached snapshot of the values passed to init() / init_with_config()
 # at startup, surfaced by diagnose(). _diag_sample_rate and _diag_buffer_size
@@ -675,13 +715,30 @@ func _emit_bus_stats_to_debugger() -> void:
 	# get_bus_effects (pre-v0.28.0) just sends a stats payload
 	# without an `effects` field, which the dock treats as 0
 	# effects per bus and hides the Fx button.
+	#
+	# v0.81.16: added 2-second TTL cache. The pre-cache version
+	# called get_bus_effects() every emit tick (30 Hz) for every
+	# bus, which produced 30 warnings/sec in defaults-config mode
+	# where the C++ side has a name-registry inconsistency between
+	# get_bus_stats() (returns "Master") and FindBusIdByName()
+	# (kInvalidBusId for "Master"). Effects on a bus rarely change
+	# at runtime, so polling at 0.5 Hz is more than sufficient for
+	# the mixer dock — newly-added effects appear in the editor
+	# within 2 seconds, which is below visible latency for a
+	# slow-changing surface.
 	if _runtime != null and _runtime.has_method("get_bus_effects"):
+		var now_ms := Time.get_ticks_msec()
 		for s in stats:
 			var bn := String(s.get("name", ""))
 			if bn.is_empty():
 				s["effects"] = []
-			else:
-				s["effects"] = _runtime.get_bus_effects(bn)
+				continue
+			var last_polled := int(_bus_effects_last_polled_ms.get(bn, 0))
+			if now_ms - last_polled >= _BUS_EFFECTS_POLL_INTERVAL_MS \
+					or not _bus_effects_cache.has(bn):
+				_bus_effects_cache[bn] = _runtime.get_bus_effects(bn)
+				_bus_effects_last_polled_ms[bn] = now_ms
+			s["effects"] = _bus_effects_cache[bn]
 	EngineDebugger.send_message("gool:bus_stats", [stats])
 
 # v0.44.0: Push engine-wide render stats over the same debugger

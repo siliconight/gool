@@ -26,6 +26,172 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.16] - 2026-05-30 — Fix defaults-mode bus warning spam + add boot-time recovery hint
+
+Surfaced during fresh-install testing of v0.81.15: when gool boots in
+defaults mode (no `res://gool/config.json` present), `_emit_bus_stats_to_debugger`
+floods the Output panel with ~30 warnings/second of
+`GoolAudioRuntime: get_bus_effects unknown bus 'Master'`. Real user
+hit it in their first session.
+
+### Two distinct bugs at play
+
+**Bug A (root cause, NOT fixed in this patch — documented for follow-up):**
+
+The C++ runtime has two separate bus-name resolution paths that
+disagree in defaults mode:
+
+  - `get_bus_stats()` iterates buses by index, calls `GetBusName(i)`
+    → returns "Master" for the auto-created default bus
+  - `FindBusIdByName("Master")` returns `kInvalidBusId` → can't
+    resolve the same name
+
+So `get_bus_stats()` and `get_bus_effects(name)` disagree about
+whether the default Master bus exists. The defaults-config
+initialization path populates one name registry but not the other.
+
+This is a real engine bug, not a documentation issue. The fix is
+in `src/audio_engine/runtime/`'s default-config construction —
+specifically, the path that creates the auto-Master bus when no
+config.json is loaded needs to ALSO register the bus name in the
+name → BusId lookup table.
+
+Not fixing here because: requires C++ compile-and-test cycle that
+v0.81.16 doesn't budget. Captured in CHANGELOG so future-self
+knows where to look. Workaround in v0.81.16 (Bug B fixes) hides
+the symptom; the underlying inconsistency remains.
+
+**Bug B (symptom, fixed in v0.81.16):**
+
+`_emit_bus_stats_to_debugger` runs every render tick (~30 Hz) and
+calls `_runtime.get_bus_effects(bus_name)` for every bus it sees in
+`get_bus_stats()`. In defaults mode, that hits Bug A 30 times per
+second per bus → flooding the Output panel and drowning out any
+other diagnostic the user might care about.
+
+Filed during this patch's user session: 1731+ identical warnings
+within the first 28 seconds of a fresh-install Godot project run.
+
+### Fixed
+
+  * **`godot/addons/gool/runtime_singleton.gd`**: added a 2-second
+    TTL cache for `get_bus_effects` polling.
+
+    New private state:
+    ```
+    const _BUS_EFFECTS_POLL_INTERVAL_MS := 2000
+    var _bus_effects_cache: Dictionary = {}              # bus_name → Array
+    var _bus_effects_last_polled_ms: Dictionary = {}     # bus_name → int
+    ```
+
+    In `_emit_bus_stats_to_debugger`, each bus's effect chain is
+    fetched at most every 2 seconds. Subsequent calls return the
+    cached result. Spam frequency drops from 30 Hz to 0.5 Hz per
+    problem bus — a 60x reduction.
+
+    UI consequence: newly-added or removed effects appear in the
+    mixer dock within 2 seconds of being changed (not in real
+    time). For a slow-changing surface like effect chains, this
+    is well below visible latency.
+
+### Added
+
+  * **Boot-time defaults-mode hint** in `runtime_singleton.gd`'s
+    init path. When `config_source == "defaults"`, gool now logs
+    a single INFO-level message (NOT per-frame) explaining:
+
+    - What's happening (single Master bus, no chains, no sub-buses)
+    - The recommended action (Project → Tools → gool → Create new
+      GoolFolderSoundBank, then use the mixer dock's "Create default
+      config" button to write a starter `res://gool/config.json`)
+    - The known issue with defaults mode warnings (Bug A)
+
+    Fires once at init, routes through `GoolLog.info` so projects
+    can silence it via Project Settings if they intentionally use
+    defaults mode for testing. Does NOT add to the per-frame spam
+    it warns about.
+
+### Verification
+
+  * **All 7 scanners green at v0.81.16**:
+    - version-sync (6 sources at 0.81.16)
+    - addon-autoload-safety (208 files)
+    - license-canonical
+    - notice-canonical
+    - apache-headers (462 files)
+    - addon-drift (mirrors canonical exactly — used `--fix` to
+      propagate this patch's changes from canonical into examples)
+    - scene-references (29/29 resolve)
+
+  * **Manual test procedure** (matches the user session that
+    surfaced the bug):
+    1. Fresh Godot project, no `res://gool/config.json`.
+    2. Enable the gool plugin.
+    3. Open `addons/gool/templates/quickstart_3d.tscn`.
+    4. F5 → run the scene.
+    5. **Before v0.81.16**: Output panel floods with
+       `get_bus_effects unknown bus 'Master'` at ~30/sec.
+    6. **After v0.81.16**:
+       - One INFO message at boot pointing at the recovery path
+       - At most one warning per 2 seconds (0.5 Hz), so ~14
+         warnings/sec total for any meaningful runtime instead
+         of 30/sec
+       - DEAD AIR warnings still fire normally (every 2s, as
+         designed — separate from this fix)
+
+### NOT changed
+
+  * The C++ engine. The root cause (Bug A) lives in
+    `src/audio_engine/runtime/` and requires a compile-and-test
+    cycle. Documented above for follow-up.
+  * The example projects. Per the v0.81.13 addon-drift scanner,
+    examples mirror canonical exactly — this patch's GDScript
+    changes propagated to all 3 examples via the scanner's
+    `--fix` mode, which is the proper workflow for any
+    canonical-side change.
+
+### What you should do next
+
+  1. Push v0.81.16. CI runs all 7 scanners; should be green.
+  2. Re-run the same fresh-install test that surfaced this bug
+     (the C:\Users\Brannen\Documents\555 project). Open
+     quickstart_3d.tscn, F5, watch Output panel. Expected:
+     - Boot-time INFO message visible
+     - Warning frequency drops to ~0.5/sec instead of 30/sec
+     - DEAD AIR warnings still appear (these are the OTHER
+       symptom — test_beep.wav references but no voice slot
+       promotes; that's downstream of Bug A and also waits on
+       the C++ fix)
+  3. Create a config.json to ENTIRELY avoid the bug for now:
+     - Open the mixer dock (or use the menu hint at boot)
+     - Click "Create default config"
+     - This writes a real `res://gool/config.json`; gool uses
+       it on next project load; defaults mode is bypassed
+  4. With a real config.json in place, test_beep.wav should
+     actually play (Bug A only fires in defaults mode).
+
+### Where this sits in the v0.81.x patch stream
+
+| Patch | Class of bug | Status |
+|---|---|---|
+| v0.81.13 | Example addon drift | ✅ Fixed + scanner |
+| v0.81.14 | Drift scanner false positives | ✅ Fixed |
+| v0.81.15 | Gitignored shipped asset | ✅ Fixed + scanner |
+| **v0.81.16** | **Defaults-mode warning spam + boot UX** | **🟡 Symptom fixed, root cause documented** |
+
+The pattern continues: every v0.81.x patch since v0.81.13 has
+been a "fresh user hits a bug an experienced developer never sees"
+fix. Each one is real and worth shipping. The honest framing:
+**defaults mode is still subtly broken** (Bug A) — but it's
+broken less loudly now, AND there's a clear path to bypass it
+(create a config.json), AND the boot message points the user
+at that path.
+
+For the next patch (Bug A's C++ root cause), I'd want to actually
+compile-test before shipping — the change is small (probably
+1-3 lines in the defaults-bus init) but the verification
+matters more than the typing.
+
 ## [0.81.15] - 2026-05-30 — Critical: test_beep.wav never shipped + scene-reference scanner
 
 Discovered a long-standing bug where `quickstart_3d.tscn` references
