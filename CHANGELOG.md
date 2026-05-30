@@ -26,6 +26,163 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.18] - 2026-05-30 — Mixer dock: bus reparent UI
+
+Adds the third verb to the bus strip's right-click context menu:
+**Change parent...**. Previously the only way to change a bus's
+parent was to manually edit `res://gool/config.json` and restart
+the project. With this patch, reparenting is a few clicks.
+
+### What it does
+
+Right-click any bus strip in the mixer dock → three verbs:
+
+```
+Rename bus 'sdf'...
+Change parent...          ← NEW in v0.81.18
+Remove bus 'sdf'...
+```
+
+Click **Change parent...** → submenu shows every valid parent
+candidate (with the current parent prefixed `(current) `), plus an
+explicit `<root — no parent>` option for detaching from the graph
+(useful for power users restructuring topology).
+
+Click a candidate → ConfigModel updates the bus's `parent` field,
+the route footer text on the affected strip ("→ Master") updates
+to reflect the new route, dirty indicator goes on, `.gool-backup`
+gets written, save proceeds via the standard flow.
+
+### Safety property: cycle prevention
+
+A bus can't be reparented to itself or to any of its transitive
+descendants — that would create a cycle in the bus graph, which is
+unloadable and would crash the engine on next project load.
+
+Defense is in TWO places:
+
+  1. **UI filter**: The submenu's candidate list excludes the bus
+     itself plus everything in `collect_bus_descendants(bus_name)`.
+     So the user can't even pick an invalid parent — the option
+     isn't there.
+
+  2. **Model validation**: `ConfigModel.set_bus_parent` also runs
+     cycle detection before mutating. Returns `ERR_CYCLIC_LINK` if
+     the proposed parent is a descendant. The UI shouldn't trigger
+     this (its candidate list already excluded descendants), so if
+     it ever fires that's a bug — a defensive error dialog surfaces
+     it instead of letting it pass silently.
+
+Combined: the user can't corrupt config.json via this verb.
+
+### Master special-casing
+
+Master is the engine root sentinel and can't be reparented (it has
+no parent by definition; reparenting it makes no sense). Same
+treatment as the existing Master-rename disable: menu item visible
+but disabled, with explanatory tooltip:
+
+> "'Master' is the engine root bus; it has no parent and cannot be reparented."
+
+### Added
+
+  * **`ConfigModel.set_bus_parent(bus_name, new_parent)`** (in
+    `editor/config_model.gd`). Mutates the bus's `parent` field
+    in `_parsed`. Validates: non-empty bus_name, not setting bus
+    as own parent, bus exists, new_parent exists (unless empty
+    for "make root"), Master isn't being reparented, no cycles.
+
+    Returns standard error codes (`OK`, `ERR_INVALID_PARAMETER`,
+    `ERR_INVALID_DATA`, `ERR_CYCLIC_LINK`).
+
+    Triggers the standard mutate-and-save pipeline:
+    `_buses_array_dirty = true`, `_schedule_save()`,
+    `dirty_changed.emit(true)`, then `bus_parent_changed.emit(...)`.
+
+    Idempotent: setting to the current parent is a no-op
+    (`return OK` without dirtying state).
+
+  * **`ConfigModel.collect_bus_descendants(bus_name)`** helper.
+    Returns a `Dictionary` of every bus transitively descended from
+    `bus_name` (NOT including `bus_name` itself). Walks the parent
+    map; capped at 64 hops as a guard against pre-existing cycles
+    in malformed configs. Used by `set_bus_parent` (cycle prevention)
+    AND by the dock's parent-picker (to exclude invalid candidates).
+
+  * **`bus_parent_changed(bus_name, old_parent, new_parent)`**
+    signal on ConfigModel. Distinct from `bus_renamed` because the
+    bus identity is preserved (it's the same bus, just routed
+    differently). Dock listens and rebuilds strips so the route
+    footer updates.
+
+  * **`_show_reparent_picker(bus_name)`** in `mixer_dock.gd`. Opens
+    the parent-picker submenu. Filters out the bus itself and its
+    descendants. Sorts alphabetically. Prefixes the current parent
+    with `(current) `.
+
+### Verification (manual)
+
+  1. Open a Godot project with gool enabled and a config.json with
+     several buses (the FPS template's Master/Reverb/SFX/Music/Voice
+     topology is ideal).
+  2. Mixer dock → right-click any non-Master bus.
+  3. Click **Change parent...** → submenu appears.
+  4. Verify:
+     - Bus itself is NOT in the candidate list (no self-cycle)
+     - Bus's descendants (if any) are NOT in the list (no cycle)
+     - Current parent is marked `(current) `
+     - `<root — no parent>` option is at the top (with separator)
+  5. Pick a different parent → submenu closes; strip's route footer
+     updates from "→ Master" to "→ SFX" (or whatever you picked).
+  6. Open `res://gool/config.json` in a text editor → verify the
+     `parent` field on the affected bus matches your selection.
+  7. Verify `.gool-backup` was created before the change.
+  8. Right-click Master → "Change parent..." is **disabled**, with
+     tooltip explaining why.
+
+### Verification (automated)
+
+  * All 7 scanners green at v0.81.18:
+    - version-sync (6 sources at 0.81.18)
+    - addon-autoload-safety (208 files)
+    - license-canonical / notice-canonical
+    - apache-headers (462 files)
+    - addon-drift / scene-references
+
+### NOT changed
+
+  * No C++ engine code. Pure GDScript editor-side change. The
+    config.json schema is unchanged — `parent` already existed; this
+    just exposes a new way to mutate it.
+  * The existing rename and remove verbs unchanged. New verb sits
+    between them in the context menu.
+  * Defaults-mode warning behavior (v0.81.16) unchanged. Bug A
+    still exists; reparenting buses doesn't fix that. But once you
+    have a real config.json (which this verb helps you author), the
+    bug becomes irrelevant.
+
+### Where this sits in the v0.81.x patch stream
+
+| Patch | Theme | Status |
+|---|---|---|
+| v0.81.13 | Example addon drift | ✅ Fixed + scanner |
+| v0.81.14 | Drift scanner false positives | ✅ Fixed |
+| v0.81.15 | Gitignored shipped asset | ✅ Fixed + scanner |
+| v0.81.16 | Defaults-mode warning spam | 🟡 Symptom fixed |
+| v0.81.17 | Mid-project config-reset verb | ✅ Shipped |
+| **v0.81.18** | **Bus reparent UI** | **✅ Shipped** |
+
+Pattern from v0.81.13 onward: each patch removes a specific paper
+cut from the first-time-user experience of gool. This is the last
+one in the immediate stream — the dock now feels feature-complete
+for bus topology authoring (add, rename, reparent, remove, edit
+effects, set gain/mute/solo/bypass).
+
+v0.82.0 next: FPS scene scaffolding tool. With the dock complete
+and the engine stable, the next leverage point is "drop a working
+audio scene into the user's 3D project so they can start picking
+sound files."
+
 ## [0.81.17] - 2026-05-30 — Tools menu: "Reset config from FPS template" verb
 
 Adds a tools-menu entry to reinstall the FPS config template at any

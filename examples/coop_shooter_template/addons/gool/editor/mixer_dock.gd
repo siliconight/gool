@@ -721,6 +721,12 @@ func _ready() -> void:
 	# ProjectSettings bus-name strings that the model itself doesn't
 	# own (material EQ impact/listener bus pointers).
 	_config_model.bus_renamed.connect(_on_model_bus_renamed)
+	# v0.81.18: bus reparent signal — handler triggers a strip
+	# rebuild so the route-footer text ("→ Master") updates on the
+	# affected strip and tree-mode indentation reflects the new
+	# topology. The dock's strip rendering reads parent from the
+	# config model, so a rebuild is the simplest correct response.
+	_config_model.bus_parent_changed.connect(_on_model_bus_parent_changed)
 	# v0.80.21: dirty-state signal — handler toggles the
 	# _dock_dirty_indicator label in the toolbar (#10).
 	_config_model.dirty_changed.connect(_on_model_dirty_changed)
@@ -1508,6 +1514,17 @@ func _on_model_bus_renamed(old_name: String, new_name: String) -> void:
 	_load_static_layout_from_config()
 
 
+# v0.81.18: handler for ConfigModel.bus_parent_changed. The route
+# footer text on the affected strip ("→ Master") needs to update,
+# and if tree mode is enabled the indentation layout needs to
+# reflect the new parent chain. Both come for free from a full
+# strip rebuild, which is the same response used for renames —
+# strips are cheap to rebuild and rare to actually do.
+func _on_model_bus_parent_changed(_bus_name: String, _old_parent: String,
+		_new_parent: String) -> void:
+	_load_static_layout_from_config()
+
+
 # v0.80.21: handler for ConfigModel.dirty_changed (#10). Toggles
 # the visibility of _dock_dirty_indicator. The signal fires
 # possibly many times during continuous editing (every mutator
@@ -1544,6 +1561,7 @@ func _on_strip_context_menu_requested(bus_name: String,
 		global_pos: Vector2) -> void:
 	# v0.80.19: PopupMenu with Rename + Remove. Pre-v0.80.19 only
 	# Remove existed; Rename was noted at this line as future work.
+	# v0.81.18: added "Change parent..." (ID 2) as the third verb.
 	var menu := PopupMenu.new()
 	menu.add_item("Rename bus '%s'..." % bus_name, 1)
 	# Master can't be renamed — see ConfigModel.rename_bus contract
@@ -1554,6 +1572,15 @@ func _on_strip_context_menu_requested(bus_name: String,
 		menu.set_item_tooltip(rename_idx,
 				"'Master' is reserved as the engine root bus and "
 				+ "cannot be renamed.")
+	# v0.81.18: Change parent verb. Same Master-disabled treatment
+	# since Master is always root and reparenting it is meaningless.
+	menu.add_item("Change parent...", 2)
+	if bus_name == "Master":
+		var reparent_idx: int = menu.get_item_index(2)
+		menu.set_item_disabled(reparent_idx, true)
+		menu.set_item_tooltip(reparent_idx,
+				"'Master' is the engine root bus; it has no parent "
+				+ "and cannot be reparented.")
 	menu.add_item("Remove bus '%s'..." % bus_name, 0)
 	menu.id_pressed.connect(_on_strip_context_menu_id_pressed.bind(bus_name))
 	menu.close_requested.connect(menu.queue_free)
@@ -1571,6 +1598,130 @@ func _on_strip_context_menu_id_pressed(id: int, bus_name: String) -> void:
 		_attempt_remove_bus(bus_name)
 	elif id == 1:
 		_attempt_rename_bus(bus_name)
+	elif id == 2:
+		_show_reparent_picker(bus_name)
+
+
+# v0.81.18: parent-picker submenu for the "Change parent..." verb.
+# Shows every valid candidate parent — i.e. every bus EXCEPT:
+#   - bus_name itself (would create a 1-cycle)
+#   - bus_name's transitive descendants (would create a cycle)
+#
+# Also marks the current parent with a leading "(current) " label
+# so the user can see the existing route at a glance.
+#
+# Plus an explicit "<root — no parent>" option for the rare case
+# of detaching a bus from the graph (typically only meaningful
+# for Master, but we expose it so power users can experiment).
+# Picking that option calls set_bus_parent with an empty string.
+func _show_reparent_picker(bus_name: String) -> void:
+	if _config_model == null:
+		return
+	var current_bus: Dictionary = _config_model.get_bus(bus_name)
+	if current_bus.is_empty():
+		push_warning("[gool dock] _show_reparent_picker: bus '%s' "
+				% bus_name + "not in config; refusing to show picker")
+		return
+	var current_parent: String = String(current_bus.get("parent", ""))
+	var descendants: Dictionary = _config_model.collect_bus_descendants(bus_name)
+
+	# Gather candidates by walking every bus in the config. Build
+	# a list of (display_label, bus_name) pairs for the popup.
+	var candidates: Array = []  # Array of [label, name] pairs
+	var all_buses: Array = _config_model.get_buses()
+	for b_v in all_buses:
+		if not (b_v is Dictionary):
+			continue
+		var b: Dictionary = b_v
+		var n: String = String(b.get("name", ""))
+		if n.is_empty():
+			continue
+		if n == bus_name:
+			continue                    # can't be own parent
+		if descendants.has(n):
+			continue                    # would create a cycle
+		var label: String = n
+		if n == current_parent:
+			label = "(current) " + label
+		candidates.append([label, n])
+
+	# Sort alphabetically by display label so the picker is
+	# predictable. The "(current)" prefix sorts the current parent
+	# near the top alphabetically, but the visual highlight
+	# (parens) is the primary cue.
+	candidates.sort_custom(func(a: Array, b: Array) -> bool:
+		return String(a[0]) < String(b[0])
+	)
+
+	# Build the popup. Item IDs are indices into our candidates
+	# array, plus a sentinel ID -1 for the "<root>" option.
+	var picker := PopupMenu.new()
+	# Sentinel for "detach from parent graph (make root)". Only
+	# offered when the bus is not already root, so we don't waste
+	# a menu line on a no-op for an already-root bus.
+	if not current_parent.is_empty():
+		picker.add_item("<root — no parent>", -1)
+		picker.add_separator()
+	for i in range(candidates.size()):
+		var pair: Array = candidates[i]
+		picker.add_item(String(pair[0]), i)
+	picker.id_pressed.connect(
+		_on_reparent_picker_id_pressed.bind(bus_name, candidates))
+	picker.close_requested.connect(picker.queue_free)
+	picker.popup_hide.connect(picker.queue_free)
+	add_child(picker)
+	# Position at mouse — same convention as the parent context menu.
+	picker.popup(Rect2i(
+			Vector2i(get_viewport().get_mouse_position()),
+			Vector2i(0, 0)))
+
+
+func _on_reparent_picker_id_pressed(picked_id: int, bus_name: String,
+		candidates: Array) -> void:
+	if _config_model == null:
+		return
+	var new_parent: String
+	if picked_id == -1:
+		new_parent = ""  # detach to root
+	else:
+		if picked_id < 0 or picked_id >= candidates.size():
+			push_warning("[gool dock] reparent picker: id %d out of range"
+					% picked_id)
+			return
+		new_parent = String((candidates[picked_id] as Array)[1])
+	var err: int = _config_model.set_bus_parent(bus_name, new_parent)
+	if err == ERR_CYCLIC_LINK:
+		# Shouldn't happen — descendants were excluded from the
+		# picker. Defensive: surface as an error dialog so we hear
+		# about it instead of silently corrupting config.
+		_show_simple_error_dialog(
+			"Reparent rejected",
+			"Setting '%s' as parent of '%s' would create a cycle "
+			% [new_parent, bus_name]
+			+ "in the bus graph. This shouldn't have been offered "
+			+ "by the picker — please file a report with your "
+			+ "config.json if you see this dialog.")
+	elif err != OK:
+		_show_simple_error_dialog(
+			"Reparent failed",
+			"Couldn't reparent '%s'. ConfigModel.set_bus_parent "
+			% bus_name + "returned error code %d." % err)
+
+
+# Tiny helper for the reparent error paths above. The full
+# AcceptDialog lifecycle pattern is the same as other dialog uses
+# in this file — extracted because we needed it twice in adjacent
+# code.
+func _show_simple_error_dialog(title: String, body: String) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = title
+	dlg.dialog_text = body
+	dlg.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	dlg.min_size = Vector2i(480, 200)
+	dlg.confirmed.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
+	add_child(dlg)
+	dlg.popup_centered()
 
 
 # Pre-check refs. If any → error dialog with the list. Else →

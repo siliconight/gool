@@ -1801,6 +1801,17 @@ signal bus_removed(bus_name: String)
 signal bus_renamed(old_name: String, new_name: String)
 
 
+# v0.81.18: bus reparent signal. Fires AFTER set_bus_parent has
+# updated the parent field. Listeners that need to react to topology
+# changes (the mixer dock's route-footer text on the affected strip,
+# tree-mode indentation layout, etc.) should connect here. The bus
+# name is preserved — it's the same bus, just routed differently —
+# so this is distinct from bus_renamed which changes the bus's
+# identity. Pass empty string for old/new parent to indicate root.
+signal bus_parent_changed(bus_name: String, old_parent: String,
+		new_parent: String)
+
+
 # ===================================================================
 # Public topology API: effects (in-bus)
 # ===================================================================
@@ -2091,6 +2102,155 @@ func rename_bus(old_name: String, new_name: String) -> int:
 	dirty_changed.emit(true)  # v0.80.21
 	bus_renamed.emit(old_name, trimmed_new)
 	return OK
+
+
+# v0.81.18: Change a bus's parent (route it to a different parent
+# bus). Validates that the new parent isn't the bus itself or any
+# descendant of the bus — both would create a cycle in the bus
+# graph, which is unloadable and would crash the engine on next
+# project load.
+#
+# Special case: passing an empty string for new_parent means "make
+# this a root bus". Only valid for Master (which is always root)
+# and for buses you're deliberately detaching from the graph (rare).
+#
+# Returns OK on success. Error codes:
+#   ERR_INVALID_PARAMETER — empty bus_name, or bus_name == new_parent
+#   ERR_INVALID_DATA      — Master can't be reparented (always root);
+#                           bus or proposed parent doesn't exist;
+#                           buses array missing/invalid
+#   ERR_CYCLIC_LINK       — new_parent is a descendant of bus_name
+func set_bus_parent(bus_name: String, new_parent: String) -> int:
+	if bus_name.is_empty():
+		push_error("[gool config] set_bus_parent: empty bus_name rejected")
+		return ERR_INVALID_PARAMETER
+	if bus_name == new_parent:
+		push_error("[gool config] set_bus_parent: cannot set '%s' as "
+				% bus_name + "its own parent (would create a 1-cycle)")
+		return ERR_INVALID_PARAMETER
+	if bus_name == "Master":
+		push_error("[gool config] set_bus_parent: 'Master' is the engine "
+				+ "root sentinel and cannot be reparented")
+		return ERR_INVALID_DATA
+
+	# Validate both buses exist (unless new_parent is empty, meaning
+	# "make root").
+	if get_bus(bus_name).is_empty():
+		push_error("[gool config] set_bus_parent: bus '%s' not found"
+				% bus_name)
+		return ERR_INVALID_DATA
+	if not new_parent.is_empty() and get_bus(new_parent).is_empty():
+		push_error("[gool config] set_bus_parent: proposed parent '%s' "
+				% new_parent + "not found")
+		return ERR_INVALID_DATA
+
+	# Cycle detection: new_parent must NOT be a descendant of
+	# bus_name. If it were, then routing bus_name to new_parent
+	# would put bus_name underneath itself in the graph (transitively).
+	# collect_bus_descendants walks the parent map; result is a
+	# Dictionary of descendant names → true so we can do O(1) lookups.
+	if not new_parent.is_empty():
+		var descendants: Dictionary = collect_bus_descendants(bus_name)
+		if descendants.has(new_parent):
+			push_error("[gool config] set_bus_parent: '%s' is a "
+					% new_parent + "descendant of '%s'; routing would "
+					% bus_name + "create a cycle in the bus graph")
+			return ERR_CYCLIC_LINK
+
+	# Mutate the bus's parent field. Find the bus, set or clear
+	# the parent key. Empty new_parent → erase the key entirely
+	# (matches the config.json convention where root buses omit
+	# the "parent" field rather than having parent: "").
+	var arr_v: Variant = _parsed.get("buses", null)
+	if not (arr_v is Array):
+		push_error("[gool config] set_bus_parent: buses array missing")
+		return ERR_INVALID_DATA
+	var buses: Array = arr_v
+	var current_parent_for_log: String = ""
+	for b_v in buses:
+		if not (b_v is Dictionary):
+			continue
+		var b: Dictionary = b_v
+		if String(b.get("name", "")) == bus_name:
+			current_parent_for_log = String(b.get("parent", ""))
+			# Idempotent no-op if already at target parent
+			if current_parent_for_log == new_parent:
+				return OK
+			if new_parent.is_empty():
+				b.erase("parent")
+			else:
+				b["parent"] = new_parent
+			break
+
+	# Full re-serialization required since the surgical patcher
+	# is per-bus and cross-bus topology changes (which this is —
+	# the parent map ripples through the dock's tree-mode rendering
+	# and the route footer on every strip) aren't representable
+	# in its per-bus model.
+	_buses_array_dirty = true
+	_has_pending_save = true
+	_schedule_save()
+	dirty_changed.emit(true)
+	# Reuse bus_renamed signal? No — semantics differ. Listeners care
+	# about the IDENTITY of bus_name being preserved (it's the same
+	# bus, just routed elsewhere). Emit a dedicated signal so the dock
+	# can refresh the route-footer text on the affected strip plus
+	# the tree-mode indentation layout without doing a full reload.
+	bus_parent_changed.emit(bus_name, current_parent_for_log, new_parent)
+	return OK
+
+
+# v0.81.18: Helper for set_bus_parent's cycle detection. Returns a
+# Dictionary whose keys are the names of every bus transitively
+# descended from bus_name (NOT including bus_name itself).
+#
+# Walks the parent map. A bus B is a descendant of A iff B's
+# parent chain (B → B.parent → B.parent.parent → ...) reaches A.
+#
+# Implementation: build a parent-map (child → parent), then for
+# each bus, walk up the chain and check if bus_name appears.
+# O(N × depth) for N buses and a depth-D graph; for typical configs
+# (N ≤ 20, D ≤ 4) this is trivially fast.
+#
+# Used by set_bus_parent (cycle prevention) and by the dock's
+# parent-picker submenu (to exclude invalid candidates).
+func collect_bus_descendants(bus_name: String) -> Dictionary:
+	var descendants: Dictionary = {}
+	var arr_v: Variant = _parsed.get("buses", null)
+	if not (arr_v is Array):
+		return descendants
+	var buses: Array = arr_v
+
+	# Build child → parent map (single pass).
+	var parent_of: Dictionary = {}
+	for b_v in buses:
+		if not (b_v is Dictionary):
+			continue
+		var b: Dictionary = b_v
+		var n: String = String(b.get("name", ""))
+		if n.is_empty():
+			continue
+		parent_of[n] = String(b.get("parent", ""))
+
+	# For each bus, walk up its parent chain. If bus_name appears
+	# anywhere in the chain, this bus is a descendant.
+	for n in parent_of.keys():
+		if n == bus_name:
+			continue
+		var cursor: String = String(parent_of[n])
+		# Guard against pathological cycles in malformed configs:
+		# cap the walk at 64 hops, which is far more than any
+		# real config's depth. Without the cap, a corrupt
+		# config.json with a pre-existing cycle would hang this
+		# function.
+		var hops: int = 0
+		while not cursor.is_empty() and hops < 64:
+			if cursor == bus_name:
+				descendants[n] = true
+				break
+			cursor = String(parent_of.get(cursor, ""))
+			hops += 1
+	return descendants
 
 
 # Returns human-readable descriptions of references to bus_name that
