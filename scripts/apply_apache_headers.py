@@ -166,6 +166,8 @@ FILE_PATTERNS: list[tuple[str, set[str]]] = [
     # they're still our code and should carry our header.
     ("examples/coop_shooter_template/addons/gool",    {".gd"}),
     ("examples/voice_chat/addons/gool",               {".gd"}),
+    ("examples/coop_4p_minimal/addons/gool",          {".gd"}),
+    ("examples/coop_4p_minimal",                      {".gd"}),
     # Build / CI scripts. The .py here covers
     # scripts/check_addon_autoload_safety.py and any future Python
     # scripts under scripts/.

@@ -71,6 +71,7 @@ SCAN_ROOTS = [
     "godot/addons/gool",
     "examples/coop_shooter_template/addons/gool",
     "examples/voice_chat/addons/gool",
+    "examples/coop_4p_minimal/addons/gool",
 ]
 
 # A reference is "safe" if it appears within these contexts:

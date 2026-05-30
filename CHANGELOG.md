@@ -26,6 +26,167 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.6] - 2026-05-30 — coop_4p_minimal: end-to-end validation example
+
+Adds a complete minimal Godot project at `examples/coop_4p_minimal/`
+that validates gool's full FPS PvE audio stack end-to-end with zero
+final audio assets, art, or gameplay tuning. A developer opens it,
+hits play, and sees PASS/FAIL within 2 seconds. If everything
+passes, the engine is doing what their game needs.
+
+This is the natural follow-up to v0.81.5's FPSCoopAudio prefab —
+that patch added the drop-in audio coordinator with a diagnostic
+overlay; this patch adds a full project that exercises it
+end-to-end with deterministic test sweeps.
+
+### How it works
+
+The example boots into a 3D scene with a gray ground plane, four
+colored test-marker cubes at cardinal directions around the player,
+and one translucent cyan cube (a ReverbZone) to the northeast.
+`main.gd` constructs the entire scene procedurally at runtime —
+no .tscn surgery, no per-component glue scripts, everything in
+one file the dev can audit in five minutes.
+
+Three modes run in sequence:
+
+**Auto-validation (first 2 seconds):**
+
+  1. `_register_procedural_sounds()` generates five PCM sounds via
+     `Gool.register_pcm_sound()` — one per FPSCoopAudio category.
+     Each sound has distinguishable frequency content (weapon =
+     880Hz click, enemy = 100Hz sawtooth, world = 60Hz + noise,
+     movement = 200Hz tick, hud = 1320Hz beep) so a listener can
+     tell them apart by ear. No external audio assets needed.
+  2. `_execute_validation_sweep()` fires `play_weapon`, `play_enemy`,
+     `play_world`, `play_movement`, `play_hud` exactly once each.
+  3. After a 500ms settle, `_check_validation_counts()` reads
+     FPSCoopAudio's `get_diagnostic_summary()` and asserts each
+     category has `fired >= 1` and `listener_attached == true`.
+  4. PASS/FAIL banner appears at the top of the screen, with the
+     specific failure listed in the status label.
+
+**Manual interaction (after validation):**
+
+  - WASD/arrows glide the player around the scene. Camera and
+    listener follow.
+  - Five buttons at the bottom (or number keys 1-5) fire each
+    category at a random test marker so the dev can hear spatial
+    positioning working.
+  - Walking into the cyan ReverbZone routes the wet bus, audible
+    on subsequent sounds.
+
+**Multiplayer testing (manual, multi-instance):**
+
+  - "Host (port 7777)" and "Join localhost:7777" buttons in the
+    top-right.
+  - The intended workflow: launch a second Godot instance, click
+    Host in one, Join in the other. Either window can fire events;
+    both diagnostic overlays' `recv` counters confirm replication.
+
+### Why procedural sounds matter
+
+Shipping audio files in the repo means either bundling licensed
+assets (legal complexity) or shipping placeholder silence (useless
+for validation — you can't tell if anything's actually playing).
+Procedural generation sidesteps both: the sounds are audibly
+distinct, deterministic across runs (RNG-seeded), and small enough
+that they're synthesized in milliseconds at boot. Once gool is
+validated, the dev replaces `_register_procedural_sounds()` with
+a real GoolSoundBank pointing at real audio files — the rest of
+the project code stays unchanged because FPSCoopAudio's semantic
+API doesn't care about sound provenance.
+
+### Added
+
+  * **`examples/coop_4p_minimal/main.gd`** (~430 lines including
+    doc comment). Single-file scene construction:
+    `_build_world()`, `_build_player()`, `_build_hud()`,
+    `_build_fps_audio()`, procedural sound generator,
+    auto-validation sweep, manual action handlers, network
+    host/join wiring.
+
+  * **`examples/coop_4p_minimal/main.tscn`** — minimal entry scene
+    (single Node with main.gd attached). All actual scene
+    construction lives in main.gd; the .tscn is two lines.
+
+  * **`examples/coop_4p_minimal/project.godot`** — Godot project
+    config: Gool autoload, MultiplayerBridge autoload, gool plugin
+    enabled, gl_compatibility renderer for maximum hardware
+    coverage.
+
+  * **`examples/coop_4p_minimal/icon.svg`** — 128x128 project icon
+    (checkmark over four peer dots).
+
+  * **`examples/coop_4p_minimal/README.md`** — usage docs,
+    troubleshooting, how to swap in real assets, full file layout.
+
+  * **`examples/coop_4p_minimal/addons/gool/`** — subset of the
+    canonical addon needed for this example. Mirrors the pattern
+    used by `examples/voice_chat/` and `examples/coop_shooter_template/`.
+    Contains: runtime_singleton.gd, audio_relevancy_filter.gd,
+    multiplayer_bridge.gd, plugin.{cfg,gd}, prefabs/{fps_coop_audio,
+    networked_audio_event, gool_listener_3d, gool_sound_bank_loader,
+    reverb_zone}.{gd,svg}, resources/gool_sound_bank.gd.
+
+### Scanner coverage updates
+
+Adding a new addon copy exposed that the version-sync and
+addon-autoload-safety scanners were hard-coded to the existing
+addon roots. Updated both to scan the new path:
+
+  * **`scripts/check_version_sync.sh`**: now checks 6 version
+    sources (was 5). Added `examples/coop_4p_minimal/addons/gool/plugin.cfg`
+    to the parse + report + comparison chain. Mismatch error
+    message updated from "5 sources" to "6 sources."
+
+  * **`scripts/check_addon_autoload_safety.py`**: `SCAN_ROOTS`
+    list now includes the new addon copy. 4 addon roots, 74 .gd
+    files scanned (was 3 roots, 64 files).
+
+  * **`scripts/apply_apache_headers.py`**: `FILE_PATTERNS` includes
+    the new addon path and the project root path (for `main.gd`).
+    All 284 first-party source files covered (was 263).
+
+### Verification
+
+  * All five scanners green:
+    - `version-sync` — 6 sources at 0.81.6
+    - `addon-autoload-safety` — 74 files across 4 roots
+    - `license-canonical`
+    - `notice-canonical`
+    - `apache-headers` — 284 files
+  * The new example was built incrementally with each scanner
+    re-run after every addition; passing state preserved
+    throughout.
+  * `class_name FPSCoopAudio` unique across all 4 addon roots
+    (it only exists in the canonical + the new example copy).
+
+### CI expectation
+
+GDScript-and-meta-only changes. Fast-CI path skips C++. Expected
+runtime ~30s. The Godot lint + headless-smoke jobs will exercise
+the example's GDScript parsing and, importantly, its scene-load
+behavior — if `main.gd` has a runtime bug that breaks scene
+construction, headless-smoke catches it.
+
+### What's next
+
+The validation example is the natural completion of the developer-
+experience layer that started with v0.81.4 (CoopAudioRoot) and
+continued through v0.81.5 (FPSCoopAudio). A dev now has:
+
+  - **CoopAudioRoot** — generic coop audio drop-in
+  - **FPSCoopAudio** — FPS PvE-specific drop-in with diagnostics
+  - **coop_4p_minimal** — end-to-end validation scene
+
+That's the full ladder from "I want to verify gool works" all the
+way down to "I want to drop in a single node and have audio." The
+remaining work for solid-as-a-rock territory is documentation
+polish + the first post-v0.81.0 C++ CI run that exercises the
+nlohmann-wrapper-TU isolation against clang-tidy — neither is
+gated on more engine code, both happen on the next push.
+
 ## [0.81.5] - 2026-05-30 — FPSCoopAudio prefab: opinionated 4P FPS PvE drop-in
 
 Adds a second drop-in prefab, one level above CoopAudioRoot in the

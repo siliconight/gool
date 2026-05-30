@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- gool 4P coop validation — project icon. Checkmark (✓ validation
+     passed) over four peer dots (4-player coop). 128x128, matches
+     Godot's icon convention. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" fill="#1a1d22"/>
+  <g stroke="#7dd87d" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Big checkmark in the center -->
+    <path d="M 32 68 L 56 92 L 100 40" stroke-width="10"/>
+  </g>
+  <!-- Four peer dots at the corners -->
+  <g fill="#e0e0e0">
+    <circle cx="18" cy="18" r="6"/>
+    <circle cx="110" cy="18" r="6"/>
+    <circle cx="18" cy="110" r="6"/>
+    <circle cx="110" cy="110" r="6"/>
+  </g>
+</svg>

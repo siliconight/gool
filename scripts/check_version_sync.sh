@@ -45,8 +45,9 @@
 #   3. godot/addons/gool/plugin.cfg                          (version=)
 #   4. examples/coop_shooter_template/addons/gool/plugin.cfg (version=)
 #   5. examples/voice_chat/addons/gool/plugin.cfg            (version=)
+#   6. examples/coop_4p_minimal/addons/gool/plugin.cfg       (version=)
 #
-# All five must match. The script bumps no files; it only reports.
+# All six must match. The script bumps no files; it only reports.
 
 set -u
 
@@ -58,23 +59,26 @@ CMK=$(grep -oP '^\s*VERSION \K[0-9.]+' CMakeLists.txt | head -1 || echo "MISSING
 PCFG_MAIN=$(grep -oP '^version="\K[^"]+' godot/addons/gool/plugin.cfg || echo "MISSING")
 PCFG_COOP=$(grep -oP '^version="\K[^"]+' examples/coop_shooter_template/addons/gool/plugin.cfg || echo "MISSING")
 PCFG_VOICE=$(grep -oP '^version="\K[^"]+' examples/voice_chat/addons/gool/plugin.cfg || echo "MISSING")
+PCFG_4P=$(grep -oP '^version="\K[^"]+' examples/coop_4p_minimal/addons/gool/plugin.cfg || echo "MISSING")
 
 printf "  %-60s %s\n" "include/audio_engine/version.h:" "$VH"
 printf "  %-60s %s\n" "CMakeLists.txt:" "$CMK"
 printf "  %-60s %s\n" "godot/addons/gool/plugin.cfg:" "$PCFG_MAIN"
 printf "  %-60s %s\n" "examples/coop_shooter_template/addons/gool/plugin.cfg:" "$PCFG_COOP"
 printf "  %-60s %s\n" "examples/voice_chat/addons/gool/plugin.cfg:" "$PCFG_VOICE"
+printf "  %-60s %s\n" "examples/coop_4p_minimal/addons/gool/plugin.cfg:" "$PCFG_4P"
 
 if [ "$VH" != "$CMK" ] \
     || [ "$VH" != "$PCFG_MAIN" ] \
     || [ "$VH" != "$PCFG_COOP" ] \
-    || [ "$VH" != "$PCFG_VOICE" ]; then
+    || [ "$VH" != "$PCFG_VOICE" ] \
+    || [ "$VH" != "$PCFG_4P" ]; then
     echo ""
-    echo "ERROR: version sync mismatch. Bump ALL 5 sources to the same value."
+    echo "ERROR: version sync mismatch. Bump ALL 6 sources to the same value."
     echo "       (also remember kVersionFull in version.h needs the same update)"
     exit 1
 fi
 
 echo ""
-echo "OK: all 5 versions agree at $VH"
+echo "OK: all 6 versions agree at $VH"
 exit 0

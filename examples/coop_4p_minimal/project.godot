@@ -1,0 +1,43 @@
+; gool — 4-player coop validation example
+;
+; A minimal Godot project that validates gool is working end-to-end
+; without requiring any final audio assets, art, or gameplay tuning.
+; Open in Godot 4.2+, hit play, see PASS/FAIL within 2 seconds.
+;
+; See README.md for full documentation.
+
+config_version=5
+
+[application]
+
+config/name="gool 4P coop validation"
+config/description="End-to-end validation scene for gool's FPS PvE audio stack"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.2")
+config/icon="res://icon.svg"
+
+[audio]
+
+driver/enable_input=false
+
+[autoload]
+
+Gool="*res://addons/gool/runtime_singleton.gd"
+MultiplayerBridge="*res://addons/gool/multiplayer_bridge.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gool/plugin.cfg")
+
+[input]
+
+ui_fire={
+"deadzone": 0.5,
+"events": [Object(InputEventMouseButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"button_mask":0,"position":Vector2(0, 0),"global_position":Vector2(0, 0),"factor":1.0,"button_index":1,"canceled":false,"pressed":true,"double_click":false,"script":null)
+]
+}
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
