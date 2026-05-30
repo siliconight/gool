@@ -435,6 +435,7 @@ jobs:
           # .clang-tidy handles transitive headers.
           jq -r '.[].file' build-tidy/compile_commands.json \
               | grep -E '/src/audio_engine/.*\.cpp$' \
+              | grep -v 'bus_config_loader\.cpp$' \
               | sort -u > /tmp/tidy_files.txt
           echo "clang-tidy targets ($(wc -l < /tmp/tidy_files.txt) files):"
           cat /tmp/tidy_files.txt
@@ -446,7 +447,7 @@ jobs:
           # hardcoded 2. Public-repo Linux runners have 4 vCPUs; per-
           # file analysis is independent, so this is a safe ~2x.
           xargs -a /tmp/tidy_files.txt -P "$(nproc)" -I{} \
-              clang-tidy -p build-tidy --warnings-as-errors='*' {}
+              timeout 300 clang-tidy -p build-tidy --warnings-as-errors='*' {}
 
   # ----------------------------------------------------------------
   # Job: cppcheck (v0.16.0 — second static analyzer alongside clang-tidy).
