@@ -38,10 +38,10 @@ namespace audio {
 // breaking changes prompt a major bump once we're past 1.0.
 constexpr int  kVersionMajor = 0;
 constexpr int  kVersionMinor = 81;
-constexpr int  kVersionPatch = 8;
+constexpr int  kVersionPatch = 9;
 
 // Stable string form. Update alongside the integer triple.
-constexpr const char* kVersionString = "0.81.8";
+constexpr const char* kVersionString = "0.81.9";
 
 // Optional pre-release / build-metadata suffix (e.g. "-rc.1", "-dev").
 // Empty for stable releases.
@@ -49,7 +49,7 @@ constexpr const char* kVersionSuffix = "";
 
 // Full version string including suffix. For "0.2.0" this is "0.2.0";
 // for "0.2.0-rc.1" this would be "0.2.0-rc.1".
-constexpr const char* kVersionFull = "0.81.8";
+constexpr const char* kVersionFull = "0.81.9";
 
 // Defined in version.cpp. Reads AE_BUILD_COMMIT (set by CMake) and
 // falls back to "unknown" when the engine is built outside CMake.

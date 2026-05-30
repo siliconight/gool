@@ -26,6 +26,159 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.9] - 2026-05-30 — Music states in the inspector: GoolMusicState Resource + declarative authoring
+
+Adds a small Resource type for a music state and an
+`states_at_startup` array export on `MusicStateController`, so
+designers can configure adaptive music in the inspector instead
+of in code.
+
+### Why this is small
+
+The honest scope of "see and edit music state parameters in the
+inspector" turned out to be smaller than the question suggested.
+The existing `MusicStateController` data model has three fields
+per state: `name`, `sound_name`, `fade_ms`. That's it. Things you
+might think belong in a music state — looping, crossfade curve
+shape, beat quantization — don't, for reasons that are now
+documented in the new Resource's doc comment:
+
+  - **Looping** lives at the `GoolSoundBank` level (per-sound,
+    not per-state). A music state pointing at a looping sound
+    loops; pointing at a non-looping sound plays once and stops.
+  - **Crossfade curve** is fixed at equal-power. That's an
+    engine-level choice baked into `GoolMusicChannel`.
+  - **Beat quantization** is not implemented today. Transitions
+    fire on the `set_state()` call.
+
+So the data model is genuinely minimal. Making it inspectable
+requires exposing exactly the three fields it actually has.
+
+### Added
+
+  * **`godot/addons/gool/resources/gool_music_state.gd`** —
+    `class_name GoolMusicState`, extends Resource. Three
+    `@export` fields:
+    - `name: String` — state identifier used by `set_state(name)`
+    - `sound_name: String` — entry in the registered sound bank
+    - `fade_ms: float` — crossfade duration when transitioning IN
+      (range 0-10000ms, default 1500ms)
+    Plus `is_valid()` for hydration-time validation.
+
+    The doc comment is heavy because the surface is small —
+    spells out why three fields and not more, names the two
+    authoring paths (declarative + imperative), explains that
+    loop / curve / quantize are NOT properties of a state today
+    and where they would live if added later.
+
+### Changed
+
+  * **`godot/addons/gool/prefabs/music_state_controller.gd`**
+    extended with two new exports:
+    - `states_at_startup: Array[GoolMusicState]` — declarative
+      states populated into the runtime dictionary at `_ready()`
+      by calling the existing `add_state()` API for each entry.
+    - `initial_state: String` — optional. If set, `set_state()`
+      is called for it after hydration so music begins
+      automatically when the scene loads. Empty (default) leaves
+      the controller stopped until your game code calls
+      `set_state()`.
+
+    New private method `_hydrate_declarative_states()` walks the
+    export array and skips invalid entries (empty name or
+    sound_name) with a per-entry warning. The controller keeps
+    working with whichever entries are valid.
+
+### Backward compatibility
+
+Purely additive. Existing users who populate states via
+`add_state()` in their game code are unaffected — the new array
+defaults to empty, `initial_state` defaults to empty, neither
+runs any code that wasn't already running for those users.
+
+If a declarative entry and an imperative `add_state()` call use
+the same name, last-write-wins (the dictionary key is
+overwritten). That matches the existing `add_state` behavior.
+
+### Inspector experience after this patch
+
+Drop a `MusicStateController` into your scene. The inspector
+now shows:
+
+```
+MusicStateController
+├── states_at_startup: Array[GoolMusicState]   [+]
+└── initial_state: String                       ""
+```
+
+Click the `+` to add an entry; either pick an existing
+`.tres` file or "New GoolMusicState" inline. Each inline state
+shows:
+
+```
+GoolMusicState
+├── name:        String      ""
+├── sound_name:  String      ""
+└── fade_ms:     float       1500 (slider, 0-10000ms)
+```
+
+Three fields. No fakery, no aspirational properties pointing at
+features that don't exist.
+
+### NOT changed
+
+No engine code. No changes to the runtime music channel, the
+crossfade implementation, or the imperative API. No new
+prefabs, no other resource changes, no changes to other
+controllers.
+
+### Verification
+
+  * `class_name GoolMusicState` unique across all four addon
+    roots.
+  * Apache-headers scanner: 286 files covered (was 285, +1 for
+    the new Resource).
+  * `addon-autoload-safety` scanner: 76 .gd files (was 75).
+  * All five scanners green:
+    - `version-sync` — 6 sources at 0.81.9
+    - `addon-autoload-safety` — 76 files across 4 roots
+    - `license-canonical`
+    - `notice-canonical`
+    - `apache-headers`
+
+### Manual test procedure
+
+  1. In a Godot project with gool installed, add a
+     `MusicStateController` node to a scene.
+  2. In the inspector, click `states_at_startup` → `+` → "New
+     GoolMusicState" twice. Fill the first: name = "explore",
+     sound_name = "music_explore", fade_ms = 1500. Fill the
+     second: name = "combat", sound_name = "music_combat",
+     fade_ms = 600.
+  3. Set `initial_state` = "explore".
+  4. Run the scene. Console should show no warnings.
+  5. From code: `$MusicStateController.set_state("combat")` —
+     should crossfade from explore to combat over 600ms.
+
+### CI expectation
+
+GDScript-only. Fast-CI path skips C++. Expected ~30s. The
+headless-smoke job parses both new files.
+
+### Roadmap context
+
+This is a thin slice of roadmap item 3.5 (Music transition
+editor). The full 3.5 envisioned a node-graph editor with
+transition-edge configuration. That remains future work — the
+data model would need to grow first (transition rules per
+edge, beat quantization, stinger layering, source-state
+filters), and that data model is best designed against real
+game requirements, not in the abstract.
+
+This patch is the smallest sensible thing that makes the
+EXISTING data model inspectable. If/when the data model grows,
+the inspector grows with it.
+
 ## [0.81.8] - 2026-05-30 — VoiceCaptureSource prefab: closes roadmap 2.2 (PTT + VAD)
 
 Adds the first-party voice capture front-end with push-to-talk and

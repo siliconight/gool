@@ -35,6 +35,31 @@
 class_name MusicStateController
 extends Node
 
+
+## Declarative state definitions populated into the controller at
+## `_ready()`. Each entry is a `GoolMusicState` resource: name +
+## sound_name + crossfade ms. Designers can drag .tres files into
+## this array or create them inline via the inspector.
+##
+## This is purely additive — `add_state()` continues to work and
+## entries added via code coexist with declarative ones. If a
+## declarative entry and an imperative `add_state()` call use the
+## same name, last-write-wins (the dictionary key is overwritten).
+##
+## v0.81.9: added so designers can author music states in the
+## inspector instead of having to write code. The runtime data
+## model is unchanged.
+@export var states_at_startup: Array[GoolMusicState] = []
+
+
+## State to enter automatically after declarative hydration
+## finishes. Empty string (default) leaves the controller stopped
+## — your game code calls `set_state()` when it wants music to
+## begin. Useful for "music starts in the explore state when the
+## scene loads" pattern.
+@export var initial_state: String = ""
+
+
 class MusicState:
 	var sound_name: String
 	var fade_ms:    float
@@ -68,6 +93,35 @@ func _ready() -> void:
 		return
 	add_child(_channel)
 	_channel.attach(_runtime)
+
+	# v0.81.9: Hydrate declarative states from the inspector array.
+	# Runs AFTER channel.attach so set_state() (if initial_state is
+	# configured) has a fully-wired channel to dispatch through.
+	_hydrate_declarative_states()
+	if initial_state != "":
+		set_state(initial_state)
+
+
+# Walk the states_at_startup export array and populate the runtime
+# states dictionary. Skips entries that fail GoolMusicState.is_valid()
+# (empty name or empty sound_name) with a clear per-entry warning;
+# the controller keeps working with the valid entries.
+func _hydrate_declarative_states() -> void:
+	for entry in states_at_startup:
+		if entry == null:
+			# Empty array slot — common during inspector editing
+			# before the designer fills the row. Silent skip.
+			continue
+		if not entry.is_valid():
+			push_warning(
+				"MusicStateController: skipping declarative state "
+				+ "entry with name='%s' sound_name='%s' — both must "
+					% [entry.name, entry.sound_name]
+				+ "be non-empty. Fill them in via the inspector or "
+				+ "remove the entry from states_at_startup."
+			)
+			continue
+		add_state(entry.name, entry.sound_name, entry.fade_ms)
 
 func add_state(state_name: String, sound_name: String,
 				fade_ms: float = 1500.0) -> void:
