@@ -1065,3 +1065,34 @@ jobs:
       - name: Check LICENSE drift
         run: |
           bash scripts/check_license_canonical.sh
+
+  # ----------------------------------------------------------------
+  # Job: Apache 2.0 source-file header coverage (v0.81.2).
+  #
+  # Verifies that every first-party source file carries the Apache
+  # 2.0 boilerplate header. The LICENSE file alone is legally
+  # sufficient, but per-file headers are the convention for serious
+  # open-source projects and survive being copied out of the repo.
+  #
+  # v0.81.2 was the bulk-application patch (260 files got the
+  # header in one commit). This CI gate prevents drift back: any
+  # new .cpp/.h/.gd/.sh/.py file added to a tracked directory must
+  # include the header or the build fails.
+  #
+  # Detector lives at scripts/apply_apache_headers.py. Run locally
+  # with --apply to fix anything the gate catches:
+  #   python3 scripts/apply_apache_headers.py --apply
+  #
+  # No path filter: header coverage drift can happen on any commit
+  # that adds a source file in a tracked directory, regardless of
+  # whether other paths changed.
+  # ----------------------------------------------------------------
+  apache-headers:
+    name: license / per-file Apache 2.0 headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check Apache 2.0 header coverage
+        run: |
+          python3 scripts/apply_apache_headers.py --check

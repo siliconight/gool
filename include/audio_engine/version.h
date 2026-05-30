@@ -1,3 +1,17 @@
+// Copyright 2026 Brannen Graves
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+// implied. See the License for the specific language governing permissions
+// and limitations under the License.
+
 // SPDX-License-Identifier: Apache-2.0
 //
 // audio_engine/version.h
@@ -24,10 +38,10 @@ namespace audio {
 // breaking changes prompt a major bump once we're past 1.0.
 constexpr int  kVersionMajor = 0;
 constexpr int  kVersionMinor = 81;
-constexpr int  kVersionPatch = 1;
+constexpr int  kVersionPatch = 2;
 
 // Stable string form. Update alongside the integer triple.
-constexpr const char* kVersionString = "0.81.1";
+constexpr const char* kVersionString = "0.81.2";
 
 // Optional pre-release / build-metadata suffix (e.g. "-rc.1", "-dev").
 // Empty for stable releases.
@@ -35,7 +49,7 @@ constexpr const char* kVersionSuffix = "";
 
 // Full version string including suffix. For "0.2.0" this is "0.2.0";
 // for "0.2.0-rc.1" this would be "0.2.0-rc.1".
-constexpr const char* kVersionFull = "0.81.1";
+constexpr const char* kVersionFull = "0.81.2";
 
 // Defined in version.cpp. Reads AE_BUILD_COMMIT (set by CMake) and
 // falls back to "unknown" when the engine is built outside CMake.

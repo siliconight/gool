@@ -26,6 +26,121 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.2] - 2026-05-30 — Apache 2.0 per-file source headers
+
+Adds the Apache 2.0 boilerplate header to every first-party source
+file in the repository. The LICENSE file alone has been legally
+sufficient since v0.80.24, but per-file headers are the convention
+for serious open-source projects in this space and serve two
+distinct purposes:
+
+  * They survive being copied out of the repository (someone
+    grabbing a single .cpp to learn from it doesn't lose the
+    licensing context).
+  * They make the licensing clear to anyone reading any individual
+    file without requiring a trip back to the repository root.
+
+This was deferred from v0.80.24 — at the time, folding 260 files
+of header additions into the LICENSE-restore patch would have
+ballooned the diff to obscure the actual fix. v0.81.2 is the
+dedicated patch with the bulk application + a CI guard that
+prevents drift.
+
+### Added
+
+  * **`scripts/apply_apache_headers.py`**: single source of truth
+    for header content (the 13-line Apache appendix boilerplate +
+    project copyright `Copyright 2026 Brannen Graves`), file
+    selection rules, and comment styles per extension (`//` for
+    C/C++, `#` for shell/Python/GDScript). Two modes:
+
+    - `--apply`: idempotently inserts the header into any matched
+      file that doesn't already have one. Shebanged files
+      (e.g. `#!/usr/bin/env bash`) get the header at line 2,
+      preserving the shebang on line 1.
+    - `--check`: read-only verification, exits 1 if any matched
+      file is missing the header. CI-friendly.
+
+  * **CI job `license / per-file Apache 2.0 headers`** (in
+    `.github/workflows/ci.yml`): runs `--check` on every push and
+    PR. No path filter — adding an unheadered source file in a
+    tracked directory should fail CI regardless of which other
+    paths changed.
+
+### Changed
+
+  * **260 first-party source files** got the header inserted at
+    the top:
+    - 40 `include/audio_engine/**/*.h`
+    - 80 `src/audio_engine/**/*.{cpp,h}`
+    - 55 `tests/**/*.cpp`
+    - 1 `tools/**/*.cpp`
+    - 18 `examples/cpp/**/*.cpp`
+    - 47 `godot/addons/gool/**/*.gd`
+    - 10 `examples/coop_shooter_template/addons/gool/**/*.gd`
+    - 5 `examples/voice_chat/addons/gool/**/*.gd`
+    - 11 `scripts/*.sh`
+    - 1 `scripts/*.py`
+    - 1 `scripts/apply_apache_headers.py` (the script itself —
+      first-party source code, so it carries the header too)
+
+    Each file's existing top-of-file comment (e.g.
+    `// audio_engine/runtime/audio_runtime.cpp`) is preserved
+    below the Apache header with one blank line separator.
+
+### NOT changed
+
+  * **Vendored / third-party code** (`third_party/**`) is untouched.
+    Each vendored library (miniaudio, dr_libs, stb, libopus) carries
+    its own license; adding our Apache header to those files would
+    be both wrong and rude.
+  * **Configuration files** (`CMakeLists.txt`, `.clang-tidy`,
+    `.gitignore`, `plugin.cfg`, `*.json`, `*.yml`): no headers.
+    Apache's own guidance treats project metadata files as separate
+    from source code; conventional open-source projects don't
+    header these.
+  * **Documentation** (`README.md`, `CHANGELOG.md`, `LICENSE`,
+    `*.md` files): no headers. These are not source.
+  * **End-user template project scripts** (`examples/<template>/`
+    GDScript outside `addons/gool/`): no headers. These files
+    become the end user's game code when they fork the template;
+    putting our copyright on them would be misleading.
+  * **Build trees / generated files**: no headers (and skipped by
+    the FILE_PATTERNS allowlist).
+
+### Why the diff is so large
+
+This is a one-time bulk insertion of mechanical content. The diff
+touches 260 files with the same 14-line addition (13 header lines
++ 1 blank separator). Once landed, future commits should show
+zero header-related noise — the CI gate guarantees new files
+arrive with the header, and existing files don't churn.
+
+If you're reviewing this commit in a git client, the `git log -- '<single-file>'` view per individual file remains clean: the header insertion is a single hunk at the top, before any meaningful code, and easily distinguished from real changes.
+
+### Verification
+
+  * Script self-tested: removing the header from one file and
+    running `--check` correctly exits 1 with the specific file
+    listed. Restoring brings `--check` back to clean.
+  * `--apply` is idempotent: re-running on the post-applied state
+    reports `0 files modified, 260 already had the header`.
+  * C++ syntax-check passes on a sampled file post-header
+    insertion (the header is just `//` comments, but verified).
+  * All four scanners green:
+    - `version-sync` (5 sources at 0.81.2)
+    - `addon-autoload-safety`
+    - `license-canonical`
+    - `apache-headers` (new, 260 files covered)
+
+### CI expectation
+
+This commit triggers the full CI matrix because it touches `.cpp`
+and `.h` files (the path filter sees `cpp` changes and runs the
+C++ jobs). Expected outcome: green across the board. The new
+`license / per-file Apache 2.0 headers` job runs in seconds — it's
+just `python3 scripts/apply_apache_headers.py --check`.
+
 ## [0.81.1] - 2026-05-30 — Node 24 deprecation override on CI workflows
 
 GitHub announced the deprecation of Node.js 20 in Actions runners
