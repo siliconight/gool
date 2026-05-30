@@ -26,6 +26,127 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.4] - 2026-05-30 — CoopAudioRoot prefab: drop-in 4-player coop audio
+
+Adds a new addon prefab — `CoopAudioRoot` — that composes the
+existing networked-audio primitives into a single drop-in node for
+the common small-party coop case (typically 4 players, scales 2-8).
+
+This is the first feature work after the v0.80.x → v0.81.x
+stabilization arc closed. The engine has had all the building blocks
+for 4-player RPC event audio since v0.79 (`NetworkedAudioEvent`,
+`NetworkedAudioEmitter3D`, `GoolListener3D`, `GoolSoundBankLoader`),
+but using them required hand-wiring 5+ nodes plus glue code for the
+listener-spawn-timing problem. `CoopAudioRoot` collapses that to:
+
+  1. Add `CoopAudioRoot` to your scene tree.
+  2. Set `sound_bank` in the inspector.
+  3. Call `set_local_player(node)` when your player spawns.
+  4. Trigger events with `play_event_3d(name, position)` or
+     `play_event_2d(name)`.
+
+The prefab is intentionally opinionated for the small-party case
+(one shared event channel, global defaults for radius/priority/mode,
+single listener). For fine-grained control — per-event channels,
+custom relevancy filters, 16+ peer scaling, persistent moving
+emitters — the underlying prefabs remain available and are the
+right tool. The doc comment at the top of `coop_audio_root.gd`
+spells out the "when not to use this" cases explicitly.
+
+### Added
+
+  * **`godot/addons/gool/prefabs/coop_audio_root.gd`** (~370 lines
+    including the doc comment). Single `Node` subclass with
+    `class_name CoopAudioRoot`. Composes three existing prefabs as
+    lazily-created children:
+
+    - `GoolSoundBankLoader` — registers the assigned `GoolSoundBank`
+      on `_ready`. The `sound_bank` export is typed as `GoolSoundBank`
+      so Godot's inspector picker filters to compatible resources.
+    - `NetworkedAudioEvent` — one shared event channel for all
+      `play_event_*` calls. Defaults to `SERVER_AUTHORITATIVE` mode;
+      override per-call via the optional `mode` parameter.
+    - `GoolListener3D` — created and attached when
+      `set_local_player()` is called. Supports late binding (players
+      typically spawn after the scene's `_ready`), and supports
+      re-binding to a different node (for spectator handoff,
+      possession changes, pause transitions).
+
+  * **`godot/addons/gool/prefabs/coop_audio_root.svg`** — 16x16
+    monochromatic icon matching the existing prefab convention.
+    Four peer dots at the corners connected by network lines to a
+    central sound-pulse.
+
+### API surface
+
+Three signals for observability:
+
+  * `sound_bank_loaded(results: Dictionary)` — emitted once after
+    SoundBank registration completes. Use to gate "ready to play"
+    UI on actual audio readiness rather than scene-load timing.
+  * `event_played(sound_name, position, source_peer_id)` — fired
+    locally every time an event plays on this peer, whether
+    triggered locally (peer_id=0) or received via replication.
+    Useful for "Player 2 fired" HUD overlays, spatial chat bubbles,
+    replay logs.
+  * `listener_attached(target)` — emitted when `set_local_player()`
+    successfully attaches the listener. Useful as a boot-sequencing
+    signal for "audio system fully wired."
+
+Three public methods:
+
+  * `set_local_player(target: Node3D)` — bind the listener to a
+    character. Idempotent; safe to call multiple times.
+  * `play_event_3d(name, position, mode=-1, radius=-1, priority=-1)`
+    — positional one-shot. `-1` sentinels let callers override
+    individual fields without specifying the whole tail.
+  * `play_event_2d(name, mode=-1)` — non-positional one-shot.
+    Internally a positional event with infinite radius at
+    `Vector3.ZERO`, which the listener treats as "centered on me."
+  * `cancel_event(prediction_id, fade_out_ms=50.0)` — abort a
+    `CLIENT_PREDICTED` event that the server later rejected.
+  * `detach_listener()` — release the listener without binding a
+    new one (spectator transitions, pause states).
+
+### NOT changed
+
+No engine code, no other prefabs, no API on existing types. This
+is purely additive — `CoopAudioRoot` builds on top of what's
+already there. Existing projects that hand-wire the underlying
+primitives continue to work unchanged.
+
+### Verification
+
+  * `class_name CoopAudioRoot` is unique across the addon.
+  * Apache-headers scanner sees the new file (262 files covered,
+    up from 261). All 5 scanners green.
+  * `sound_bank: GoolSoundBank` export type resolves correctly —
+    GoolSoundBank is a class_name registered at
+    `godot/addons/gool/resources/gool_sound_bank.gd`.
+
+### CI expectation
+
+This commit only touches GDScript (the addon) plus version files
+and CHANGELOG. The v0.80.11/v0.80.18 fast-CI path will skip the
+C++ matrix. Expected runtime: ~30 seconds, with all five scanners
+including the new apache-headers gate seeing the additional file.
+The Godot lint and headless-smoke jobs will exercise the prefab's
+parsing and instantiation.
+
+### What's next
+
+The prefab is ready for use in a game. The natural next deliverables
+would be:
+  1. A minimal example scene at `examples/coop_4p_minimal/`
+     showing CoopAudioRoot wired into a Godot multiplayer lobby
+     end-to-end (host/join UI + 4 spawn points + test event button).
+  2. A README section in the main repo highlighting the drop-in
+     case as the recommended starting point for coop projects.
+
+Neither is in scope for this patch — landing the prefab itself
+first means the next person to need 4-player coop audio (including
+future-you) has the tool available without waiting for the demo.
+
 ## [0.81.3] - 2026-05-30 — NOTICE file + drift guard
 
 Adds a NOTICE file at the repo root with the project's attribution
