@@ -152,6 +152,17 @@ const LISTENER_3D_SCRIPT := "res://addons/gool/prefabs/gool_listener_3d.gd"
 const EMITTER_3D_SCRIPT := "res://addons/gool/prefabs/audio_emitter_3d.gd"
 const BANK_LOADER_SCRIPT := "res://addons/gool/prefabs/gool_sound_bank_loader.gd"
 
+# v0.82.0: additional prefab script paths used by the "Scaffold FPS
+# audio setup" menu command. Each of these is an existing prefab —
+# the FPS scaffolding verb composes them; it does NOT introduce
+# any new prefabs (an earlier plan to add an FPSCoopAudio bundle
+# prefab was deferred so the user can let real game-side friction
+# drive that abstraction rather than designing it speculatively).
+const FOOTSTEP_PLAYER_SCRIPT := "res://addons/gool/prefabs/footstep_surface_player.gd"
+const REVERB_ZONE_SCRIPT     := "res://addons/gool/prefabs/reverb_zone.gd"
+const DEBUG_OVERLAY_SCRIPT   := "res://addons/gool/prefabs/gool_debug_overlay.gd"
+const MUSIC_STATE_SCRIPT     := "res://addons/gool/prefabs/music_state_controller.gd"
+
 # Submenu label under Project → Tools.
 # v0.80.6: Lowercase per the established brand convention.
 # "gool" is the brand/product name in all display strings; "Gool"
@@ -699,12 +710,20 @@ enum ToolsMenuItem {
 	RUN_FPS_SCENE_SMOKE_TEST = 5,  # v0.50.0
 	OPEN_HELP_PANEL = 6,  # v0.79.3
 	RESET_CONFIG_FROM_TEMPLATE = 7,  # v0.81.17
+	SCAFFOLD_FPS_AUDIO = 8,  # v0.82.0
 }
 
 func _register_tools_menu() -> void:
 	_tools_menu = PopupMenu.new()
 	_tools_menu.add_item("Add gool 3D audio scaffolding to current scene",
 		ToolsMenuItem.ADD_3D_SCAFFOLDING)
+	# v0.82.0: opinionated sibling verb for FPS games. The basic
+	# 3D scaffolding above adds listener+loader+emitter only; the
+	# FPS scaffolding adds footsteps, reverb zone, debug overlay,
+	# and music state controller — the prefabs an FPS will
+	# definitely want, sensibly configured so F5 plays a beep.
+	_tools_menu.add_item("Scaffold FPS audio setup (recommended starter)",
+		ToolsMenuItem.SCAFFOLD_FPS_AUDIO)
 	_tools_menu.add_item("Add debug overlay to current scene",
 		ToolsMenuItem.ADD_DEBUG_OVERLAY)
 	_tools_menu.add_item("Create new GoolFolderSoundBank...",
@@ -775,6 +794,8 @@ func _on_tools_menu_pressed(id: int) -> void:
 			_open_help_panel()
 		ToolsMenuItem.RESET_CONFIG_FROM_TEMPLATE:
 			_reset_config_from_fps_template()
+		ToolsMenuItem.SCAFFOLD_FPS_AUDIO:
+			_scaffold_fps_audio_setup()
 
 
 # v0.79.3: Open the help panel from the Tools menu. Second entry
@@ -1004,6 +1025,202 @@ func _add_3d_scaffolding_to_current_scene() -> void:
 		+ "\n".join(added_names.duplicate())
 		+ next_steps
 	)
+
+
+# v0.82.0: opinionated FPS scaffolding. Drops a set of prefabs into
+# the current 3D scene that an FPS game will want: listener, bank
+# loader, footsteps with material defaults, reverb zone, debug
+# overlay, music state controller. Each is an existing prefab —
+# this verb composes them; it does NOT introduce new prefabs.
+#
+# Idempotent: if any of these nodes already exist as direct children
+# of the scene root (by name match), they're skipped rather than
+# duplicated. So clicking the verb twice produces "Already present"
+# notes for the existing nodes and adds only what's missing. Same
+# pattern as the v0.81.11 polish work for repeated clicks.
+#
+# The basic _add_3d_scaffolding verb above remains the right choice
+# for non-FPS 3D projects (puzzle games, walking sims, etc.). This
+# verb is specifically the "FPS starter" — adds nodes that are real
+# leverage for shooters and useless or distracting otherwise.
+func _scaffold_fps_audio_setup() -> void:
+	var root: Node = EditorInterface.get_edited_scene_root()
+	if root == null:
+		_show_info_dialog(
+			"No scene open",
+			"Open a scene first (Scene → New Scene → 3D Scene), then "
+			+ "try Project → Tools → gool → Scaffold FPS audio setup "
+			+ "again."
+		)
+		return
+	if not (root is Node3D):
+		_show_info_dialog(
+			"3D scene required",
+			"The current scene's root is %s, not a Node3D-derived "
+			% root.get_class()
+			+ "node. The FPS audio scaffolding adds 3D nodes "
+			+ "(GoolListener3D, FootstepSurfacePlayer, ReverbZone) "
+			+ "which require a 3D scene root. Open a 3D scene "
+			+ "(Scene → New Scene → 3D Scene) and try again."
+		)
+		return
+
+	# Each entry: [script_path, node_name, base_class, optional_post_config_callable_name].
+	# base_class is what to instantiate when wrapping the script:
+	# Node3D for spatial things, Node for non-spatial. The post-config
+	# step (named so it's grep-able) is where prefab-specific
+	# defaults get applied (e.g. FootstepSurfacePlayer's material
+	# table).
+	var prefabs := [
+		{
+			"script": LISTENER_3D_SCRIPT,
+			"name": "GoolListener3D",
+			"base": "Node3D",
+			"description": "captures position/orientation for 3D audio panning",
+		},
+		{
+			"script": BANK_LOADER_SCRIPT,
+			"name": "GoolSoundBankLoader",
+			"base": "Node",
+			"description": "loads res://sounds/bank.tres at scene start",
+		},
+		{
+			"script": FOOTSTEP_PLAYER_SCRIPT,
+			"name": "FootstepSurfacePlayer",
+			"base": "Node3D",
+			"description": "plays surface-aware footstep sounds; reads AudioMaterialTag on geometry",
+		},
+		{
+			"script": REVERB_ZONE_SCRIPT,
+			"name": "ReverbZone",
+			"base": "Node3D",
+			"description": "area-based reverb (e.g. for indoor sections); position + resize as needed",
+		},
+		{
+			"script": DEBUG_OVERLAY_SCRIPT,
+			"name": "GoolDebugOverlay",
+			"base": "CanvasLayer",
+			"description": "dev-only on-screen audio diagnostics; delete before shipping",
+		},
+		{
+			"script": MUSIC_STATE_SCRIPT,
+			"name": "MusicStateController",
+			"base": "Node",
+			"description": "music state machine (lobby/combat/escape/etc.); configure states as you author them",
+		},
+	]
+
+	var added_names: PackedStringArray = PackedStringArray()
+	var skipped_names: PackedStringArray = PackedStringArray()
+	var failed_loads: PackedStringArray = PackedStringArray()
+
+	for p in prefabs:
+		var node_name: String = p["name"]
+		# Idempotency: if a direct child by this name exists, skip.
+		# We don't check class/script — name match is the v0.81.11
+		# convention, simple and predictable. If a user named an
+		# unrelated node "GoolListener3D" they'll get a skip, which
+		# is arguably correct (don't clobber).
+		if root.get_node_or_null(node_name) != null:
+			skipped_names.append(node_name)
+			continue
+
+		var script: Script = load(p["script"])
+		if script == null:
+			push_warning("[gool] FPS scaffolding: couldn't load %s"
+					% p["script"])
+			failed_loads.append(node_name)
+			continue
+
+		var node: Node
+		match p["base"]:
+			"Node3D":
+				node = Node3D.new()
+			"CanvasLayer":
+				node = CanvasLayer.new()
+			_:
+				node = Node.new()
+
+		node.set_script(script)
+		node.name = node_name
+		root.add_child(node)
+		# set_owner is what makes the scene tree actually persist
+		# the new node when the user saves. Without it, the node is
+		# in-memory only and lost on close.
+		node.set_owner(root)
+		added_names.append(node_name)
+
+	# Wire the bank loader to res://sounds/bank.tres if the bank
+	# exists. If it doesn't, we surface that in the dialog as a
+	# pointer to the "Create new GoolFolderSoundBank..." verb.
+	var bank_status: String = ""
+	var loader: Node = root.get_node_or_null("GoolSoundBankLoader")
+	if loader != null:
+		if FileAccess.file_exists(BANK_PATH):
+			var bank_resource: Resource = load(BANK_PATH)
+			if bank_resource != null:
+				loader.bank = bank_resource
+				bank_status = "  ✓ Bank wired: %s\n" % BANK_PATH
+			else:
+				bank_status = "  ! Bank exists at %s but failed to load\n" \
+						% BANK_PATH
+		else:
+			bank_status = ("  ! No bank yet at %s — use Project → Tools "
+					+ "→ gool → Create new GoolFolderSoundBank... to "
+					+ "make one, then drag it onto the loader's bank "
+					+ "field.\n") % BANK_PATH
+
+	# Build the post-add dialog. Three sections: what was added,
+	# what was skipped (idempotency), and a worked example of how to
+	# play sounds with category routing.
+	var msg: String = ""
+	if not added_names.is_empty():
+		msg += "Added to '%s':\n" % root.name
+		for n in added_names:
+			# Find the description matching this added node
+			for p in prefabs:
+				if p["name"] == n:
+					msg += "  + %s — %s\n" % [n, p["description"]]
+					break
+		msg += "\n"
+	if bank_status != "":
+		msg += bank_status + "\n"
+	if not skipped_names.is_empty():
+		msg += "Already present (skipped):\n"
+		for n in skipped_names:
+			msg += "  · %s\n" % n
+		msg += "\n"
+	if not failed_loads.is_empty():
+		msg += "Failed to load (addon installation may be incomplete):\n"
+		for n in failed_loads:
+			msg += "  ✗ %s\n" % n
+		msg += "Re-run quickinstall to repair if these persist.\n\n"
+
+	msg += "Next steps:\n"
+	msg += "  1. Save the scene (Ctrl+S).\n"
+	msg += "  2. Drop your gangster-game audio into res://sounds/sfx/\n"
+	msg += "     in category folders: weapons/, foley/, impacts/, etc.\n"
+	msg += "  3. Re-import the bank (select bank.tres in FileSystem,\n"
+	msg += "     it auto-refreshes — or right-click → Reimport).\n"
+	msg += "  4. Play sounds from your game scripts using category routing:\n"
+	msg += "       Gool.play_one_shot(\"tec9_fire\", position, \"weapons\")\n"
+	msg += "       Gool.play_one_shot(\"perp_yell\", position, \"voice_npc\")\n"
+	msg += "     The third arg is the category; config.json's\n"
+	msg += "     category_routing maps each to a bus (e.g. weapons → SFX).\n"
+	msg += "  5. Configure FootstepSurfacePlayer's material table in\n"
+	msg += "     its inspector (concrete/wood/carpet/metal defaults).\n"
+	msg += "  6. Position and resize ReverbZone for your indoor areas.\n"
+	msg += "  7. F5. The GoolDebugOverlay shows live audio diagnostics.\n\n"
+	msg += "Want category names that match your game?\n"
+	msg += "  Open res://gool/config.json and edit category_routing.\n"
+	msg += "  Or use the mixer dock (gool Mixer panel at bottom) to\n"
+	msg += "  add buses and route them via right-click → Change parent.\n\n"
+	msg += "Tip: GoolDebugOverlay is dev-only — delete it before\n"
+	msg += "shipping. MusicStateController is a placeholder; configure\n"
+	msg += "its state list as you author music for the heist phases."
+
+	_show_info_dialog("FPS audio scaffolding result", msg)
+
 
 # v0.23.0: create-new-bank command.
 #

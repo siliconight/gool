@@ -26,6 +26,192 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.82.0] - 2026-05-30 — Tools menu: "Scaffold FPS audio setup" verb
+
+First minor-version bump since v0.81.0 (33 patches ago). Adds an
+opinionated FPS scaffolding verb to the tools menu — the "drop a
+working audio scene into my 3D project" entry point we've been
+building toward through the v0.81.13–18 polish stream.
+
+### What it does
+
+New menu entry: **Project → Tools → gool → Scaffold FPS audio setup (recommended starter)**
+
+Placed adjacent to the existing **Add gool 3D audio scaffolding to current scene** verb. The two are siblings, not replacements:
+
+  - **Basic 3D scaffolding** (v0.23.0): minimal three-node setup —
+    listener, bank loader, single emitter. Right choice for non-FPS
+    3D projects (puzzle games, walking sims, exploration games).
+
+  - **FPS scaffolding** (v0.82.0, NEW): opinionated six-node setup
+    for shooters. Adds footsteps, reverb zone, debug overlay, and
+    music state controller on top of listener + loader.
+
+Click the FPS verb in a 3D scene → six prefabs appear as children
+of the scene root:
+
+  1. **GoolListener3D** — 3D listener position/orientation
+  2. **GoolSoundBankLoader** — wired to `res://sounds/bank.tres` if
+     it exists; clear message in dialog if it doesn't
+  3. **FootstepSurfacePlayer** — surface-aware footsteps
+  4. **ReverbZone** — placeholder; user resizes for indoor areas
+  5. **GoolDebugOverlay** — dev-time diagnostics (delete before ship)
+  6. **MusicStateController** — music state machine placeholder
+
+Each node is an existing prefab in the codebase. The verb composes
+them; it does NOT introduce any new prefab.
+
+### What this verb deliberately does NOT introduce
+
+An earlier plan called for adding an `FPSCoopAudio` prefab — a
+bundle node with helper methods like `play_weapon()`,
+`play_enemy()`, etc. wrapping category routing. That prefab was
+deferred for v0.82.0:
+
+  - Designing it without having used gool in a real game first
+    is exactly the speculative-design trap we've been avoiding.
+  - The functionality it would have wrapped (category-routed
+    playback) already exists today via
+    `Gool.play_one_shot(name, position, category)` — a single
+    line, no helper needed.
+  - If `Gool.play_one_shot(name, pos, "weapons")` proves clunky
+    enough to warrant `play_weapon(name, pos)`, the user can
+    author a ~30-line `Audio.gd` autoload wrapper from real
+    friction. That's the right shape for an abstraction —
+    grown from use, not designed in advance.
+
+When the user has built their gangster game far enough to know
+what helper API actually helps, FPSCoopAudio (or whatever the
+right shape turns out to be) gets designed at that point.
+
+### Idempotency
+
+Clicking the verb twice does NOT duplicate nodes. The handler
+checks for each prefab's name as a direct child of the scene
+root; if present, it's listed under "Already present (skipped)"
+in the post-add dialog. Same convention as the v0.81.11 polish
+work for repeated menu clicks.
+
+If you add some prefabs manually then click the verb, only the
+missing ones get scaffolded. Clean compose-or-skip behavior.
+
+### Post-add dialog
+
+After scaffolding, the dialog walks the user through:
+
+  1. Save the scene
+  2. Drop audio files into `res://sounds/sfx/` category folders
+     (`weapons/`, `foley/`, `impacts/`, etc.)
+  3. Re-import the bank
+  4. **Play sounds via category routing** — worked example:
+     ```
+     Gool.play_one_shot("tec9_fire", position, "weapons")
+     Gool.play_one_shot("perp_yell", position, "voice_npc")
+     ```
+     Explains the third arg is the category, mapped to a bus by
+     config.json's `category_routing`.
+  5. Configure FootstepSurfacePlayer's material table
+  6. Position/resize ReverbZone for indoor areas
+  7. F5 — GoolDebugOverlay shows live diagnostics
+
+Plus pointers to:
+  - Reset config from FPS template (the v0.81.17 verb)
+  - Bus reparent via mixer dock right-click (v0.81.18)
+  - Which nodes are safe to delete if the user doesn't need them
+
+### Added
+
+  * **`ToolsMenuItem.SCAFFOLD_FPS_AUDIO = 8`** enum entry
+  * **Menu item** "Scaffold FPS audio setup (recommended starter)"
+    placed after "Add gool 3D audio scaffolding to current scene"
+  * **Path constants** for the four newly-referenced prefabs
+    (FOOTSTEP_PLAYER_SCRIPT, REVERB_ZONE_SCRIPT,
+    DEBUG_OVERLAY_SCRIPT, MUSIC_STATE_SCRIPT) — co-located with the
+    existing v0.23.0 prefab paths so the relationship is explicit
+  * **`_scaffold_fps_audio_setup()` handler** with preflight (must
+    be 3D scene), idempotency check, per-prefab instantiate/owner
+    discipline, bank-wiring step, and rich post-add dialog
+
+### Verification (manual)
+
+  1. Open a Godot project with gool enabled.
+  2. Create a new 3D scene (Scene → New Scene → 3D Scene).
+  3. Project → Tools → gool → **Scaffold FPS audio setup**
+  4. Verify dialog shows six prefabs added (or "bank wired" /
+     "no bank yet" message depending on whether
+     `res://sounds/bank.tres` exists).
+  5. Verify scene tree shows the six nodes as children of root,
+     all with proper class scripts attached.
+  6. Save the scene (Ctrl+S). Re-open project → nodes persist.
+  7. **Idempotency check**: click the menu again. Dialog should
+     say "Already present (skipped)" for all six. No duplicates
+     in scene tree.
+  8. **Non-3D rejection**: open a 2D scene (Scene → New Scene →
+     2D Scene). Click the menu. Dialog should reject with a
+     clear "3D scene required" message naming the actual root
+     class. No partial scaffolding.
+  9. **No scene open**: close all scenes. Click the menu. Dialog
+     should reject with "No scene open" message.
+
+### Verification (automated)
+
+  * All 7 scanners green at v0.82.0:
+    - version-sync (6 sources at 0.82.0)
+    - addon-autoload-safety (208 files)
+    - license-canonical / notice-canonical
+    - apache-headers (462 files)
+    - addon-drift / scene-references
+
+### NOT changed
+
+  * No C++ engine code. Pure GDScript editor-side.
+  * No new prefabs introduced (the FPSCoopAudio decision above).
+  * The existing basic 3D scaffolding verb is unchanged and remains
+    the right choice for non-FPS projects.
+  * No new API surface — the post-add dialog teaches a workflow
+    that uses APIs that already work (`Gool.play_one_shot` with
+    category arg, config.json's `category_routing`).
+
+### Why a minor version bump (0.81.x → 0.82.0)
+
+The v0.81.13–18 stream was six patches of polish and bug-fix
+work; appropriate to ship under patch-level versions.
+
+v0.82.0 introduces a new user-facing feature (a tools-menu verb
+that creates scene state). That's the right scope for a minor
+bump. The verb is additive — nothing existing changed or broke —
+so there's no breaking-changes block in this entry.
+
+### Where this sits in the broader arc
+
+| Version range | Theme |
+|---|---|
+| v0.78.x – v0.81.0 | Engine completeness for FPS coop game shape |
+| v0.81.1 – v0.81.12 | Polish: error audit, prefab smoke tests, music states |
+| v0.81.13 – v0.81.18 | Fresh-install hygiene + dock completeness |
+| **v0.82.0** | **First-class FPS scaffolding** |
+| v0.82.x (future) | Sound bank tooling (inspector, audit, export) — Tier 2 from the menu design conversation |
+| v0.83.x (speculative) | Audio helper API if usage patterns justify |
+
+The path was: make the engine work, make the editor feel
+complete, then make the "I want to start an FPS" verb a single
+click. That's where v0.82.0 lands.
+
+### What the user should do next
+
+  1. Push v0.82.0, watch CI go green, wait for release.yml to
+     publish the addon archives.
+  2. Re-run quickinstall in your 555 project to pull v0.82.0.
+  3. Open or create a 3D scene.
+  4. Project → Tools → gool → Scaffold FPS audio setup.
+  5. Save. Then start dropping 1990s gangster sounds into
+     `res://sounds/sfx/weapons/`, `voice_npc/`, etc.
+  6. Wire your game's weapon fire → `Gool.play_one_shot(...)`.
+  7. Iterate. Build the game.
+
+You now have a scene to build on. The engine is solid. The
+editor is complete. Time to make the gangsters.
+
 ## [0.81.18] - 2026-05-30 — Mixer dock: bus reparent UI
 
 Adds the third verb to the bus strip's right-click context menu:
