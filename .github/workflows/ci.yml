@@ -12,6 +12,18 @@ env:
   # Bump in lockstep with .github/workflows/release.yml and
   # godot/gool.gdextension's `compatibility_minimum`.
   GODOT_CPP_REF: '4.4'
+  # v0.81.1: force every JS-based action in this workflow onto Node
+  # 24 ahead of GitHub's June 16 2026 default-switchover and Sept 16
+  # 2026 hard removal. Two actions in this file still ship Node-20
+  # entrypoints — dorny/paths-filter@v3 and actions/setup-python@v5 —
+  # and the CI runner emits a deprecation warning on every run that
+  # uses them. This env var is the GitHub-recommended interim
+  # mitigation (changelog 2025-09-19). It's a no-op for actions that
+  # have already shipped Node-24 entrypoints (checkout@v5, cache@v5,
+  # upload-artifact@v5), so safe to apply at the workflow level
+  # rather than per-action.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 
 jobs:
   # ----------------------------------------------------------------

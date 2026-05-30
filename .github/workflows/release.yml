@@ -31,6 +31,13 @@ env:
   # in godot/gool.gdextension. Bumping this to a newer Godot minor (4.3,
   # 4.4) requires also bumping the manifest's compatibility_minimum.
   GODOT_CPP_REF: '4.4'
+  # v0.81.1: force JS-based actions onto Node 24 ahead of GitHub's
+  # June 16 2026 default-switchover. See ci.yml's matching block for
+  # the full rationale. `softprops/action-gh-release@v2` is the only
+  # JS-based action used here that might still ship a Node-20
+  # entrypoint; the env var handles that and any future regressions
+  # without requiring per-action version tracking.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   release:

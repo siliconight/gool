@@ -26,6 +26,78 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.1] - 2026-05-30 — Node 24 deprecation override on CI workflows
+
+GitHub announced the deprecation of Node.js 20 in Actions runners
+on 2025-09-19. The timeline:
+
+  * **June 16, 2026**: Node 24 becomes the default. JS-based actions
+    still shipping Node 20 entrypoints are auto-forced onto Node 24.
+  * **September 16, 2026**: Node 20 is removed from runners entirely.
+    Actions still depending on it will fail.
+
+The v0.81.0 CI run (kick CI #234) emitted deprecation warnings for
+two actions in `ci.yml` still on Node 20:
+
+  * `dorny/paths-filter@v3` — used by the v0.80.11 fast-CI path
+    detector
+  * `actions/setup-python@v5` — used by one of the build setup steps
+
+Both are non-fatal warnings today and will be auto-mitigated by
+GitHub on June 16, but explicit opt-in is the GitHub-recommended
+posture per the changelog announcement: set the
+`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` env var on workflows that
+use any JS-based action. The env var is a no-op for actions that
+have already shipped Node-24 entrypoints (every `actions/*@v5`
+in our workflows), so safe to apply at the workflow level rather
+than tracking each action's individual upgrade status.
+
+### Changed
+
+  * **`.github/workflows/ci.yml`**: `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'`
+    added to the existing `env:` block. Eliminates the two
+    deprecation warnings observed on kick CI #234.
+
+  * **`.github/workflows/nightly.yml`**: same env var added to its
+    existing `env:` block. No Node-20 actions known to be in this
+    workflow today, but future-proofs against new ones and keeps
+    the three workflow env blocks consistent.
+
+  * **`.github/workflows/release.yml`**: same env var added.
+    `softprops/action-gh-release@v2` is the only JS-based action
+    used here that might still ship a Node-20 entrypoint; the env
+    var handles that and any future regressions without per-action
+    version tracking.
+
+### NOT changed
+
+  * `.github/workflows/fuzz.yml` and `.github/workflows/pvs-studio.yml`
+    have no existing `env:` block and no known Node-20 actions
+    today; modifying them would be more invasive (adding a new
+    top-level key) than the benefit warrants. If either workflow
+    starts emitting deprecation warnings on its own runs, add the
+    env var in a follow-up patch.
+
+  * No engine code, no API, no behavior. This is a pure CI-
+    configuration patch.
+
+### Verification
+
+  * All three modified workflow YAMLs parse clean (Python's
+    `yaml.safe_load` validates).
+  * All three scanners green: version-sync (5 sources at 0.81.1),
+    addon-autoload-safety, license-canonical.
+  * Next CI run will exercise the env var. Expected outcome: zero
+    Node-20 deprecation warnings on the run summary.
+
+### CI expectation
+
+This is a GDScript/docs-class push (only YAML files changed),
+which means the v0.80.11/v0.80.18 fast-CI path correctly skips the
+C++ matrix. Expected runtime: ~30 seconds, matching kick CI #234.
+The next C++ push will be the first to actually exercise v0.81.0's
+nlohmann-wrapper-TU isolation against clang-tidy.
+
 ## [0.81.0] - 2026-05-29 — JSON dependency isolation; v0.80.x stabilization milestone
 
 v0.81.0 is the first minor bump since the v0.80.x stream began.

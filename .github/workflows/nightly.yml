@@ -25,6 +25,12 @@ on:
 
 env:
   GODOT_CPP_REF: '4.4'
+  # v0.81.1: force JS-based actions onto Node 24 ahead of GitHub's
+  # June 16 2026 default-switchover. See ci.yml's matching block for
+  # the full rationale. No Node-20 actions are known to be in this
+  # workflow today, but the env var is a no-op for already-Node-24
+  # actions and future-proofs against new Node-20 actions appearing.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build-addon:
