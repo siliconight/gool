@@ -1152,3 +1152,33 @@ jobs:
       - name: Check example addon copies mirror canonical
         run: |
           python3 scripts/check_addon_drift.py
+
+  # ----------------------------------------------------------------
+  # Job: scene asset-reference resolution guard (v0.81.15).
+  #
+  # Walks every .tscn / .tres file in the canonical addon, extracts
+  # all ext_resource path="res://..." references, and verifies each
+  # one resolves to a file that exists on disk.
+  #
+  # Catches the v0.81.15 bug class: an asset file referenced by a
+  # scene gets silently excluded from the release archive because
+  # it's ignored by .gitignore (the test_beep.wav precedent — a
+  # blanket *.wav rule excluded the addon's only audio asset for
+  # many releases before anyone noticed). The existing addon-drift
+  # scanner doesn't catch this because it compares git-tracked
+  # files only, and a gitignored file is invisible in both
+  # canonical and examples.
+  #
+  # Detector lives at scripts/check_scene_references.py. No --fix
+  # mode — a missing reference requires either restoring the asset
+  # or editing the scene; both are human judgment calls.
+  # ----------------------------------------------------------------
+  scene-references:
+    name: scenes / asset-reference resolution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check every scene's ext_resource paths resolve
+        run: |
+          python3 scripts/check_scene_references.py

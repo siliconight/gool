@@ -26,6 +26,193 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.15] - 2026-05-30 — Critical: test_beep.wav never shipped + scene-reference scanner
+
+Discovered a long-standing bug where `quickstart_3d.tscn` references
+an audio file (`test_beep.wav`) that was silently excluded from every
+release archive by a blanket `*.wav` rule in `.gitignore`. Users
+installing via `quickinstall.ps1` got a broken templates directory,
+producing "Load failed due to missing dependencies" the moment Godot
+tried to open the addon.
+
+### The bug
+
+`godot/.gitignore` contained:
+
+```
+# Large binary fixtures we don't want to track casually; remove this
+# block if you intentionally check assets in.
+*.wav
+```
+
+That blanket rule excluded `godot/addons/gool/templates/test_beep.wav`
+from git. The file existed in every developer's local working copy
+(it was created when the addon was authored) — but git never tracked
+it, so:
+
+  - CI runners checked out the repo WITHOUT the .wav
+  - `release.yml`'s `cp -r godot/addons/gool/. ${dest}/` copied what
+    CI saw (a templates/ directory missing the .wav)
+  - The release archive shipped without the .wav across many versions
+  - The v0.22.1 regression guard ("staged matches source") couldn't
+    detect the bug because both staged AND source-on-CI were equally
+    incomplete
+
+When you installed via `quickinstall.ps1` into a fresh Godot project:
+
+  - The .wav was missing from `addons/gool/templates/`
+  - `quickstart_3d.tscn` (which references the .wav via ext_resource)
+    fired "Load failed: missing dependencies" as soon as Godot
+    discovered the scene
+  - Users had to dismiss the error to even reach their first
+    interaction with the addon
+
+Why this went undetected for so long:
+
+  - Every addon developer had a local copy of the .wav, so it always
+    "worked" on dev machines
+  - Example projects also had local copies (they were created when
+    the addon was authored, before .gitignore was added or before
+    the rule was tightened)
+  - The v0.81.13 addon-drift scanner ignored the .wav too — both
+    canonical and examples saw it as non-existent (git-invisible),
+    so they "matched"
+  - The first project to ever see the bug was your fresh `444`
+    Godot project today, installed via quickinstall
+
+### Fixed
+
+  * **`.gitignore`** updated with a narrowly-scoped exception:
+
+    ```
+    *.wav
+    !godot/addons/gool/templates/*.wav
+    !examples/*/addons/gool/templates/*.wav
+    ```
+
+    Addon-shipped audio assets MUST be tracked so they ride with
+    releases. The exception is scoped to the addon's templates/
+    directory + corresponding example copies; user-level .wav files
+    in their game projects remain ignored by default (they're often
+    large and don't belong in source control).
+
+  * **`godot/addons/gool/templates/test_beep.wav`** now tracked by
+    git. The file content (22094 bytes) is unchanged from what's
+    been on developer machines for many versions — this just makes
+    git aware of it.
+
+  * **Corresponding files in example addon copies** also tracked
+    (the v0.81.13 cp -a sync had already mirrored the file to each
+    example's addon/templates/; this patch just makes the tracking
+    consistent across all four copies).
+
+### Added
+
+  * **`scripts/check_scene_references.py`** — new scanner that
+    catches the v0.81.15 bug class generally. For every .tscn /
+    .tres file under canonical, extracts every
+    `[ext_resource path="res://..."]` reference and verifies the
+    target file exists on disk. Reports any missing references with
+    file:line:res-path pointers.
+
+    This is a complement to v0.81.13's addon-drift scanner — that
+    one catches "git-tracked file in canonical but not example";
+    this one catches "scene references a file that doesn't exist
+    on disk anywhere (regardless of whether it's git-tracked)."
+
+    Currently checks the canonical addon only. The addon-drift
+    scanner ensures examples mirror canonical, so if canonical
+    scenes resolve cleanly, example scenes do too.
+
+  * **`.github/workflows/ci.yml`**: new `scene-references` job
+    runs the scanner on every push. Will fail CI if anyone adds
+    a scene reference pointing at a non-existent (or unstaged)
+    asset.
+
+### Verification
+
+Both real and synthetic test cases:
+
+  * **Clean state (file present)**: scanner reports OK; 29
+    ext_resource references across 27 scene/resource files all
+    resolve.
+
+  * **Synthetic broken state (file removed)**: scanner reports
+    FAIL with file/line/res-path pointer to
+    `quickstart_3d.tscn:38 → res://addons/gool/templates/test_beep.wav`,
+    exits non-zero.
+
+  * **All 7 scanners green at v0.81.15**:
+    - version-sync (6 sources at 0.81.15)
+    - addon-autoload-safety (208 files)
+    - license-canonical
+    - notice-canonical
+    - apache-headers (462 files, +1 for the new scanner)
+    - addon-drift (mirrors canonical exactly)
+    - **scene-references (29/29 resolve)** ← NEW
+
+### What you need to do after pulling this patch
+
+The `test_beep.wav` file is now staged in the tarball. When you
+extract v0.81.15 and `git add -A`, git will see the .wav as a
+new tracked file (because the gitignore exception now allows it).
+
+Verify with:
+
+```powershell
+git status godot/addons/gool/templates/test_beep.wav
+```
+
+Expected: shows the file as "new file" or "modified". After
+commit + push + tag, the next release.yml run will include the
+.wav in the addon archive. Users running quickinstall.ps1 will
+finally get a working templates/ directory.
+
+If git is still ignoring it for some reason, force-add:
+
+```powershell
+git add -f godot/addons/gool/templates/test_beep.wav
+git add -f examples/coop_shooter_template/addons/gool/templates/test_beep.wav
+git add -f examples/voice_chat/addons/gool/templates/test_beep.wav
+git add -f examples/coop_4p_minimal/addons/gool/templates/test_beep.wav
+```
+
+### NOT changed
+
+  * No engine code, no API, no behavior. Pure repository hygiene
+    + a new scanner.
+  * The release.yml workflow itself is correct — the bug was
+    upstream of release.yml (in .gitignore filtering the file out
+    of what CI even saw). No changes needed to release.yml.
+
+### CI expectation
+
+Adds one new job (scene-references) that runs in ~1 second.
+Other scanners unaffected. The addon-drift scanner you fixed in
+v0.81.14 continues to ignore .uid/.import; that fix stands.
+
+### Meta-lesson
+
+Three patches in a row (v0.81.13, v0.81.14, v0.81.15) each
+discovered a class of bug that none of the existing scanners
+covered:
+
+  - v0.81.13: example addons were stale subsets of canonical
+  - v0.81.14: drift scanner false-positives on generated files
+  - v0.81.15: gitignored files invisible to all scanners
+
+Each one was a real user-impacting bug that had been silent
+across many releases. The pattern: **a working setup on dev
+machines masks failures on fresh installs.** This is why the
+first fresh-install experience (your 444 project today) is so
+valuable — it's the only way to see what your real users see.
+
+The lesson banked: **for every bug class found, add a scanner.**
+After v0.81.15 there are 7 scanners running on every push. That
+sounds like a lot, but each one catches a class of bug that
+silently shipped at some point. The scanners ARE the
+institutional memory of "what's gone wrong before."
+
 ## [0.81.14] - 2026-05-30 — Fix v0.81.13 addon-drift false positives
 
 Quick follow-up to v0.81.13. CI's new `addon-drift` job failed on

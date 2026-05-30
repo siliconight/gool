@@ -68,6 +68,14 @@ __pycache__/
 # Large binary fixtures we don't want to track casually; remove this
 # block if you intentionally check assets in.
 *.wav
+# v0.81.15 exception: addon-shipped audio assets MUST be tracked so
+# they ride with the release archive. The blanket *.wav rule above
+# was silently excluding godot/addons/gool/templates/test_beep.wav
+# from every release for many versions; users installing via
+# quickinstall.ps1 got a broken templates/ directory because git
+# never saw the file.
+!godot/addons/gool/templates/*.wav
+!examples/*/addons/gool/templates/*.wav
 *.ogg
 *.flac
 *.mp3
