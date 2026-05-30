@@ -1670,9 +1670,14 @@ func _show_reparent_picker(bus_name: String) -> void:
 	picker.close_requested.connect(picker.queue_free)
 	picker.popup_hide.connect(picker.queue_free)
 	add_child(picker)
-	# Position at mouse — same convention as the parent context menu.
+	# Position at the actual cursor in screen coordinates.
+	# get_viewport().get_mouse_position() returns viewport-local
+	# coords, but PopupMenu.popup(Rect2i) expects global screen
+	# coords — using viewport-local makes the picker land in the
+	# wrong place (typically bottom-left of the editor window).
+	# DisplayServer.mouse_get_position() returns true screen coords.
 	picker.popup(Rect2i(
-			Vector2i(get_viewport().get_mouse_position()),
+			DisplayServer.mouse_get_position(),
 			Vector2i(0, 0)))
 
 

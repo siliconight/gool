@@ -510,7 +510,7 @@ func _play(category: int, sound_name: String, position: Vector3) -> int:
 	if category < 0 or category >= _channels.size():
 		push_error("[FPSCoopAudio] _play with invalid category %d" % category)
 		return -1
-	var channel := _channels[category]
+	var channel := _channels[category] as Node
 	if channel == null:
 		push_error("[FPSCoopAudio] _play called on null channel for category %d; " %
 				category + "if you're trying to play HUD audio, use play_hud() instead.")

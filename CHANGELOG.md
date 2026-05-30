@@ -26,6 +26,145 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.82.1] - 2026-05-30 — Bug fixes from v0.82.0 / v0.81.18 testing
+
+Two fixes from real fresh-install testing of the v0.81.18 + v0.82.0
+work — one pre-existing parse error in `fps_coop_audio.gd`, and one
+regression in the v0.81.18 reparent picker's positioning.
+
+### Fixed: fps_coop_audio.gd parse error (line 513)
+
+Symptom: opening a project with gool enabled produced this error
+at editor startup:
+
+```
+ERROR: res://addons/gool/prefabs/fps_coop_audio.gd:513 - Parse Error:
+       Cannot infer the type of "channel" variable because the value
+       doesn't have a set type.
+ERROR: Failed to load script "res://addons/gool/prefabs/fps_coop_audio.gd"
+       with error "Parse error".
+```
+
+This is a GDScript 4 strictness issue. The original code at line 513
+used `:=` (inferred-type declaration) on an Array element:
+
+```gdscript
+var channel := _channels[category]
+```
+
+`_channels` is declared as `Array = []` (untyped), so indexing into
+it returns `Variant` at static-analysis time. GDScript 4 refuses to
+infer a concrete type from a Variant return — the user must declare
+it explicitly.
+
+The same file already had the right pattern at line 375:
+
+```gdscript
+var channel := _channels[Category.WEAPONS] as Node
+```
+
+Line 513 was just missing the `as Node` cast. Fix applied — line 513
+now matches line 375's pattern.
+
+### Fixed: v0.81.18 reparent picker positioned in bottom-left corner
+
+Symptom: right-clicking a bus strip → "Change parent..." → the
+candidate-list popup appeared in the bottom-left of the editor
+window instead of near the user's cursor.
+
+Root cause in `mixer_dock.gd::_show_reparent_picker`:
+
+```gdscript
+picker.popup(Rect2i(
+        Vector2i(get_viewport().get_mouse_position()),
+        Vector2i(0, 0)))
+```
+
+`get_viewport().get_mouse_position()` returns mouse position in
+**viewport-local** coordinates. `PopupMenu.popup(Rect2i)` expects
+**global screen** coordinates. Passing viewport-local to a method
+expecting global causes the popup to land at the wrong screen
+position — typically near the top-left of whatever monitor the
+viewport's origin maps to, which from the user's perspective looked
+like "bottom-left of the editor."
+
+Fix: use `DisplayServer.mouse_get_position()` instead, which returns
+true global screen coords regardless of viewport hierarchy. The
+picker now appears at the user's cursor (which is on top of the
+"Change parent..." item they just clicked).
+
+### Honest correction: I was wrong about fps_coop_audio.gd existing
+
+In the v0.82.0 conversation I stated, with confidence, that
+`fps_coop_audio.gd` did NOT exist in the codebase. That was wrong.
+The file is present at `godot/addons/gool/prefabs/fps_coop_audio.gd`
+(21938 bytes, 602 lines) and is mirrored to all three example
+addon copies via the v0.81.13 drift sync. My grep missed it
+somehow — possibly a glob-expansion issue or a stale snapshot
+inspected at the wrong time.
+
+The v0.82.0 design decision to "compose existing prefabs instead of
+introducing FPSCoopAudio" was made on a false premise (that the
+prefab didn't exist). The actual situation is more nuanced:
+
+  - FPSCoopAudio DOES exist as a prefab in the codebase
+  - It defines `Category.WEAPONS`, `.ENEMIES`, etc. and provides
+    `play(category, sound_name, position)` plus per-category
+    `_channels` management
+  - It has had the line 513 parse error since whenever it was
+    authored (so it's never actually loaded successfully in any
+    project that opens this file)
+  - With v0.82.1's fix, it should now load
+
+This means v0.82.0's scaffolding verb deliberately omitted a real
+prefab that would have been a sensible addition. The omission isn't
+catastrophic (the scaffolded scene still works without
+FPSCoopAudio), but a future patch should consider whether to add
+FPSCoopAudio to the FPS scaffolding once we've verified it works
+end-to-end with the line 513 fix.
+
+For NOW: just ship the bug fixes. Don't expand the scaffolding verb
+in this patch — that's a follow-up after we confirm FPSCoopAudio
+actually behaves as expected once it can load.
+
+### Meta-lesson banked
+
+**Static reading from confident memory is not verification.** I
+claimed a file didn't exist based on a grep that apparently failed
+silently or hit a stale snapshot. The same lesson keeps recurring
+through this project — the codebase is the ground truth, my
+recollection of it is not. Re-grep, don't re-state.
+
+The CHANGELOG and patch flow already enforces this for shipped
+features (the version-sync scanner, addon-drift scanner, etc.). The
+gap is in CONVERSATION: when I'm reasoning about what the code
+contains, I should re-verify rather than rely on memory of an
+earlier grep. Especially in long sessions where the codebase has
+evolved between checks.
+
+### Verification
+
+  * All 7 scanners green at v0.82.1
+  * Manual test the user should run:
+    1. Re-install v0.82.1 in 555 project via quickinstall
+    2. Open the project — verify NO `fps_coop_audio.gd:513` parse
+       error appears in console
+    3. Open the mixer dock, right-click any non-Master bus
+    4. Click "Change parent..." → verify the candidate-list popup
+       appears at the cursor (where you clicked), NOT in the
+       bottom-left corner
+    5. Pick a new parent → verify it works as in v0.81.18
+
+### NOT changed
+
+  * No new features. Both changes are bug fixes.
+  * The v0.82.0 FPS scaffolding verb is unchanged — still ships,
+    still composes the same six prefabs. The CHANGELOG entry for
+    v0.82.0 above describes that work; this patch just fixes
+    issues that surfaced during testing.
+  * The FPSCoopAudio prefab's API surface is untouched. Only the
+    line 513 type annotation changed.
+
 ## [0.82.0] - 2026-05-30 — Tools menu: "Scaffold FPS audio setup" verb
 
 First minor-version bump since v0.81.0 (33 patches ago). Adds an
