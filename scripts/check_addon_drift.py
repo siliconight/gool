@@ -76,6 +76,23 @@ EXAMPLES = [
     REPO_ROOT / "examples" / "coop_4p_minimal" / "addons" / "gool",
 ]
 
+# Godot-generated artifacts that legitimately differ between addon
+# copies. The scanner ignores these — they're not human-authored
+# content, they're deterministic outputs of Godot's import pipeline,
+# and they exist in an addon copy iff Godot has opened that copy's
+# parent project at least once.
+#
+#   .uid    — Godot 4.4+ generates one per .gd script (unique
+#             resource UIDs for cross-scene references).
+#   .import — Generated per imageable resource (.svg, .png, etc.)
+#             on first project open, holding import settings.
+#
+# Both are .gitignore candidates at the project level but historically
+# have been committed in some example projects. The scanner ignores
+# them rather than fighting the conventions of whichever project state
+# happens to be checked in.
+_GENERATED_SUFFIXES = {".uid", ".import"}
+
 
 def _hash_file(path: Path) -> str:
     """SHA-256 of a file's bytes. Used for content comparison reporting."""
@@ -87,11 +104,12 @@ def _hash_file(path: Path) -> str:
 
 
 def _relative_files(root: Path) -> set[Path]:
-    """All files under root, as paths relative to root."""
+    """All human-authored files under root, as paths relative to root.
+    Excludes Godot-generated artifacts (see _GENERATED_SUFFIXES)."""
     return {
         p.relative_to(root)
         for p in root.rglob("*")
-        if p.is_file()
+        if p.is_file() and p.suffix not in _GENERATED_SUFFIXES
     }
 
 

@@ -1,0 +1,6 @@
+[gd_resource type="Resource" script_class="GoolFolderSoundBank" format=3 uid="uid://4gm4fuhucxl0"]
+
+[ext_resource type="Script" uid="uid://lknyorvxulji" path="res://addons/gool/resources/gool_folder_sound_bank.gd" id="1_yh3j1"]
+
+[resource]
+script = ExtResource("1_yh3j1")

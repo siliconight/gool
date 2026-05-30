@@ -26,6 +26,143 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.14] - 2026-05-30 — Fix v0.81.13 addon-drift false positives
+
+Quick follow-up to v0.81.13. CI's new `addon-drift` job failed on
+the first run with false-positive ORPHANED entries for files like
+`runtime_singleton.gd.uid` and `prefabs/fps_coop_audio.svg.import`.
+These aren't drift — they're Godot-generated artifacts that
+legitimately differ between addon copies depending on whether Godot
+has opened the parent project.
+
+### Root cause
+
+Godot 4.4+ auto-generates two file types alongside source content:
+
+  * **`.uid` files** — one per `.gd` script. Contains a unique
+    resource UID used for cross-scene references. Generated on
+    project import / first open.
+  * **`.import` files** — one per imageable resource (`.svg`,
+    `.png`, etc.). Holds Godot's per-resource import settings
+    (compression, filtering, mipmaps). Generated on project
+    import / first open.
+
+Both are deterministic outputs of Godot's import pipeline, not
+human-authored content. They exist in an addon copy if and only if
+Godot has opened that copy's parent project at least once.
+
+In v0.81.13 you opened `examples/coop_4p_minimal/` in Godot to
+verify the addon-drift fix worked. Godot auto-generated 14 `.uid`
+and 2 `.import` files alongside the newly-synced source files.
+Git picked them up; the commit included them; CI ran the new
+scanner and reported them as ORPHANED because they don't exist
+in the canonical addon (which has never been opened as a project
+by itself).
+
+The other two examples (`coop_shooter_template`, `voice_chat`)
+passed CI because you didn't open them in Godot, so they have
+no `.uid` files for the scanner to flag.
+
+### Fixed
+
+  * **`scripts/check_addon_drift.py`**: added `_GENERATED_SUFFIXES`
+    deny-list `{.uid, .import}` and updated `_relative_files()` to
+    filter these out during enumeration. The scanner now ignores
+    Godot-generated artifacts entirely — neither flags them as
+    ORPHANED if present in one example but not another, nor as
+    MISSING if absent.
+
+    Single point of filtering: changing one set affects both the
+    canonical-vs-example set comparison (catches missing/orphaned
+    real source files) and the content-comparison loop (catches
+    drifted content on shared source files). Generated files are
+    invisible to both.
+
+### Why this is the right scope
+
+The scanner's job is to catch drift in **human-authored content**.
+`.uid` and `.import` files are pipeline outputs, not authorship —
+they will diverge across project copies by design as Godot opens
+each project. Including them in the scanner's view would:
+
+  - Generate noise (false positives whenever any project is opened)
+  - Confuse the actual signal (real source drift gets buried under
+    auto-generated file noise)
+  - Force coordinated Godot-open ceremony on every addon change
+    (every example would need to be opened to regenerate matching
+    `.uid` files)
+
+None of those are desirable. Ignoring generated files is the
+correct behavior.
+
+### Verification
+
+Both the false-positive case (the scenario CI hit) and genuine
+drift cases tested:
+
+  * **`.uid`/`.import` injected in one example, others clean**
+    → scanner reports OK across all examples. (Fixes the v0.81.13
+    CI failure.)
+
+  * **Source file deleted from one example**
+    → scanner reports MISSING and exits 1. (Genuine drift still
+    caught.)
+
+  * **Source file edited in one example to differ from canonical**
+    → scanner reports CONTENT DRIFT with SHA-256 prefixes and
+    exits 1. (Genuine drift still caught.)
+
+  * **`--fix` recovers cleanly**
+    → re-mirrors canonical, generated files in examples preserved
+    (they aren't in canonical to mirror, so they survive the
+    `rm -rf && cp -a` cycle).
+
+  * **All 6 scanners green at 0.81.14**:
+    - `version-sync` — 6 sources agree
+    - `addon-autoload-safety` — 208 files
+    - `license-canonical`
+    - `notice-canonical`
+    - `apache-headers` — 461 files
+    - `addon-drift` — all examples mirror canonical
+
+### What you need to do
+
+Nothing extra. The `.uid` files currently committed to
+`examples/coop_4p_minimal/addons/gool/` stay in the repo — the
+scanner just ignores them now. They're harmless metadata; Godot
+will keep them in sync as you work normally.
+
+If you'd rather not have them tracked in git going forward,
+add this to `.gitignore`:
+
+```
+examples/*/addons/gool/**/*.uid
+examples/*/addons/gool/**/*.import
+```
+
+Optional. The current state (tracked but ignored by drift scanner)
+works fine.
+
+### CI expectation
+
+Pure Python change (1 added constant, 1 modified function). The
+`addon-drift` job that failed in v0.81.13 CI should now pass
+cleanly. All other jobs unaffected.
+
+### The meta-lesson
+
+The v0.81.13 scanner shipped without being tested against the
+"Godot has opened the project locally" state, because my staging
+environment doesn't run Godot. That's a category of CI test gap
+I should be more careful about in the future: any scanner that
+checks file presence/absence needs to be exercised against the
+project state that a real user would have AFTER using the tools,
+not just before.
+
+Bookmark for future CI work: when adding a scanner, consider
+what state the user's working tree will be in by the time the
+scanner runs — not just the pristine repo state.
+
 ## [0.81.13] - 2026-05-30 — Critical: example addon drift fix + scanner
 
 Fixes a substantial silent bug: the gool addon copies in the three
