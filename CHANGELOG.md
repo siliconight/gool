@@ -26,6 +26,165 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.17] - 2026-05-30 — Tools menu: "Reset config from FPS template" verb
+
+Adds a tools-menu entry to reinstall the FPS config template at any
+point in a project's life — not just at first setup. Closes the user
+ask: "there should be a way to create a template for the buses after
+you've started a project if you didn't get what you want, getting a
+clear warning that it would change the json."
+
+### What it does
+
+New menu entry: **Project → Tools → gool → Reset config from FPS template (overwrites res://gool/config.json)...**
+
+Placed in a new "maintenance group" separator below the smoke-test
+verbs (which are read-only checks) so the visual grouping conveys
+"these change project state."
+
+Flow:
+
+  1. **Preflight**: Confirm the FPS template
+     (`res://addons/gool/templates/config_fps.json`) exists. If not,
+     surface a clear error pointing at quickinstall as the recovery
+     path.
+
+  2. **Confirmation dialog** (with text branched on whether a config
+     already exists):
+     - **Existing config**: explicit "REPLACE your existing
+       res://gool/config.json" warning + lists what's in the
+       template + names the `.gool-backup` recovery breadcrumb
+     - **No existing config**: gentler "Install FPS template as
+       res://gool/config.json" — same outcome, no overwrite drama
+
+  3. **On confirm**:
+     a. If existing config: snapshot it to
+        `res://gool/config.json.gool-backup` BEFORE writing the
+        template. Refuses to proceed if the backup write fails (so
+        the destructive operation never runs without a recovery
+        breadcrumb).
+     b. Create `res://gool/` directory if it doesn't exist (handles
+        the no-existing-config branch).
+     c. Write the template content to `res://gool/config.json`.
+        Uses `store_buffer(text.to_utf8_buffer())` per the v0.80.20
+        discipline (avoids Windows LF→CRLF mangling that breaks
+        downstream byte-for-byte JSON comparisons).
+     d. Refresh the FileSystem dock so the new file appears
+        immediately.
+
+  4. **Success dialog** tells the user what happened, instructs
+     them to restart the project to apply the new config, and
+     names the `.gool-backup` recovery path.
+
+### Why this verb specifically (vs. building 5 verbs at once)
+
+The user has only one game in flight (1990s gangster FPS) and only
+one config template currently authored (`config_fps.json`). Building
+a generic "pick from N templates" picker would be over-engineering
+for the n=1 case.
+
+Adding more templates later is a one-line change per template (add
+another menu entry pointing at a different .json file). If/when
+you author a music-focused or voice-focused template, this verb
+becomes the model for those.
+
+### Differences from the existing "Use FPS template" banner
+
+The existing `getting_started_banner.gd` has a "Use FPS template"
+button that does similar work. Three deliberate differences:
+
+  1. **When it's available**: banner only shows in projects with
+     no config yet (its trigger). The tools-menu verb is always
+     available, including after you've authored or fiddled with a
+     config.
+  2. **Overwrite confirmation**: banner is a fresh-install flow
+     (no existing config to clobber). The tools-menu verb is
+     overwrite-aware: shows a louder warning + saves to backup
+     first.
+  3. **Recovery breadcrumb**: banner doesn't snapshot a backup
+     (nothing to back up). The tools-menu verb does, so the dock's
+     "Restore from backup" toolbar action recovers from
+     accidental overwrite.
+
+Template content is shared (single source of truth at
+`addons/gool/templates/config_fps.json`), so future template
+edits propagate to both surfaces.
+
+### Verification (manual)
+
+  1. Open a Godot project with gool enabled.
+  2. **If no config exists yet**:
+     - Tools → gool → Reset config from FPS template...
+     - Dialog should say "Install FPS template" (no overwrite drama)
+     - Confirm → res://gool/config.json appears in FileSystem dock
+  3. **If config already exists**:
+     - Tools → gool → Reset config from FPS template...
+     - Dialog should say "Overwrite res://gool/config.json from FPS
+       template?" + mention the .gool-backup
+     - Click Cancel → nothing changes
+     - Re-open → Confirm → config.json replaced, .gool-backup created
+  4. Verify in FileSystem dock that BOTH config.json and
+     config.json.gool-backup exist after the overwrite case.
+  5. Restart project, open mixer dock — should see FPS template
+     bus topology (Master → Reverb / SFX / Music / Voice / Ambient).
+
+### Verification (automated)
+
+  * All 7 scanners green at v0.81.17:
+    - version-sync (6 sources at 0.81.17)
+    - addon-autoload-safety (208 files)
+    - license-canonical
+    - notice-canonical
+    - apache-headers (462 files)
+    - addon-drift (mirrors canonical exactly — used `--fix` to
+      propagate canonical changes to examples)
+    - scene-references (29/29 resolve)
+
+### NOT changed
+
+  * No C++ engine code. Pure GDScript + tooling.
+  * No template content changes. The FPS template at
+    `addons/gool/templates/config_fps.json` is unchanged from
+    v0.81.16; this patch just gives users a second way to apply it.
+  * No removal of the existing banner workflow. Banner still works
+    for first-project-setup; tools-menu verb is the
+    after-the-fact path.
+  * Defaults-mode bug A (the C++ bus name registry inconsistency
+    from v0.81.16) is still present. This verb gives the user a
+    cheap way to BYPASS that bug entirely by installing a real
+    config.json — which is the most reliable recovery for the
+    spam-warnings symptom.
+
+### Where this sits in the v0.81.x patch stream
+
+| Patch | Theme | Status |
+|---|---|---|
+| v0.81.13 | Example addon drift | ✅ Fixed + scanner |
+| v0.81.14 | Drift scanner false positives | ✅ Fixed |
+| v0.81.15 | Gitignored shipped asset | ✅ Fixed + scanner |
+| v0.81.16 | Defaults-mode warning spam | 🟡 Symptom fixed, root cause documented |
+| **v0.81.17** | **Mid-project config reset verb** | **✅ Shipped** |
+
+Each patch since v0.81.13 has been removing friction from the
+"first-time user installing gool into a fresh project" experience.
+This one adds an escape hatch for the case where they got into a
+broken state and want to start over — which is itself a first-time
+user scenario (experienced users wouldn't get there).
+
+### Future possibilities (NOT in this patch)
+
+If you author more templates later (music-focused, voice-focused,
+ambient-heavy, etc.), the pattern extends naturally:
+
+  - Drop `addons/gool/templates/config_music.json` etc.
+  - Add a `ToolsMenuItem.RESET_CONFIG_FROM_MUSIC_TEMPLATE = 8` enum
+    entry
+  - Add another menu line + handler that points at the new template
+
+At ~5 templates the menu starts feeling crowded; that's the point
+where a submenu ("Reset config from template..." → submenu of N
+options) becomes appropriate. Premature today.
+
 ## [0.81.16] - 2026-05-30 — Fix defaults-mode bus warning spam + add boot-time recovery hint
 
 Surfaced during fresh-install testing of v0.81.15: when gool boots in

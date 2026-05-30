@@ -698,6 +698,7 @@ enum ToolsMenuItem {
 	RUN_PREFAB_SMOKE_TEST = 4,  # v0.45.0
 	RUN_FPS_SCENE_SMOKE_TEST = 5,  # v0.50.0
 	OPEN_HELP_PANEL = 6,  # v0.79.3
+	RESET_CONFIG_FROM_TEMPLATE = 7,  # v0.81.17
 }
 
 func _register_tools_menu() -> void:
@@ -724,6 +725,13 @@ func _register_tools_menu() -> void:
 	# with no Voice bus, etc.). See addons/gool/tools/fps_scene_smoke_test.gd.
 	_tools_menu.add_item("Run FPS scene smoke test (find missing config dependencies)",
 		ToolsMenuItem.RUN_FPS_SCENE_SMOKE_TEST)
+	# v0.81.17: maintenance group — operations that modify the
+	# project's gool config or assets. Separated from the smoke
+	# tests above (which are read-only checks) by its own separator,
+	# so the visual grouping conveys "be careful with these."
+	_tools_menu.add_separator()
+	_tools_menu.add_item("Reset config from FPS template (overwrites res://gool/config.json)...",
+		ToolsMenuItem.RESET_CONFIG_FROM_TEMPLATE)
 	# v0.79.3: Help panel — second entry point for the help content
 	# (alongside the "?" button in the Mixer Dock). Users who don't
 	# open the dock can still find help from the Project menu.
@@ -765,6 +773,8 @@ func _on_tools_menu_pressed(id: int) -> void:
 			_run_fps_scene_smoke_test()
 		ToolsMenuItem.OPEN_HELP_PANEL:
 			_open_help_panel()
+		ToolsMenuItem.RESET_CONFIG_FROM_TEMPLATE:
+			_reset_config_from_fps_template()
 
 
 # v0.79.3: Open the help panel from the Tools menu. Second entry
@@ -1064,6 +1074,170 @@ func _save_new_folder_bank(path: String) -> void:
 		+ "(folder_path=%s)" % bank.folder_path)
 	# Ping the FileSystem dock so the new file appears immediately.
 	EditorInterface.get_resource_filesystem().scan()
+
+
+# v0.81.17: Reset res://gool/config.json from the FPS template.
+# Mid-project escape hatch — you started a project, fiddled with the
+# mixer dock, got into a confused state, and want to start fresh from
+# a known-good FPS bus topology.
+#
+# Differs from getting_started_banner's "Use FPS template" in three ways:
+#   1. Available from the tools menu (banner only shows on first project
+#      setup before any config exists)
+#   2. Explicitly warns about overwrite of existing config.json
+#   3. Saves the existing config to .gool-backup BEFORE writing the
+#      template, so the dock's "Restore from backup" toolbar action
+#      works as recovery
+#
+# Template content lives at res://addons/gool/templates/config_fps.json
+# (the same file getting_started_banner uses, so config-template
+# changes propagate to both surfaces without duplication).
+const _FPS_TEMPLATE_PATH := "res://addons/gool/templates/config_fps.json"
+const _CONFIG_PATH       := "res://gool/config.json"
+const _CONFIG_BACKUP_PATH := "res://gool/config.json.gool-backup"
+
+func _reset_config_from_fps_template() -> void:
+	# Preflight: confirm template exists. Without it, the operation
+	# can't proceed regardless of what the user wants.
+	if not FileAccess.file_exists(_FPS_TEMPLATE_PATH):
+		_show_info_dialog(
+			"FPS template not found",
+			"Couldn't find " + _FPS_TEMPLATE_PATH + ".\n\n"
+			+ "This file ships with the gool addon. If it's missing, "
+			+ "the addon installation may be incomplete — try re-running "
+			+ "the quickinstall.ps1 / .sh script to repair, or check "
+			+ "your addons/gool/ directory."
+		)
+		return
+
+	# Build the confirmation dialog. Branches on whether a config
+	# already exists: if yes, this is an OVERWRITE (loud warning); if
+	# no, it's a fresh install (gentler tone, matches the banner's
+	# experience).
+	var existing := FileAccess.file_exists(_CONFIG_PATH)
+	var confirm := ConfirmationDialog.new()
+	if existing:
+		confirm.title = "Overwrite res://gool/config.json from FPS template?"
+		confirm.dialog_text = (
+			"You're about to REPLACE your existing "
+			+ "res://gool/config.json with the FPS template.\n\n"
+			+ "Your current config will be saved to "
+			+ "res://gool/config.json.gool-backup before the new "
+			+ "template is written. If you change your mind, you can "
+			+ "restore the backup from the mixer dock's 'Restore from "
+			+ "backup' toolbar action.\n\n"
+			+ "The FPS template includes:\n"
+			+ "  - Master bus with master_control (glue compression, "
+			+ "loudness rider, brick-wall limiter)\n"
+			+ "  - Reverb send bus with biquad highpass + reverb\n"
+			+ "  - SFX, Music, Voice, Ambient sub-buses\n"
+			+ "  - 48kHz / 512-sample buffer / standard FPS values\n\n"
+			+ "Proceed with overwrite?"
+		)
+	else:
+		confirm.title = "Install FPS template as res://gool/config.json?"
+		confirm.dialog_text = (
+			"You don't have a res://gool/config.json yet. This will "
+			+ "create one from the FPS template.\n\n"
+			+ "The FPS template includes Master + Reverb + SFX + Music "
+			+ "+ Voice + Ambient buses with sensible defaults for a "
+			+ "first-person shooter (48kHz, 512-sample buffer, "
+			+ "master_control on Master).\n\n"
+			+ "Create config.json now?"
+		)
+	confirm.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	confirm.min_size = Vector2i(580, 320)
+	confirm.confirmed.connect(_perform_config_reset_from_fps_template)
+	confirm.confirmed.connect(confirm.queue_free)
+	confirm.canceled.connect(confirm.queue_free)
+	EditorInterface.get_base_control().add_child(confirm)
+	confirm.popup_centered()
+
+
+# Extracted from _reset_config_from_fps_template so the
+# overwrite-confirmation flow can call it after the user clicks
+# Confirm. Does the actual file work; no UI.
+func _perform_config_reset_from_fps_template() -> void:
+	# 1. Read the template.
+	var template_text := FileAccess.get_file_as_string(_FPS_TEMPLATE_PATH)
+	if template_text == "":
+		_show_info_dialog(
+			"Template read failed",
+			"Couldn't read " + _FPS_TEMPLATE_PATH + ". This shouldn't "
+			+ "happen — the template existed at preflight check time "
+			+ "but is empty or unreadable now. Try re-running "
+			+ "quickinstall to repair the addon."
+		)
+		return
+
+	# 2. If a config already exists, snapshot it to .gool-backup
+	#    BEFORE writing the template. This is the same backup
+	#    convention used by mixer_dock.gd's save path, so the dock's
+	#    "Restore from backup" action recovers this case too.
+	if FileAccess.file_exists(_CONFIG_PATH):
+		var current_text := FileAccess.get_file_as_string(_CONFIG_PATH)
+		if current_text != "":
+			var backup := FileAccess.open(_CONFIG_BACKUP_PATH,
+					FileAccess.WRITE)
+			if backup == null:
+				_show_info_dialog(
+					"Backup failed — aborting",
+					"Couldn't open " + _CONFIG_BACKUP_PATH + " for "
+					+ "writing (FileAccess error %d). Refusing to "
+					+ "overwrite the existing config without a "
+					+ "recovery breadcrumb in place. Check the "
+					+ "directory's write permissions and try again."
+					% FileAccess.get_open_error()
+				)
+				return
+			# v0.80.20 discipline: use store_buffer not store_string
+			# on Windows to avoid LF→CRLF mangling that breaks
+			# downstream tools comparing JSON byte-for-byte.
+			backup.store_buffer(current_text.to_utf8_buffer())
+			backup.close()
+
+	# 3. Write the template content to the target config path.
+	var dir := DirAccess.open("res://")
+	if dir != null and not dir.dir_exists("gool"):
+		var mkdir_err := dir.make_dir("gool")
+		if mkdir_err != OK:
+			_show_info_dialog(
+				"Couldn't create res://gool/",
+				"DirAccess.make_dir returned %d. Check write "
+				+ "permissions for the project root."
+				% mkdir_err
+			)
+			return
+
+	var out := FileAccess.open(_CONFIG_PATH, FileAccess.WRITE)
+	if out == null:
+		_show_info_dialog(
+			"Config write failed",
+			"Couldn't open " + _CONFIG_PATH + " for writing "
+			+ "(FileAccess error %d). The backup at "
+			+ "res://gool/config.json.gool-backup (if it was created) "
+			+ "preserves your previous config."
+			% FileAccess.get_open_error()
+		)
+		return
+	out.store_buffer(template_text.to_utf8_buffer())
+	out.close()
+
+	# 4. Ping the FileSystem dock so the new file appears immediately.
+	EditorInterface.get_resource_filesystem().scan()
+
+	# 5. Tell the user what happened and how to verify.
+	_show_info_dialog(
+		"FPS template installed",
+		"Wrote FPS template to " + _CONFIG_PATH + ".\n\n"
+		+ "To apply the new config, restart the project (or use the "
+		+ "mixer dock's reload button if you have one). The new bus "
+		+ "topology will be visible in the mixer dock after reload.\n\n"
+		+ "Your previous config (if any) was saved to "
+		+ "res://gool/config.json.gool-backup. To restore it, use "
+		+ "the mixer dock's 'Restore from backup' toolbar action."
+	)
+
 
 # Helper for popping up a small info/notice dialog. Editor-side only;
 # does NOT block execution (Godot's AcceptDialog is modeless by default).
