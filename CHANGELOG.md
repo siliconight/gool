@@ -26,6 +26,156 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.82.3] - 2026-05-30 — End-to-end FPS workflow guide (online multiplayer focus)
+
+Pure documentation patch. Adds `docs/fps_workflow.md` — a 603-line
+end-to-end recipe for wiring gool into a 4-player online coop FPS,
+plus a discoverability pointer in the cookbook so readers find the
+guide.
+
+### Why this exists
+
+The cookbook (`docs/cookbook.md`) has 11 individual recipes for
+specific audio tasks (play a sound, mute a player, footsteps with
+surface material, etc.). What it didn't have was the **end-to-end
+multiplayer workflow story** — how all those recipes fit together
+to build a real online FPS.
+
+The reference document the user shared mapped most of its 10 points
+to functionality gool already covers. Rather than build N new
+prefabs to "implement" the document, this patch distills the
+audio-relevant pieces of that document into a concrete twelve-step
+recipe that:
+
+  - Uses only existing gool prefabs and APIs (no new code)
+  - Is explicit about the multiplayer-online context (ENet, Steam
+    P2P, MultiplayerAPI)
+  - Names which prefab handles which concern
+  - Explicitly draws the boundary between gool's domain and the
+    game's domain
+  - Calls out the pitfalls that bite first-time multiplayer-audio
+    devs
+
+### Added
+
+  * **`docs/fps_workflow.md`** — twelve-step guide:
+    1. Scaffold the audio foundation (uses v0.82.0 verb)
+    2. Configure bus topology (mixer dock + v0.81.18 reparent UI)
+    3. Register sounds in category folders
+    4. Wire local prediction (instant feedback for firing player)
+    5. Wire remote replication (NetworkedAudioEvent + three modes)
+    6. The Audio Event Bridge pattern (optional helper, explained
+       as a pattern the user can author themselves rather than
+       shipped as a gool prefab)
+    7. Footsteps with surface material
+    8. Reverb zones for indoor sections
+    9. Occlusion through walls
+    10. Voice chat for the coop crew
+    11. Music state for heist phases
+    12. Debug overlay during development
+
+    Plus "Common pitfalls" section (6 traps), "Where gool ends and
+    your game begins" boundary statement, "Reference" pointer to
+    source material, and "See also" links to related docs.
+
+  * **`docs/cookbook.md`** — new section "Building an online
+    multiplayer FPS?" near the top, pointing to fps_workflow.md.
+    Placed right after the "honest framing" section since that's
+    where the cookbook would naturally tell readers about the
+    structured multiplayer path.
+
+### Why no new prefabs
+
+The user's reference document mentioned an "Audio Event Bridge"
+pattern (Section 8) — a single node on the Player that handles
+play_local / send_rpc_audio_event / receive_rpc_audio_event /
+forward_to_audio_engine. It's tempting to ship this as a gool
+prefab.
+
+Deliberately not doing that, because:
+
+  - The right shape depends on the game (per-player bridge vs.
+    one global bridge vs. no bridge at all). The reference
+    document shows one valid pattern; others are equally valid.
+  - The functionality it wraps already exists today — local
+    `Gool.play_one_shot()` for prediction, `NetworkedAudioEvent`
+    prefab for replication. The two-line inline pattern is fine
+    for small games.
+  - Shipping a canonical bridge prefab before any real game has
+    been built with it is exactly the speculative-design trap
+    that almost gave us FPSCoopAudio in v0.82.0.
+
+The guide teaches the **pattern** (Step 6, "The Audio Event Bridge
+pattern (optional, when wiring gets repetitive)") using existing
+prefabs and helper code the user authors themselves. If the
+pattern proves valuable enough across multiple games, it can be
+promoted to a gool prefab in a later release — but only after
+real friction justifies the design choices.
+
+### NOT changed
+
+  * No code changes. Pure docs.
+  * No new prefabs. The reference document's "AudioEventBridge"
+    pattern is taught using existing prefabs + user-authored
+    helper code (Step 6 of the new guide explains this choice
+    explicitly).
+  * No changes to existing docs except the cookbook pointer.
+
+### Verification
+
+  * All 7 scanners green at v0.82.3.
+  * Manual check: `docs/fps_workflow.md` is 603 lines, references
+    every shipped prefab (GoolListener3D, GoolSoundBankLoader,
+    FootstepSurfacePlayer, ReverbZone, GoolDebugOverlay,
+    MusicStateController, NetworkedAudioEvent, VoiceCaptureSource,
+    VoiceChatPlayer, VoiceCipher, GoolMusicState, AudioMaterialTag,
+    MusicStateController) by name.
+  * No mentions of nonexistent prefabs (no FPSCoopAudio,
+    AudioEventBridge, WeaponData as gool-shipped constructs —
+    those are either patterns the user authors or game-side
+    concerns).
+
+### Where this sits in the broader arc
+
+| Version | Theme |
+|---|---|
+| v0.82.0 | FPS scaffolding tool (drops 6 prefabs into a scene) |
+| v0.82.1 | Bug fixes from v0.82.0 / v0.81.18 testing |
+| v0.82.2 | Lessons learned: type inference + popup positioning gaps |
+| **v0.82.3** | **End-to-end FPS workflow guide (this patch)** |
+
+v0.82.0 was "drop the parts into a scene." v0.82.3 is "here's how
+to wire those parts into a real online multiplayer FPS." Together
+they take a first-time-3D-FPS developer from empty project to
+"audio is solved for my game" with explicit, named steps.
+
+What's NOT in this stream and shouldn't be: more new prefabs. The
+engine is feature-complete for the documented workflow. Future
+work should be driven by real game-side friction, not by
+speculation about what might be useful.
+
+### Process note
+
+The user's two-message arc to land this patch was textbook:
+
+  1. "Here's a reference document; this might inform a v0.83
+     direction." — sharing the source material
+  2. "I'd like to insert that the end-to-end FPS workflow guide
+     should assume this game will be an online multiplayer
+     game" — a specific constraint that sharpened the framing
+
+Both messages improved the patch substantially. The first prevented
+me from building speculative prefabs (Option A vs Option B vs
+Option C deliberation). The second narrowed the audience from
+"any 3D FPS dev" to "online multiplayer 3D FPS dev with 4 coop
+players" — which is exactly gool's design center and exactly the
+user's actual game.
+
+The honest framing earned a better doc than I would have shipped
+on the first try. Worth banking as a workflow lesson: when a user
+shares reference material, the right next step is often to ask
+what specific constraints they want to apply, not to assume.
+
 ## [0.82.2] - 2026-05-30 — Lessons learned: type inference, popup positioning, smoke gap
 
 Pure documentation patch. Captures the v0.82.1 bug fixes as lessons

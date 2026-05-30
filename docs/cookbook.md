@@ -31,6 +31,19 @@ Godot will serve you well. The integration helpers in v0.14.0
 `sync_volume_from_godot_bus`) let gool coexist with Godot's audio
 system rather than replace it.
 
+## Building an online multiplayer FPS?
+
+If you're specifically building an online multiplayer first-person
+shooter — using Godot's `MultiplayerAPI` (ENet) or a Steam P2P
+transport — there's an end-to-end wiring guide that walks the full
+twelve-step path: scaffold → bus topology → sound bank → local
+prediction → remote replication → footsteps → reverb → occlusion
+→ voice chat → music states → debug overlay → pitfalls.
+
+See [`fps_workflow.md`](fps_workflow.md). The recipes below cover
+individual tasks; the FPS workflow guide ties them together for
+the multiplayer-coop case.
+
 ## 1 — Play a sound at a position (fire and forget) ✨ Convenience
 
 For one-shot SFX like a coin pickup or a UI ping.
