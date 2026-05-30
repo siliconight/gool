@@ -821,7 +821,18 @@ public:
 
         const auto rc = runtime_->Initialize(cfg, std::move(deps));
         if (rc != audio::AudioResult::Success) {
-            UtilityFunctions::push_error("GoolAudioRuntime: Initialize failed");
+            // v0.81.12: include the specific AudioResult so the user can
+            // diagnose. AudioResultText gives human-friendly strings
+            // ("backend unavailable", "invalid argument", etc.) rather
+            // than the bare enum value.
+            UtilityFunctions::push_error(
+                String("GoolAudioRuntime: Initialize failed: ")
+                + String(AudioResultText(rc))
+                + String(". Common causes: 'backend unavailable' = no "
+                  "audio device or device is in use by another process; "
+                  "'invalid argument' = config has out-of-range values "
+                  "(sample_rate, buffer_size); 'unsupported' = a feature "
+                  "was requested that was compiled out of this build."));
             runtime_.reset();
             geometry_query_ = nullptr;
             return false;
@@ -887,8 +898,20 @@ public:
 
         const auto rc = runtime_->Initialize(cfg, std::move(deps));
         if (rc != audio::AudioResult::Success) {
+            // v0.81.12: include the specific AudioResult. Bus-config
+            // path is more error-prone (the config was parsed OK but
+            // the runtime rejected the resulting configuration), so
+            // the rc value is especially informative here.
             UtilityFunctions::push_error(
-                "GoolAudioRuntime: Initialize failed (with bus config)");
+                String("GoolAudioRuntime: Initialize failed (with bus config): ")
+                + String(AudioResultText(rc))
+                + String(". The bus config parsed successfully but the "
+                  "runtime rejected the resulting configuration. If rc is "
+                  "'invalid argument', a bus likely references an effect "
+                  "kind or parameter range the engine doesn't support. "
+                  "If 'backend unavailable', the audio device couldn't "
+                  "open at the sample rate / buffer size the config "
+                  "requested."));
             runtime_.reset();
             geometry_query_ = nullptr;
             return false;

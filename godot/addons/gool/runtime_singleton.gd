@@ -521,7 +521,55 @@ func _handle_set_bus_gain(bus_name: String, db: float) -> void:
 	# user dragged a fader during F5.
 	var ok: bool = _runtime.set_bus_gain_db(bus_name, db)
 	if not ok:
-		push_warning("[gool] set_bus_gain('%s', %.2fdB) failed" % [bus_name, db])
+		push_warning(_format_bus_op_error("set_bus_gain", bus_name,
+				"%.2fdB" % db))
+
+
+# v0.81.12: shared helper for the four set_bus_* operations'
+# error reporting. Replaces a generic "[gool] set_bus_X('foo', 0.5)
+# failed" message that gave no actionable info with introspection-
+# based diagnosis. By the time this is called, _check_init() has
+# already returned true, so _runtime is non-null AND initialized;
+# the most common cause of `ok == false` from a set_bus_X call is
+# that bus_name isn't in the runtime's bus topology (typo or
+# config drift).
+func _format_bus_op_error(op_name: String, bus_name: String,
+		params: String) -> String:
+	# Defensive: get_bus_stats should always return a Dict by this
+	# point, but in case it doesn't (unexpected runtime state), fall
+	# back to a sensible message instead of crashing.
+	var stats: Variant = _runtime.get_bus_stats()
+	if not (stats is Dictionary):
+		return ("[gool] %s('%s', %s) failed: " % [op_name, bus_name, params]
+				+ "runtime returned unexpected bus-stats shape. This is "
+				+ "an engine-internal issue; please report at "
+				+ "https://github.com/siliconight/gool/issues with the "
+				+ "Output panel contents from this session.")
+	var stats_dict: Dictionary = stats
+	if not stats_dict.has(bus_name):
+		var available: Array = stats_dict.keys()
+		var bus_list: String
+		if available.is_empty():
+			bus_list = ("no buses are configured in the runtime. "
+					+ "Check that res://gool/config.json exists and has "
+					+ "a 'buses' section. If you deleted it, the mixer "
+					+ "dock's empty-state buttons can recreate a "
+					+ "default.")
+		else:
+			bus_list = "available buses: " + ", ".join(available)
+		return ("[gool] %s('%s', %s) failed: " % [op_name, bus_name, params]
+				+ "bus '%s' is not in the topology. %s" % [bus_name, bus_list])
+	# Bus exists but the op was rejected. Rare — the runtime accepted
+	# the bus lookup but refused the operation. Most likely the
+	# Godot-bus mirror is in use and the operation tried to set state
+	# that conflicts (e.g. set_bus_muted on a mirror-driven bus
+	# where Godot's AudioServer owns the mute state).
+	return ("[gool] %s('%s', %s) failed: " % [op_name, bus_name, params]
+			+ "bus exists in the topology but the runtime rejected the "
+			+ "operation. If this bus is mirroring a Godot AudioServer "
+			+ "bus, the corresponding state may be owned by the Godot "
+			+ "bus and need to be set via AudioServer.set_bus_volume_db / "
+			+ "set_bus_mute instead.")
 
 
 # v0.27.0: per-bus mute / solo / effect-bypass debugger-command handlers.
@@ -533,7 +581,8 @@ func _handle_set_bus_mute(bus_name: String, muted: bool) -> void:
 		return
 	var ok: bool = _runtime.set_bus_muted(bus_name, muted)
 	if not ok:
-		push_warning("[gool] set_bus_mute('%s', %s) failed" % [bus_name, muted])
+		push_warning(_format_bus_op_error("set_bus_mute", bus_name,
+				str(muted)))
 
 
 func _handle_set_bus_solo(bus_name: String, soloed: bool) -> void:
@@ -541,7 +590,8 @@ func _handle_set_bus_solo(bus_name: String, soloed: bool) -> void:
 		return
 	var ok: bool = _runtime.set_bus_soloed(bus_name, soloed)
 	if not ok:
-		push_warning("[gool] set_bus_solo('%s', %s) failed" % [bus_name, soloed])
+		push_warning(_format_bus_op_error("set_bus_solo", bus_name,
+				str(soloed)))
 
 
 func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
@@ -549,7 +599,8 @@ func _handle_set_bus_bypass(bus_name: String, bypassed: bool) -> void:
 		return
 	var ok: bool = _runtime.set_bus_effects_bypassed(bus_name, bypassed)
 	if not ok:
-		push_warning("[gool] set_bus_bypass('%s', %s) failed" % [bus_name, bypassed])
+		push_warning(_format_bus_op_error("set_bus_bypass", bus_name,
+				str(bypassed)))
 
 
 # v0.28.0 (Phase 3.3c-1): live effect parameter set. Same direct-call

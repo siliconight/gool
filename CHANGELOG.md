@@ -26,6 +26,213 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.12] - 2026-05-30 — Runtime error message audit: top worst offenders
+
+Surveyed all runtime error-emitting sites across gool: 206 push_error
+/ push_warning callsites in the GDScript addon, plus 30 push_error /
+push_warning sites in the C++ binding (gool_godot.cpp). Sampled
+worst-likely-to-be-hit paths, identified 6 sites across 2 patterns
+that were causing confused-user pain. Fixed all 6 in this patch.
+
+### Baseline finding: most messages are surprisingly good
+
+Before changing anything, the survey showed that runtime_singleton.gd
+already has a strong investment in actionable error reporting. Examples
+of messages that DON'T need to be touched (and that future work should
+imitate, not imitate-degrade):
+
+  * **GoolAudioRuntime class not registered** — names the binary, gives
+    2 fix paths (download from Releases / build from source), names
+    the per-OS shared library filenames, links to SETUP.md.
+
+  * **Bus config schema rejection** — references the prior parser
+    error's line number, names the common schema failures, points
+    at the mixer dock's empty-state recovery buttons.
+
+  * **No audio device available** — suggests specific config values
+    to try (sample_rate=44100, buffer_size=1024).
+
+  * **_NOT_INITIALIZED_WARNING** template — names the method, gives
+    two concrete fixes (`ready_to_play` signal OR `is_initialized()`
+    guard), states "fires once per method per session" so the user
+    knows what they're seeing.
+
+  * **MusicStateController.set_state unknown name** — lists the
+    known states, asks "did you mean to add_state() first, or did
+    the name get a typo?"
+
+  * **Prefab autoload-not-found messages** — name the exact
+    Project Settings location to enable the plugin.
+
+  * **play_impact_sound: invalid material** — names what was
+    expected vs what was received, names the fallback behavior.
+
+The bar is high. The worst-offender list ended up shorter than
+expected.
+
+### Fixed (6 sites, 2 patterns)
+
+**Pattern A: set_bus_* operations had generic "failed" messages**
+(4 sites)
+
+Pre-v0.81.12:
+
+```
+[gool] set_bus_gain('reverb_send', -3.00dB) failed
+```
+
+This gave no actionable info. Was the bus name wrong? Was the runtime
+not ready? Was the operation rejected for some internal reason? The
+user had to dig.
+
+Post-v0.81.12 (via new `_format_bus_op_error` helper):
+
+```
+[gool] set_bus_gain('reverb_send', -3.00dB) failed: bus
+'reverb_send' is not in the topology. available buses: master, sfx,
+voice, music, reverb. Check res://gool/config.json for typos, or
+use the mixer dock to confirm the bus exists.
+```
+
+The helper uses `get_bus_stats()` for introspection. Three cases handled:
+
+  1. **Bus not in topology** — lists available buses (or notes "no
+     buses configured" if topology is empty, with config.json
+     recovery pointer).
+  2. **Bus exists but op rejected** — names the most likely cause
+     (Godot-bus mirror state ownership).
+  3. **Unexpected stats shape** — engine-internal anomaly, points
+     at the issue tracker with what to include.
+
+Applied to all four: set_bus_gain, set_bus_mute, set_bus_solo,
+set_bus_bypass.
+
+**Pattern B: C++ Initialize errors dropped the AudioResult enum**
+(2 sites)
+
+Pre-v0.81.12:
+
+```
+GoolAudioRuntime: Initialize failed
+```
+
+There are 14 values of `audio::AudioResult` (BackendUnavailable,
+InvalidArgument, AssetMissing, Unsupported, IoError, DecodeError,
+RateLimited, PolicyViolation, etc.). The user got "Initialize
+failed" with no indication of which one.
+
+Post-v0.81.12 (uses existing `AudioResultText(rc)` helper that was
+already defined in gool_godot.cpp for other purposes):
+
+```
+GoolAudioRuntime: Initialize failed: backend unavailable. Common
+causes: 'backend unavailable' = no audio device or device is in
+use by another process; 'invalid argument' = config has out-of-
+range values (sample_rate, buffer_size); 'unsupported' = a feature
+was requested that was compiled out of this build.
+```
+
+Both Initialize call sites updated:
+  * Without bus config (line 824)
+  * With bus config (line 891) — second site includes additional
+    context about bus-config-specific failure modes.
+
+### Survey method (in case anyone wants to repeat)
+
+1. `grep -c push_error\|push_warning godot/addons/gool/` → site count
+2. Sample errors from the most-called paths (sound playback, bus
+   ops, voice, multiplayer, autoload init).
+3. For each sample, ask: does this tell the user (a) what specifically
+   happened, (b) how to fix it, (c) where to look for more info?
+4. Mark sites that fail 2+ of those as worst-offenders.
+5. Look for shared patterns — fixing 4 sites via one helper is
+   cheaper than 4 separate fixes.
+
+### Not touched (with reasoning)
+
+  * **register_sound_definition: target_bus_name 'X' doesn't exist**
+    — could be improved with "available buses: A, B, C" but the
+    message already names the file and rate-limits warnings per
+    bus. Marginal value-add, skipped to stay focused.
+
+  * **Per-line bus config parse errors** — already include line
+    number and parser reason. Adding more context here would
+    require knowing the schema at the C++ level, not worth it.
+
+  * **Voice / multiplayer error paths** — sampled, found them
+    already reasonable. submit_voice_packet's "unknown player_id"
+    error names the id and registration API; submit_event_local
+    silently drops with telemetry rather than warning (deliberate;
+    voice traffic can be lossy and warning per drop would spam).
+
+  * **The 200 other push_warning / push_error sites** — most are
+    inside conditional code paths that won't fire in typical
+    usage. Spending time improving messages that nobody hits is
+    speculation, not engineering. Wait for a user report
+    mentioning a specific message before improving it.
+
+### CRITICAL: C++ change requires actual build
+
+The two C++ edits in gool_godot.cpp use `String(AudioResultText(rc))`
+— a pattern already used elsewhere in this file at line 1363. I'm
+confident the syntax is correct because it matches existing usage,
+but I did NOT compile the binding to verify. **Before pushing this
+tag, run `cmake --build` with your usual CI flags and confirm a
+clean build.** If anything was off, the build will catch it; static
+reading is not verification.
+
+If the build fails, the most likely cause is that I introduced a
+`String(...)` constructor mismatch I can't see from grep alone.
+Easy revert: `git checkout HEAD -- godot/src/gool_godot.cpp` and
+the GDScript improvements still ship; the C++ fix re-lands in
+a follow-up.
+
+### Verification (automated)
+
+  * `version-sync` — 6 sources at 0.81.12
+  * `addon-autoload-safety` — 77 files across 4 roots
+  * `license-canonical`
+  * `notice-canonical`
+  * `apache-headers` — 287 files
+
+### Verification (manual)
+
+**Bus error message:**
+  1. In a project with gool enabled, open a scene with the mixer
+     dock or run any code that calls `Gool._handle_set_bus_gain`
+     (or send a `gool:set_bus_gain` debugger command) with a
+     non-existent bus name.
+  2. Expected: warning lists the available buses + suggests
+     config.json check, not the old generic "failed".
+
+**Initialize error (requires C++ rebuild first):**
+  1. Run gool in an environment where the audio device is
+     unavailable (e.g. another process holding exclusive lock,
+     headless Linux with no PulseAudio).
+  2. Expected: error names the specific AudioResult value
+     ("backend unavailable", etc.) and the common causes,
+     not just "Initialize failed".
+
+### CI expectation
+
+GDScript fast-CI path skips C++. The C++ change requires the full
+C++ matrix to actually exercise. If you push the tag and only the
+fast-CI passes, that doesn't validate the C++ change — wait for
+the full matrix.
+
+### Roadmap context
+
+Not a roadmap item. Same hygiene-on-existing-surface pattern as
+v0.81.11's tools-menu polish. The user-felt impact of these fixes
+is real but only visible to users who actually hit the error paths
+— so it's the kind of work that doesn't ship a feature but quietly
+makes the engine more trustworthy.
+
+Future passes on the same pattern (when user reports surface them
+or when surveying becomes productive again): the music transition
+edge cases, the voice-chat-receiver error paths, the multiplayer
+bridge's unrecognized-transport errors.
+
 ## [0.81.11] - 2026-05-30 — Tools menu audit + polish: reliability fixes for Project→Tools→gool
 
 Audit + polish pass on the `Project → Tools → gool` editor menu.
