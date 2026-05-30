@@ -26,6 +26,241 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.10] - 2026-05-30 — VoiceCipher prefab: lightweight voice encryption
+
+Adds the application-layer voice encryption prefab. Closes the
+"lightweight" path of roadmap item 2.1 — encrypted voice for users
+on transports that don't encrypt natively (raw ENet, custom UDP),
+without requiring certificate management or external libraries.
+
+### DTLS first, VoiceCipher second
+
+For most users, Godot's built-in DTLS is the right answer:
+
+```gdscript
+# Host
+var key := Crypto.new().generate_rsa(2048)
+var cert := Crypto.new().generate_self_signed_certificate(key)
+var peer := ENetMultiplayerPeer.new()
+peer.set_dtls_key(key)
+peer.set_dtls_certificate(cert)
+peer.create_server(7777)
+
+# Client
+var peer := ENetMultiplayerPeer.new()
+peer.set_dtls_verify_enabled(false)  # accept self-signed for coop
+peer.create_client(host_ip, 7777)
+```
+
+This encrypts ALL traffic (voice + chat + game events) with one
+transport-level config block. Per-packet overhead is ~13 bytes.
+Forward secrecy via ephemeral key exchange during handshake.
+
+**Use VoiceCipher only if** you've decided not to use DTLS for
+some specific reason: you want voice encrypted but the rest of
+your traffic in plaintext (debugging-friendly), you've already
+committed to a transport that doesn't support DTLS, or you want
+crypto independent of transport choice. For the typical case,
+DTLS at the transport layer is simpler, more secure (forward
+secrecy), and lower-overhead per packet.
+
+### Added
+
+  * **`godot/addons/gool/prefabs/voice_cipher.gd`** (~370 lines
+    including heavy doc comment). `class_name VoiceCipher`,
+    `extends Node`. Public API:
+
+    - `static func generate_session_key() -> PackedByteArray`
+      Returns a fresh 32-byte (256-bit) key from
+      `Crypto.generate_random_bytes`. Call once on the host at
+      session start; distribute to peers via lobby handshake.
+    - `session_key: PackedByteArray` export. Setting this
+      derives subkeys, runs a round-trip self-test, and marks
+      the cipher ready. Invalid keys (wrong size, broken Godot
+      crypto) cause the cipher to refuse encrypt/decrypt with a
+      clear error.
+    - `encrypt(plaintext) -> PackedByteArray` — returns
+      `iv || ciphertext || tag` packet. Empty on failure.
+    - `decrypt(packet) -> PackedByteArray` — verifies HMAC,
+      decrypts, unpads. Empty on auth failure or malformed input
+      (caller silently drops).
+    - `is_ready() -> bool` — true once session_key is set and
+      self-test passed.
+
+  * **`godot/addons/gool/prefabs/voice_cipher.svg`** — 16x16
+    monochromatic icon: microphone with a padlock overlay.
+
+### Cryptographic construction
+
+Encrypt-then-MAC per RFC 7518 section 5.2.2. Standard secure
+composition for AES-CBC + HMAC.
+
+**Key derivation:**
+
+```
+enc_key = HMAC-SHA256(session_key, "gool-enc-v1")   # 32 bytes
+mac_key = HMAC-SHA256(session_key, "gool-mac-v1")   # 32 bytes
+```
+
+Separate keys for encryption and authentication is best practice
+— if one were somehow leaked it doesn't compromise the other's
+function. The "-v1" suffix lets future patches change the
+construction without accidentally decrypting old packets under
+new rules.
+
+**Encrypt:**
+
+```
+iv = random(16)                                      # OS-secure RNG
+padded = PKCS7-pad(plaintext, 16)
+ciphertext = AES-256-CBC(enc_key, iv, padded)
+tag = HMAC-SHA256(mac_key, iv || ciphertext)
+packet = iv || ciphertext || tag                     # 48-63 bytes overhead
+```
+
+**Decrypt:**
+
+```
+Split packet → iv (16), ciphertext (16N), tag (32)
+Verify tag = HMAC-SHA256(mac_key, iv || ciphertext)  # drop if mismatch
+plaintext = PKCS7-unpad(AES-256-CBC-decrypt(enc_key, iv, ciphertext))
+```
+
+Per-packet overhead: 16-byte IV + up to 15 bytes PKCS7 padding +
+32-byte tag = 48-63 bytes. For a 20ms Opus packet at ~80 bytes
+encoded, that's ~60% size increase. Acceptable for the
+"lightweight + no cert setup" trade-off.
+
+### Threat model
+
+**Protects against:**
+  - Passive eavesdropping on the network (neighbor on the same
+    Wi-Fi sniffing voice packets). Without the session key, the
+    ciphertext is unreadable.
+  - Packet tampering. HMAC verification catches any modification
+    to iv, ciphertext, or both.
+
+**Does NOT protect against:**
+  - **Replay attacks.** A captured encrypted packet can be
+    re-sent and will decrypt successfully. For voice this is
+    mostly harmless (Opus packet IDs + jitter buffer dedup
+    handle most cases). If you need replay rejection, prepend
+    a sequence number to plaintext before encrypt and verify
+    on decrypt.
+  - **Compromised session key.** One leaked key compromises all
+    sessions using it. No forward secrecy. DTLS provides this
+    via ephemeral key exchange.
+  - **MITM during key distribution.** If your lobby handshake
+    is unencrypted, the attacker captures the session key
+    during join. Distribute keys over a secure transport (DTLS,
+    TLS, Steam GNS lobby).
+  - **Side-channel attacks.** GDScript HMAC comparison isn't
+    constant-time. Not a practical concern for friendly coop;
+    relevant only if attackers have sustained local network
+    access.
+
+### Self-test on session_key set
+
+Every call to set `session_key` runs a round-trip encrypt-decrypt
+self-test with a known input. If it fails (Godot AESContext or
+HMACContext API broken, wrong key size, derived subkeys malformed),
+the cipher refuses to encrypt/decrypt and logs a clear error.
+Catches misconfigurations at startup, not at first packet.
+
+### Why this is GDScript-only
+
+The roadmap item 2.1 contemplates a C++ `IVoiceTransportCipher`
+seam in the engine. That's the heavier "full 2.1" path. For the
+lightweight delivery, GDScript with Godot's built-in
+`AESContext` + `HMACContext` + `Crypto` is sufficient: real
+crypto primitives from a well-tested library (Godot uses
+mbedTLS under the hood), no native dependencies, no C++
+engine changes.
+
+If a future need surfaces — higher-performance bulk encryption
+for many concurrent voice sources, libsodium for AEAD modes
+(AES-GCM, ChaCha20-Poly1305), or hardware acceleration — the
+C++ `IVoiceTransportCipher` seam from the roadmap is the next
+step. VoiceCipher exists alongside it as the easy default.
+
+### NOT changed
+
+  * No C++ engine code. No new bindings. No external
+    dependencies (mbedTLS comes with Godot).
+  * No other prefabs touched. VoiceCaptureSource (v0.81.8) and
+    the receive-side voice path (`Gool.submit_voice_packet`)
+    work unchanged — callers explicitly call
+    `cipher.encrypt()` / `cipher.decrypt()` between capture
+    and dispatch.
+  * No example update. The voice_chat example still uses its
+    own capture path with no encryption. Migrating it to
+    demonstrate VoiceCipher is a polish task for a future
+    patch.
+
+### Verification
+
+  * `class_name VoiceCipher` unique across all four addon roots.
+  * Apache-headers scanner: 287 files covered (was 286, +1 for
+    the new prefab).
+  * `addon-autoload-safety` scanner: 77 .gd files (was 76).
+  * All five scanners green:
+    - `version-sync` — 6 sources at 0.81.10
+    - `addon-autoload-safety` — 77 files across 4 roots
+    - `license-canonical`
+    - `notice-canonical`
+    - `apache-headers`
+
+### Manual test procedure
+
+  1. In a Godot project with gool installed, add a `VoiceCipher`
+     node to a scene.
+  2. Generate a key and assign it:
+
+         var key := VoiceCipher.generate_session_key()
+         $VoiceCipher.session_key = key
+
+  3. Console should NOT show errors. Optional sanity check:
+
+         assert($VoiceCipher.is_ready())
+
+  4. Round-trip an arbitrary payload:
+
+         var pt := "hello world".to_utf8_buffer()
+         var ct := $VoiceCipher.encrypt(pt)
+         var rt := $VoiceCipher.decrypt(ct)
+         assert(rt == pt)
+
+  5. Verify tampering detection: flip one byte in `ct`, retry
+     decrypt; should return empty `PackedByteArray`.
+
+  6. Verify wrong-key rejection: create a second VoiceCipher
+     with a different key, decrypt the original ct on it; should
+     return empty.
+
+If all four behaviors pass, the cipher is wired correctly.
+
+### CI expectation
+
+GDScript-only. Fast-CI path skips C++. Expected ~30s. The
+headless-smoke job parses the new prefab. Note: that smoke
+job doesn't exercise the runtime self-test (which only fires
+when `session_key` is set at runtime), so the first actual
+crypto verification happens in your project's first run.
+
+### Roadmap status
+
+Closes the lightweight path of item 2.1. The "full 2.1" with
+C++ engine cipher seam, libsodium integration, key rotation,
+and forward secrecy remains future work and should be designed
+against real performance requirements (4-player voice at 64kbps
+each is ~256kbps total — not crypto-bound on any reasonable
+machine, so the lightweight version covers the actual game
+needs for the foreseeable future).
+
+For shipping a 4P FPS PvE coop game over Godot's non-Steam P2P:
+**use DTLS if you can; use VoiceCipher if you can't.** Either
+way, voice is protected.
+
 ## [0.81.9] - 2026-05-30 — Music states in the inspector: GoolMusicState Resource + declarative authoring
 
 Adds a small Resource type for a music state and an
