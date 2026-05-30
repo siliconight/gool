@@ -1067,6 +1067,30 @@ jobs:
           bash scripts/check_license_canonical.sh
 
   # ----------------------------------------------------------------
+  # Job: NOTICE canonical content drift guard (v0.81.3).
+  #
+  # Apache 2.0 Section 4(d) gives the NOTICE file special legal
+  # weight: derivative works MUST copy it verbatim. That makes it
+  # both the strongest attribution mechanism Apache 2.0 provides
+  # AND the most fragile — every change creates work for every
+  # downstream fork. The guard ensures the project name, copyright
+  # owner, and source URL stay intact and that the MIT-placeholder
+  # regression that bit LICENSE in May 2026 can't bite NOTICE too.
+  #
+  # Detector lives at scripts/check_notice_canonical.sh, same
+  # pattern as check_license_canonical.sh. No path filter.
+  # ----------------------------------------------------------------
+  notice-canonical:
+    name: license / canonical NOTICE
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check NOTICE drift
+        run: |
+          bash scripts/check_notice_canonical.sh
+
+  # ----------------------------------------------------------------
   # Job: Apache 2.0 source-file header coverage (v0.81.2).
   #
   # Verifies that every first-party source file carries the Apache

@@ -26,6 +26,123 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.3] - 2026-05-30 — NOTICE file + drift guard
+
+Adds a NOTICE file at the repo root with the project's attribution
+block, plus a CI guard that prevents drift.
+
+### Why NOTICE matters
+
+Apache 2.0 Section 4(d) gives the NOTICE file legal weight that
+the LICENSE file alone doesn't have: **derivative works MUST
+include a readable copy of NOTICE's attribution notices**. That
+makes NOTICE the strongest attribution mechanism Apache 2.0
+provides:
+
+  * LICENSE establishes the license terms, but doesn't compel
+    derivative-work authors to credit the original author by name.
+  * Per-file headers (v0.81.2) credit the author per source file,
+    but a determined infringer could argue stripping them was
+    accidental.
+  * NOTICE is mandatory, top-level, and verbatim. Strip it and
+    your distribution is in license violation; the Apache 2.0
+    termination clause (Section 4) kicks in automatically.
+
+For a one-person open-source project, this is meaningful real
+protection. A bad actor who forks gool and tries to claim the
+work as their own has to actively strip NOTICE — at which point
+they've violated the license terms and lost the right to
+distribute the code at all.
+
+### Added
+
+  * **`NOTICE`** at the repo root, kept intentionally minimal:
+
+    ```
+    gool
+    Copyright 2026 Brannen Graves
+
+    This product is multiplayer-first audio middleware for Godot.
+    Source: https://github.com/siliconight/gool
+    ```
+
+    Five lines. Every line here propagates to every fork in
+    perpetuity, so terseness is a feature. Acknowledgments,
+    trademark notices, and additional attribution requirements
+    can be added later if/when there's a specific reason; for
+    today, the minimal form does the legal work.
+
+  * **`scripts/check_notice_canonical.sh`**: drift guard,
+    modeled after `check_license_canonical.sh`. Five pattern
+    checks: no MIT-template artifacts (regression detector from
+    the v0.80.24 incident), and three structural integrity
+    checks (project name `gool` on its own line, exact
+    `Copyright YYYY Brannen Graves` line, source URL present).
+    Each failure prints what was expected.
+
+  * **CI job `license / canonical NOTICE`** in
+    `.github/workflows/ci.yml`: runs the drift guard on every
+    push and PR. No path filter. Located between
+    `license-canonical` and `apache-headers` so the three
+    license-class jobs form a logical CI block.
+
+### NOT changed
+
+  * **NOTICE itself does not carry the Apache per-file header.**
+    NOTICE is metadata (alongside LICENSE), not source code.
+    Adding `# Copyright 2026 Brannen Graves` above the existing
+    `Copyright 2026 Brannen Graves` line would be both redundant
+    and weird-looking. The `apply_apache_headers.py` script's
+    FILE_PATTERNS allowlist doesn't include the repo root, so
+    NOTICE is correctly skipped by automation.
+
+  * **No third-party acknowledgments in NOTICE.** Vendored
+    libraries (miniaudio, dr_libs, stb, libopus) carry their own
+    licenses in `third_party/` and are documented in LICENSE's
+    third-party section. None require their attribution to
+    propagate via NOTICE (their licenses are permissive enough
+    that LICENSE-level acknowledgment is sufficient). If a
+    future dependency uses Apache 2.0 with its own NOTICE file,
+    that NOTICE content gets appended to ours per Apache
+    convention.
+
+### Verification
+
+  * NOTICE drift guard tested in both directions: corrupted NOTICE
+    correctly exits 1 with all three structural errors named;
+    restored NOTICE passes clean.
+  * The new `check_notice_canonical.sh` itself got the Apache
+    per-file header automatically (it's in `scripts/`, which is
+    in the apache-headers allowlist). 261 files now covered, up
+    from 260 in v0.81.2.
+  * All five scanners green:
+    - `version-sync` (5 sources at 0.81.3)
+    - `addon-autoload-safety`
+    - `license-canonical`
+    - **`notice-canonical` (new)**
+    - `apache-headers` (261 files)
+
+### CI expectation
+
+This commit only touches CI-config and meta files (one new top-
+level file `NOTICE`, one new script, one new workflow job, plus
+the version bumps). No C++ or GDScript changes, so the
+v0.80.11/v0.80.18 fast-CI path will skip the C++ matrix. Expected
+runtime: ~30 seconds, matching the v0.81.1 kick CI run.
+
+### Solid-as-a-rock status after this lands
+
+  * LICENSE: canonical Apache 2.0, drift-guarded (v0.80.24)
+  * Per-file headers: 261 files covered, drift-guarded (v0.81.2)
+  * **NOTICE: attribution-enforcing, drift-guarded (this patch)**
+
+That's the full Apache 2.0 attribution stack: LICENSE (terms),
+NOTICE (mandatory attribution propagation), and per-file headers
+(survives copy-out-of-context). Every layer drift-guarded. About
+as defensible as a one-person open-source project can make
+itself without paying for trademark registration or hiring an
+IP lawyer.
+
 ## [0.81.2] - 2026-05-30 — Apache 2.0 per-file source headers
 
 Adds the Apache 2.0 boilerplate header to every first-party source
