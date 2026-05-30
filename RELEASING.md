@@ -234,3 +234,97 @@ artifacts ship; consumers who pin to non-pre-release tags ignore them.
 When the pre-release hardens into the stable cut, drop the suffix in
 `version.h`, rebuild the changelog entry under the stable version
 header, and tag `vX.Y.Z`.
+
+## Sustainability of the prebuilt-binary path
+
+SETUP.md offers users two install tracks: prebuilt binaries (Track A,
+the fast path) and build-from-source (Track B, the contributor path).
+Track A is the one most adopters use. Keeping it actually working
+is a maintenance commitment, not a one-time setup.
+
+### Failure modes the maintainer should watch for
+
+1. **Silent release.yml failures.** If the release workflow breaks
+   on a platform that CI didn't catch (a Windows-only template
+   instantiation that compiles on Linux, an MSVC-version-specific
+   warning under `-Werror`, etc.), the tag still gets created, but
+   the binary archive for that platform doesn't get attached to
+   the GitHub Release. The quickinstall script then 404s on that
+   platform. Users hit it before the maintainer does. Mitigation:
+   after every `v*` tag push, manually verify the GitHub Releases
+   page shows BOTH the engine archives AND the addon archives for
+   ALL claimed platforms. If anything is missing, treat it as a
+   release-blocker per "What to do when the release breaks" above.
+
+2. **Drift between addon path and release.yml staging logic.**
+   `release.yml` has its own copy of which addon files to bundle
+   into the platform-specific addon archives. If a new prefab gets
+   added to `godot/addons/gool/prefabs/` but `release.yml`'s file
+   list isn't updated, the shipped addon will silently miss it.
+   Users won't see the new prefab until they look. Mitigation: any
+   change to the addon directory structure should grep for the
+   addon paths in `release.yml` and check whether the staging logic
+   needs an update. This is the kind of drift a CI guard could
+   catch — see "Future improvements" below.
+
+3. **Quickinstall script staleness.** `scripts/quickinstall.{ps1,sh}`
+   downloads from "latest release" via the GitHub API. If the API
+   endpoint or response shape ever changes, the scripts break. They
+   also hard-code platform detection logic that could miss new
+   platforms (e.g. Windows ARM64). Mitigation: the scripts are
+   small; periodically run them on a clean Godot project on each
+   supported platform to verify they still work end-to-end.
+
+4. **Binary-Godot version compatibility.** GDExtension binaries
+   are tied to the `godot-cpp` version they were built against,
+   which is tied to a specific Godot minor version. A user running
+   Godot 4.5 with a binary built against 4.4 godot-cpp may hit
+   subtle ABI issues. SETUP.md currently claims "Godot 4.2 or
+   newer"; if a future Godot version breaks compatibility, that
+   text and the GODOT_CPP_REF env var in CI workflows need
+   updating in lockstep.
+
+### Future improvements (not yet implemented)
+
+These would tighten sustainability but require their own engineering
+work. Listed in rough priority order:
+
+1. **CI smoke test for the published addon archive.** Add a job
+   that runs on `v*` tag push, AFTER `release.yml` uploads the
+   archives. It downloads the just-uploaded addon archive, extracts
+   it into a fresh Godot project, runs `examples/coop_4p_minimal`
+   in Godot headless mode, and verifies the validation banner
+   reaches PASSED state. If the smoke test fails, the maintainer
+   gets an email-alert from the failed workflow, well before any
+   user hits the issue.
+
+2. **Drift guard on `release.yml`'s addon staging logic.** A
+   scanner (similar to `check_version_sync.sh`) that walks
+   `godot/addons/gool/` and ensures every file is accounted for
+   in `release.yml`'s archive-staging step. Catches "added a new
+   prefab but forgot to update the release workflow" the same way
+   the version-sync scanner catches "bumped version.h but forgot
+   plugin.cfg".
+
+3. **macOS x86_64 in the build matrix.** SETUP.md mentions macOS
+   support, but only `macos-arm64` is in the CI matrix as of
+   v0.81.6. Apple Silicon users covered; Intel macOS users have
+   to fall back to Track B. Adding `macos-x86_64` to release.yml
+   is straightforward but adds CI time and platform-specific
+   maintenance.
+
+4. **An "I just want to try gool" landing page.** A
+   `docs/try_gool.md` (or section in the main README) targeted at
+   developers who haven't decided whether to adopt gool, with the
+   one-line install + 60-second validation walkthrough as the
+   only content. Today this information is split across SETUP.md
+   and `examples/coop_4p_minimal/README.md`, and a prospective
+   adopter has to assemble it themselves.
+
+5. **Godot Asset Library submission.** The most discoverable
+   distribution channel for Godot addons. Requires (1) the smoke
+   test above (asset library reviewers expect "open project, hit
+   play, it works"), (2) versioning that survives the asset
+   library's manual review cadence, and (3) some sustained
+   willingness to update the submission alongside each release.
+   Worth doing once gool stabilizes past 1.0; premature pre-1.0.

@@ -26,6 +26,85 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.7] - 2026-05-30 — Documentation honesty: validation example + B-path sustainability
+
+The v0.81.6 patch shipped the `coop_4p_minimal` validation example
+with a README that implied "open it and hit play, see PASS." That's
+correct for users who already have gool installed — but incorrect
+for a fresh clone, because gool ships a compiled GDExtension binary
+that the example's `addons/gool/` directory doesn't include. A user
+hitting "play" without first installing the binary gets
+`GoolAudioRuntime class not registered` errors and a misleading
+"VALIDATION FAILED" banner.
+
+This patch fixes the documentation, and adds a sustainability
+section to RELEASING.md so the prebuilt-binary distribution path
+stays trustworthy as the project evolves.
+
+### Context: the prebuilt pipeline works
+
+Verified before writing this CHANGELOG: every tagged release from
+v0.80.24 through v0.81.6 has 8 assets attached (the engine archive
++ Godot addon archive for each of Linux x86_64, Windows x86_64,
+macOS arm64, and source). Track A (prebuilt via quickinstall) has
+been functional throughout. The v0.81.6 documentation just didn't
+point users at it.
+
+### Changed
+
+  * **`examples/coop_4p_minimal/README.md`** rewritten:
+    - Adds a `Prerequisites` section mirroring
+      `examples/coop_shooter_template/README.md`'s convention.
+    - Names the specific error signature
+      (`GoolAudioRuntime class not registered`) a user hits when
+      the binary is missing, so they recognize what they're seeing.
+    - Splits install instructions into Track A (prebuilt via
+      quickinstall.{ps1,sh}) and Track B (build from source),
+      matching SETUP.md's vocabulary.
+    - Points at SETUP.md as the canonical install reference rather
+      than reinventing the build instructions inline.
+    - Reorders content so the install-related material comes
+      before the "what you'll see when validation passes" section
+      — a fresh-clone user shouldn't have to read three pages
+      before learning they need to install something first.
+
+  * **`RELEASING.md`** new section: `Sustainability of the prebuilt-
+    binary path`. Captures:
+    - Four failure modes to watch for (silent release.yml failures,
+      drift between addon paths and release.yml staging logic,
+      quickinstall script staleness, binary-Godot version
+      compatibility).
+    - Five ranked future improvements (CI smoke test for published
+      addon archives, drift guard on release.yml's staging logic,
+      macOS x86_64 in the build matrix, an "I just want to try
+      gool" landing page, Godot Asset Library submission).
+
+    None of these are landing in this patch — the section is
+    preventive documentation that captures the long-term thinking
+    so it's available when (not if) any of these become urgent.
+
+### NOT changed
+
+  * No engine code, no API, no behavior, no scanners, no scripts.
+    Pure documentation patch.
+  * Other examples' READMEs (`coop_shooter_template`, `voice_chat`)
+    not touched — they already follow the Prerequisites convention
+    that this patch is bringing `coop_4p_minimal` in line with.
+
+### Verification
+
+  * All five scanners green:
+    - `version-sync` — 6 sources at 0.81.7
+    - `addon-autoload-safety` — 74 files across 4 roots
+    - `license-canonical`
+    - `notice-canonical`
+    - `apache-headers` — 284 files (no new sources to header)
+
+### CI expectation
+
+Pure markdown changes plus version bump. Fast-CI path skips C++.
+Expected runtime ~30s.
+
 ## [0.81.6] - 2026-05-30 — coop_4p_minimal: end-to-end validation example
 
 Adds a complete minimal Godot project at `examples/coop_4p_minimal/`
