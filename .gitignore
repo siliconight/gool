@@ -35,6 +35,15 @@ _deps/
 *.exe
 *.app
 *.pdb
+# Compiler stray-output names. v0.82.4 hygiene: an empty a.out file
+# slipped into the v0.82.1 release tarball from a Claude-assistant
+# session, propagated through v0.82.2 and v0.82.3 via tree-copy.
+# The default GCC/Clang executable output name is `a.out` when no
+# -o flag is given; the `.out` suffix is common in older build
+# scripts. Block both at the gitignore level so a stray empty file
+# can't sneak into a release archive again.
+a.out
+*.out
 
 # Test executables (we name them audio_engine_*_test in CMake)
 audio_engine_*_test

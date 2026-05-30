@@ -26,6 +26,142 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.82.4] - 2026-05-30 — Cleanup: remove stray a.out + harden .gitignore
+
+Pure hygiene patch. Removes an empty `a.out` file that slipped into
+the repo root via my v0.82.1 tarball and propagated through v0.82.2
+and v0.82.3 via tree-copy. Adds `a.out` and `*.out` to .gitignore so
+this class of stray can't recur.
+
+### What happened
+
+During v0.82.1's bug-fix work (fps_coop_audio.gd:513), some command
+in my session created an empty file named `a.out` at the repo root.
+The file is 0 bytes — not a real compiler binary (those are never
+empty), just a redirect-style mistake — `> a.out` instead of some
+intended target, or a fragment of a typo'd command that defaulted
+to that filename.
+
+The mistake was mine. My `cp -r` between staging directories then
+carried it forward into v0.82.2 and v0.82.3 silently. The user
+ran `git add -A` after extracting each tarball, which staged the
+empty file because .gitignore didn't have a `a.out` entry. So it
+got pushed to the repo with three subsequent commits as part of
+v0.82.1, v0.82.2, v0.82.3.
+
+The user spotted it.
+
+### Fixed
+
+  * **Removed `a.out`** from the v0.82.4 tarball. After applying
+    this patch the file is gone from canonical.
+
+  * **`.gitignore`** updated with `a.out` and `*.out` entries in
+    the existing binary-extensions block:
+
+    ```
+    # Compiler stray-output names. v0.82.4 hygiene: an empty a.out
+    # file slipped into the v0.82.1 release tarball from a
+    # Claude-assistant session, propagated through v0.82.2 and
+    # v0.82.3 via tree-copy. The default GCC/Clang executable
+    # output name is `a.out` when no -o flag is given; the `.out`
+    # suffix is common in older build scripts. Block both at the
+    # gitignore level so a stray empty file can't sneak into a
+    # release archive again.
+    a.out
+    *.out
+    ```
+
+    The comment in .gitignore is deliberately verbose — future
+    maintainers should know why these entries exist so they aren't
+    silently removed during a future cleanup pass.
+
+### What the user needs to do
+
+After extracting v0.82.4:
+
+```
+cd C:\gool
+git rm a.out
+git add -A
+git commit -m "v0.82.4: remove stray a.out + harden .gitignore against compiler outputs"
+git push origin main
+git tag -a v0.82.4 -m "v0.82.4"
+git push origin v0.82.4
+```
+
+The `git rm a.out` is the actual removal from the tree. The
+.gitignore change comes along automatically via `git add -A`.
+
+### Flagged for user decision (NOT acted on in this patch)
+
+While investigating the a.out issue, I noticed a second 0-byte
+file at the repo root: **`GoolLogContext`**. Unlike a.out, this
+one predates my session — it was already in the user's repo at
+`/tmp/gool_inspect/gool/GoolLogContext` (dated May 29) before
+v0.81.13 was even staged. My tree-copies just carried it forward.
+
+`GoolLogContext` IS a legitimate class name elsewhere in the
+codebase (used by `addons/gool/logging.gd` and
+`addons/gool/logging_context.gd`), but the 0-byte file at the
+repo root has no plausible legitimate purpose I can identify.
+Most likely it's leftover from someone typing `> GoolLogContext`
+or `touch GoolLogContext` in a terminal during testing, then
+the file got accidentally committed.
+
+I deliberately did NOT remove it in this patch because:
+
+  1. It's been in the repo since before this session, so it
+     might be a marker file the user's workflow depends on
+     (unlikely but possible)
+  2. Auto-removing a tracked file without confirmation would be
+     overreach when the cost of leaving it is zero (an empty
+     file at root)
+
+If the user confirms it's safe to remove, a follow-up patch
+(v0.82.5) can clean it. Or the user can `git rm GoolLogContext`
+in the same commit as the v0.82.4 cleanup if they're confident.
+
+### NOT changed
+
+  * No code changes. Pure hygiene.
+  * No new scanner. The .gitignore hardening covers the recurrence
+    case without needing a dedicated scanner.
+  * No retroactive cleanup of v0.82.1–v0.82.3 tarballs. Those
+    history artifacts stay as-shipped; v0.82.4 is the recovery
+    point.
+
+### Process lesson banked
+
+For future patches: **after `cp -r` between staging directories,
+run `find . -maxdepth 2 -size 0 -type f` against the new staging
+to catch zero-byte stragglers BEFORE tarballing.** If anything is
+found, audit it for whether it's intentional. Adding this to my
+own pre-package checklist mentally — won't surface in
+lessons_learned.md since it's specific to assistant workflow
+rather than the codebase's discipline.
+
+The broader principle: 0-byte files at the repo root are almost
+always a mistake. Real files have content; intentional
+placeholders are usually in subdirectories (e.g. `.keep` files in
+empty dirs). A 0-byte file at root is a smell that warrants
+investigation.
+
+### Verification
+
+  * All 7 scanners green at v0.82.4.
+  * Confirmed: `a.out` not present in v0.82.4 tarball.
+  * Confirmed: `.gitignore` now lists `a.out` and `*.out`.
+  * Confirmed: `GoolLogContext` deliberately still present
+    pending user decision.
+
+### Where this sits
+
+This is the cleanup patch for a small mistake. Not a feature, not
+a fix to gool's behavior — just removing pollution that snuck in
+during the v0.82.1 session and ensuring it can't recur. Push it,
+push it with `git rm a.out`, move on to building the gangsters.
+
 ## [0.82.3] - 2026-05-30 — End-to-end FPS workflow guide (online multiplayer focus)
 
 Pure documentation patch. Adds `docs/fps_workflow.md` — a 603-line
