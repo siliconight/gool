@@ -26,6 +26,169 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.81.11] - 2026-05-30 — Tools menu audit + polish: reliability fixes for Project→Tools→gool
+
+Audit + polish pass on the `Project → Tools → gool` editor menu.
+Four bugs fixed; menu now behaves correctly on fresh projects
+without assumptions about pre-existing config or sound bank files.
+
+### Why this patch
+
+The tools menu is the discovery surface for gool's editor-side
+features (scaffolding, bank creation, validation). For users
+trying gool out for the first time, this is often the first thing
+they interact with. Bugs here become "gool broke my project /
+gool doesn't work" reports even when the actual engine is fine.
+Four issues identified during a systematic audit:
+
+  1. **Add 3D scaffolding was not idempotent** — clicking twice
+     added duplicate listener/loader/emitter nodes, doubling
+     audio at runtime.
+  2. **Create folder bank silently overwrote existing files** —
+     a data-safety hazard for designer-owned banks.
+  3. **FPS scene smoke test failed on projects without a
+     gool config.json** — a fresh project hadn't created config
+     yet, but the tool reported FAILED instead of SKIPPED. This
+     broke the "works for any project" claim directly.
+  4. **3D scaffolding silently set up a null-bank loader** when
+     no bank.tres existed yet — the scene compiled but played
+     no sound, with no editor-time feedback about why.
+
+### Changed
+
+**`godot/addons/gool/plugin.gd`**
+
+  * **`_add_3d_scaffolding_to_current_scene()`**: idempotency
+    check added. Walks the scene root's direct children, looks
+    for an existing GoolListener3D (by script resource_path
+    match), and if found surfaces a dialog explaining the state
+    and how to either modify the existing scaffolding or remove
+    it and re-run. Matches the existing idempotency pattern in
+    `_add_debug_overlay_to_current_scene`.
+
+  * **`_add_3d_scaffolding_to_current_scene()`**: post-add dialog
+    now branches on whether bank.tres was actually wired up. If
+    yes → standard "next steps" guidance. If no → explicit
+    pointer to the bank-creation tool with a 4-step recovery
+    workflow ("here's how to make this scene actually play sound").
+    Tracks the wire-up via a new local `bank_wired` flag.
+
+  * **`_on_new_bank_path_selected()`**: overwrite confirmation.
+    If the target path exists, shows a ConfirmationDialog
+    ("Overwrite existing file?") with descriptive text before
+    calling ResourceSaver.save. Logic extracted into new
+    `_save_new_folder_bank()` so both the no-conflict path and
+    the post-confirm path call the same implementation.
+
+  * **`_run_fps_scene_smoke_test()`**: SKIPPED vs FAILED
+    discrimination. Pre-checks `FileAccess.file_exists` on
+    `res://gool/config.json` BEFORE invoking the tool. If the
+    config doesn't exist, shows a new "SKIPPED" dialog
+    explaining the project is fine but the test needs config to
+    cross-reference. Includes two concrete recovery paths
+    (enable the plugin to write default config, or move custom
+    config back to canonical path). Existing PASS/FAIL paths
+    unchanged.
+
+### NOT changed
+
+Four other items came up during the audit but didn't land here:
+
+  * **Hidden tools in `tools/`**: `gool_stress_perf_probe.gd`
+    and `verify_install.gd` exist but aren't in the menu. Both
+    are runtime tools (need F5) rather than editor commands, so
+    they don't fit the current menu model cleanly. If/when these
+    get menu entries, they should probably get a "Validate"
+    submenu rather than crowding the main list.
+
+  * **Plugin-enabled sanity check**: I considered adding
+    "is the gool plugin enabled?" guard to each handler. Skipped
+    because the menu only appears when the plugin is enabled —
+    if you can see the menu, the plugin is enabled. The check
+    would be redundant. (Disabling the plugin while the menu is
+    open and then clicking is a theoretical edge case but not
+    one users hit.)
+
+  * **Smoke-test load-vs-parse-error distinction**: when the
+    tool script fails to `load()`, the user sees "tool not
+    found" regardless of whether the file is missing or has a
+    parse error. Distinguishing would require reading the file
+    with `FileAccess` and attempting a parse — extra complexity
+    for a vanishingly rare case (only happens after a gool
+    update introduces a script regression, which CI catches
+    first). Not worth the code.
+
+  * **Default bank path UX**: the bank creation dialog opens
+    at `res://sounds/my_bank.tres`, and `EditorFileDialog`
+    silently shows the project root if `res://sounds/` doesn't
+    exist. Functional but unexplained. A future enhancement
+    could detect this and either offer to create the directory
+    or pick a different default. Not landing now because the
+    current behavior isn't a bug per se.
+
+### Verification
+
+Manual test procedure for each fix:
+
+**Fix 1 (idempotency):**
+  1. Open a 3D scene.
+  2. Project → Tools → gool → Add gool 3D audio scaffolding.
+  3. Verify GoolListener3D, GoolSoundBankLoader, AudioEmitter3D added.
+  4. Project → Tools → gool → Add gool 3D audio scaffolding (again).
+  5. Expected: dialog "Already present" appears. No duplicate
+     nodes added.
+
+**Fix 2 (overwrite confirmation):**
+  1. Create a `test_bank.tres` (any GoolFolderSoundBank).
+  2. Project → Tools → gool → Create new GoolFolderSoundBank.
+  3. Save to `test_bank.tres` (same path).
+  4. Expected: "Overwrite existing file?" confirmation dialog
+     appears. Clicking Cancel preserves the original. Clicking
+     OK overwrites.
+
+**Fix 3 (skip vs fail):**
+  1. Open a project with NO `res://gool/config.json`.
+  2. Project → Tools → gool → Run FPS scene smoke test.
+  3. Expected: "SKIPPED" dialog with explanation. NOT "FAILED".
+
+**Fix 4 (bank-aware scaffolding message):**
+  1. Open a 3D scene in a project with NO `res://sounds/bank.tres`.
+  2. Project → Tools → gool → Add gool 3D audio scaffolding.
+  3. Expected: post-add dialog mentions the loader has no bank
+     and explains the 4-step recovery workflow.
+
+All four expected behaviors verifiable in Godot in about 2 minutes total.
+
+### Verification (automated)
+
+  * `version-sync` — 6 sources at 0.81.11
+  * `addon-autoload-safety` — 77 files across 4 roots
+  * `license-canonical`
+  * `notice-canonical`
+  * `apache-headers` — 287 files
+
+### CI expectation
+
+GDScript-only changes. Fast-CI path skips C++. Expected ~30s.
+Godot headless-smoke job parses the modified plugin.gd; if
+indentation or syntax got corrupted by str_replace edits, it
+catches the regression.
+
+### Roadmap context
+
+This isn't a roadmap item directly; it's quality-of-life work on
+the existing tools surface. The roadmap focuses on FEATURES; this
+patch is HYGIENE on the features that already exist. Both kinds
+of work are valid — the engine grows in capability via roadmap
+items, and grows in trustworthiness via audits like this one.
+
+If you keep building on top of gool, similar audits on other
+surfaces (the mixer dock's edge cases, the inspector plugins'
+behavior on malformed resources, the runtime error reporting)
+would each pay dividends. Not landing those now — just naming
+that the pattern of "audit and polish a specific surface" is a
+worthwhile activity beyond the roadmap's feature list.
+
 ## [0.81.10] - 2026-05-30 — VoiceCipher prefab: lightweight voice encryption
 
 Adds the application-layer voice encryption prefab. Closes the
