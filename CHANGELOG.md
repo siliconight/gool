@@ -26,6 +26,134 @@ Nothing shipping yet. Next-up candidates:
   duplicate bus, reorder buses, in-block comment preservation
   on topology edits.
 
+## [0.82.5] - 2026-05-30 — Container dependencies reference doc
+
+Pure documentation patch. Adds `docs/build_container.md` — a
+452-line reference for setting up a container (Docker, Podman, or
+any reproducible environment) to build gool from source. Covers
+the C++ audio engine, the Godot GDExtension binary, header-only
+deps fetched at build time, and optional CI tooling.
+
+### Why this exists
+
+Until now, the dependency story was spread across `SETUP.md` (Track
+B — end-user build instructions), `RELEASING.md` (maintainer
+context), `.github/workflows/release.yml` (authoritative truth),
+and `CMakeLists.txt` (build options). For someone wanting to author
+a container, the answer was "read all four and reconstruct the
+recipe."
+
+This patch consolidates that into a single document organized as
+three tiers:
+
+  - **Tier 1**: Minimum deps to build just the C++ engine library
+    (`audio_engine.lib` / `libaudio_engine.a`)
+  - **Tier 2**: Adds Godot GDExtension build (`libgool_godot.so` /
+    `gool_godot.dll`) — adds Python 3, SCons, network access to
+    github.com for cloning godot-cpp
+  - **Tier 3**: Optional CI parity tooling (clang-tidy, cppcheck,
+    lizard, gdtoolkit)
+
+Plus: a working Dockerfile, what's NOT needed, network-access
+requirements per build step, and image size references.
+
+### Added
+
+  * **`docs/build_container.md`** — comprehensive container deps
+    reference. Includes:
+    - Per-distro install lines (apt, dnf, brew, vcpkg) for each
+      tier
+    - Verification commands at each tier so a container author
+      knows whether their image is complete
+    - Header-only deps fetched at build time (miniaudio, dr_libs,
+      stb_vorbis) with their canonical upstream URLs — for
+      air-gapped builds, vendor these
+    - Working multi-stage Dockerfile example (~700MB builder,
+      ~80MB runtime trim)
+    - What's NOT needed (Godot itself, SCons-for-gool, GPU SDKs,
+      etc.) for clarity
+    - Network-access requirements table per build step
+    - Image size reference for planning
+
+### The v0.82.3 CI incident captured as concrete precedent
+
+The doc's "Network access requirements" section names the v0.82.3
+CI 502 (GitHub returning 502 for the third-party CMake binary that
+vcpkg needed to bootstrap itself on Windows) as a concrete example
+of why air-gapped builds benefit from vendored dependencies. That
+incident wasn't gool's fault — it was GitHub's infrastructure
+having a transient bad moment — but it's a real example of why
+pre-warming the toolchain matters for reproducible CI.
+
+### What this doc deliberately does NOT cover
+
+  * **Cross-compilation**. The doc assumes building natively for
+    the container's own OS/arch. Cross-compiling Windows binaries
+    from a Linux container, or ARM64 from x86_64, has additional
+    setup that's out of scope.
+
+  * **CI workflow internals**. `RELEASING.md` covers the release
+    pipeline; this doc focuses on the build environment itself.
+
+  * **Godot version compatibility**. The doc names the
+    `GODOT_CPP_REF=4.4` env var; what that means for which Godot
+    minor versions can load the resulting addon is in
+    `SETUP.md` / `gool.gdextension`.
+
+  * **Optimizing image size beyond multi-stage**. Distroless,
+    Alpine musl builds, etc. are advanced topics. The doc shows
+    the standard Ubuntu/Debian recipe that matches CI; tighter
+    images are an exercise for the container author.
+
+### Verification
+
+  * All 7 scanners green at v0.82.5.
+  * `wc -l docs/build_container.md` → 452 lines.
+  * Doc was authored against the actual CMakeLists.txt + release.yml
+    (verified via grep, not from memory) — every package name and
+    version constraint cited is grounded in real build inputs.
+
+### NOT changed
+
+  * No code changes. Pure docs.
+  * No new prefabs.
+  * The `GoolLogContext` 0-byte file at repo root is still present
+    pending the v0.82.4 user-decision flag. The pre-tarball sweep
+    procedure (banked as a v0.82.4 process lesson) was run before
+    packaging; nothing else stray surfaced.
+
+### Where this sits
+
+| Version | Theme |
+|---|---|
+| v0.82.0 | FPS scaffolding tool |
+| v0.82.1 | Bug fixes (fps_coop_audio.gd:513, popup positioning) |
+| v0.82.2 | Lessons learned doc entries |
+| v0.82.3 | End-to-end FPS workflow guide (online multiplayer) |
+| v0.82.4 | Stray a.out cleanup + .gitignore hardening |
+| **v0.82.5** | **Container build deps reference** |
+
+The v0.82.x stream is now 6 patches: 1 feature (scaffolding), 1 bug
+fix, 4 documentation/hygiene. The doc-heavy ratio reflects the
+project's actual state — the engine is feature-complete for the
+documented workflow; what's been missing was approachable
+documentation for the various entry points (FPS workflow, container
+setup, etc.).
+
+After v0.82.5, the entry points are all documented:
+
+  - **I want to use gool in my game** → `SETUP.md`
+  - **I want to build an FPS** → `docs/fps_workflow.md`
+  - **I want to set up a build container** → `docs/build_container.md`
+  - **I want to look up an audio task** → `docs/cookbook.md`
+  - **I want to release a new version** → `RELEASING.md`
+  - **I want to understand the design** → `docs/architecture.md`,
+    `docs/engineering/lessons_learned.md`
+
+Future doc work will be driven by friction the user hits during
+real game-building, not by speculation about additional docs that
+might be useful.
+
 ## [0.82.4] - 2026-05-30 — Cleanup: remove stray a.out + harden .gitignore
 
 Pure hygiene patch. Removes an empty `a.out` file that slipped into
